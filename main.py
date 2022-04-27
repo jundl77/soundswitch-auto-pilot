@@ -3,7 +3,7 @@ import time
 
 import midi_message as mm
 
-PORT_IDX = 2
+PORT_IDX = 1
 
 midi_out = rtmidi.MidiOut()
 available_ports = midi_out.get_ports()

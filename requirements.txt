@@ -1,3 +1,11 @@
 isobar
 python-rtmidi
 jupyterlab
+zeroconf
+numpy
+pyaudio
+pyqt5
+pyqwt
+matplotlib
+scipy
+python-osc
