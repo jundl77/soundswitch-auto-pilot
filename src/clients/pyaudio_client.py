@@ -16,6 +16,11 @@ class PyAudioClient:
         self.stream_in: pyaudio.Stream = None
         self.stream_out: pyaudio.Stream = None
 
+    def list_devices(self):
+        print('All pyaudio devices:')
+        for i in range(0, self.py_audio.get_device_count()):
+            print(f'index: {i}, device: {self.py_audio.get_device_info_by_index(i)["name"]}')
+
     def support_output(self) -> bool:
         return self.stream_out is not None
 
