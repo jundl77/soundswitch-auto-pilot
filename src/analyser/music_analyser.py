@@ -55,7 +55,7 @@ class MusicAnalyser:
 
     def get_bpm(self) -> float:
         if self.is_playing:
-            return self.tempo_o.get_ bpm()
+            return self.tempo_o.get_bpm()
         else:
             return 0
 
