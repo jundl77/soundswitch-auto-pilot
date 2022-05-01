@@ -2,7 +2,7 @@ import numpy as np
 import aubio
 import datetime
 from analyser.music_analyser_handler import MusicAnalyserHandler
-from typing import List
+from typing import List, Optional
 
 
 class MusicAnalyser:
@@ -22,9 +22,9 @@ class MusicAnalyser:
         self.mfcc_coeffs = 13
         self.click_sound: float = 0.7 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
 
-        self._init_state()
+        self._reset_state()
 
-    def _init_state(self):
+    def _reset_state(self) -> None:
         # audio analysers
         self.pitch_o: aubio.pitch = aubio.pitch("default", self.win_s, self.hop_s, self.sample_rate)
         self.pitch_o.set_unit("midi")
@@ -34,53 +34,70 @@ class MusicAnalyser:
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
         self.mfcc_o: aubio.mfcc = aubio.mfcc(self.win_s, self.mfcc_filters, self.mfcc_coeffs, self.sample_rate)
 
-        # state
+        # tracking state
         self.is_playing: bool = False
         self.song_start_time: datetime.datetime = datetime.datetime.now()
         self.song_current_time: datetime.datetime = datetime.datetime.now()
         self.silence_period_start: datetime.datetime = datetime.datetime.now()
-
-        self.bpm: float = 0
-        self.beats: List[float] = []
         self.mfccs = np.zeros([self.mfcc_coeffs,])
 
-    def get_start_of_song(self) -> datetime.datetime:
-        return self.song_start_time
+    def get_start_of_song(self) -> Optional[datetime.datetime]:
+        if self.is_playing:
+            return self.song_start_time
+        else:
+            return None
 
     def get_song_duration(self) -> datetime.timedelta:
-        return self.song_current_time - self.song_start_time
+        if self.is_playing:
+            return self.song_current_time - self.song_start_time
+        else:
+            return datetime.timedelta(seconds=0)
 
     def get_bpm(self) -> float:
-        return self.bpm
+        if self.is_playing:
+            return self.tempo_o.get_ bpm()
+        else:
+            return 0
 
     def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
-        is_onset = self.onset_o(audio_signal)
-        if is_onset:
-            self.handler.on_onset()
+        is_onset: bool = self._track_onset(audio_signal)
+        is_beat: bool = self._track_beat(audio_signal)
 
-        is_beat = self.tempo_o(audio_signal)
-        if is_beat:
-            this_beat: float = self.tempo_o.get_last_s()
-            self.beats.append(this_beat)
-            self.bpm = self._beats_to_bpm(self.beats)
-            self.handler.on_beat(this_beat)
-
-        spec = self.pvoc_o(audio_signal)
-        mfcc_out = self.mfcc_o(spec)
-        self.mfccs = np.vstack((self.mfccs, mfcc_out))
-        self._track_song_duration(mfcc_out)
+        mfcc = self._track_mfcc(audio_signal)
+        self._track_song_duration(mfcc)
 
         pitch = self.pitch_o(audio_signal)[0]
         confidence = self.pitch_o.get_confidence()
+
+        if self.get_song_duration() > datetime.timedelta(minutes=15):
+            self._reset_state()
 
         if is_beat:
             audio_signal += self.click_sound
         return audio_signal
 
-    def _track_song_duration(self, mfcc) -> None:
+    def _track_onset(self, audio_signal: np.ndarray) -> bool:
+        is_onset: bool = self.onset_o(audio_signal)[0] > 0
+        if is_onset:
+            self.handler.on_onset()
+        return is_onset
 
+    def _track_beat(self, audio_signal: np.ndarray) -> bool:
+        is_beat: bool = self.tempo_o(audio_signal)[0] > 0
+        if is_beat:
+            this_beat: float = self.tempo_o.get_last_s()
+            self.handler.on_beat(this_beat)
+
+        return is_beat
+
+    def _track_mfcc(self, audio_signal: np.ndarray) -> np.ndarray:
+        spec = self.pvoc_o(audio_signal)
+        mfcc_out = self.mfcc_o(spec)
+        self.mfccs = np.vstack((self.mfccs, mfcc_out))
+        return mfcc_out
+
+    def _track_song_duration(self, mfcc: np.ndarray) -> None:
         is_silence_now: bool = len([n for n in mfcc[1:] if -0.001 < n < 0.001]) == len(mfcc) - 1
-
         now = datetime.datetime.now()
 
         # if it is silent now, we do not update silence_period_start in order to track the duration of the silence
@@ -91,7 +108,7 @@ class MusicAnalyser:
         if now - self.silence_period_start > datetime.timedelta(seconds=0.3):
             if self.is_playing:
                 self.handler.on_sound_stop()
-            self._init_state()  # sets is_playing to False
+            self._reset_state()  # sets is_playing to False
         else:
             self.song_current_time = now
 
@@ -99,14 +116,3 @@ class MusicAnalyser:
         if not self.is_playing and now - self.song_start_time > datetime.timedelta(seconds=0.3):
             self.handler.on_sound_start()
             self.is_playing = True
-
-    def _fbeats_to_bpm(self, beats: List[float]) -> float:
-        # if enough beats are found, convert to periods then to bpm
-        if len(beats) > 1:
-            if len(beats) < 4:
-                print("few beats found in audio")
-            bpms = 60. / np.diff(beats)
-            return np.median(bpms)
-        else:
-            print("not enough beats found in audio")
-            return 0
