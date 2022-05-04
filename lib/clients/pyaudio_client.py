@@ -17,7 +17,7 @@ class PyAudioClient:
         self.stream_out: pyaudio.Stream = None
 
     def list_devices(self):
-        print('All pyaudio devices:')
+        print('=== Pyaudio devices ===')
         for i in range(0, self.py_audio.get_device_count()):
             print(f'index: {i}, device: {self.py_audio.get_device_info_by_index(i)["name"]}')
 
@@ -28,16 +28,16 @@ class PyAudioClient:
         if self.input_device_index is None:
             default_input_device_info = self.py_audio.get_default_input_device_info()
             self.input_device_index = default_input_device_info['index']
-            print(f"Using default input device: {default_input_device_info['name']}")
+            print(f"Using default sound input device: {default_input_device_info['name']}")
         else:
-            print(f"Using input device with index: {self.input_device_index}")
+            print(f"Using sound input device with index: {self.input_device_index}")
 
         if self.output_device_index is None:
             default_output_device_info = self.py_audio.get_default_output_device_info()
             self.output_device_index = default_output_device_info['index']
-            print(f"Using default output device: {default_output_device_info['name']}")
+            print(f"Using default sound output device: {default_output_device_info['name']}")
         else:
-            print(f"Using output device with index: {self.output_device_index}")
+            print(f"Using sound output device with index: {self.output_device_index}")
 
         self.stream_in = self.py_audio.open(format=pyaudio.paFloat32,
                                             channels=1,

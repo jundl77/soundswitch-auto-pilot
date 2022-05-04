@@ -1,10 +1,9 @@
 python-rtmidi
 jupyterlab
-zeroconf
 numpy
 pyaudio
 matplotlib
 scipy
 python-osc
-pyqt5
-isobar
+sklearn
+argcomplete

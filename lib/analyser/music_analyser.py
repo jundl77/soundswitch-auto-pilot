@@ -1,8 +1,8 @@
 import numpy as np
 import aubio
 import datetime
-from analyser.music_analyser_handler import MusicAnalyserHandler
 from typing import List, Optional
+from lib.analyser.music_analyser_handler import MusicAnalyserHandler
 
 
 class MusicAnalyser:
@@ -33,13 +33,17 @@ class MusicAnalyser:
         self.onset_o: aubio.onset = aubio.onset("default", self.win_s, self.hop_s, self.sample_rate)
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
         self.mfcc_o: aubio.mfcc = aubio.mfcc(self.win_s, self.mfcc_filters, self.mfcc_coeffs, self.sample_rate)
+        self.energy_filter = aubio.filterbank(40, self.win_s)
+        self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
 
         # tracking state
         self.is_playing: bool = False
         self.song_start_time: datetime.datetime = datetime.datetime.now()
         self.song_current_time: datetime.datetime = datetime.datetime.now()
         self.silence_period_start: datetime.datetime = datetime.datetime.now()
+        self.last_mfcc_sample_time: datetime.datetime = datetime.datetime.now()
         self.mfccs = np.zeros([self.mfcc_coeffs,])
+        self.energies = np.zeros((40,))
 
     def get_start_of_song(self) -> Optional[datetime.datetime]:
         if self.is_playing:
@@ -63,9 +67,6 @@ class MusicAnalyser:
         is_onset: bool = self._track_onset(audio_signal)
         is_beat: bool = self._track_beat(audio_signal)
 
-        mfcc = self._track_mfcc(audio_signal)
-        self._track_song_duration(mfcc)
-
         pitch = self.pitch_o(audio_signal)[0]
         confidence = self.pitch_o.get_confidence()
 
@@ -74,11 +75,15 @@ class MusicAnalyser:
 
         if is_beat:
             audio_signal += self.click_sound
-        return audio_signal
+        if is_onset:
+            return audio_signal
+        return np.zeros((1,))
 
     def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
+            mfcc = self._compute_mfcc(audio_signal)
+            self._track_song_duration(mfcc)
             self.handler.on_onset()
         return is_onset
 
@@ -90,10 +95,14 @@ class MusicAnalyser:
 
         return is_beat
 
-    def _track_mfcc(self, audio_signal: np.ndarray) -> np.ndarray:
+    def _compute_mfcc(self, audio_signal: np.ndarray) -> np.ndarray:
         spec = self.pvoc_o(audio_signal)
+        new_energies = self.energy_filter(spec)
         mfcc_out = self.mfcc_o(spec)
+
         self.mfccs = np.vstack((self.mfccs, mfcc_out))
+        self.energies = np.vstack([self.energies, new_energies])
+
         return mfcc_out
 
     def _track_song_duration(self, mfcc: np.ndarray) -> None:

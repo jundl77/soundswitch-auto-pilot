@@ -1,4 +1,4 @@
-from clients.midi_client import MidiClient
+from lib.clients.midi_client import MidiClient
 
 
 class MusicAnalyserHandler:

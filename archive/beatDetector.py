@@ -4,7 +4,7 @@ import osc
 import ui
 import sys
 from PyQt5 import QtCore, QtWidgets
-from src.analyser.bpm import SignalGenerator, AudioAnalyzer
+from lib.analyser.bpm import SignalGenerator, AudioAnalyzer
 from recorder import *
 
 
