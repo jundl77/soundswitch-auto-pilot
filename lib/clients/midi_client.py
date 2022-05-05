@@ -25,6 +25,6 @@ class MidiClient:
 
     def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_ON)
-        logging.info(f'[{self.port_name}] send BPM TAP')
+        logging.info('[midi] send BPM TAP')
         time.sleep(0.01)
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_OFF)
