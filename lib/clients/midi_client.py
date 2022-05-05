@@ -16,7 +16,7 @@ class MidiClient:
             print(f'index: {i}, port: {self.available_ports[i]}')
 
     def start(self):
-        assert 0 < self.midi_port_index < len(self.available_ports), "midi_port_index does not reference a valid port"
+        assert 0 <= self.midi_port_index < len(self.available_ports), "midi_port_index does not reference a valid port"
         print(f"Using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
@@ -24,6 +24,6 @@ class MidiClient:
 
     def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_ON)
-        print(f'[{port_name}] send BPM TAP')
+        print(f'[{self.port_name}] send BPM TAP')
         time.sleep(0.01)
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_OFF)
