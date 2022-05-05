@@ -2,9 +2,12 @@
 
 import argparse
 import argcomplete
+import logging
 
 BUFFER_SIZE = 512
 SAMPLE_RATE = 44100
+
+logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 
 
 class SoundSwitchAutoPilot:
@@ -34,7 +37,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
 
-        print("auto pilot is ready, starting")
+        logging.info("auto pilot is ready, starting")
         while True:
             audio_signal = self.audio_client.read()
             new_audio_signal = self.music_analyser.analyse(audio_signal)

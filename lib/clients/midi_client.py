@@ -1,6 +1,7 @@
 import rtmidi
 import time
 import lib.clients.midi_message as mm
+import logging
 
 
 class MidiClient:
@@ -17,13 +18,13 @@ class MidiClient:
 
     def start(self):
         assert 0 <= self.midi_port_index < len(self.available_ports), "midi_port_index does not reference a valid port"
-        print(f"Using midi port: {self.port_name}")
+        logging.info(f"Using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
         self.midi_out.send_message(mm.MIDI_MSG_LINK_TOGGLE)
 
     def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_ON)
-        print(f'[{self.port_name}] send BPM TAP')
+        logging.info(f'[{self.port_name}] send BPM TAP')
         time.sleep(0.01)
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_OFF)
