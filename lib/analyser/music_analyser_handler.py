@@ -22,4 +22,5 @@ class MusicAnalyserHandler:
     def on_beat(self, beat: float) -> None:
         bpm = self.analyser.get_bpm()
         logging.info(f'beat {beat}, bpm: {bpm}')
+        self.midi_client.send_beat()
 
