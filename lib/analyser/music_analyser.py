@@ -76,9 +76,8 @@ class MusicAnalyser:
 
         if is_beat:
             audio_signal += self.click_sound
-        if is_onset:
-            return audio_signal
-        return np.zeros((1,))
+
+        return audio_signal
 
     def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
