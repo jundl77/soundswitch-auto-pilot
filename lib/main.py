@@ -3,6 +3,7 @@
 import argparse
 import argcomplete
 import logging
+import asyncio
 
 BUFFER_SIZE = 512
 SAMPLE_RATE = 44100
@@ -23,6 +24,7 @@ class SoundSwitchAutoPilot:
         from lib.analyser.music_analyser_handler import MusicAnalyserHandler
 
         self.debug_mode: bool = debug_mode
+        self.loop = asyncio.get_event_loop()
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.handler: MusicAnalyserHandler = MusicAnalyserHandler(self.midi_client)
@@ -33,21 +35,21 @@ class SoundSwitchAutoPilot:
         self.audio_client.list_devices()
         self.midi_client.list_devices()
 
-    def run(self):
+    async def run(self):
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
 
         logging.info("auto pilot is ready, starting")
-        while True:
+        while self.loop.is_running():
             audio_signal = self.audio_client.read()
-            new_audio_signal = self.music_analyser.analyse(audio_signal)
+            new_audio_signal = await self.music_analyser.analyse(audio_signal)
 
             if self.audio_client.support_output():
                 self.audio_client.play(new_audio_signal)
         self.audio_client.close()
 
 
-def run_cmd(args: argparse.Namespace):
+async def run_cmd(args: argparse.Namespace):
     if args.debug:
         print('starting in debug mode')
         debug_mode = True
@@ -62,7 +64,7 @@ def run_cmd(args: argparse.Namespace):
                                output_device_index=output_device_index,
                                debug_mode=debug_mode)
 
-    app.run()
+    await app.run()
 
 
 async def list_cmd(args: argparse.Namespace):

@@ -64,9 +64,9 @@ class MusicAnalyser:
         else:
             return 0
 
-    def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
-        is_onset: bool = self._track_onset(audio_signal)
-        is_beat: bool = self._track_beat(audio_signal)
+    async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
+        is_onset: bool = await self._track_onset(audio_signal)
+        is_beat: bool = await self._track_beat(audio_signal)
 
         pitch = self.pitch_o(audio_signal)[0]
         confidence = self.pitch_o.get_confidence()
@@ -79,19 +79,19 @@ class MusicAnalyser:
 
         return audio_signal
 
-    def _track_onset(self, audio_signal: np.ndarray) -> bool:
+    async def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
             mfcc = self._compute_mfcc(audio_signal)
             self._track_song_duration(mfcc)
-            self.handler.on_onset()
+            await self.handler.on_onset()
         return is_onset
 
-    def _track_beat(self, audio_signal: np.ndarray) -> bool:
+    async def _track_beat(self, audio_signal: np.ndarray) -> bool:
         is_beat: bool = self.tempo_o(audio_signal)[0] > 0
         if is_beat:
             this_beat: float = self.tempo_o.get_last_s()
-            self.handler.on_beat(this_beat)
+            await self.handler.on_beat(this_beat)
 
         return is_beat
 

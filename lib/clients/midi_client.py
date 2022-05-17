@@ -2,6 +2,7 @@ import rtmidi
 import time
 import lib.clients.midi_message as mm
 import logging
+import asyncio
 
 
 class MidiClient:
@@ -23,8 +24,8 @@ class MidiClient:
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
         self.midi_out.send_message(mm.MIDI_MSG_LINK_TOGGLE)
 
-    def send_beat(self):
+    async def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_ON)
         logging.info('[midi] send BPM TAP')
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_OFF)

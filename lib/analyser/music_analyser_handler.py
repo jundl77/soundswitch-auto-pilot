@@ -16,11 +16,11 @@ class MusicAnalyserHandler:
     def on_sound_stop(self):
         logging.info('sound stop')
 
-    def on_onset(self):
+    async def on_onset(self):
         logging.info('onset')
 
-    def on_beat(self, beat: float) -> None:
+    async def on_beat(self, beat: float) -> None:
         bpm = self.analyser.get_bpm()
         logging.info(f'beat {beat}, bpm: {bpm}')
-        self.midi_client.send_beat()
+        await self.midi_client.send_beat()
 
