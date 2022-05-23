@@ -45,6 +45,8 @@ class MusicAnalyser:
         self.last_mfcc_sample_time: datetime.datetime = datetime.datetime.now()
         self.mfccs = np.zeros([self.mfcc_coeffs,])
         self.energies = np.zeros((40,))
+        self.last_bpm: float = 0.0
+        self.beat_count: int = 0
 
     def get_start_of_song(self) -> Optional[datetime.datetime]:
         if self.is_playing:
@@ -90,8 +92,11 @@ class MusicAnalyser:
     async def _track_beat(self, audio_signal: np.ndarray) -> bool:
         is_beat: bool = self.tempo_o(audio_signal)[0] > 0
         if is_beat:
-            this_beat: float = self.tempo_o.get_last_s()
-            await self.handler.on_beat(this_beat)
+            this_bpm: float = self.get_bpm()
+            bpm_changed: bool = self._has_bpm_changed(this_bpm)
+            self.beat_count += 1
+            await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
+            self.last_bpm = self.get_bpm()
 
         return is_beat
 
@@ -125,3 +130,10 @@ class MusicAnalyser:
         if not self.is_playing and now - self.song_start_time > datetime.timedelta(seconds=0.3):
             self.handler.on_sound_start()
             self.is_playing = True
+
+    def _has_bpm_changed(self, current_bpm: float) -> bool:
+        if self.is_playing:
+            # 5% change in bpm constitutes a change in bpm
+            return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05
+        else:
+            return False

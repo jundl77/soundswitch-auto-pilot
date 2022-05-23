@@ -19,7 +19,7 @@ class MidiClient:
 
     def start(self):
         assert 0 <= self.midi_port_index < len(self.available_ports), "midi_port_index does not reference a valid port"
-        logging.info(f"Using midi port: {self.port_name}")
+        logging.info(f"[midi] using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
         self.midi_out.send_message(mm.MIDI_MSG_LINK_TOGGLE)

@@ -20,6 +20,7 @@ class SoundSwitchAutoPilot:
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
+        from lib.clients.os2l_client import Os2lClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.analyser.music_analyser_handler import MusicAnalyserHandler
 
@@ -27,7 +28,8 @@ class SoundSwitchAutoPilot:
         self.loop = asyncio.get_event_loop()
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
-        self.handler: MusicAnalyserHandler = MusicAnalyserHandler(self.midi_client)
+        self.os2l_client: Os2lClient = Os2lClient()
+        self.handler: MusicAnalyserHandler = MusicAnalyserHandler(self.midi_client, self.os2l_client)
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.handler)
         self.handler.set_analyser(self.music_analyser)
 
@@ -38,6 +40,7 @@ class SoundSwitchAutoPilot:
     async def run(self):
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
+        self.os2l_client.start()
 
         logging.info("auto pilot is ready, starting")
         while self.loop.is_running():

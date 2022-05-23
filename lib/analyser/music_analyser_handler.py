@@ -1,10 +1,12 @@
 import logging
 from lib.clients.midi_client import MidiClient
+from lib.clients.os2l_client import Os2lClient
 
 
 class MusicAnalyserHandler:
-    def __init__(self, midi_client: MidiClient):
+    def __init__(self, midi_client: MidiClient, os2l_client: Os2lClient):
         self.midi_client: MidiClient = midi_client
+        self.os2l_client: Os2lClient = os2l_client
         self.analyser: "MusicAnalyser" = None
 
     def set_analyser(self, analyser: "MusicAnalyser"):
@@ -17,10 +19,8 @@ class MusicAnalyserHandler:
         logging.info('sound stop')
 
     async def on_onset(self):
-        logging.info('onset')
+        pass
 
-    async def on_beat(self, beat: float) -> None:
-        bpm = self.analyser.get_bpm()
-        logging.info(f'beat {beat}, bpm: {bpm}')
-        await self.midi_client.send_beat()
+    async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
+        await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0)
 
