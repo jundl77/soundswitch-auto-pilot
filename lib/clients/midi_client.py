@@ -22,7 +22,6 @@ class MidiClient:
         logging.info(f"[midi] using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
-        self.midi_out.send_message(mm.MIDI_MSG_LINK_TOGGLE)
 
     async def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_LINK_BPM_TAP_ON)

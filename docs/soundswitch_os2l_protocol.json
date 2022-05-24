@@ -1,0 +1,107 @@
+Os2l protocol:
+
+-- LOGIN --
+SS -> VDJ:
+{"evt":"subscribe","trigger":["deck 1 get_text '%SOUNDSWITCH_ID'","deck 2 get_text '%SOUNDSWITCH_ID'","deck 3 get_text '%SOUNDSWITCH_ID'","deck 4 get_text '%SOUNDSWITCH_ID'","deck 1 get_filepath","deck 2 get_filepath","deck 3 get_filepath","deck 4 get_filepath","deck 1 level","deck 2 level","deck 3 level","deck 4 level","crossfader","deck 1 get_time elapsed absolute","deck 2 get_time elapsed absolute","deck 3 get_time elapsed absolute","deck 4 get_time elapsed absolute","deck 1 get_beatpos","deck 2 get_beatpos","deck 3 get_beatpos","deck 4 get_beatpos","deck 1 get_firstbeat","deck 2 get_firstbeat","deck 3 get_firstbeat","deck 4 get_firstbeat","deck 1 get_bpm","deck 2 get_bpm","deck 3 get_bpm","deck 4 get_bpm","deck 1 play","deck 2 play","deck 3 play","deck 4 play","deck 1 loop","deck 2 loop","deck 3 loop","deck 4 loop","deck 1 get_loop","deck 2 get_loop","deck 3 get_loop","deck 4 get_loop","deck 1 loop_roll 0.03125 ? constant 0.03125 : deck 1 loop_roll 0.0625 ? constant 0.0625 : deck 1 loop_roll 0.125 ? constant 0.125 : deck 1 loop_roll 0.25 ? constant 0.25 : deck 1 loop_roll 0.5 ? constant 0.5 : deck 1 loop_roll 0.75 ? constant 0.75 : deck 1 loop_roll 1 ? constant 1 : deck 1 loop_roll 2 ? constant 2 : deck 1 loop_roll 4 ? constant 4 : constant 0","deck 2 loop_roll 0.03125 ? constant 0.03125 : deck 2 loop_roll 0.0625 ? constant 0.0625 : deck 2 loop_roll 0.125 ? constant 0.125 : deck 2 loop_roll 0.25 ? constant 0.25 : deck 2 loop_roll 0.5 ? constant 0.5 : deck 2 loop_roll 0.75 ? constant 0.75 : deck 2 loop_roll 1 ? constant 1 : deck 2 loop_roll 2 ? constant 2 : deck 2 loop_roll 4 ? constant 4 : constant 0","deck 3 loop_roll 0.03125 ? constant 0.03125 : deck 3 loop_roll 0.0625 ? constant 0.0625 : deck 3 loop_roll 0.125 ? constant 0.125 : deck 3 loop_roll 0.25 ? constant 0.25 : deck 3 loop_roll 0.5 ? constant 0.5 : deck 3 loop_roll 0.75 ? constant 0.75 : deck 3 loop_roll 1 ? constant 1 : deck 3 loop_roll 2 ? constant 2 : deck 3 loop_roll 4 ? constant 4 : constant 0","deck 4 loop_roll 0.03125 ? constant 0.03125 : deck 4 loop_roll 0.0625 ? constant 0.0625 : deck 4 loop_roll 0.125 ? constant 0.125 : deck 4 loop_roll 0.25 ? constant 0.25 : deck 4 loop_roll 0.5 ? constant 0.5 : deck 4 loop_roll 0.75 ? constant 0.75 : deck 4 loop_roll 1 ? constant 1 : deck 4 loop_roll 2 ? constant 2 : deck 4 loop_roll 4 ? constant 4 : constant 0"],"frequency":"25"}
+VDJ -> SS Reply:
+{"evt":"subscribed","trigger":"deck 1 get_text '%SOUNDSWITCH_ID'","value":""}
+{"evt":"subscribed","trigger":"deck 2 get_text '%SOUNDSWITCH_ID'","value":""}
+{"evt":"subscribed","trigger":"deck 3 get_text '%SOUNDSWITCH_ID'","value":""}
+{"evt":"subscribed","trigger":"deck 4 get_text '%SOUNDSWITCH_ID'","value":""}
+{"evt":"subscribed","trigger":"deck 1 level","value":1}
+{"evt":"subscribed","trigger":"deck 2 level","value":1}
+{"evt":"subscribed","trigger":"deck 3 level","value":1}
+{"evt":"subscribed","trigger":"deck 4 level","value":1}
+{"evt":"subscribed","trigger":"crossfader","value":0.5}
+{"evt":"subscribed","trigger":"deck 1 get_bpm","value":120}
+{"evt":"subscribed","trigger":"deck 2 get_bpm","value":120}
+{"evt":"subscribed","trigger":"deck 3 get_bpm","value":120}
+{"evt":"subscribed","trigger":"deck 4 get_bpm","value":120}
+{"evt":"subscribed","trigger":"deck 1 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 2 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 3 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 4 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 1 loop","value":"off"}
+{"evt":"subscribed","trigger":"deck 2 loop","value":"off"}
+{"evt":"subscribed","trigger":"deck 3 loop","value":"off"}
+{"evt":"subscribed","trigger":"deck 4 loop","value":"off"}
+{"evt":"subscribed","trigger":"deck 1 get_loop","value":0.5}
+{"evt":"subscribed","trigger":"deck 2 get_loop","value":4}
+{"evt":"subscribed","trigger":"deck 3 get_loop","value":0.5}
+{"evt":"subscribed","trigger":"deck 4 get_loop","value":0.5}
+{"evt":"subscribed","trigger":"deck 1 loop_roll 0.03125 ? constant 0.03125 : deck 1 loop_roll 0.0625 ? constant 0.0625 : deck 1 loop_roll 0.125 ? constant 0.125 : deck 1 loop_roll 0.25 ? constant 0.25 : deck 1 loop_roll 0.5 ? constant 0.5 : deck 1 loop_roll 0.75 ? constant 0.75 : deck 1 loop_roll 1 ? constant 1 : deck 1 loop_roll 2 ? constant 2 : deck 1 loop_roll 4 ? constant 4 : constant 0","value":0}
+{"evt":"subscribed","trigger":"deck 2 loop_roll 0.03125 ? constant 0.03125 : deck 2 loop_roll 0.0625 ? constant 0.0625 : deck 2 loop_roll 0.125 ? constant 0.125 : deck 2 loop_roll 0.25 ? constant 0.25 : deck 2 loop_roll 0.5 ? constant 0.5 : deck 2 loop_roll 0.75 ? constant 0.75 : deck 2 loop_roll 1 ? constant 1 : deck 2 loop_roll 2 ? constant 2 : deck 2 loop_roll 4 ? constant 4 : constant 0","value":0}
+{"evt":"subscribed","trigger":"deck 3 loop_roll 0.03125 ? constant 0.03125 : deck 3 loop_roll 0.0625 ? constant 0.0625 : deck 3 loop_roll 0.125 ? constant 0.125 : deck 3 loop_roll 0.25 ? constant 0.25 : deck 3 loop_roll 0.5 ? constant 0.5 : deck 3 loop_roll 0.75 ? constant 0.75 : deck 3 loop_roll 1 ? constant 1 : deck 3 loop_roll 2 ? constant 2 : deck 3 loop_roll 4 ? constant 4 : constant 0","value":0}
+{"evt":"subscribed","trigger":"deck 4 loop_roll 0.03125 ? constant 0.03125 : deck 4 loop_roll 0.0625 ? constant 0.0625 : deck 4 loop_roll 0.125 ? constant 0.125 : deck 4 loop_roll 0.25 ? constant 0.25 : deck 4 loop_roll 0.5 ? constant 0.5 : deck 4 loop_roll 0.75 ? constant 0.75 : deck 4 loop_roll 1 ? constant 1 : deck 4 loop_roll 2 ? constant 2 : deck 4 loop_roll 4 ? constant 4 : constant 0","value":0}
+
+On song loaded (VDJ -> SS):
+{"evt":"subscribed","trigger":"deck 1 get_text '%SOUNDSWITCH_ID'","value":"{D6516ACF-28B0-4FF2-B553-2D458EE30FF4}"}
+{"evt":"subscribed","trigger":"deck 3 get_text '%SOUNDSWITCH_ID'","value":"{D6516ACF-28B0-4FF2-B553-2D458EE30FF4}"}
+{"evt":"subscribed","trigger":"deck 4 get_text '%SOUNDSWITCH_ID'","value":"{D6516ACF-28B0-4FF2-B553-2D458EE30FF4}"}
+{"evt":"subscribed","trigger":"deck 1 get_filepath","value":"C:\\Users\\Julian\\Music\\Avicii - Levels.mp3"}
+{"evt":"subscribed","trigger":"deck 3 get_filepath","value":"C:\\Users\\Julian\\Music\\Avicii - Levels.mp3"}
+{"evt":"subscribed","trigger":"deck 4 get_filepath","value":"C:\\Users\\Julian\\Music\\Avicii - Levels.mp3"}
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":329}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":329}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":329}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-48.015476}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-48.015476}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-48.015476}
+{"evt":"subscribed","trigger":"deck 1 get_firstbeat","value":23193.921875}
+{"evt":"subscribed","trigger":"deck 3 get_firstbeat","value":23193.921875}
+{"evt":"subscribed","trigger":"deck 4 get_firstbeat","value":23193.921875}
+{"evt":"subscribed","trigger":"deck 1 get_bpm","value":126.000122}
+{"evt":"subscribed","trigger":"deck 3 get_bpm","value":126.000122}
+{"evt":"subscribed","trigger":"deck 4 get_bpm","value":126.000122}
+
+On play (VDJ -> SS):
+{"evt":"subscribed","trigger":"deck 1 play","value":"on"}
+{"evt":"subscribed","trigger":"deck 3 play","value":"on"}
+{"evt":"subscribed","trigger":"deck 4 play","value":"on"}
+
+-- START OF SOUND --
+VDJ -> SS (on beat):
+{"evt":"beat","change":true,"pos":-48,"bpm":126,"strength":0.3}
+
+VDJ -> SS (every 25ms, as set by the "frequency" field in the SS login message):
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":359}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":359}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":359}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-47.952473}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-47.952473}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-47.952473}
+
+...
+
+VDJ -> SS:
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":809}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":809}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":809}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-47.007473}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-47.007473}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-47.007473}
+
+VDJ -> SS (on beat):
+{"evt":"beat","change":false,"pos":-47,"bpm":126,"strength":0.1}
+
+VDJ -> SS:
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":839}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":839}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":839}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-46.944473}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-46.944473}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-46.944473}
+
+...
+
+-- MUSIC PAUSED --
+VDJ -> SS:
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":2129}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":2129}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":2129}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-44.23547}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-44.23547}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-44.23547}
+{"evt":"subscribed","trigger":"deck 1 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 3 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 4 play","value":"off"}

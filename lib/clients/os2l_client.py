@@ -1,10 +1,11 @@
 import time
 import logging
-import asyncio
 import socket
-from typing import List, Optional, cast
+from typing import List, Optional
 from zeroconf import IPVersion, ServiceBrowser, ServiceStateChange, Zeroconf, ServiceInfo
 from threading import Thread
+from lib.clients.os2l_sender import Os2lSender
+import lib.clients.os2l_messages as os2l_messages
 
 OS2L_SERVICE_NAME = '_os2l._tcp.local.'
 
@@ -60,7 +61,7 @@ def on_service_state_change(zeroconf: Zeroconf,
 
 class Os2lClient:
     def __init__(self):
-        self.os2l_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.os2l_sender: Os2lSender = Os2lSender()
 
     def start(self):
         # we can't call this from within the main asyncio event-loop, so we spawn a thread and await its completion
@@ -71,17 +72,23 @@ class Os2lClient:
 
         assert len(global_services) == 1, f"more than one os2l service found: {global_services}"
         service = global_services[0]
-        server_address = (service.ipv4_address, service.port)
-        logging.info(f'[os2l] connecting to {service.ipv4_address}:{service.port} ({service.service_name})')
-        self.os2l_socket.connect(server_address)
+        self.os2l_sender.start(service.ipv4_address, service.port)
+        logging.info(f'[os2l] connected to service: {service})')
 
     def stop(self):
-        self.os2l_socket.close()
+        self.os2l_sender.stop()
+
+    def on_sound_start(self, time_elapsed: int, beat_pos: float, first_beat: float, bpm: float):
+        self.os2l_sender.send_message(os2l_messages.logon_message())
+        self.os2l_sender.send_message(os2l_messages.song_loaded_message(time_elapsed, beat_pos, first_beat, bpm))
+        self.os2l_sender.send_message(os2l_messages.play_start_message())
+
+    def on_sound_stop(self):
+        self.os2l_sender.send_message(os2l_messages.play_stop_message())
 
     async def send_beat(self, change: bool, pos: int, bpm: float, strength: float):
-        change_str = 'true' if change else 'false'
-        message = '{"evt":"beat","change":%s,"pos":%d,"bpm":%d,"strength":%d}' % (change_str, pos, bpm, strength)
-        self.os2l_socket.sendall(message.encode())
+        message = os2l_messages.beat_message(change, pos, bpm, strength)
+        self.os2l_sender.send_message(message)
         logging.info(f'[os2l] sent beat message: {message}')
 
     def _find_services(self):
