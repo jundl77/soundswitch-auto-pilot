@@ -10,6 +10,7 @@ import lib.clients.os2l_messages as os2l_messages
 
 class Os2lSender:
     def __init__(self):
+        self.analyser: "MusicAnalyser" = None
         self.dest_ipv4_address: str = None
         self.dest_port: int = None
         self.os2l_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -20,6 +21,9 @@ class Os2lSender:
         # state once logged in
         self.send_update_frequency: datetime.timedelta = datetime.timedelta(milliseconds=25)
         self.last_update_sent: datetime.datetime = datetime.datetime.now()
+
+    def set_analyser(self, analyser: "MusicAnalyser"):
+        self.analyser: "MusicAnalyser" = analyser
 
     def start(self, ipv4_address: str, port: int):
         self.dest_ipv4_address = ipv4_address
@@ -64,8 +68,12 @@ class Os2lSender:
 
     def _send_update_if_due(self):
         now = datetime.datetime.now()
-        if now - self.last_update_sent > self.send_update_frequency:
-            self.send_message(os2l_messages.update_message(0, 0))
+        is_playing = self.analyser.is_song_playing()
+        if is_playing and now - self.last_update_sent > self.send_update_frequency:
+            beat_position: float = self.analyser.get_beat_position()
+            time_elapsed: datetime.timedelta = self.analyser.get_song_duration()
+            time_elapsed_ms: int = int(time_elapsed.microseconds / 1000)
+            self.send_message(os2l_messages.update_message(beat_position, time_elapsed_ms))
             self.last_update_sent = now
 
     def _send_message(self, message: str):

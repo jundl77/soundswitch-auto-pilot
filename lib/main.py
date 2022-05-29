@@ -32,6 +32,7 @@ class SoundSwitchAutoPilot:
         self.handler: MusicAnalyserHandler = MusicAnalyserHandler(self.midi_client, self.os2l_client)
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.handler)
         self.handler.set_analyser(self.music_analyser)
+        self.os2l_client.set_analyser(self.music_analyser)
 
     def list_devices(self):
         self.audio_client.list_devices()

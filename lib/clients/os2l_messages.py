@@ -39,9 +39,9 @@ def song_loaded_message(time_elapsed: int, beat_pos: float, first_beat: float, b
 """ + """
 {"evt":"subscribed","trigger":"deck 1 get_filepath","value":""}
 {"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":%d}
-{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":%d}
-{"evt":"subscribed","trigger":"deck 1 get_firstbeat","value":%d}
-{"evt":"subscribed","trigger":"deck 1 get_bpm","value":%d}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":%f}
+{"evt":"subscribed","trigger":"deck 1 get_firstbeat","value":%f}
+{"evt":"subscribed","trigger":"deck 1 get_bpm","value":%f}
 """ % (time_elapsed, beat_pos, first_beat, bpm)
 
 
@@ -56,10 +56,10 @@ def play_stop_message():
 def update_message(beat_pos: float, time_elapsed: int):
     return """
 {"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":%d}
-{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":%d}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":%f}
 """ % (time_elapsed, beat_pos)
 
 
 def beat_message(change: bool, pos: int, bpm: float, strength: float):
     change_str = 'true' if change else 'false'
-    return """{"evt":"beat","change":%s,"pos":%d,"bpm":%d,"strength":%d}""" % (change_str, pos, bpm, strength)
+    return """{"evt":"beat","change":%s,"pos":%d,"bpm":%f,"strength":%f}""" % (change_str, pos, bpm, strength)

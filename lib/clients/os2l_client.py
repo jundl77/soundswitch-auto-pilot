@@ -63,6 +63,9 @@ class Os2lClient:
     def __init__(self):
         self.os2l_sender: Os2lSender = Os2lSender()
 
+    def set_analyser(self, analyser: "MusicAnalyser"):
+        self.os2l_sender.set_analyser(analyser)
+
     def start(self):
         # we can't call this from within the main asyncio event-loop, so we spawn a thread and await its completion
         # instead

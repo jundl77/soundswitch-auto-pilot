@@ -47,6 +47,8 @@ class MusicAnalyser:
         self.energies = np.zeros((40,))
         self.last_bpm: float = 0.0
         self.beat_count: int = 0
+        self.time_to_last_beat_sec: float = 0
+        self.last_beat_detected: datetime.datetime = datetime.datetime.now()
 
     def get_start_of_song(self) -> Optional[datetime.datetime]:
         if self.is_playing:
@@ -60,11 +62,22 @@ class MusicAnalyser:
         else:
             return datetime.timedelta(seconds=0)
 
+    def get_beat_position(self) -> float:
+        if self.is_playing and self.time_to_last_beat_sec > 0:
+            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).microseconds / 1000 / 1000
+            beat_percent_elapsed = time_to_current_beat_sec / self.time_to_last_beat_sec
+            return self.beat_count + abs(beat_percent_elapsed)
+        else:
+            return 0
+
     def get_bpm(self) -> float:
         if self.is_playing:
             return self.tempo_o.get_bpm()
         else:
             return 0
+
+    def is_song_playing(self) -> bool:
+        return self.is_playing
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         is_onset: bool = await self._track_onset(audio_signal)
@@ -97,6 +110,9 @@ class MusicAnalyser:
             self.beat_count += 1
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
+            now = datetime.datetime.now()
+            self.time_to_last_beat_sec = (now - self.last_beat_detected).microseconds / 1000 / 1000
+            self.last_beat_detected = now
 
         return is_beat
 

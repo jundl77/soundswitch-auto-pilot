@@ -64,10 +64,10 @@ VDJ -> SS (on beat):
 {"evt":"beat","change":true,"pos":-48,"bpm":126,"strength":0.3}
 
 VDJ -> SS (every 25ms, as set by the "frequency" field in the SS login message):
-{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":359}
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":359} // elapsed time in MS
 {"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":359}
 {"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":359}
-{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-47.952473}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-47.952473} // beat count before first "major" beat, which is beat 0
 {"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-47.952473}
 {"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-47.952473}
 
@@ -105,3 +105,13 @@ VDJ -> SS:
 {"evt":"subscribed","trigger":"deck 1 play","value":"off"}
 {"evt":"subscribed","trigger":"deck 3 play","value":"off"}
 {"evt":"subscribed","trigger":"deck 4 play","value":"off"}
+
+
+-- ON SCROLL --
+// On scroll, only the below message is sent with a new time elapsed and a new beat pos
+{"evt":"subscribed","trigger":"deck 1 get_time elapsed absolute","value":15989}
+{"evt":"subscribed","trigger":"deck 3 get_time elapsed absolute","value":15989}
+{"evt":"subscribed","trigger":"deck 4 get_time elapsed absolute","value":15989}
+{"evt":"subscribed","trigger":"deck 1 get_beatpos","value":-15.129442}
+{"evt":"subscribed","trigger":"deck 3 get_beatpos","value":-15.129442}
+{"evt":"subscribed","trigger":"deck 4 get_beatpos","value":-15.129442}
