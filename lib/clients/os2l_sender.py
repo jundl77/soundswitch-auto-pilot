@@ -6,11 +6,12 @@ import datetime
 from threading import Thread
 from queue import Queue, Empty
 import lib.clients.os2l_messages as os2l_messages
+from lib.analyser.music_analyser import MusicAnalyser
 
 
 class Os2lSender:
     def __init__(self):
-        self.analyser: "MusicAnalyser" = None
+        self.analyser: MusicAnalyser = None
         self.dest_ipv4_address: str = None
         self.dest_port: int = None
         self.os2l_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -23,8 +24,8 @@ class Os2lSender:
         self.send_update_frequency: datetime.timedelta = datetime.timedelta(milliseconds=25)
         self.last_update_sent: datetime.datetime = datetime.datetime.now()
 
-    def set_analyser(self, analyser: "MusicAnalyser"):
-        self.analyser: "MusicAnalyser" = analyser
+    def set_analyser(self, analyser: MusicAnalyser):
+        self.analyser: MusicAnalyser = analyser
 
     def start(self, ipv4_address: str, port: int):
         self.dest_ipv4_address = ipv4_address

@@ -3,17 +3,17 @@ import aubio
 import datetime
 import logging
 from typing import List, Optional
-from lib.analyser.music_analyser_handler import MusicAnalyserHandler
+from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 
 
 class MusicAnalyser:
     def __init__(self,
                  sample_rate: int,
                  buffer_size: int,
-                 handler: MusicAnalyserHandler):
+                 handler: IMusicAnalyserHandler):
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
-        self.handler: MusicAnalyserHandler = handler
+        self.handler: IMusicAnalyserHandler = handler
 
         # constants
         self.tolerance: float = 0.8
@@ -80,7 +80,7 @@ class MusicAnalyser:
         return self.is_playing
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
-        mfcc, energies = self._compute_mfcc(audio_signal)
+        mfccs, energies = self._compute_mfcc(audio_signal)
         self._track_song_duration(energies)
 
         is_onset: bool = await self._track_onset(audio_signal)
@@ -114,7 +114,6 @@ class MusicAnalyser:
             now = datetime.datetime.now()
             self.time_to_last_beat_sec = (now - self.last_beat_detected).microseconds / 1000 / 1000
             self.last_beat_detected = now
-
         return is_beat
 
     def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray]:

@@ -1,30 +1,21 @@
 import logging
-from lib.clients.midi_client import MidiClient
-from lib.clients.os2l_client import Os2lClient
+from abc import ABC, abstractmethod
 
 
-class MusicAnalyserHandler:
-    def __init__(self, midi_client: MidiClient, os2l_client: Os2lClient):
-        self.midi_client: MidiClient = midi_client
-        self.os2l_client: Os2lClient = os2l_client
-        self.analyser: "MusicAnalyser" = None
+class IMusicAnalyserHandler(ABC):
 
-    def set_analyser(self, analyser: "MusicAnalyser"):
-        self.analyser: "MusicAnalyser" = analyser
-
+    @abstractmethod
     def on_sound_start(self):
-        logging.info('sound start')
-        self.midi_client.on_sound_start()
-        self.os2l_client.on_sound_start(0, 0, 20000, 120)
+        pass
 
+    @abstractmethod
     def on_sound_stop(self):
-        logging.info('sound stop')
-        self.midi_client.on_sound_stop()
-        self.os2l_client.on_sound_stop()
+        pass
 
+    @abstractmethod
     async def on_onset(self):
         pass
 
+    @abstractmethod
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
-        await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0)
-
+        pass

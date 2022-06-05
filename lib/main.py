@@ -24,7 +24,7 @@ class SoundSwitchAutoPilot:
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
         from lib.analyser.music_analyser import MusicAnalyser
-        from lib.analyser.music_analyser_handler import MusicAnalyserHandler
+        from lib.engine.light_engine import LightEngine
 
         self.debug_mode: bool = debug_mode
         self.is_running: bool = False
@@ -32,9 +32,9 @@ class SoundSwitchAutoPilot:
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
-        self.handler: MusicAnalyserHandler = MusicAnalyserHandler(self.midi_client, self.os2l_client)
-        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.handler)
-        self.handler.set_analyser(self.music_analyser)
+        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client)
+        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
+        self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
     def list_devices(self):
@@ -108,8 +108,8 @@ async def main():
 
     subparser = subparsers.add_parser('run', help='Create the specified instance')
     subparser.add_argument('midi_port_index', help='The midi port index of the midi device to use. Available devices are shown by running \'list\'')
-    subparser.add_argument('-i', '--input_device', help='Specify the index of the sound INPUT device to use', required=False, default=None)
-    subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use', required=False, default=None)
+    subparser.add_argument('-i', '--input_device', help='Specify the index of the sound INPUT device to use, uses system-default by default', required=False, default=None)
+    subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with '
                                                  'additional auditory information', required=False, action='store_true')
     subparser.set_defaults(func=run_cmd)

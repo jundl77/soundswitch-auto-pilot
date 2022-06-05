@@ -7,6 +7,7 @@ from zeroconf import IPVersion, ServiceBrowser, ServiceStateChange, Zeroconf, Se
 from threading import Thread
 from lib.clients.os2l_sender import Os2lSender
 import lib.clients.os2l_messages as os2l_messages
+from lib.analyser.music_analyser import MusicAnalyser
 
 OS2L_SERVICE_NAME = '_os2l._tcp.local.'
 
@@ -67,7 +68,7 @@ class Os2lClient:
     def __init__(self):
         self.os2l_sender: Os2lSender = Os2lSender()
 
-    def set_analyser(self, analyser: "MusicAnalyser"):
+    def set_analyser(self, analyser: MusicAnalyser):
         self.os2l_sender.set_analyser(analyser)
 
     def start(self):
@@ -108,12 +109,12 @@ class Os2lClient:
         zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
         service_names = [OS2L_SERVICE_NAME]
         ServiceBrowser(zeroconf, service_names, handlers=[on_service_state_change])
-        logging.info('[os2l-discovery] searching for services..')
+        logging.info('[os2l-discovery] searching for soundswitch services..')
         search_start = datetime.datetime.now()
         while len(global_services) == 0:
             if service_discovery_error != '':
                 break
             if datetime.datetime.now() - search_start > datetime.timedelta(seconds=5):
-                service_discovery_error = 'unable to find service after 5sec'
+                service_discovery_error = 'unable to find soundswitch service after 5sec'
             time.sleep(0.1)
         zeroconf.close()
