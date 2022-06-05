@@ -80,6 +80,9 @@ class MusicAnalyser:
         return self.is_playing
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
+        mfcc, energies = self._compute_mfcc(audio_signal)
+        self._track_song_duration(energies)
+
         is_onset: bool = await self._track_onset(audio_signal)
         is_beat: bool = await self._track_beat(audio_signal)
 
@@ -97,8 +100,6 @@ class MusicAnalyser:
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
-            mfcc = self._compute_mfcc(audio_signal)
-            self._track_song_duration(mfcc)
             await self.handler.on_onset()
         return is_onset
 
@@ -116,18 +117,18 @@ class MusicAnalyser:
 
         return is_beat
 
-    def _compute_mfcc(self, audio_signal: np.ndarray) -> np.ndarray:
+    def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray]:
         spec = self.pvoc_o(audio_signal)
-        new_energies = self.energy_filter(spec)
+        energies_out = self.energy_filter(spec)
         mfcc_out = self.mfcc_o(spec)
 
         self.mfccs = np.vstack((self.mfccs, mfcc_out))
-        self.energies = np.vstack([self.energies, new_energies])
+        self.energies = np.vstack([self.energies, energies_out])
 
-        return mfcc_out
+        return mfcc_out, energies_out
 
-    def _track_song_duration(self, mfcc: np.ndarray) -> None:
-        is_silence_now: bool = len([n for n in mfcc[1:] if -0.001 < n < 0.001]) == len(mfcc) - 1
+    def _track_song_duration(self, energies: np.ndarray) -> None:
+        is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)
         now = datetime.datetime.now()
 
         # if it is silent now, we do not update silence_period_start in order to track the duration of the silence
