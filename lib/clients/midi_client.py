@@ -11,7 +11,7 @@ class MidiClient:
         self.available_ports = self.midi_out.get_ports()
         self.midi_port_index: int = midi_port_index
         self.port_name = self.midi_out.get_port_name(self.midi_port_index)
-        self.is_paused: bool = True
+        self.soundswitch_is_paused: bool = True
 
     def list_devices(self):
         print('=== Midi ports ===')
@@ -31,16 +31,16 @@ class MidiClient:
 
     def on_sound_start(self):
         self._set_intensities(1)
-        if self.is_paused:
+        if self.soundswitch_is_paused:
             self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
-            self.is_paused = False
+            self.soundswitch_is_paused = False
 
     def on_sound_stop(self):
         self._set_intensities(0)
-        if not self.is_paused:
+        if not self.soundswitch_is_paused:
             time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
             self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
-            self.is_paused = True
+            self.soundswitch_is_paused = True
 
     async def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_ON)

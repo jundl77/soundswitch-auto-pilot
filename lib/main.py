@@ -100,7 +100,6 @@ signal.signal(signal.SIGTERM, death_handler)
 
 async def main():
     parser = argparse.ArgumentParser()
-
     subparsers = parser.add_subparsers(help='Functionality to start')
 
     subparser = subparsers.add_parser('list', help='List all available sound and midi devices')
@@ -110,8 +109,7 @@ async def main():
     subparser.add_argument('midi_port_index', help='The midi port index of the midi device to use. Available devices are shown by running \'list\'')
     subparser.add_argument('-i', '--input_device', help='Specify the index of the sound INPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use, uses system-default by default', required=False, default=None)
-    subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with '
-                                                 'additional auditory information', required=False, action='store_true')
+    subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
     subparser.set_defaults(func=run_cmd)
 
     argcomplete.autocomplete(parser)
