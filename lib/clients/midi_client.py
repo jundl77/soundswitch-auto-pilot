@@ -31,11 +31,15 @@ class MidiClient:
 
     def on_sound_start(self):
         self._set_intensities(1)
-        self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
+        if self.is_paused:
+            self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
+            self.is_paused = False
 
     def on_sound_stop(self):
         self._set_intensities(0)
-        self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
+        if not self.is_paused:
+            self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
+            self.is_paused = True
 
     async def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_ON)
