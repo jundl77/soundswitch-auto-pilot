@@ -39,9 +39,9 @@ class Os2lSender:
             self.sending_thread.join()
 
             # send stop message to soundswitch
-            stop_message = os2l_messages.play_stop_message()
-            logging.info(f'[os2l] sending stop message to soundswitch: {stop_message}')
-            self._send_message(os2l_messages.play_stop_message())
+            shutdown_message = os2l_messages.shutdown_message()
+            logging.info(f'[os2l] sending shutdown message to soundswitch: {shutdown_message}')
+            self._send_message(os2l_messages.shutdown_message())
             self.os2l_socket.close()
 
     def send_message(self, message: str):

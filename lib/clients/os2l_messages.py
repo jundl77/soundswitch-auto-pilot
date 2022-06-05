@@ -68,6 +68,14 @@ def play_start_message():
 
 def play_stop_message():
     return """
+{"evt":"subscribed","trigger":"deck 1 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 3 play","value":"off"}
+{"evt":"subscribed","trigger":"deck 4 play","value":"off"}
+""".strip().replace('\n', '')
+
+
+def shutdown_message():
+    return """
 {"evt":"subscribed","trigger":"deck 1 get_text '%SOUNDSWITCH_ID'","value":""}
 {"evt":"subscribed","trigger":"deck 3 get_text '%SOUNDSWITCH_ID'","value":""}
 {"evt":"subscribed","trigger":"deck 4 get_text '%SOUNDSWITCH_ID'","value":""}
