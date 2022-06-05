@@ -56,6 +56,7 @@ class SoundSwitchAutoPilot:
                 self.audio_client.play(new_audio_signal)
         self.audio_client.close()
         self.os2l_client.stop()
+        self.midi_client.stop()
 
     def stop(self):
         self.is_running = False
