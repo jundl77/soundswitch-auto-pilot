@@ -17,6 +17,7 @@ class Os2lSender:
         self.sending_thread = Thread(target=self._run_sending_thread)
         self.message_queue: Queue = Queue()
         self.is_running: bool = False
+        self.logon_complete: bool = False
 
         # state once logged in
         self.send_update_frequency: datetime.timedelta = datetime.timedelta(milliseconds=25)
@@ -33,6 +34,7 @@ class Os2lSender:
 
     def stop(self):
         self.is_running = False
+        self.logon_complete = False
         self.sending_thread.join()
         self.os2l_socket.close()
 
@@ -49,7 +51,8 @@ class Os2lSender:
         while self.is_running:
             self._poll_socket()
             self._poll_queue()
-            self._send_update_if_due()
+            if self.logon_complete:
+                self._send_update_if_due()
             time.sleep(0.001)
 
     def _poll_socket(self):
@@ -60,6 +63,8 @@ class Os2lSender:
             pass  # expected
 
     def _poll_queue(self):
+        if not self.logon_complete:
+            return
         try:
             message = self.message_queue.get(block=False)
             self._send_message(message)
@@ -97,4 +102,5 @@ class Os2lSender:
         assert 'frequency' in json_message, "'json_message' was not in subscribe message"
         self.send_update_frequency = datetime.timedelta(milliseconds=int(json_message['frequency']))
         logging.info(f'[os2l] setting update frequency to {self.send_update_frequency.microseconds / 1000} ms')
-        self.send_message(os2l_messages.logon_message())
+        self._send_message(os2l_messages.logon_message())
+        self.logon_complete = True
