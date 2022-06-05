@@ -11,6 +11,7 @@ class MidiClient:
         self.available_ports = self.midi_out.get_ports()
         self.midi_port_index: int = midi_port_index
         self.port_name = self.midi_out.get_port_name(self.midi_port_index)
+        self.is_paused: bool = True
 
     def list_devices(self):
         print('=== Midi ports ===')
@@ -29,23 +30,24 @@ class MidiClient:
         self.on_sound_stop()
 
     def on_sound_start(self):
-        self.midi_out.send_message(mm.get_autoloop_intensity_msg(1))
-        self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
-        self.midi_out.send_message(mm.get_group_1_intensity_msg(1))
-        self.midi_out.send_message(mm.get_group_2_intensity_msg(1))
-        self.midi_out.send_message(mm.get_group_3_intensity_msg(1))
-        self.midi_out.send_message(mm.get_group_4_intensity_msg(1))
+        self._set_intensities(1)
+        self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
 
     def on_sound_stop(self):
-        self.midi_out.send_message(mm.get_autoloop_intensity_msg(0))
-        self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
-        self.midi_out.send_message(mm.get_group_1_intensity_msg(0))
-        self.midi_out.send_message(mm.get_group_2_intensity_msg(0))
-        self.midi_out.send_message(mm.get_group_3_intensity_msg(0))
-        self.midi_out.send_message(mm.get_group_4_intensity_msg(0))
+        self._set_intensities(0)
+        self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
 
     async def send_beat(self):
         self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_ON)
         logging.info('[midi] send BPM TAP')
         await asyncio.sleep(0.01)
         self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_OFF)
+
+    def _set_intensities(self, value: int):
+        assert 0 <= value <= 1, "intensity value should be in [0, 1]"
+        self.midi_out.send_message(mm.get_autoloop_intensity_msg(value))
+        self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
+        self.midi_out.send_message(mm.get_group_1_intensity_msg(value))
+        self.midi_out.send_message(mm.get_group_2_intensity_msg(value))
+        self.midi_out.send_message(mm.get_group_3_intensity_msg(value))
+        self.midi_out.send_message(mm.get_group_4_intensity_msg(value))
