@@ -14,10 +14,12 @@ class MusicAnalyserHandler:
 
     def on_sound_start(self):
         logging.info('sound start')
+        self.midi_client.on_sound_start()
         self.os2l_client.on_sound_start(0, 0, 20000, 120)
 
     def on_sound_stop(self):
         logging.info('sound stop')
+        self.midi_client.on_sound_stop()
         self.os2l_client.on_sound_stop()
 
     async def on_onset(self):
