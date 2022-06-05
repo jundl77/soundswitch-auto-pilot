@@ -33,10 +33,11 @@ class Os2lSender:
         self.sending_thread.start()
 
     def stop(self):
-        self.is_running = False
-        self.logon_complete = False
-        self.sending_thread.join()
-        self.os2l_socket.close()
+        if self.is_running:
+            self.is_running = False
+            self.logon_complete = False
+            self.sending_thread.join()
+            self.os2l_socket.close()
 
     def send_message(self, message: str):
         self.message_queue.put(message)

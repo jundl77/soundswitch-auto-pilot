@@ -1,6 +1,7 @@
 import time
 import logging
 import socket
+import datetime
 from typing import List, Optional
 from zeroconf import IPVersion, ServiceBrowser, ServiceStateChange, Zeroconf, ServiceInfo
 from threading import Thread
@@ -22,6 +23,7 @@ class Os2lService:
 
 
 global_services: List[Os2lService] = []
+service_discovery_error: str = ''
 
 
 def get_local_ip():
@@ -42,7 +44,7 @@ def on_service_state_change(zeroconf: Zeroconf,
                             service_type: str,
                             name: str,
                             state_change: ServiceStateChange) -> None:
-    global global_services
+    global global_services, service_discovery_error
     logging.info(f'[os2l-discovery] service state changed: [name: {name}, type {service_type}, state change: {state_change}]')
 
     local_ip = get_local_ip()
@@ -52,7 +54,9 @@ def on_service_state_change(zeroconf: Zeroconf,
         if service_info:
             ipv4_addresses: List[str] = service_info.parsed_scoped_addresses(IPVersion.V4Only)
             kept_addresses = [address for address in ipv4_addresses if address == local_ip]
-            assert len(kept_addresses) == 1, f"more than one os2l service found on local ip: {local_ip}"
+            if len(kept_addresses) == 1:
+                service_discovery_error = f'found more than one os2l service found on local ip: {local_ip}'
+                return
 
             os2l_service = Os2lService(kept_addresses[0], service_info.port, service_info.name, service_info.server)
             logging.info(f'[os2l-discovery] found: {os2l_service}')
@@ -72,6 +76,9 @@ class Os2lClient:
         thread = Thread(target=self._find_services)
         thread.start()
         thread.join()
+
+        if service_discovery_error != '':
+            raise RuntimeError(f"unable to find correct os2l service: {service_discovery_error}")
 
         assert len(global_services) == 1, f"more than one os2l service found: {global_services}"
         service = global_services[0]
@@ -95,10 +102,16 @@ class Os2lClient:
         logging.info(f'[os2l] sent beat message: {message}')
 
     def _find_services(self):
+        global service_discovery_error
         zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
         service_names = [OS2L_SERVICE_NAME]
         ServiceBrowser(zeroconf, service_names, handlers=[on_service_state_change])
         logging.info('[os2l-discovery] searching for services..')
+        search_start = datetime.datetime.now()
         while len(global_services) == 0:
+            if service_discovery_error != '':
+                break
+            if datetime.datetime.now() - search_start > datetime.timedelta(seconds=5):
+                service_discovery_error = 'unable to find service after 5sec'
             time.sleep(0.1)
         zeroconf.close()

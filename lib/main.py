@@ -4,11 +4,13 @@ import argparse
 import argcomplete
 import logging
 import asyncio
+import signal
 
 BUFFER_SIZE = 512
 SAMPLE_RATE = 44100
 
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
+global_app = None
 
 
 class SoundSwitchAutoPilot:
@@ -25,6 +27,7 @@ class SoundSwitchAutoPilot:
         from lib.analyser.music_analyser_handler import MusicAnalyserHandler
 
         self.debug_mode: bool = debug_mode
+        self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
@@ -42,18 +45,25 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.os2l_client.start()
+        self.is_running = True
 
         logging.info("auto pilot is ready, starting")
-        while self.loop.is_running():
+        while self.is_running:
             audio_signal = self.audio_client.read()
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
 
             if self.audio_client.support_output():
                 self.audio_client.play(new_audio_signal)
         self.audio_client.close()
+        self.os2l_client.stop()
+
+    def stop(self):
+        self.is_running = False
+        self.os2l_client.stop()
 
 
 async def run_cmd(args: argparse.Namespace):
+    global global_app
     if args.debug:
         print('starting in debug mode')
         debug_mode = True
@@ -63,17 +73,27 @@ async def run_cmd(args: argparse.Namespace):
     midi_port_index: int = int(args.midi_port_index)
     input_device_index = int(args.input_device) if args.input_device is not None else None
     output_device_index = int(args.output_device) if args.output_device is not None else None
-    app = SoundSwitchAutoPilot(midi_port_index=midi_port_index,
-                               input_device_index=input_device_index,
-                               output_device_index=output_device_index,
-                               debug_mode=debug_mode)
+    global_app = SoundSwitchAutoPilot(midi_port_index=midi_port_index,
+                                      input_device_index=input_device_index,
+                                      output_device_index=output_device_index,
+                                      debug_mode=debug_mode)
 
-    await app.run()
+    await global_app.run()
 
 
 async def list_cmd(args: argparse.Namespace):
     app = SoundSwitchAutoPilot(0)
     app.list_devices()
+
+
+def death_handler(signum, frame):
+    if global_app is not None:
+        logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
+        global_app.stop()
+
+
+signal.signal(signal.SIGINT, death_handler)
+signal.signal(signal.SIGTERM, death_handler)
 
 
 async def main():
