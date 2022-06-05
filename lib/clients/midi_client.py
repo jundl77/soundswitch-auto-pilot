@@ -32,6 +32,7 @@ class MidiClient:
     def on_sound_start(self):
         self._set_intensities(1)
         if self.is_paused:
+            time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
             self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
             self.is_paused = False
 
