@@ -54,7 +54,7 @@ def on_service_state_change(zeroconf: Zeroconf,
         if service_info:
             ipv4_addresses: List[str] = service_info.parsed_scoped_addresses(IPVersion.V4Only)
             kept_addresses = [address for address in ipv4_addresses if address == local_ip]
-            if len(kept_addresses) == 1:
+            if len(kept_addresses) != 1:
                 service_discovery_error = f'found more than one os2l service found on local ip: {local_ip}'
                 return
 
