@@ -22,6 +22,7 @@ class MidiClient:
         logging.info(f"[midi] using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"
+        logging.info(f'[midi] setting soundswitch intensities up')
         self.midi_out.send_message(mm.get_autoloop_intensity_msg(1))
         self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
         self.midi_out.send_message(mm.get_group_1_intensity_msg(1))
@@ -30,6 +31,8 @@ class MidiClient:
         self.midi_out.send_message(mm.get_group_4_intensity_msg(1))
 
     def stop(self):
+        logging.info(f'[midi] stopping midi client')
+        logging.info(f'[midi] setting soundswitch intensities down')
         self.midi_out.send_message(mm.get_autoloop_intensity_msg(0))
         self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
         self.midi_out.send_message(mm.get_group_1_intensity_msg(0))

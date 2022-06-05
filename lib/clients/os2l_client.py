@@ -86,7 +86,9 @@ class Os2lClient:
         logging.info(f'[os2l] connected to service: {service})')
 
     def stop(self):
-        self.os2l_sender.stop()
+        if self.os2l_sender.is_running:
+            logging.info(f'[os2l] stopping os2l client')
+            self.os2l_sender.stop()
 
     def on_sound_start(self, time_elapsed: int, beat_pos: float, first_beat: float, bpm: float):
         self.os2l_sender.send_message(os2l_messages.logon_message())

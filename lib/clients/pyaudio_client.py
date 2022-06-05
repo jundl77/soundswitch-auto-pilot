@@ -68,6 +68,7 @@ class PyAudioClient:
         self.stream_out.write(audio_buffer.tobytes())
 
     def close(self) -> None:
+        logging.info(f'[pyaudio] closing pyaudio')
         if self.stream_in is not None:
             self.stream_in.stop_stream()
             self.stream_in.close()
