@@ -94,9 +94,9 @@ class Os2lClient:
             logging.info(f'[os2l] stopping os2l client')
             self.os2l_sender.stop()
 
-    def on_sound_start(self, time_elapsed: int, beat_pos: float, first_beat: float, bpm: float):
+    def on_sound_start(self, time_elapsed_ms: int, beat_pos: float, first_downbeat_ms: float, bpm: float):
         self.os2l_sender.send_message(os2l_messages.logon_message())
-        self.os2l_sender.send_message(os2l_messages.song_loaded_message(time_elapsed, beat_pos, first_beat, bpm))
+        self.os2l_sender.send_message(os2l_messages.song_loaded_message(time_elapsed_ms, beat_pos, first_downbeat_ms, bpm))
         self.os2l_sender.send_message(os2l_messages.play_start_message())
 
     def on_sound_stop(self):

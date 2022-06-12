@@ -17,13 +17,25 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = analyser
 
     def on_sound_start(self):
-        logging.info('sound start')
+        logging.info('[engine] sound start')
         spotify_song_analysis = self.spotify_client.get_current_song_analysis()
+
+        first_downbeat_ms = 20000
+        bpm = 120
+        beats_to_first_downbeat = 0
+        time_elapsed_ms = 0
+        if spotify_song_analysis:
+            first_downbeat_ms = spotify_song_analysis.first_downbeat_ms
+            bpm = spotify_song_analysis.bpm
+            beats_to_first_downbeat = spotify_song_analysis.beats_to_first_downbeat
+            time_elapsed_ms = spotify_song_analysis.progress_ms
+            self.analyser.inject_spotify_track_analysis(spotify_song_analysis)
+
         self.midi_client.on_sound_start()
-        self.os2l_client.on_sound_start(0, 0, 20000, 120)
+        self.os2l_client.on_sound_start(time_elapsed_ms, beats_to_first_downbeat, first_downbeat_ms, bpm)
 
     def on_sound_stop(self):
-        logging.info('sound stop')
+        logging.info('[engine] sound stop')
         self.midi_client.on_sound_stop()
         self.os2l_client.on_sound_stop()
 

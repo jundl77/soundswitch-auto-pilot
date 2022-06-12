@@ -4,6 +4,7 @@ import datetime
 import logging
 from typing import List, Optional
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
+from lib.clients.spotify_client import SpotifyTrackAnalysis
 
 
 class MusicAnalyser:
@@ -39,6 +40,7 @@ class MusicAnalyser:
 
         # tracking state
         self.is_playing: bool = False
+        self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
         self.song_start_time: datetime.datetime = datetime.datetime.now()
         self.song_current_time: datetime.datetime = datetime.datetime.now()
         self.silence_period_start: datetime.datetime = datetime.datetime.now()
@@ -78,6 +80,12 @@ class MusicAnalyser:
 
     def is_song_playing(self) -> bool:
         return self.is_playing
+
+    def inject_spotify_track_analysis(self, track_analysis: Optional[SpotifyTrackAnalysis]):
+        self.spotify_track_analysis = track_analysis
+        if self.spotify_track_analysis:
+            self.beat_count -= track_analysis.beats_to_first_downbeat
+            logging.info(f'[analyser] first_downbeat_count={self.beat_count}, first_downbeat_ms={track_analysis.first_downbeat_ms}')
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         mfccs, energies = self._compute_mfcc(audio_signal)

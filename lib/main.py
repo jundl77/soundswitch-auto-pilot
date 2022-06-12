@@ -49,7 +49,7 @@ class SoundSwitchAutoPilot:
         self.os2l_client.start()
         self.is_running = True
 
-        logging.info("auto pilot is ready, starting")
+        logging.info("[main] auto pilot is ready, starting")
         while self.is_running:
             audio_signal = self.audio_client.read()
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
@@ -59,7 +59,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.close()
         self.os2l_client.stop()
         self.midi_client.stop()
-        logging.info("auto pilot stopped, clean shutdown")
+        logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
         self.is_running = False
