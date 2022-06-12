@@ -56,7 +56,7 @@ class SpotifyClient:
             return SpotifyTrackAnalysis('', 0)
         track_name = current_playback['item']['name']
         track_id = current_playback['item']['id']
-        progress_ms = int(current_playback['item']['progress_ms'])
+        progress_ms = int(current_playback['progress_ms'])
 
         audio_features = self.spotify.audio_features(track_id)  # high-level data, e.g. track danceability
         audio_analysis = self.spotify.audio_analysis(track_id)  # low-level data, e.g. all beats in track
