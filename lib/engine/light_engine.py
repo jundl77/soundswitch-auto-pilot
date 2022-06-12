@@ -18,8 +18,7 @@ class LightEngine(IMusicAnalyserHandler):
 
     def on_sound_start(self):
         logging.info('sound start')
-        current_playback = self.spotify_client.get_current_playback()
-        logging.info(f'playing: {current_playback}')
+        spotify_song_analysis = self.spotify_client.get_current_song_analysis()
         self.midi_client.on_sound_start()
         self.os2l_client.on_sound_start(0, 0, 20000, 120)
 

@@ -3,3 +3,4 @@ venv
 .idea
 .ipynb_checkpoints
 spotify_details.json
+.cache
