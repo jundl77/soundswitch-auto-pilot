@@ -23,6 +23,7 @@ class SoundSwitchAutoPilot:
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
+        from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.engine.light_engine import LightEngine
 
@@ -32,7 +33,8 @@ class SoundSwitchAutoPilot:
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
-        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client)
+        self.spotify_client: SpotifyClient = SpotifyClient()
+        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.spotify_client)
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
