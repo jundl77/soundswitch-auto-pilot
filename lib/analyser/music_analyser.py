@@ -84,8 +84,9 @@ class MusicAnalyser:
     def inject_spotify_track_analysis(self, track_analysis: Optional[SpotifyTrackAnalysis]):
         self.spotify_track_analysis = track_analysis
         if self.spotify_track_analysis:
-            self.beat_count -= track_analysis.beats_to_first_downbeat
-            logging.info(f'[analyser] first_downbeat_count={self.beat_count}, first_downbeat_ms={track_analysis.first_downbeat_ms}')
+            self.beat_count = track_analysis.current_beat_count
+            self.song_start_time = self.song_start_time - datetime.timedelta(milliseconds=track_analysis.progress_ms)
+            logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         mfccs, energies = self._compute_mfcc(audio_signal)
