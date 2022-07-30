@@ -24,7 +24,10 @@ class AutoloopController:
 
         if section_index != self.current_section_index:
             self.current_section_index = section_index
-            logging.info(f'[autoloop_controler] audio section change detected, section_start={audio_section.section_start_sec} sec, duration={audio_section.section_duration_sec} sec')
+            logging.info(f'[autoloop_controler] audio section change detected,'
+                         f'section_start={audio_section.section_start_sec} sec,'
+                         f'duration={audio_section.section_duration_sec} sec,'
+                         f'change_offset={(FIXED_CHANGE_OFFSET_SEC * -1.0):.2f} sec')
             await self._choose_new_autoloop()
 
     def reset_state(self):
