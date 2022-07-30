@@ -56,7 +56,7 @@ class LightEngine(IMusicAnalyserHandler):
         current_second = self.analyser.get_song_current_duration().total_seconds()
         beat_strength = self._calculate_current_beat_strength(current_second)
         await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
-        logging.info(f'[engine] [{current_second}] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm}, strength={beat_strength}')
+        logging.info(f'[engine] [{current_second:.2f}] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm}, strength={beat_strength}')
 
     async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
         logging.info(f"[engine] spotify track change detected")
