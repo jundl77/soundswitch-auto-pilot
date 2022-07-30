@@ -105,7 +105,6 @@ class Os2lClient:
     async def send_beat(self, change: bool, pos: int, bpm: float, strength: float):
         message = os2l_messages.beat_message(change, pos, bpm, strength)
         self.os2l_sender.send_message(message)
-        logging.info(f'[os2l] sent beat message: {message}')
 
     def _find_services(self):
         global service_discovery_error
