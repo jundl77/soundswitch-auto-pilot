@@ -3,7 +3,8 @@ from typing import Optional, Tuple
 from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection
 from lib.clients.midi_client import MidiClient, AutoloopAction
 
-FIXED_START_OFFSET_SEC = 0.5
+# trigger the auto-loop change 1sec before the event because it takes some time for the change to take effect
+FIXED_CHANGE_OFFSET_SEC = 1.0
 
 
 class AutoloopController:
@@ -37,7 +38,7 @@ class AutoloopController:
                                           spotify_track_analysis: SpotifyTrackAnalysis) -> Tuple[int, Optional[SpotifyAudioSection]]:
         section_index = 0
         for audio_section in spotify_track_analysis.audio_sections:
-            section_start_sec = audio_section.section_start_sec - FIXED_START_OFFSET_SEC
+            section_start_sec = audio_section.section_start_sec - FIXED_CHANGE_OFFSET_SEC
             section_end_sec = section_start_sec + audio_section.section_duration_sec
             if section_start_sec <= current_second < section_end_sec:
                 return section_index, audio_section
