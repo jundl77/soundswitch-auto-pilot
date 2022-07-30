@@ -83,7 +83,7 @@ class Os2lSender:
         is_playing = self.analyser.is_song_playing()
         if is_playing and now - self.last_update_sent > self.send_update_frequency:
             beat_position: float = self.analyser.get_beat_position()
-            time_elapsed: datetime.timedelta = self.analyser.get_song_duration()
+            time_elapsed: datetime.timedelta = self.analyser.get_song_current_duration()
             time_elapsed_ms: int = int(time_elapsed.microseconds / 1000)
             self.send_message(os2l_messages.update_message(beat_position, time_elapsed_ms))
             self.last_update_sent = now

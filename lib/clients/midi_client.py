@@ -1,8 +1,13 @@
 import rtmidi
 import time
-import lib.clients.midi_message as mm
 import logging
 import asyncio
+from enum import Enum
+import lib.clients.midi_message as mm
+
+
+class AutoloopAction(Enum):
+    NEXT_AUTOLOOP = 1
 
 
 class MidiClient:
@@ -42,11 +47,11 @@ class MidiClient:
             self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
             self.soundswitch_is_paused = True
 
-    async def send_beat(self):
-        self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_ON)
-        logging.info('[midi] send BPM TAP')
-        await asyncio.sleep(0.01)
-        self.midi_out.send_message(mm.MIDI_MSG_BPM_TAP_OFF)
+    async def set_autoloop(self, action: AutoloopAction):
+        if action == AutoloopAction.NEXT_AUTOLOOP:
+            self.midi_out.send_message(mm.MIDI_MSG_NEXT_AUTOLOOP_TAP_ON)
+            await asyncio.sleep(0.01)
+            self.midi_out.send_message(mm.MIDI_MSG_NEXT_AUTOLOOP_TAP_OFF)
 
     def _set_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"

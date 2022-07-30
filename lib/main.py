@@ -5,6 +5,7 @@ import argcomplete
 import logging
 import asyncio
 import signal
+import datetime
 
 BUFFER_SIZE = 512
 SAMPLE_RATE = 44100
@@ -26,15 +27,24 @@ class SoundSwitchAutoPilot:
         from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.engine.light_engine import LightEngine
+        from lib.engine.autoloop_controler import AutoloopController
 
         self.debug_mode: bool = debug_mode
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
+
+        # construct clients
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
         self.spotify_client: SpotifyClient = SpotifyClient()
-        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.spotify_client)
+
+        # construct engine
+        self.autoloop_controller: AutoloopController = AutoloopController(self.midi_client)
+        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.spotify_client, self.autoloop_controller)
+        self.spotify_client.set_engine(self.light_engine)
+
+        # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
@@ -50,12 +60,31 @@ class SoundSwitchAutoPilot:
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
+
+        last_100ms_callback_execution: datetime.datetime = datetime.datetime.now()
+        last_1sec_callback_execution: datetime.datetime = datetime.datetime.now()
+        last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
+
         while self.is_running:
+            now = datetime.datetime.now()
             audio_signal = self.audio_client.read()
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
 
             if self.audio_client.support_output():
                 self.audio_client.play(new_audio_signal)
+
+            if now - last_100ms_callback_execution > datetime.timedelta(milliseconds=100):
+                last_100ms_callback_execution = now
+                await self._do_100ms_callback()
+
+            if now - last_1sec_callback_execution > datetime.timedelta(seconds=1):
+                last_1sec_callback_execution = now
+                await self._do_1s_callback()
+
+            if now - last_10sec_callback_execution > datetime.timedelta(seconds=10):
+                last_10sec_callback_execution = now
+                await self._do_10s_callback()
+
         self.audio_client.close()
         self.os2l_client.stop()
         self.midi_client.stop()
@@ -64,6 +93,15 @@ class SoundSwitchAutoPilot:
     def stop(self):
         self.is_running = False
         self.os2l_client.stop()
+
+    async def _do_100ms_callback(self):
+        await self.light_engine.on_100ms_callback()
+
+    async def _do_1s_callback(self):
+        await self.light_engine.on_1sec_callback()
+
+    async def _do_10s_callback(self):
+        await self.light_engine.on_10sec_callback()
 
 
 async def run_cmd(args: argparse.Namespace):

@@ -14,22 +14,46 @@ class SpotifyDetails:
         self.client_secret: str = spotify_client_secret
 
 
+class SpotifyAudioSection:
+    def __init__(self,
+                 section_start_sec: float,
+                 section_duration_sec: float,
+                 section_loudness: float,
+                 section_bpm: float,
+                 section_key: int,
+                 section_mode: int,
+                 section_time_signature: int):
+        self.section_start_sec: float = section_start_sec
+        self.section_duration_sec: float = section_duration_sec
+        self.section_loudness: float = section_loudness
+        self.section_bpm: float = section_bpm
+        self.section_key: int = section_key
+        self.section_mode: int = section_mode
+        self.section_time_signature: int = section_time_signature
+
+
 class SpotifyTrackAnalysis:
     def __init__(self,
                  track_name: str,
+                 album_name: str,
+                 artists: List[str],
                  progress_ms: int,
                  bpm: float,
                  beats_to_first_downbeat: int,
                  first_downbeat_ms: int,
                  current_beat_count: int,
-                 beat_strengths_by_sec: List[float]):
+                 beat_strengths_by_sec: List[float],
+                 audio_sections: List[SpotifyAudioSection]):
         self.track_name: str = track_name
+        self.album_name: str = album_name
+        self.artists: List[str] = artists
         self.progress_ms: int = progress_ms
         self.bpm: float = bpm
         self.beats_to_first_downbeat: int = beats_to_first_downbeat
         self.first_downbeat_ms: int = first_downbeat_ms
         self.current_beat_count: int = current_beat_count
         self.beat_strengths_by_sec: List[float] = beat_strengths_by_sec
+        self.audio_sections: List[SpotifyAudioSection] = audio_sections
 
 
 class SpotifyClient:
@@ -41,11 +65,15 @@ class SpotifyClient:
                                         redirect_uri="http://localhost:8877/callback",
                                         scope="user-read-playback-state")
             self.spotify = spotipy.Spotify(auth_manager=auth_manager)
+            self.engine = None
             self.is_active = True
             logging.info(f"[spotify] spotify song analysis is active")
         else:
             self.is_active = False
             logging.info(f"[spotify] spotify song analysis is inactive")
+
+    def set_engine(self, engine: "Engine"):
+        self.engine = engine
 
     def _read_spotify_details_file(self) -> Optional[SpotifyDetails]:
         spotify_details_file_path = (Path(__file__).parent.parent.parent / "spotify_details.json").absolute()
@@ -62,7 +90,7 @@ class SpotifyClient:
     def is_active(self) -> bool:
         return self.is_active
 
-    def get_current_song_analysis(self) -> Optional[SpotifyTrackAnalysis]:
+    def get_current_track_analysis(self) -> Optional[SpotifyTrackAnalysis]:
         if not self.is_active:
             return None
 
@@ -71,6 +99,8 @@ class SpotifyClient:
             return None
 
         track_name = current_playback['item']['name']
+        album_name = current_playback['item']['album']['name']
+        artists = [artist['name'] for artist in current_playback['item']['artists']]
         track_id = current_playback['item']['id']
         progress_ms = int(current_playback['progress_ms'])
 
@@ -80,15 +110,35 @@ class SpotifyClient:
         beats_to_first_downbeat, first_downbeat_ms = self._calculate_first_downbeat(audio_analysis)
         current_beat_count = self._calculate_current_beat_count(progress_ms, audio_analysis) - beats_to_first_downbeat
         beat_strengths_by_sec = self._calculate_beat_strengths_by_sec(audio_analysis)
+        audio_sections = self._get_audio_section(audio_analysis)
 
-        logging.info(f'[spotify] first_downbeat_count={beats_to_first_downbeat}, first_downbeat_ms={first_downbeat_ms}, bpm={bpm}')
         return SpotifyTrackAnalysis(track_name,
+                                    album_name,
+                                    artists,
                                     progress_ms,
                                     bpm,
                                     beats_to_first_downbeat,
                                     first_downbeat_ms,
                                     current_beat_count,
-                                    beat_strengths_by_sec)
+                                    beat_strengths_by_sec,
+                                    audio_sections)
+
+    async def check_for_track_changes(self, previous_song: Optional[SpotifyTrackAnalysis], current_second: float):
+        assert self.engine is not None, "engine should be set when 'check_for_track_changes' is called"
+        if not self.is_active:
+            return
+
+        track_analysis = self.get_current_track_analysis()
+        if not track_analysis:
+            return
+
+        if not previous_song or track_analysis.track_name != previous_song.track_name:
+            await self.engine.on_spotify_track_changed(track_analysis)
+            return
+
+        if abs(track_analysis.progress_ms - current_second * 1000) > 1000:
+            await self.engine.on_spotify_track_progress_changed(track_analysis)
+            return
 
     def _calculate_first_downbeat(self, audio_analysis: Dict) -> Tuple[int, int]:
         sections = audio_analysis['sections']
@@ -142,3 +192,15 @@ class SpotifyClient:
         normalized_audio_strengths_by_sec = [item for sublist in normalized_audio_strengths_by_sec for item in sublist]
         return normalized_audio_strengths_by_sec
 
+    def _get_audio_section(self, audio_analysis: Dict) -> List[SpotifyAudioSection]:
+        audio_sections: List[SpotifyAudioSection] = list()
+        for raw_section in audio_analysis['sections']:
+            section = SpotifyAudioSection(section_start_sec=float(raw_section['start']),
+                                          section_duration_sec=float(raw_section['duration']),
+                                          section_loudness=float(raw_section['loudness']),
+                                          section_bpm=float(raw_section['tempo']),
+                                          section_key=int(raw_section['key']),
+                                          section_mode=int(raw_section['mode']),
+                                          section_time_signature=int(raw_section['time_signature']))
+            audio_sections.append(section)
+        return audio_sections

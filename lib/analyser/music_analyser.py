@@ -58,7 +58,7 @@ class MusicAnalyser:
         else:
             return None
 
-    def get_song_duration(self) -> datetime.timedelta:
+    def get_song_current_duration(self) -> datetime.timedelta:
         if self.is_playing:
             return self.song_current_time - self.song_start_time
         else:
@@ -85,7 +85,7 @@ class MusicAnalyser:
         self.spotify_track_analysis = track_analysis
         if self.spotify_track_analysis:
             self.beat_count = track_analysis.current_beat_count
-            self.song_start_time = self.song_start_time - datetime.timedelta(milliseconds=track_analysis.progress_ms)
+            self.song_start_time = datetime.datetime.now() - datetime.timedelta(milliseconds=track_analysis.progress_ms)
             logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
@@ -98,7 +98,7 @@ class MusicAnalyser:
         pitch = self.pitch_o(audio_signal)[0]
         confidence = self.pitch_o.get_confidence()
 
-        if self.get_song_duration() > datetime.timedelta(minutes=15):
+        if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
         if is_beat:
@@ -158,7 +158,7 @@ class MusicAnalyser:
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:
         if self.is_playing:
-            # 5% change in bpm constitutes a change in bpm
+            # 5% change in bpm constitutes a change in bpm, defined arbitrarily
             return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05
         else:
             return False
