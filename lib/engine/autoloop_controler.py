@@ -38,8 +38,8 @@ class AutoloopController:
         section_index = 0
         for audio_section in spotify_track_analysis.audio_sections:
             section_start_sec = audio_section.section_start_sec - FIXED_START_OFFSET_SEC
-            section_duration_sec = audio_section.section_duration_sec - FIXED_START_OFFSET_SEC
-            if section_start_sec <= current_second < section_duration_sec:
+            section_end_sec = section_start_sec + audio_section.section_duration_sec
+            if section_start_sec <= current_second < section_end_sec:
                 return section_index, audio_section
             else:
                 section_index += 1
