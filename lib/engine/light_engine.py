@@ -67,13 +67,18 @@ class LightEngine(IMusicAnalyserHandler):
         self._handle_spotify_state_change(spotify_track_analysis)
 
     async def on_100ms_callback(self):
+        if not self.analyser.is_song_playing():
+            return
         current_second = float(self.analyser.get_song_current_duration().total_seconds())
         await self.autoloop_controller.check_autoloops(current_second, self.spotify_track_analysis)
 
     async def on_1sec_callback(self):
-        pass
+        if not self.analyser.is_song_playing():
+            return
 
     async def on_10sec_callback(self):
+        if not self.analyser.is_song_playing():
+            return
         current_second = float(self.analyser.get_song_current_duration().total_seconds())
         await self.spotify_client.check_for_track_changes(self.spotify_track_analysis, current_second)
         self._log_current_track_info()
@@ -93,9 +98,6 @@ class LightEngine(IMusicAnalyserHandler):
         return self.spotify_track_analysis.beat_strengths_by_sec[current_second]
 
     def _log_current_track_info(self):
-        if not self.analyser.is_song_playing():
-            return
-
         bpm = int(self.analyser.get_bpm())
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
 
