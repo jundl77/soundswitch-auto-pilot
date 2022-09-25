@@ -20,8 +20,8 @@ class MusicAnalyser:
         self.tolerance: float = 0.8
         self.win_s: int = 1024  # fft size
         self.hop_s: int = self.buffer_size  # hop size
-        self.mfcc_filters = 40  # must be 40 for mfcc
-        self.mfcc_coeffs = 13
+        self.mfcc_filters: int = 40  # must be 40 for mfcc
+        self.mfcc_coeffs: int = 13
         self.click_sound: float = 0.7 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
 
         self._reset_state()
