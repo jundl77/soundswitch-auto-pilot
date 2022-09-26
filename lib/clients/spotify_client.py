@@ -2,10 +2,13 @@ import spotipy
 import json
 import logging
 import numpy as np
+import datetime
+from datetime import date
 from typing import Optional, Dict, Tuple, List
 from pathlib import Path
 from spotipy.oauth2 import SpotifyOAuth
 from sklearn import preprocessing
+from lib.analyser.lightshow_classifier import LightShowType, classify_track
 
 
 class SpotifyDetails:
@@ -38,20 +41,54 @@ class SpotifyTrackAnalysis:
                  album_name: str,
                  artists: List[str],
                  progress_ms: int,
+                 duration_ms: int,
                  bpm: float,
                  beats_to_first_downbeat: int,
                  first_downbeat_ms: int,
                  current_beat_count: int,
+                 key: int,
+                 mode: int,
+                 time_signature: int,
+                 acousticness: float,
+                 danceability: float,
+                 energy: float,
+                 instrumentalness: float,
+                 liveness: float,
+                 loudness: float,
+                 speechiness: float,
+                 valence: float,
+                 tempo: float,
+                 release_date: date,
+                 popularity: int,
+                 genres: List[str],
+                 light_show_type: LightShowType,
                  beat_strengths_by_sec: List[float],
                  audio_sections: List[SpotifyAudioSection]):
         self.track_name: str = track_name
         self.album_name: str = album_name
         self.artists: List[str] = artists
         self.progress_ms: int = progress_ms
+        self.duration_ms: int = duration_ms
         self.bpm: float = bpm
         self.beats_to_first_downbeat: int = beats_to_first_downbeat
         self.first_downbeat_ms: int = first_downbeat_ms
         self.current_beat_count: int = current_beat_count
+        self.key: int = key
+        self.mode: int = mode
+        self.time_signature: int = time_signature
+        self.acousticness: float = acousticness
+        self.danceability: float = danceability
+        self.energy: float = energy
+        self.instrumentalness: float = instrumentalness
+        self.liveness: float = liveness
+        self.loudness: float = loudness
+        self.speechiness: float = speechiness
+        self.valence: float = valence
+        self.tempo: float = tempo
+        self.release_date: date = release_date
+        self.popularity: int = popularity
+        self.genres: List[str] = genres
+        self.light_show_type: LightShowType = light_show_type
         self.beat_strengths_by_sec: List[float] = beat_strengths_by_sec
         self.audio_sections: List[SpotifyAudioSection] = audio_sections
 
@@ -100,28 +137,66 @@ class SpotifyClient:
 
         track_name = current_playback['item']['name']
         album_name = current_playback['item']['album']['name']
-        artists = [artist['name'] for artist in current_playback['item']['artists']]
+        artist_names = [artist['name'] for artist in current_playback['item']['artists']]
+        artist_ids = [artist['id'] for artist in current_playback['item']['artists']]
         track_id = current_playback['item']['id']
         progress_ms = int(current_playback['progress_ms'])
+        duration_ms = int(current_playback['item']['duration_ms'])
+
+        artist_data = self.spotify.artists(artist_ids)
+        genres = [data['genres'] for data in artist_data['artists']]
+        genres = [item for sublist in genres for item in sublist]
 
         audio_features = self.spotify.audio_features(track_id)  # high-level data, e.g. track danceability
         audio_analysis = self.spotify.audio_analysis(track_id)  # low-level data, e.g. all beats in track
         bpm = audio_analysis['track']['tempo']
         beats_to_first_downbeat, first_downbeat_ms = self._calculate_first_downbeat(audio_analysis)
         current_beat_count = self._calculate_current_beat_count(progress_ms, audio_analysis) - beats_to_first_downbeat
+        key = int(audio_features[0]['key'])
+        mode = int(audio_features[0]['mode'])
+        time_signature = int(audio_features[0]['time_signature'])
+        acousticness = float(audio_features[0]['acousticness'])
+        danceability = float(audio_features[0]['danceability'])
+        energy = float(audio_features[0]['energy'])
+        instrumentalness = float(audio_features[0]['instrumentalness'])
+        liveness = float(audio_features[0]['liveness'])
+        loudness = float(audio_features[0]['loudness'])
+        speechiness = float(audio_features[0]['speechiness'])
+        valence = float(audio_features[0]['valence'])
+        tempo = float(audio_features[0]['tempo'])
+        release_date = self._get_release_date_from_string(current_playback['item']['album']['release_date'])
+        popularity = int(current_playback['item']['popularity'])
+        light_show_type: LightShowType = classify_track(genres, bpm, energy, loudness, danceability)
         beat_strengths_by_sec = self._calculate_beat_strengths_by_sec(audio_analysis)
         audio_sections = self._get_audio_section(audio_analysis)
 
-        return SpotifyTrackAnalysis(track_name,
-                                    album_name,
-                                    artists,
-                                    progress_ms,
-                                    bpm,
-                                    beats_to_first_downbeat,
-                                    first_downbeat_ms,
-                                    current_beat_count,
-                                    beat_strengths_by_sec,
-                                    audio_sections)
+        return SpotifyTrackAnalysis(track_name=track_name,
+                                    album_name=album_name,
+                                    artists=artist_names,
+                                    progress_ms=progress_ms,
+                                    duration_ms=duration_ms,
+                                    bpm=bpm,
+                                    beats_to_first_downbeat=beats_to_first_downbeat,
+                                    first_downbeat_ms=first_downbeat_ms,
+                                    current_beat_count=current_beat_count,
+                                    key=key,
+                                    mode=mode,
+                                    time_signature=time_signature,
+                                    acousticness=acousticness,
+                                    danceability=danceability,
+                                    energy=energy,
+                                    instrumentalness=instrumentalness,
+                                    liveness=liveness,
+                                    loudness=loudness,
+                                    speechiness=speechiness,
+                                    valence=valence,
+                                    tempo=tempo,
+                                    release_date=release_date,
+                                    popularity=popularity,
+                                    light_show_type=light_show_type,
+                                    genres=genres,
+                                    beat_strengths_by_sec=beat_strengths_by_sec,
+                                    audio_sections=audio_sections)
 
     async def check_for_track_changes(self, previous_song: Optional[SpotifyTrackAnalysis], current_second: float):
         assert self.engine is not None, "engine should be set when 'check_for_track_changes' is called"
@@ -204,3 +279,17 @@ class SpotifyClient:
                                           section_time_signature=int(raw_section['time_signature']))
             audio_sections.append(section)
         return audio_sections
+
+    def _get_release_date_from_string(self, release_date_string) -> date:
+        # try parse normal date format, but some songs only have a year
+        try:
+            return datetime.datetime.strptime(release_date_string, '%Y-%m-%d')
+        except:
+            pass
+
+        try:
+            return datetime.datetime.strptime(release_date_string, '%Y')
+        except:
+            pass
+
+        return datetime.datetime.strptime(str(datetime.date.today().year), '%Y')

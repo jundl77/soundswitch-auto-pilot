@@ -27,7 +27,7 @@ class SoundSwitchAutoPilot:
         from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.engine.light_engine import LightEngine
-        from lib.engine.autoloop_controler import AutoloopController
+        from lib.engine.autoloop_controller import AutoloopController
 
         self.debug_mode: bool = debug_mode
         self.is_running: bool = False

@@ -24,7 +24,7 @@ class AutoloopController:
 
         if section_index != self.current_section_index:
             self.current_section_index = section_index
-            logging.info(f'[autoloop_controler] audio section change detected,'
+            logging.info(f'[autoloop_controller] audio section change detected,'
                          f' section_start={audio_section.section_start_sec:.2f} sec,'
                          f' duration={audio_section.section_duration_sec:.2f} sec,'
                          f' change_offset={(FIXED_CHANGE_OFFSET_SEC * -1.0):.2f} sec')

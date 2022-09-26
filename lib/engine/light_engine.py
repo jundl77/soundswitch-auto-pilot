@@ -1,6 +1,6 @@
 import logging
 from typing import Optional
-from lib.engine.autoloop_controler import AutoloopController
+from lib.engine.autoloop_controller import AutoloopController
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
@@ -106,6 +106,8 @@ class LightEngine(IMusicAnalyserHandler):
             logging.info(f"[engine]   name:                    {self.spotify_track_analysis.track_name}")
             logging.info(f"[engine]   artists:                 [{', '.join(self.spotify_track_analysis.artists)}]")
             logging.info(f"[engine]   album:                   {self.spotify_track_analysis.album_name}")
+            logging.info(f"[engine]   genres:                  [{', '.join(self.spotify_track_analysis.genres)}]")
+            logging.info(f"[engine]   light_show_type:         {self.spotify_track_analysis.light_show_type.name}")
             logging.info(f"[engine]   first_downbeat_count:    {self.spotify_track_analysis.beats_to_first_downbeat}")
             logging.info(f"[engine]   first_downbeat_ms:       {self.spotify_track_analysis.first_downbeat_ms}")
             logging.info(f"[engine]   audio_sections_start_ts: {[s.section_start_sec for s in self.spotify_track_analysis.audio_sections]}")
