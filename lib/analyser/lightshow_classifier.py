@@ -5,7 +5,7 @@ from enum import Enum
 LOW_INTENSITY_GENRES: List[str] = ['mellow', 'soft', 'golden', 'trance']
 MEDIUM_INTENSITY_GENRES: List[str] = ['pop']
 HIGH_INTENSITY_GENRES: List[str] = ['dance', 'hard', 'techno', 'house', 'edm', 'electro', 'latin', 'euro', 'reggaeton']
-HIP_HOP_GENRES: List[str] = ['hip hop', 'rap']
+HIP_HOP_GENRES: List[str] = ['hip hop']
 
 
 class LightShowType(Enum):
