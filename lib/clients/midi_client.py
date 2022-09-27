@@ -2,27 +2,8 @@ import rtmidi
 import time
 import logging
 import asyncio
-from enum import Enum
-from typing import Dict, List
 import lib.clients.midi_message as mm
 from lib.clients.midi_message import MidiChannel
-
-
-class AutoloopAction(Enum):
-    NEXT_AUTOLOOP = 1
-
-
-ColorOverrides: List[MidiChannel] = [
-    MidiChannel.COLOR_OVERRIDE_1,
-    MidiChannel.COLOR_OVERRIDE_2,
-    MidiChannel.COLOR_OVERRIDE_3,
-    MidiChannel.COLOR_OVERRIDE_4,
-    MidiChannel.COLOR_OVERRIDE_5,
-    MidiChannel.COLOR_OVERRIDE_6,
-    MidiChannel.COLOR_OVERRIDE_7,
-    MidiChannel.COLOR_OVERRIDE_8,
-    MidiChannel.COLOR_OVERRIDE_9,
-]
 
 
 class MidiClient:
@@ -62,14 +43,14 @@ class MidiClient:
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
             self.soundswitch_is_paused = True
 
-    async def set_autoloop(self, action: AutoloopAction):
-        if action == AutoloopAction.NEXT_AUTOLOOP:
-            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.NEXT_AUTOLOOP))
-            await asyncio.sleep(0.01)
-            self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.NEXT_AUTOLOOP))
+    async def set_autoloop(self, auto_loop: MidiChannel):
+        self.midi_out.send_message(mm.get_midi_msg_on(auto_loop))
+        await asyncio.sleep(0.01)
+        self.midi_out.send_message(mm.get_midi_msg_off(auto_loop))
 
     async def set_color_override(self, color: MidiChannel):
         await self.clear_color_overrides()
+        await asyncio.sleep(0.01)
         self.midi_out.send_message(mm.get_midi_msg_on(color))
 
     async def clear_color_overrides(self):

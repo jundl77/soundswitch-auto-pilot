@@ -1,28 +1,31 @@
 import logging
 import random
 import datetime
-from typing import Optional, Tuple
-from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection
-from lib.clients.midi_client import MidiClient, AutoloopAction, ColorOverrides
-
-APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60
+from typing import Optional, Tuple, List
+from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection, LightShowType
+from lib.clients.midi_client import MidiClient
+from lib.clients.midi_message import MidiChannel
+from lib.engine.autoloop_actions import COLOR_OVERRIDES, LOW_INTENSITY_AUTOLOOPS, MEDIUM_INTENSITY_AUTOLOOPS, HIGH_INTENSITY_AUTOLOOPS, HIP_HOP_AUTOLOOPS
 
 # trigger the auto-loop change 1sec before the event because it takes some time for the change to take effect
 FIXED_CHANGE_OFFSET_SEC = 1.0
+APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60
 
 
 class AutoloopController:
     def __init__(self, midi_client: MidiClient):
         self.midi_client: MidiClient = midi_client
         self.current_section_index: int = -1
-        self.last_color_override: int = -1
+        self.last_audio_section: Optional[SpotifyAudioSection] = None
+        self.last_autoloop: MidiChannel = MidiChannel.AUTOLOOP_BANK_1A
+        self.last_color_override: MidiChannel = MidiChannel.COLOR_OVERRIDE_1
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
-    async def check_autoloops(self, current_second: float, spotify_track_analysis: Optional[SpotifyTrackAnalysis]):
-        if not spotify_track_analysis:
+    async def check_autoloops(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+        if not track_analysis:
             return
 
-        section_index, audio_section = self._find_current_audio_section_index(current_second, spotify_track_analysis)
+        section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
         if audio_section is None:
             # something has gone wrong in section detection, just reset - likely we switched songs
             self.reset_state()
@@ -34,14 +37,36 @@ class AutoloopController:
                          f' section_start={audio_section.section_start_sec:.2f} sec,'
                          f' duration={audio_section.section_duration_sec:.2f} sec,'
                          f' change_offset={(FIXED_CHANGE_OFFSET_SEC * -1.0):.2f} sec')
-            await self._choose_new_autoloop()
+            await self._choose_new_autoloop(track_analysis, audio_section, self.last_audio_section)
+            self.last_audio_section = audio_section
 
     def reset_state(self):
-        self.current_section_index = -1
+        self.current_section_index: int = -1
+        self.last_audio_section: Optional[SpotifyAudioSection] = None
+        self.last_autoloop: MidiChannel = MidiChannel.AUTOLOOP_BANK_1A
+        self.last_color_override: MidiChannel = MidiChannel.COLOR_OVERRIDE_1
+        self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
-    async def _choose_new_autoloop(self):
-        await self.midi_client.set_autoloop(AutoloopAction.NEXT_AUTOLOOP)
+    async def _choose_new_autoloop(self,
+                                   track_analysis: SpotifyTrackAnalysis,
+                                   current_audio_section: SpotifyAudioSection,
+                                   last_audio_section: Optional[SpotifyAudioSection]):
+
+        if track_analysis.light_show_type == LightShowType.LOW_INTENSITY:
+            new_autoloop: MidiChannel = self._select_new_random_channel(LOW_INTENSITY_AUTOLOOPS, self.last_autoloop)
+        elif track_analysis.light_show_type == LightShowType.MEDIUM_INTENSITY:
+            new_autoloop: MidiChannel = self._select_new_random_channel(MEDIUM_INTENSITY_AUTOLOOPS, self.last_autoloop)
+        elif track_analysis.light_show_type == LightShowType.HIGH_INTENSITY:
+            new_autoloop: MidiChannel = self._select_new_random_channel(HIGH_INTENSITY_AUTOLOOPS, self.last_autoloop)
+        elif track_analysis.light_show_type == LightShowType.HIP_HOP:
+            new_autoloop: MidiChannel = self._select_new_random_channel(HIP_HOP_AUTOLOOPS, self.last_autoloop)
+        else:
+            raise RuntimeError(f"unknown LightShowType {track_analysis.light_show_type}")
+
+        logging.info(f'[autoloop_controller] changing auto-loop to: {new_autoloop.name}')
+        await self.midi_client.set_autoloop(new_autoloop)
         await self._apply_color_override_if_due()
+        self.last_autoloop = new_autoloop
 
     async def _apply_color_override_if_due(self):
         now = datetime.datetime.now()
@@ -52,13 +77,9 @@ class AutoloopController:
             await self.midi_client.clear_color_overrides()
             return
 
-        # make sure we don't set the color override to the same color as last time
-        new_color = random.randrange(1, len(ColorOverrides), 1)
-        while new_color == self.last_color_override:
-            new_color = random.randrange(1, len(ColorOverrides), 1)
-
-        logging.info(f'[autoloop_controller] setting color override to color: {new_color}')
-        await self.midi_client.set_color_override(ColorOverrides[new_color])
+        new_color: MidiChannel = self._select_new_random_channel(COLOR_OVERRIDES, self.last_color_override)
+        logging.info(f'[autoloop_controller] setting color override to color: {new_color.name}')
+        await self.midi_client.set_color_override(new_color)
         self.last_color_override = new_color
         self.last_color_override_time = now
 
@@ -75,3 +96,9 @@ class AutoloopController:
                 section_index += 1
         return -1, None
 
+    def _select_new_random_channel(self, channels: List[MidiChannel], previous_channel: MidiChannel) -> MidiChannel:
+        # make sure we don't select the same channel as last time
+        new_channel: int = random.randrange(1, len(channels), 1)
+        while channels[new_channel] == previous_channel:
+            new_channel = random.randrange(1, len(channels), 1)
+        return channels[new_channel]
