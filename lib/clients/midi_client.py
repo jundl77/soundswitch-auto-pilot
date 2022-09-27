@@ -69,10 +69,10 @@ class MidiClient:
             self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.NEXT_AUTOLOOP))
 
     async def set_color_override(self, color: MidiChannel):
-        self._clear_color_overrides()
+        await self.clear_color_overrides()
         self.midi_out.send_message(mm.get_midi_msg_on(color))
 
-    def _clear_color_overrides(self):
+    async def clear_color_overrides(self):
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_1))
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_2))
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_3))

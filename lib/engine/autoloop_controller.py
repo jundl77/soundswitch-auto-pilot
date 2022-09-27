@@ -49,6 +49,7 @@ class AutoloopController:
         if time_diff < datetime.timedelta(seconds=APPLY_COLOR_OVERRIDE_INTERVAL_SEC):
             logging.info(f'[autoloop_controller] set color override in the last {APPLY_COLOR_OVERRIDE_INTERVAL_SEC} sec,'
                          f' will set it again in {APPLY_COLOR_OVERRIDE_INTERVAL_SEC - time_diff.seconds} sec')
+            await self.midi_client.clear_color_overrides()
             return
 
         # make sure we don't set the color override to the same color as last time
