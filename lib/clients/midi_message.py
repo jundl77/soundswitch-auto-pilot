@@ -2,6 +2,7 @@ from rtmidi.midiconstants import NOTE_ON, NOTE_OFF, CONTROLLER_CHANGE
 from enum import Enum
 
 
+# max is 127 unfortunately, after that SoundSwitch does not respond
 class MidiChannel(Enum):
     LINK = 1
     BPM_TAP = 2

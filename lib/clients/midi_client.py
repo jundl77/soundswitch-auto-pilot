@@ -3,12 +3,26 @@ import time
 import logging
 import asyncio
 from enum import Enum
+from typing import Dict, List
 import lib.clients.midi_message as mm
 from lib.clients.midi_message import MidiChannel
 
 
 class AutoloopAction(Enum):
     NEXT_AUTOLOOP = 1
+
+
+ColorOverrides: List[MidiChannel] = [
+    MidiChannel.COLOR_OVERRIDE_1,
+    MidiChannel.COLOR_OVERRIDE_2,
+    MidiChannel.COLOR_OVERRIDE_3,
+    MidiChannel.COLOR_OVERRIDE_4,
+    MidiChannel.COLOR_OVERRIDE_5,
+    MidiChannel.COLOR_OVERRIDE_6,
+    MidiChannel.COLOR_OVERRIDE_7,
+    MidiChannel.COLOR_OVERRIDE_8,
+    MidiChannel.COLOR_OVERRIDE_9,
+]
 
 
 class MidiClient:
@@ -53,6 +67,21 @@ class MidiClient:
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.NEXT_AUTOLOOP))
             await asyncio.sleep(0.01)
             self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.NEXT_AUTOLOOP))
+
+    async def set_color_override(self, color: MidiChannel):
+        self._clear_color_overrides()
+        self.midi_out.send_message(mm.get_midi_msg_on(color))
+
+    def _clear_color_overrides(self):
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_1))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_2))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_3))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_4))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_5))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_6))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_7))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_8))
+        self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_9))
 
     def _set_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"
