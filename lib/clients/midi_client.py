@@ -4,6 +4,7 @@ import logging
 import asyncio
 from enum import Enum
 import lib.clients.midi_message as mm
+from lib.clients.midi_message import MidiChannel
 
 
 class AutoloopAction(Enum):
@@ -37,21 +38,21 @@ class MidiClient:
     def on_sound_start(self):
         self._set_intensities(1)
         if self.soundswitch_is_paused:
-            self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # unpause
+            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # unpause
             self.soundswitch_is_paused = False
 
     def on_sound_stop(self):
         self._set_intensities(0)
         if not self.soundswitch_is_paused:
             time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
-            self.midi_out.send_message(mm.MIDI_MSG_PAUSE_TOGGLE)  # pause
+            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
             self.soundswitch_is_paused = True
 
     async def set_autoloop(self, action: AutoloopAction):
         if action == AutoloopAction.NEXT_AUTOLOOP:
-            self.midi_out.send_message(mm.MIDI_MSG_NEXT_AUTOLOOP_TAP_ON)
+            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.NEXT_AUTOLOOP))
             await asyncio.sleep(0.01)
-            self.midi_out.send_message(mm.MIDI_MSG_NEXT_AUTOLOOP_TAP_OFF)
+            self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.NEXT_AUTOLOOP))
 
     def _set_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"
