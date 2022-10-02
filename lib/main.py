@@ -96,6 +96,7 @@ class SoundSwitchAutoPilot:
 
     async def _do_100ms_callback(self):
         await self.light_engine.on_100ms_callback()
+        await self.midi_client.on_100ms_callback()
 
     async def _do_1s_callback(self):
         await self.light_engine.on_1sec_callback()

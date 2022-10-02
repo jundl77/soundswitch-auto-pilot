@@ -15,24 +15,24 @@ COLOR_OVERRIDES: List[MidiChannel] = [
 ]
 
 LOW_INTENSITY_AUTOLOOPS: List[MidiChannel] = [
-    MidiChannel.AUTOLOOP_BANK_1A,
-    MidiChannel.AUTOLOOP_BANK_1B,
-    MidiChannel.AUTOLOOP_BANK_1C,
-    MidiChannel.AUTOLOOP_BANK_1D,
-    MidiChannel.AUTOLOOP_BANK_1E,
-    MidiChannel.AUTOLOOP_BANK_1F,
-    MidiChannel.AUTOLOOP_BANK_1G,
-    MidiChannel.AUTOLOOP_BANK_1H,
+    MidiChannel.AUTOLOOP_BANK_2A,
+    MidiChannel.AUTOLOOP_BANK_2B,
+    MidiChannel.AUTOLOOP_BANK_2C,
+    MidiChannel.AUTOLOOP_BANK_2D,
+    MidiChannel.AUTOLOOP_BANK_2E,
+    MidiChannel.AUTOLOOP_BANK_2F,
+    MidiChannel.AUTOLOOP_BANK_2G,
+    MidiChannel.AUTOLOOP_BANK_2H,
 ]
 MEDIUM_INTENSITY_AUTOLOOPS: List[MidiChannel] = [
-    MidiChannel.AUTOLOOP_BANK_1A,
-    MidiChannel.AUTOLOOP_BANK_1B,
-    MidiChannel.AUTOLOOP_BANK_1C,
-    MidiChannel.AUTOLOOP_BANK_1D,
-    MidiChannel.AUTOLOOP_BANK_1E,
-    MidiChannel.AUTOLOOP_BANK_1F,
-    MidiChannel.AUTOLOOP_BANK_1G,
-    MidiChannel.AUTOLOOP_BANK_1H,
+    MidiChannel.AUTOLOOP_BANK_2A,
+    MidiChannel.AUTOLOOP_BANK_2B,
+    MidiChannel.AUTOLOOP_BANK_2C,
+    MidiChannel.AUTOLOOP_BANK_2D,
+    MidiChannel.AUTOLOOP_BANK_2E,
+    MidiChannel.AUTOLOOP_BANK_2F,
+    MidiChannel.AUTOLOOP_BANK_2G,
+    MidiChannel.AUTOLOOP_BANK_2H,
 ]
 HIGH_INTENSITY_AUTOLOOPS: List[MidiChannel] = [
     MidiChannel.AUTOLOOP_BANK_1A,

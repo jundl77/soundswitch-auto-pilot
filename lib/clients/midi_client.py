@@ -2,8 +2,32 @@ import rtmidi
 import time
 import logging
 import asyncio
+import datetime
 import lib.clients.midi_message as mm
 from lib.clients.midi_message import MidiChannel
+from typing import List
+from enum import Enum
+
+
+class EffectAction(Enum):
+    ACTIVATE = 1,
+    DEACTIVATE = 2
+
+
+class DelayedEffect:
+    def __init__(self,
+                 start_ts: datetime.datetime,
+                 effect: MidiChannel,
+                 action: EffectAction,
+                 duration: datetime.timedelta):
+        self.start_ts: datetime.datetime = start_ts
+        self.effect: MidiChannel = effect
+        self.action: EffectAction = action
+        self.duration: datetime.timedelta = duration
+        self.is_done: bool = False
+
+    def __repr__(self):
+        return f"DelayedEffect(start_ts={self.start_ts.time()}, effect={self.effect.name}, action={self.action.name}, duration={self.duration.total_seconds()} sec)"
 
 
 class MidiClient:
@@ -13,6 +37,7 @@ class MidiClient:
         self.midi_port_index: int = midi_port_index
         self.port_name = self.midi_out.get_port_name(self.midi_port_index)
         self.soundswitch_is_paused: bool = True
+        self._pending_effects: List[DelayedEffect] = list()
 
     def list_devices(self):
         print('=== Midi ports ===')
@@ -43,10 +68,23 @@ class MidiClient:
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
             self.soundswitch_is_paused = True
 
+    async def on_100ms_callback(self):
+        await self._process_delayed_effects()
+
     async def set_autoloop(self, auto_loop: MidiChannel):
+        logging.info(f'[midi] set autoloop: {auto_loop.name}')
         self.midi_out.send_message(mm.get_midi_msg_on(auto_loop))
         await asyncio.sleep(0.01)
         self.midi_out.send_message(mm.get_midi_msg_off(auto_loop))
+
+    async def set_special_effect(self, special_effect: MidiChannel, duration_sec: int):
+        logging.info(f'[midi] set special effect: {special_effect.name}')
+        now = datetime.datetime.now()
+        self.midi_out.send_message(mm.get_midi_msg_on(special_effect))
+        self._pending_effects.append(DelayedEffect(start_ts=now,
+                                                   effect=special_effect,
+                                                   action=EffectAction.DEACTIVATE,
+                                                   duration=datetime.timedelta(seconds=duration_sec)))
 
     async def set_color_override(self, color: MidiChannel):
         await self.clear_color_overrides()
@@ -63,6 +101,27 @@ class MidiClient:
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_7))
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_8))
         self.midi_out.send_message(mm.get_midi_msg_off(MidiChannel.COLOR_OVERRIDE_9))
+
+    async def _process_delayed_effects(self):
+        now = datetime.datetime.now()
+        for effect in self._pending_effects:
+            if not effect.is_done and now - effect.start_ts > effect.duration:
+                logging.info(f'[midi] activated delayed effect: {effect}')
+                if effect.action == EffectAction.ACTIVATE:
+                    self.midi_out.send_message(mm.get_midi_msg_on(effect.effect))
+                elif effect.action == EffectAction.DEACTIVATE:
+                    self.midi_out.send_message(mm.get_midi_msg_off(effect.effect))
+                else:
+                    raise RuntimeError(f"unknown EffectAction: {effect.action}")
+                effect.is_done = True
+
+        # delete all finished coros
+        i = 0
+        while i < len(self._pending_effects):
+            if self._pending_effects[i].is_done:
+                del self._pending_effects[i]
+            else:
+                i += 1
 
     def _set_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"

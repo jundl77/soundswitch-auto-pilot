@@ -57,7 +57,7 @@ class AutoloopController:
         elif track_analysis.light_show_type == LightShowType.MEDIUM_INTENSITY:
             new_autoloop: MidiChannel = self._select_new_random_channel(MEDIUM_INTENSITY_AUTOLOOPS, self.last_autoloop)
         elif track_analysis.light_show_type == LightShowType.HIGH_INTENSITY:
-            new_autoloop: MidiChannel = self._select_new_random_channel(HIGH_INTENSITY_AUTOLOOPS, self.last_autoloop)
+            new_autoloop: MidiChannel = await self._choose_new_autoloop_high_itensity(track_analysis, current_audio_section, last_audio_section)
         elif track_analysis.light_show_type == LightShowType.HIP_HOP:
             new_autoloop: MidiChannel = self._select_new_random_channel(HIP_HOP_AUTOLOOPS, self.last_autoloop)
         else:
@@ -67,6 +67,28 @@ class AutoloopController:
         await self.midi_client.set_autoloop(new_autoloop)
         await self._apply_color_override_if_due()
         self.last_autoloop = new_autoloop
+
+    async def _choose_new_autoloop_high_itensity(self,
+                                                 track_analysis: SpotifyTrackAnalysis,
+                                                 current_audio_section: SpotifyAudioSection,
+                                                 last_audio_section: Optional[SpotifyAudioSection]):
+        track_loudness: float = track_analysis.loudness
+        current_section_loudness: float = current_audio_section.section_loudness
+        section_to_track_ratio: float = track_loudness / current_section_loudness
+
+        if last_audio_section:
+            last_section_loudness = last_audio_section.section_loudness
+            to_last_section_ratio = last_section_loudness / current_section_loudness
+            if to_last_section_ratio > 1.25:
+                await self.midi_client.set_special_effect(MidiChannel.SPECIAL_EFFECT_STROBE, duration_sec=10)
+                return self._select_new_random_channel(HIGH_INTENSITY_AUTOLOOPS, self.last_autoloop)
+            if to_last_section_ratio < 0.7:
+                return self._select_new_random_channel(LOW_INTENSITY_AUTOLOOPS, self.last_autoloop)
+
+        if section_to_track_ratio < 0.7:
+            return self._select_new_random_channel(LOW_INTENSITY_AUTOLOOPS, self.last_autoloop)
+
+        return self._select_new_random_channel(HIGH_INTENSITY_AUTOLOOPS, self.last_autoloop)
 
     async def _apply_color_override_if_due(self):
         now = datetime.datetime.now()
