@@ -3,12 +3,17 @@ import json
 import logging
 import numpy as np
 import datetime
+import time
+from threading import Thread
 from datetime import date
 from typing import Optional, Dict, Tuple, List
 from pathlib import Path
 from spotipy.oauth2 import SpotifyOAuth
 from sklearn import preprocessing
 from lib.analyser.lightshow_classifier import LightShowType, classify_track
+
+
+SPOTIFY_QUERY_INTERVAL = datetime.timedelta(seconds=10)
 
 
 class SpotifyDetails:
@@ -103,14 +108,36 @@ class SpotifyClient:
                                         scope="user-read-playback-state")
             self.spotify = spotipy.Spotify(auth_manager=auth_manager)
             self.engine = None
-            self.is_active = True
+            self.fetching_thread = Thread(target=self._run_query_thread)
+            self.is_running: bool = True
+            self.current_analysis: SpotifyTrackAnalysis = None
             logging.info(f"[spotify] spotify song analysis is active")
         else:
-            self.is_active = False
+            self.is_running: bool = False
             logging.info(f"[spotify] spotify song analysis is inactive")
 
     def set_engine(self, engine: "Engine"):
         self.engine = engine
+
+    def start(self):
+        self.is_running = True
+        self.fetching_thread.start()
+
+    def stop(self):
+        logging.info(f'[spotify] stopping query thread')
+        if self.is_running:
+            self.is_running = False
+            self.fetching_thread.join()
+
+    def _run_query_thread(self):
+        logging.info(f'[spotify] started query thread')
+
+        last_query = datetime.datetime.now() - SPOTIFY_QUERY_INTERVAL
+        while self.is_running:
+            now = datetime.datetime.now()
+            if now - last_query > SPOTIFY_QUERY_INTERVAL:
+                self._fetch_current_track_analysis()
+            time.sleep(0.001)
 
     def _read_spotify_details_file(self) -> Optional[SpotifyDetails]:
         spotify_details_file_path = (Path(__file__).parent.parent.parent / "spotify_details.json").absolute()
@@ -124,16 +151,21 @@ class SpotifyClient:
         return SpotifyDetails(spotify_client_id=spotify_details_json['spotify_client_id'],
                               spotify_client_secret=spotify_details_json['spotify_client_secret'])
 
-    def is_active(self) -> bool:
-        return self.is_active
+    def is_running(self) -> bool:
+        return self.is_running
 
     def get_current_track_analysis(self) -> Optional[SpotifyTrackAnalysis]:
-        if not self.is_active:
-            return None
+        return self.current_analysis
+
+    def _fetch_current_track_analysis(self):
+        if not self.is_running:
+            self.current_analysis = None
+            return
 
         current_playback = self.spotify.current_playback()
-        if current_playback is None or not current_playback['is_playing']:
-            return None
+        if current_playback is None or not current_playback['is_playing'] or current_playback['item'] is None:
+            self.current_analysis = None
+            return
 
         track_name = current_playback['item']['name']
         album_name = current_playback['item']['album']['name']
@@ -170,37 +202,37 @@ class SpotifyClient:
         beat_strengths_by_sec = self._calculate_beat_strengths_by_sec(audio_analysis)
         audio_sections = self._get_audio_section(audio_analysis)
 
-        return SpotifyTrackAnalysis(track_name=track_name,
-                                    album_name=album_name,
-                                    artists=artist_names,
-                                    progress_ms=progress_ms,
-                                    duration_ms=duration_ms,
-                                    bpm=bpm,
-                                    beats_to_first_downbeat=beats_to_first_downbeat,
-                                    first_downbeat_ms=first_downbeat_ms,
-                                    current_beat_count=current_beat_count,
-                                    key=key,
-                                    mode=mode,
-                                    time_signature=time_signature,
-                                    acousticness=acousticness,
-                                    danceability=danceability,
-                                    energy=energy,
-                                    instrumentalness=instrumentalness,
-                                    liveness=liveness,
-                                    loudness=loudness,
-                                    speechiness=speechiness,
-                                    valence=valence,
-                                    tempo=tempo,
-                                    release_date=release_date,
-                                    popularity=popularity,
-                                    light_show_type=light_show_type,
-                                    genres=genres,
-                                    beat_strengths_by_sec=beat_strengths_by_sec,
-                                    audio_sections=audio_sections)
+        self.current_analysis = SpotifyTrackAnalysis(track_name=track_name,
+                                                     album_name=album_name,
+                                                     artists=artist_names,
+                                                     progress_ms=progress_ms,
+                                                     duration_ms=duration_ms,
+                                                     bpm=bpm,
+                                                     beats_to_first_downbeat=beats_to_first_downbeat,
+                                                     first_downbeat_ms=first_downbeat_ms,
+                                                     current_beat_count=current_beat_count,
+                                                     key=key,
+                                                     mode=mode,
+                                                     time_signature=time_signature,
+                                                     acousticness=acousticness,
+                                                     danceability=danceability,
+                                                     energy=energy,
+                                                     instrumentalness=instrumentalness,
+                                                     liveness=liveness,
+                                                     loudness=loudness,
+                                                     speechiness=speechiness,
+                                                     valence=valence,
+                                                     tempo=tempo,
+                                                     release_date=release_date,
+                                                     popularity=popularity,
+                                                     light_show_type=light_show_type,
+                                                     genres=genres,
+                                                     beat_strengths_by_sec=beat_strengths_by_sec,
+                                                     audio_sections=audio_sections)
 
     async def check_for_track_changes(self, previous_song: Optional[SpotifyTrackAnalysis], current_second: float):
         assert self.engine is not None, "engine should be set when 'check_for_track_changes' is called"
-        if not self.is_active:
+        if not self.is_running:
             return
 
         track_analysis = self.get_current_track_analysis()

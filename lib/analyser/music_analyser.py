@@ -1,8 +1,8 @@
-import numpy as np
-import aubio
 import datetime
 import logging
-from typing import List, Optional
+import aubio
+import numpy as np
+from typing import Optional
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clients.spotify_client import SpotifyTrackAnalysis
 
@@ -17,8 +17,9 @@ class MusicAnalyser:
         self.handler: IMusicAnalyserHandler = handler
 
         # constants
-        self.tolerance: float = 0.8
-        self.win_s: int = 1024  # fft size
+        self.win_s: int = self.buffer_size * 4  # fft size
+        self.win_s_small: int = self.buffer_size * 2  # fft size
+        self.win_s_large: int = self.buffer_size * 8  # fft size
         self.hop_s: int = self.buffer_size  # hop size
         self.mfcc_filters: int = 40  # must be 40 for mfcc
         self.mfcc_coeffs: int = 13
@@ -28,11 +29,11 @@ class MusicAnalyser:
 
     def _reset_state(self) -> None:
         # audio analysers
-        self.pitch_o: aubio.pitch = aubio.pitch("default", self.win_s, self.hop_s, self.sample_rate)
-        self.pitch_o.set_unit("midi")
-        self.pitch_o.set_tolerance(self.tolerance)
-        self.tempo_o: aubio.tempo = aubio.tempo("default", self.win_s, self.hop_s, self.sample_rate)
-        self.onset_o: aubio.onset = aubio.onset("default", self.win_s, self.hop_s, self.sample_rate)
+        self.pitch_o: aubio.pitch = aubio.pitch("default", self.win_s_large, self.hop_s, self.sample_rate)
+        self.pitch_o.set_unit("hertz")
+        self.tempo_o: aubio.tempo = aubio.tempo("default", self.win_s_small, self.hop_s, self.sample_rate)
+        self.onset_o: aubio.onset = aubio.onset("default", self.win_s_small, self.hop_s, self.sample_rate)
+        self.notes_o = aubio.notes("default", self.win_s_small, self.hop_s, self.sample_rate)
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
         self.mfcc_o: aubio.mfcc = aubio.mfcc(self.win_s, self.mfcc_filters, self.mfcc_coeffs, self.sample_rate)
         self.energy_filter = aubio.filterbank(40, self.win_s)
@@ -51,6 +52,7 @@ class MusicAnalyser:
         self.beat_count: int = 0
         self.time_to_last_beat_sec: float = 0
         self.last_beat_detected: datetime.datetime = datetime.datetime.now()
+        self.last_note_detected: datetime.datetime = datetime.datetime.now()
 
     def get_start_of_song(self) -> Optional[datetime.datetime]:
         if self.is_playing:
@@ -89,20 +91,27 @@ class MusicAnalyser:
             logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
+        now = datetime.datetime.now()
+
+        pitch_hz = self.pitch_o(audio_signal)[0]
+        pitch_confidence = self.pitch_o.get_confidence()
         mfccs, energies = self._compute_mfcc(audio_signal)
-        self._track_song_duration(energies)
+        self._track_song_duration(energies, now)
 
         is_onset: bool = await self._track_onset(audio_signal)
-        is_beat: bool = await self._track_beat(audio_signal)
-
-        pitch = self.pitch_o(audio_signal)[0]
-        confidence = self.pitch_o.get_confidence()
+        is_beat: bool = await self._track_beat(audio_signal, now)
+        is_note, note = await self._track_note(audio_signal, now)
 
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
         if is_beat:
+            #audio_signal += self.click_sound
+            pass
+
+        if is_note:
             audio_signal += self.click_sound
+            pass
 
         return audio_signal
 
@@ -112,7 +121,7 @@ class MusicAnalyser:
             await self.handler.on_onset()
         return is_onset
 
-    async def _track_beat(self, audio_signal: np.ndarray) -> bool:
+    async def _track_beat(self, audio_signal: np.ndarray, now: datetime.datetime) -> bool:
         is_beat: bool = self.tempo_o(audio_signal)[0] > 0
         if is_beat:
             this_bpm: float = self.get_bpm()
@@ -120,10 +129,17 @@ class MusicAnalyser:
             self.beat_count += 1
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
-            now = datetime.datetime.now()
             self.time_to_last_beat_sec = (now - self.last_beat_detected).microseconds / 1000 / 1000
             self.last_beat_detected = now
         return is_beat
+
+    async def _track_note(self, audio_signal: np.ndarray, now: datetime.datetime) -> tuple[bool, np.ndarray]:
+        note = self.notes_o(audio_signal)
+        is_note = note[0] > 0 and now - self.last_note_detected > datetime.timedelta(milliseconds=75)
+        if is_note:
+            logging.debug(f'[analyser] note {note}')
+            self.last_note_detected = now
+        return is_note, note
 
     def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray]:
         spec = self.pvoc_o(audio_signal)
@@ -135,9 +151,8 @@ class MusicAnalyser:
 
         return mfcc_out, energies_out
 
-    def _track_song_duration(self, energies: np.ndarray) -> None:
+    def _track_song_duration(self, energies: np.ndarray, now: datetime.datetime) -> None:
         is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)
-        now = datetime.datetime.now()
 
         # if it is silent now, we do not update silence_period_start in order to track the duration of the silence
         if not is_silence_now:
@@ -162,3 +177,7 @@ class MusicAnalyser:
             return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05
         else:
             return False
+
+    def _midi_to_hz(self, notes: np.ndarray):
+        """ taken from librosa, Get the frequency (Hz) of MIDI note(s) """
+        return 440.0 * (2.0 ** ((np.asanyarray(notes) - 69.0) / 12.0))

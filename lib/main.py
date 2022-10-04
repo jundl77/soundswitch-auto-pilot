@@ -7,7 +7,7 @@ import asyncio
 import signal
 import datetime
 
-BUFFER_SIZE = 512
+BUFFER_SIZE = 256
 SAMPLE_RATE = 44100
 
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
@@ -57,6 +57,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.os2l_client.start()
+        self.spotify_client.start()
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
@@ -88,11 +89,13 @@ class SoundSwitchAutoPilot:
         self.audio_client.close()
         self.os2l_client.stop()
         self.midi_client.stop()
+        self.spotify_client.stop()
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
         self.is_running = False
         self.os2l_client.stop()
+        self.spotify_client.stop()
 
     async def _do_100ms_callback(self):
         await self.light_engine.on_100ms_callback()
