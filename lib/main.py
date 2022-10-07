@@ -19,17 +19,20 @@ class SoundSwitchAutoPilot:
                  midi_port_index: int,
                  input_device_index: int = None,
                  output_device_index: int = None,
-                 debug_mode: bool = False):
+                 debug_mode: bool = False,
+                 show_visualizer: bool = False):
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
         from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
+        from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
         from lib.engine.autoloop_controller import AutoloopController
 
         self.debug_mode: bool = debug_mode
+        self.show_visualizer: bool = show_visualizer
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
 
@@ -39,13 +42,21 @@ class SoundSwitchAutoPilot:
         self.os2l_client: Os2lClient = Os2lClient()
         self.spotify_client: SpotifyClient = SpotifyClient()
 
+        # construct visualizer
+        if self.show_visualizer:
+            self.visualizer: Visualizer = Visualizer()
+            self.visualizer_updater: VisualizerUpdater = VisualizerUpdater()
+        else:
+            self.visualizer: Visualizer = None
+            self.visualizer_updater: VisualizerUpdater = None
+
         # construct engine
         self.autoloop_controller: AutoloopController = AutoloopController(self.midi_client)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.spotify_client, self.autoloop_controller)
         self.spotify_client.set_engine(self.light_engine)
 
         # construct analyser
-        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
+        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
@@ -57,6 +68,9 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.os2l_client.start()
+        if self.show_visualizer:
+            self.visualizer.show()
+            self.visualizer_updater.connect()
         self.spotify_client.start()
         self.is_running = True
 
@@ -89,6 +103,9 @@ class SoundSwitchAutoPilot:
         self.audio_client.close()
         self.os2l_client.stop()
         self.midi_client.stop()
+        if self.show_visualizer:
+            self.visualizer.stop()
+            self.visualizer_updater.stop()
         self.spotify_client.stop()
         logging.info("[main] auto pilot stopped, clean shutdown")
 
@@ -96,6 +113,9 @@ class SoundSwitchAutoPilot:
         self.is_running = False
         self.os2l_client.stop()
         self.spotify_client.stop()
+        if self.show_visualizer:
+            self.visualizer.stop()
+            self.visualizer_updater.stop()
 
     async def _do_100ms_callback(self):
         await self.light_engine.on_100ms_callback()
@@ -122,7 +142,8 @@ async def run_cmd(args: argparse.Namespace):
     global_app = SoundSwitchAutoPilot(midi_port_index=midi_port_index,
                                       input_device_index=input_device_index,
                                       output_device_index=output_device_index,
-                                      debug_mode=debug_mode)
+                                      debug_mode=debug_mode,
+                                      show_visualizer=args.visualizer)
 
     await global_app.run()
 
@@ -154,6 +175,7 @@ async def main():
     subparser.add_argument('-i', '--input_device', help='Specify the index of the sound INPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
+    subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
     subparser.set_defaults(func=run_cmd)
 
     argcomplete.autocomplete(parser)

@@ -5,16 +5,19 @@ import numpy as np
 from typing import Optional
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clients.spotify_client import SpotifyTrackAnalysis
+from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
 
 
 class MusicAnalyser:
     def __init__(self,
                  sample_rate: int,
                  buffer_size: int,
-                 handler: IMusicAnalyserHandler):
+                 handler: IMusicAnalyserHandler,
+                 visualizer_updater: VisualizerUpdater):
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
         self.handler: IMusicAnalyserHandler = handler
+        self.visualizer_updater: VisualizerUpdater = visualizer_updater
 
         # constants
         self.win_s: int = self.buffer_size * 4  # fft size
@@ -95,7 +98,7 @@ class MusicAnalyser:
 
         pitch_hz = self.pitch_o(audio_signal)[0]
         pitch_confidence = self.pitch_o.get_confidence()
-        mfccs, energies = self._compute_mfcc(audio_signal)
+        spec, mfccs, energies = self._compute_mfcc(audio_signal)
         self._track_song_duration(energies, now)
 
         is_onset: bool = await self._track_onset(audio_signal)
@@ -112,6 +115,10 @@ class MusicAnalyser:
         if is_note:
             audio_signal += self.click_sound
             pass
+
+        if self.visualizer_updater is not None:
+            data = VisualizerData(spec.norm, mfccs, energies, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
+            self.visualizer_updater.update_data(data)
 
         return audio_signal
 
@@ -137,19 +144,19 @@ class MusicAnalyser:
         note = self.notes_o(audio_signal)
         is_note = note[0] > 0 and now - self.last_note_detected > datetime.timedelta(milliseconds=75)
         if is_note:
-            logging.debug(f'[analyser] note {note}')
+            logging.debug(f'[analyser] note {note}, frequency={self._midi_to_hz(note[0])}hz')
             self.last_note_detected = now
         return is_note, note
 
-    def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray]:
+    def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray, np.ndarray]:
         spec = self.pvoc_o(audio_signal)
-        energies_out = self.energy_filter(spec)
         mfcc_out = self.mfcc_o(spec)
+        energies_out = self.energy_filter(spec)
 
         self.mfccs = np.vstack((self.mfccs, mfcc_out))
         self.energies = np.vstack([self.energies, energies_out])
 
-        return mfcc_out, energies_out
+        return spec, mfcc_out, energies_out
 
     def _track_song_duration(self, energies: np.ndarray, now: datetime.datetime) -> None:
         is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)

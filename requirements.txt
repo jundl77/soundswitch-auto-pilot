@@ -1,6 +1,7 @@
 python-rtmidi
 spotipy
 jupyterlab
+aubio
 numpy
 pyaudio
 matplotlib
