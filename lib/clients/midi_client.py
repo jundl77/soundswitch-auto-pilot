@@ -56,13 +56,13 @@ class MidiClient:
         self.on_sound_stop()
 
     def on_sound_start(self):
-        self._set_intensities(1)
+        self.set_intensities(1)
         if self.soundswitch_is_paused:
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # unpause
             self.soundswitch_is_paused = False
 
     def on_sound_stop(self):
-        self._set_intensities(0)
+        self.set_intensities(0)
         if not self.soundswitch_is_paused:
             time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
@@ -123,7 +123,7 @@ class MidiClient:
             else:
                 i += 1
 
-    def _set_intensities(self, value: int):
+    def set_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"
         self.midi_out.send_message(mm.get_autoloop_intensity_msg(value))
         self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))

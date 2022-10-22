@@ -13,6 +13,10 @@ class IMusicAnalyserHandler(ABC):
         pass
 
     @abstractmethod
+    async def on_cycle(self, intensity):
+        pass
+
+    @abstractmethod
     async def on_onset(self):
         pass
 

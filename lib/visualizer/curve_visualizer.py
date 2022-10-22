@@ -32,9 +32,9 @@ class CurveVisualizer:
         block_mean = np.mean(block, axis=0)[0:self.n_features]
 
         data = block
-        if self.vmax < np.max(block_mean):
-            self.vmax = np.max(block_mean)
-        self.image.set_clim(self.vmin, self.vmax)
+        # if self.vmax < np.max(block_mean):
+        #     self.vmax = np.max(block_mean)
+        # self.image.set_clim(self.vmin, self.vmax)
 
         # block_mean *= ((N_BUCKETS - 1)/block_mean.max())
         # data = np.zeros((N_BUCKETS, self.n_features))

@@ -116,6 +116,15 @@ class MusicAnalyser:
             self._reset_state()
 
         rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
+        intensity_val = np.min([1, (np.mean(rgb_spec[0]) + np.mean(rgb_spec[1]) + np.mean(rgb_spec[2])) / 3 / 50])
+        if self.is_playing:
+            await self.handler.on_cycle(intensity_val)
+
+        new = [np.zeros((4,)), np.zeros((4,)), np.zeros((4,))]
+        new[0] = [intensity_val] * 4
+        new[1] = [intensity_val] * 4
+        new[2] = [intensity_val] * 4
+
 
         # rgb_spec, rgb_energy, rgb_scroll = np.zeros((4,)), np.zeros((4,)), np.zeros((4,))
         # if is_onset:

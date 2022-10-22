@@ -49,6 +49,9 @@ class LightEngine(IMusicAnalyserHandler):
         self.os2l_client.on_sound_stop()
         self.autoloop_controller.reset_state()
 
+    async def on_cycle(self, intensity):
+        self.midi_client.set_intensities(intensity)
+
     async def on_onset(self):
         pass
 

@@ -105,7 +105,7 @@ class Visualizer:
                                               title='Time vs Energies', x_label="Time", y_label="Energies")
         if self.show_freq_curve:
             self.curve_fig, (curve_ax1) = plt.subplots(1, 1)
-            self.freq_curve = CurveVisualizer(ax=curve_ax1, data_attr='energy_curve', n_features=60,
+            self.freq_curve = CurveVisualizer(ax=curve_ax1, data_attr='freq_curve', n_features=4,
                                               title='Frequency vs Power', x_label="Frequency", y_label="Power")
         if self.show_ssm:
             self.ssm_fig, ssm_ax = plt.subplots(1, 1)
