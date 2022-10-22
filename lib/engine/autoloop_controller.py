@@ -120,7 +120,7 @@ class AutoloopController:
 
     def _select_new_random_channel(self, channels: List[MidiChannel], previous_channel: MidiChannel) -> MidiChannel:
         # make sure we don't select the same channel as last time
-        new_channel: int = random.randrange(1, len(channels), 1)
+        new_channel: int = random.randrange(0, len(channels), 1)
         while channels[new_channel] == previous_channel:
-            new_channel = random.randrange(1, len(channels), 1)
+            new_channel = random.randrange(0, len(channels), 1)
         return channels[new_channel]

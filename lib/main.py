@@ -44,7 +44,11 @@ class SoundSwitchAutoPilot:
 
         # construct visualizer
         if self.show_visualizer:
-            self.visualizer: Visualizer = Visualizer()
+            self.visualizer: Visualizer = Visualizer(show_freq=False,
+                                                     show_freq_gradient=False,
+                                                     show_energy=False,
+                                                     show_freq_curve=True,
+                                                     show_ssm=False)
             self.visualizer_updater: VisualizerUpdater = VisualizerUpdater()
         else:
             self.visualizer: Visualizer = None

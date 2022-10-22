@@ -3,9 +3,12 @@ import logging
 import aubio
 import numpy as np
 from typing import Optional
+from scipy.ndimage.filters import gaussian_filter1d
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
+from lib.analyser.exp_filter import ExpFilter
 from lib.clients.spotify_client import SpotifyTrackAnalysis
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
+from lib.effects.rgb_visualizer import RgbVisualizer
 
 
 class MusicAnalyser:
@@ -39,8 +42,12 @@ class MusicAnalyser:
         self.notes_o = aubio.notes("default", self.win_s_small, self.hop_s, self.sample_rate)
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
         self.mfcc_o: aubio.mfcc = aubio.mfcc(self.win_s, self.mfcc_filters, self.mfcc_coeffs, self.sample_rate)
-        self.energy_filter = aubio.filterbank(40, self.win_s)
+        self.energy_filter = aubio.filterbank(self.mfcc_filters, self.win_s)
         self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
+
+        self.rgb_visualizer = RgbVisualizer(num_mel_bins=self.mfcc_filters, num_pixels=60)
+        self.mel_gain = ExpFilter(np.tile(1e-1, self.mfcc_filters), alpha_decay=0.01, alpha_rise=0.99)
+        self.mel_smoothing = ExpFilter(np.tile(1e-1, self.mfcc_filters), alpha_decay=0.5, alpha_rise=0.99)
 
         # tracking state
         self.is_playing: bool = False
@@ -108,6 +115,12 @@ class MusicAnalyser:
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
+        rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
+
+        # rgb_spec, rgb_energy, rgb_scroll = np.zeros((4,)), np.zeros((4,)), np.zeros((4,))
+        # if is_onset:
+        #     rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
+
         if is_beat:
             #audio_signal += self.click_sound
             pass
@@ -117,7 +130,7 @@ class MusicAnalyser:
             pass
 
         if self.visualizer_updater is not None:
-            data = VisualizerData(spec.norm, mfccs, energies, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
+            data = VisualizerData(spec.norm, energies, rgb_spec, rgb_energy, rgb_scroll, mfccs, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
             self.visualizer_updater.update_data(data)
 
         return audio_signal
@@ -157,6 +170,23 @@ class MusicAnalyser:
         self.energies = np.vstack([self.energies, energies_out])
 
         return spec, mfcc_out, energies_out
+
+    def _compute_rgb_visualizations(self, energies: np.ndarray) -> [np.ndarray, np.ndarray, np.ndarray]:
+        # Scale data to values more suitable for visualization
+        mel = np.atleast_2d(energies).T * energies.T
+        mel = np.sum(mel, axis=0)
+        mel = mel**2.0
+
+        # Gain normalization
+        self.mel_gain.update(np.max(gaussian_filter1d(mel, sigma=1.0)))
+        mel /= self.mel_gain.value
+        mel = self.mel_smoothing.update(mel)
+
+        rgb_spec = self.rgb_visualizer.visualize_spectrum(mel)
+        rgb_energy = self.rgb_visualizer.visualize_energy(mel)
+        rgb_scroll = self.rgb_visualizer.visualize_scroll(mel)
+
+        return rgb_spec, rgb_energy, rgb_scroll
 
     def _track_song_duration(self, energies: np.ndarray, now: datetime.datetime) -> None:
         is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)

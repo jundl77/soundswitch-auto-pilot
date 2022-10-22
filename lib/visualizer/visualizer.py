@@ -1,33 +1,18 @@
 import time
 import logging
+import numpy as np
+import matplotlib.pyplot as plt
 from threading import Thread
 from multiprocessing import Process
 from multiprocessing.connection import Client, Listener
-import numpy as np
-import matplotlib.pyplot as plt
-
+from lib.visualizer.visualizer_types import VisualizerData
+from lib.visualizer.spectogram import Spectogram
+from lib.visualizer.curve_visualizer import CurveVisualizer
+from lib.visualizer.self_similarity_matrix import SelfSimilarityMatrix
 
 TCP_CONNECTION_PORT = 5599
 N_SAMPLES = 16
 plt.style.use('dark_background')
-
-
-class VisualizerData:
-    def __init__(self,
-                 spectogram: np.ndarray,
-                 mfccs: np.ndarray,
-                 energies: np.ndarray,
-                 pitch_hz: np.ndarray,
-                 is_onset: np.ndarray,
-                 is_beat: np.ndarray,
-                 is_note: np.ndarray):
-        self.spectogram: np.ndarray = spectogram
-        self.mfccs: np.ndarray = mfccs
-        self.energies: np.ndarray = energies
-        self.pitch_hz: np.ndarray = pitch_hz
-        self.is_onset: np.ndarray = is_onset
-        self.is_beat: np.ndarray = is_beat
-        self.is_note: np.ndarray = is_note
 
 
 class VisualizerUpdater:
@@ -37,6 +22,7 @@ class VisualizerUpdater:
         self.data_buffer: VisualizerData = None
 
     def connect(self):
+        time.sleep(1)
         self.is_running = True
         self.sending_thread.start()
 
@@ -52,8 +38,11 @@ class VisualizerUpdater:
             return
 
         self.data_buffer.spectogram = np.vstack((self.data_buffer.spectogram, data.spectogram))
-        self.data_buffer.mfccs = np.vstack((self.data_buffer.mfccs, data.mfccs))
         self.data_buffer.energies = np.vstack((self.data_buffer.energies, data.energies))
+        self.data_buffer.freq_curve = np.vstack((self.data_buffer.freq_curve, data.freq_curve))
+        self.data_buffer.energy_curve = np.vstack((self.data_buffer.energy_curve, data.energy_curve))
+        self.data_buffer.scroll_curve = np.vstack((self.data_buffer.scroll_curve, data.scroll_curve))
+        self.data_buffer.chroma = np.vstack((self.data_buffer.chroma, data.chroma))
         self.data_buffer.pitch_hz = np.vstack((self.data_buffer.pitch_hz, data.pitch_hz))
         self.data_buffer.is_onset = np.vstack((self.data_buffer.is_onset, data.is_onset))
         self.data_buffer.is_beat = np.vstack((self.data_buffer.is_beat, data.is_beat))
@@ -68,45 +57,59 @@ class VisualizerUpdater:
 
         while self.is_running:
             if self.data_buffer is not None and self.data_buffer.spectogram.shape[0] > N_SAMPLES:
-                sending_buffer = VisualizerData(self.data_buffer.spectogram[:N_SAMPLES],
-                                                self.data_buffer.mfccs[:N_SAMPLES],
-                                                self.data_buffer.energies[:N_SAMPLES],
-                                                self.data_buffer.pitch_hz[:N_SAMPLES],
-                                                self.data_buffer.is_onset[:N_SAMPLES],
-                                                self.data_buffer.is_beat[:N_SAMPLES],
-                                                self.data_buffer.is_note[:N_SAMPLES])
-                client.send(sending_buffer)
-                self.data_buffer.spectogram = self.data_buffer.spectogram[N_SAMPLES:]
-                self.data_buffer.mfccs = self.data_buffer.mfccs[N_SAMPLES:]
-                self.data_buffer.energies = self.data_buffer.energies[N_SAMPLES:]
-                self.data_buffer.pitch_hz = self.data_buffer.pitch_hz[N_SAMPLES:]
-                self.data_buffer.is_onset = self.data_buffer.is_onset[N_SAMPLES:]
-                self.data_buffer.is_beat = self.data_buffer.is_beat[N_SAMPLES:]
-                self.data_buffer.is_note = self.data_buffer.is_note[N_SAMPLES:]
+                client.send(self.data_buffer)
+                self.data_buffer.spectogram = self.data_buffer.spectogram[-1:0]
+                self.data_buffer.energies = self.data_buffer.energies[-1:0]
+                self.data_buffer.freq_curve = self.data_buffer.freq_curve[-1:0]
+                self.data_buffer.energy_curve = self.data_buffer.energy_curve[-1:0]
+                self.data_buffer.scroll_curve = self.data_buffer.scroll_curve[-1:0]
+                self.data_buffer.chroma = self.data_buffer.chroma[-1:0]
+                self.data_buffer.pitch_hz = self.data_buffer.pitch_hz[-1:0]
+                self.data_buffer.is_onset = self.data_buffer.is_onset[-1:0]
+                self.data_buffer.is_beat = self.data_buffer.is_beat[-1:0]
+                self.data_buffer.is_note = self.data_buffer.is_note[-1:0]
             time.sleep(0.01)
         plt.close()
 
 
 class Visualizer:
-    def __init__(self):
+    def __init__(self,
+                 show_freq: bool,
+                 show_freq_gradient: bool,
+                 show_energy: bool,
+                 show_freq_curve: bool,
+                 show_ssm: bool):
+        self.show_freq: bool = show_freq
+        self.show_freq_gradient: bool = show_freq_gradient
+        self.show_energy: bool = show_energy
+        self.show_freq_curve: bool = show_freq_curve
+        self.show_ssm: bool = show_ssm
+
         self.ui_process = Process(target=self._run_ui_process)
         self.is_running: bool = False
-        self.render_start_ts: float = 0
-        self.frame_count: int = 0
-
-        self.n_fft = N_SAMPLES
-        self.n_plot_tf = 120  # num of buckets on x
-        self.n_freqs = self.n_fft // 2 + 1
-        self.f_max_idx = 100  # 1 < f_max_idx < n_freqs
-        self.window = np.hamming(self.n_fft)
-        self.amp = np.zeros((self.n_plot_tf, self.f_max_idx))
         self.fps = 1.0
-        self.fig, self.ax = plt.subplots()
-        self.image = self.ax.imshow(self.amp.T, aspect="auto")
-        self.ax.set_xlabel(f"Time frame")
-        self.ax.set_ylabel(f"Frequency")
-        self.fig.colorbar(self.image)
-        self.vmax, self.vmin = 1.0, 0.0
+
+        self.spec_fig = None
+        self.curve_fig = None
+        self.ssm_fig = None
+
+        if self.show_freq:
+            self.spec_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            self.frequency_spec = Spectogram(ax=ax1, data_attr='spectogram', n_features=200,
+                                             title='Time vs Frequency', x_label="Time", y_label="Frequency")
+            if self.show_freq_gradient:
+                self.freq_gradient_spec = Spectogram(ax=ax2, data_attr='freq_grad', n_features=200,
+                                                     title='Time vs Freq. Gradient', x_label="Time", y_label="Freq. Gradient")
+            if self.show_energy:
+                self.energy_spec = Spectogram(ax=ax3, data_attr='energies', n_features=40,
+                                              title='Time vs Energies', x_label="Time", y_label="Energies")
+        if self.show_freq_curve:
+            self.curve_fig, (curve_ax1) = plt.subplots(1, 1)
+            self.freq_curve = CurveVisualizer(ax=curve_ax1, data_attr='energy_curve', n_features=60,
+                                              title='Frequency vs Power', x_label="Frequency", y_label="Power")
+        if self.show_ssm:
+            self.ssm_fig, ssm_ax = plt.subplots(1, 1)
+            self.ssm = SelfSimilarityMatrix(ssm_ax, 'chroma', 12, 'title', 'xlabel', 'ylabel')
 
     def show(self):
         logging.info(f'[ui] starting ui thread')
@@ -132,28 +135,37 @@ class Visualizer:
         plt.show(block=False)
 
         while self.is_running:
+            render_start_ts = time.time()
+
             msg: VisualizerData = connection.recv()
             self._render(msg)
+
+            time_diff = time.time() - render_start_ts
+            self.fps = 1.0 / (time_diff + 1e-16)
         plt.close()
 
     def _render(self, visualizer_data: VisualizerData):
-        self.render_start_ts = time.time()
-        block = visualizer_data.spectogram
-        if block.shape[0] != self.n_fft:
-            return
+        if self.show_freq:
+            self.frequency_spec.render(visualizer_data)
+        if self.show_freq_gradient:
+            self.freq_gradient_spec.render(visualizer_data)
+        if self.show_energy:
+            self.energy_spec.render(visualizer_data)
+        if self.show_freq_curve:
+            self.freq_curve.render(visualizer_data)
+        if self.show_ssm:
+            self.ssm.render(visualizer_data)
 
-        self.amp[-1] = np.mean(block, axis=0)[0:self.f_max_idx]
-        if self.vmax < np.max(self.amp[-1]):
-            self.vmax = np.max(self.amp[-1])
-        self.image.set_clim(self.vmin, self.vmax)
-        self.image.set_data(self.amp.T[::-1])
+        if self.spec_fig is not None:
+            self.spec_fig.suptitle(f"fps: {self.fps:0.1f} Hz")
+            self.spec_fig.canvas.draw()
 
-        plt.title(f"fps: {self.fps:0.1f} Hz")
-        self.fig.canvas.draw()
+        if self.curve_fig is not None:
+            self.curve_fig.suptitle(f"fps: {self.fps:0.1f} Hz")
+            self.curve_fig.canvas.draw()
+
+        if self.ssm_fig is not None:
+            self.ssm_fig.suptitle(f"fps: {self.fps:0.1f} Hz")
+            self.ssm_fig.canvas.draw()
+
         plt.pause(0.001)
-
-        self.amp[0:-1] = self.amp[1::]
-
-        now = time.time()
-        time_diff = now - self.render_start_ts
-        self.fps = 1.0 / (time_diff + 1e-16)
