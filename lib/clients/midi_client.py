@@ -56,13 +56,13 @@ class MidiClient:
         self.on_sound_stop()
 
     def on_sound_start(self):
-        self.set_intensities(1)
+        self.set_all_intensities(1)
         if self.soundswitch_is_paused:
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # unpause
             self.soundswitch_is_paused = False
 
     def on_sound_stop(self):
-        self.set_intensities(0)
+        self.set_all_intensities(0)
         if not self.soundswitch_is_paused:
             time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
@@ -123,7 +123,7 @@ class MidiClient:
             else:
                 i += 1
 
-    def set_intensities(self, value: int):
+    def set_all_intensities(self, value: int):
         assert 0 <= value <= 1, "intensity value should be in [0, 1]"
         self.midi_out.send_message(mm.get_autoloop_intensity_msg(value))
         self.midi_out.send_message(mm.get_scripted_track_intensity_msg(0))
@@ -131,3 +131,16 @@ class MidiClient:
         self.midi_out.send_message(mm.get_group_2_intensity_msg(value))
         self.midi_out.send_message(mm.get_group_3_intensity_msg(value))
         self.midi_out.send_message(mm.get_group_4_intensity_msg(value))
+
+    def set_group_intensities(self, group: int, value: int):
+        assert 0 <= value <= 1, "intensity value should be in [0, 1]"
+        if group == 1:
+            self.midi_out.send_message(mm.get_group_1_intensity_msg(value))
+        elif group == 2:
+            self.midi_out.send_message(mm.get_group_2_intensity_msg(value))
+        elif group == 3:
+            self.midi_out.send_message(mm.get_group_3_intensity_msg(value))
+        elif group == 4:
+            self.midi_out.send_message(mm.get_group_4_intensity_msg(value))
+        else:
+            raise RuntimeError(f'cannot set intensity for unknown group {group}, only groups 1-4 are supported')
