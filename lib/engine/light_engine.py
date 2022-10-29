@@ -50,7 +50,9 @@ class LightEngine(IMusicAnalyserHandler):
         self.autoloop_controller.reset_state()
 
     async def on_cycle(self, intensity):
-        self.midi_client.set_group_intensities(group=2, value=intensity)
+        pass
+        # todo: uncomment and fix later
+        #self.midi_client.set_group_intensities(group=2, value=intensity)
 
     async def on_onset(self):
         pass

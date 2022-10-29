@@ -5,7 +5,7 @@ from typing import Optional, Tuple, List
 from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection, LightShowType
 from lib.clients.midi_client import MidiClient
 from lib.clients.midi_message import MidiChannel
-from lib.engine.autoloop_actions import COLOR_OVERRIDES, LOW_INTENSITY_AUTOLOOPS, MEDIUM_INTENSITY_AUTOLOOPS, HIGH_INTENSITY_AUTOLOOPS, HIP_HOP_AUTOLOOPS
+from lib.engine.autoloop_actions import COLOR_OVERRIDES, SPECIAL_EFFECTS, LOW_INTENSITY_AUTOLOOPS, MEDIUM_INTENSITY_AUTOLOOPS, HIGH_INTENSITY_AUTOLOOPS, HIP_HOP_AUTOLOOPS
 
 # trigger the auto-loop change 1sec before the event because it takes some time for the change to take effect
 FIXED_CHANGE_OFFSET_SEC = 1.0
@@ -18,6 +18,7 @@ class AutoloopController:
         self.current_section_index: int = -1
         self.last_audio_section: Optional[SpotifyAudioSection] = None
         self.last_autoloop: MidiChannel = MidiChannel.AUTOLOOP_BANK_1A
+        self.last_special_effect: MidiChannel = MidiChannel.SPECIAL_EFFECT_STROBE
         self.last_color_override: MidiChannel = MidiChannel.COLOR_OVERRIDE_1
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
@@ -80,7 +81,9 @@ class AutoloopController:
             last_section_loudness = last_audio_section.section_loudness
             to_last_section_ratio = last_section_loudness / current_section_loudness
             if to_last_section_ratio > 1.25:
-                await self.midi_client.set_special_effect(MidiChannel.SPECIAL_EFFECT_STROBE, duration_sec=10)
+                new_special_effect: MidiChannel = self._select_new_random_channel(SPECIAL_EFFECTS, self.last_special_effect)
+                await self.midi_client.set_special_effect(new_special_effect, duration_sec=30)
+                self.last_special_effect = new_special_effect
                 return self._select_new_random_channel(HIGH_INTENSITY_AUTOLOOPS, self.last_autoloop)
             if to_last_section_ratio < 0.7:
                 return self._select_new_random_channel(LOW_INTENSITY_AUTOLOOPS, self.last_autoloop)

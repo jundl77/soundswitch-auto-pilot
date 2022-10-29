@@ -13,7 +13,12 @@ COLOR_OVERRIDES: List[MidiChannel] = [
     MidiChannel.COLOR_OVERRIDE_8,
     MidiChannel.COLOR_OVERRIDE_9,
 ]
-
+SPECIAL_EFFECTS: List[MidiChannel] = [
+    MidiChannel.SPECIAL_EFFECT_STROBE,
+    MidiChannel.STATIC_LOOK_1,
+    MidiChannel.STATIC_LOOK_2,
+    MidiChannel.STATIC_LOOK_3,
+]
 LOW_INTENSITY_AUTOLOOPS: List[MidiChannel] = [
     MidiChannel.AUTOLOOP_BANK_2A,
     MidiChannel.AUTOLOOP_BANK_2B,

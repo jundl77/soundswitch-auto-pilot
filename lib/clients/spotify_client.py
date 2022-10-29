@@ -14,7 +14,7 @@ from requests.exceptions import ReadTimeout
 from lib.analyser.lightshow_classifier import LightShowType, classify_track
 
 
-SPOTIFY_QUERY_INTERVAL = datetime.timedelta(seconds=10)
+SPOTIFY_QUERY_INTERVAL = datetime.timedelta(seconds=20)
 
 
 class SpotifyDetails:

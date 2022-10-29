@@ -115,16 +115,11 @@ class MusicAnalyser:
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
-        rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
-        intensity_val = np.min([1, (np.mean(rgb_spec[0]) + np.mean(rgb_spec[1]) + np.mean(rgb_spec[2])) / 3 / 50])
-        if self.is_playing:
-            await self.handler.on_cycle(intensity_val)
-
-        new = [np.zeros((4,)), np.zeros((4,)), np.zeros((4,))]
-        new[0] = [intensity_val] * 4
-        new[1] = [intensity_val] * 4
-        new[2] = [intensity_val] * 4
-
+        # todo: uncomment and fix again
+        # rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
+        # intensity_val = np.min([1, (np.mean(rgb_spec[0]) + np.mean(rgb_spec[1]) + np.mean(rgb_spec[2])) / 3 / 50])
+        # if self.is_playing:
+        #     await self.handler.on_cycle(intensity_val)
 
         # rgb_spec, rgb_energy, rgb_scroll = np.zeros((4,)), np.zeros((4,)), np.zeros((4,))
         # if is_onset:
@@ -138,9 +133,10 @@ class MusicAnalyser:
             audio_signal += self.click_sound
             pass
 
-        if self.visualizer_updater is not None:
-            data = VisualizerData(spec.norm, energies, rgb_spec, rgb_energy, rgb_scroll, mfccs, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
-            self.visualizer_updater.update_data(data)
+        # todo: uncomment again
+        # if self.visualizer_updater is not None:
+        #     data = VisualizerData(spec.norm, energies, rgb_spec, rgb_energy, rgb_scroll, mfccs, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
+        #     self.visualizer_updater.update_data(data)
 
         return audio_signal
 
