@@ -101,26 +101,32 @@ class SpotifyTrackAnalysis:
 
 class SpotifyClient:
     def __init__(self):
-        spotify_details = self._read_spotify_details_file()
-        if spotify_details is not None:
-            auth_manager = SpotifyOAuth(client_id=spotify_details.client_id,
-                                        client_secret=spotify_details.client_secret,
-                                        redirect_uri="http://localhost:8877/callback",
-                                        scope="user-read-playback-state")
-            self.spotify = spotipy.Spotify(auth_manager=auth_manager)
-            self.engine = None
-            self.fetching_thread = Thread(target=self._run_query_thread)
-            self.is_running: bool = True
-            self.current_analysis: SpotifyTrackAnalysis = None
-            logging.info(f"[spotify] spotify song analysis is active")
-        else:
-            self.is_running: bool = False
-            logging.info(f"[spotify] spotify song analysis is inactive")
+        self.is_running: bool = False
+        self.spotify: spotipy.Spotify = None
+        self.engine: "Engine" = None
+        self.fetching_thread: Thread = Thread(target=self._run_query_thread)
+        self.current_analysis: SpotifyTrackAnalysis = None
 
     def set_engine(self, engine: "Engine"):
         self.engine = engine
 
     def start(self):
+        spotify_details = self._read_spotify_details_file()
+        if spotify_details is None:
+            logging.info(f"[spotify] spotify song analysis is inactive")
+            return
+
+        auth_manager = SpotifyOAuth(client_id=spotify_details.client_id,
+                                    client_secret=spotify_details.client_secret,
+                                    redirect_uri="http://localhost:8877/callback",
+                                    scope="user-read-playback-state")
+        self.spotify = spotipy.Spotify(auth_manager=auth_manager)
+        self.engine = None
+        self.fetching_thread = Thread(target=self._run_query_thread)
+        self.is_active = True
+        self.current_analysis = None
+        logging.info(f"[spotify] spotify song analysis is active")
+
         self.is_running = True
         self.fetching_thread.start()
 

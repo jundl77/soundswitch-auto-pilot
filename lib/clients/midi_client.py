@@ -35,7 +35,7 @@ class MidiClient:
         self.midi_out = rtmidi.MidiOut()
         self.available_ports = self.midi_out.get_ports()
         self.midi_port_index: int = midi_port_index
-        self.port_name = self.midi_out.get_port_name(self.midi_port_index)
+        self.port_name: str = None
         self.soundswitch_is_paused: bool = True
         self._pending_effects: List[DelayedEffect] = list()
 
@@ -46,6 +46,7 @@ class MidiClient:
 
     def start(self):
         assert 0 <= self.midi_port_index < len(self.available_ports), "midi_port_index does not reference a valid port"
+        self.port_name = self.midi_out.get_port_name(self.midi_port_index)
         logging.info(f"[midi] using midi port: {self.port_name}")
         self.midi_out.open_port(self.midi_port_index)
         assert self.midi_out.is_port_open(), f"Unable to open midi port '{self.port_name}', (index={self.midi_port_index})"

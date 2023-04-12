@@ -69,13 +69,14 @@ class SoundSwitchAutoPilot:
         self.midi_client.list_devices()
 
     async def run(self):
+        logging.info("[main] setting up auto pilot..")
+        self.spotify_client.start()
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.os2l_client.start()
         if self.show_visualizer:
             self.visualizer.show()
             self.visualizer_updater.connect()
-        self.spotify_client.start()
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
