@@ -121,9 +121,7 @@ class SpotifyClient:
                                     redirect_uri="http://localhost:8877/callback",
                                     scope="user-read-playback-state")
         self.spotify = spotipy.Spotify(auth_manager=auth_manager)
-        self.engine = None
         self.fetching_thread = Thread(target=self._run_query_thread)
-        self.is_active = True
         self.current_analysis = None
         logging.info(f"[spotify] spotify song analysis is active")
 
