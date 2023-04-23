@@ -126,11 +126,11 @@ class MusicAnalyser:
         #     rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
 
         if is_beat:
-            #audio_signal += self.click_sound
+            audio_signal += self.click_sound
             pass
 
         if is_note:
-            audio_signal += self.click_sound
+            #audio_signal += self.click_sound
             pass
 
         # todo: uncomment again

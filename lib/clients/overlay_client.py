@@ -52,7 +52,7 @@ class DmxOverlays:
         assert start + length <= 512, f"start + length has to be < 512"
         self.current_index += 1
         self.overlays[self.current_index] = DmxOverlay(start, length)
-        self.update_overlay(self.current_index, dmx_data)
+        self.update_overlay_data(self.current_index, dmx_data)
         return self.current_index
 
     def update_overlay_data(self, index: int, dmx_data: list[int]):
@@ -68,6 +68,12 @@ class DmxOverlays:
     def deactivate_overlay(self, index: int):
         self.overlays[index].set_active(False)
 
+    def toggle_overlay(self, index: int):
+        if self.overlays[index].is_active():
+            self.overlays[index].set_active(False)
+        else:
+            self.overlays[index].set_active(True)
+
     def clear(self):
         self.overlays = [DmxOverlay(0, 0)] * MAX_NUM_DMX_DEVICES
         self.current_index = -1
@@ -78,7 +84,7 @@ class DmxOverlays:
 
     def pack(self) -> bytes:
         msg = self.overlays[0].pack()
-        for i in range(1, 100):
+        for i in range(1, MAX_NUM_DMX_DEVICES):
             msg += self.overlays[i].pack()
         msg += self.dmx_frame.pack()
         return msg
@@ -96,6 +102,10 @@ class OverlayClient:
 
     def update_overlay_data(self, index: int, dmx_data: list[int]):
         self.overlays.update_overlay_data(index, dmx_data)
+        self._send_message()
+
+    def toggle_overlay(self, index: int):
+        self.overlays.toggle_overlay(index)
         self._send_message()
 
     def activate_overlay(self, index: int):

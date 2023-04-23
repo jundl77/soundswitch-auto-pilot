@@ -3,6 +3,7 @@ from typing import Optional
 from lib.engine.autoloop_controller import AutoloopController
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
+from lib.clients.overlay_client import OverlayClient
 from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
@@ -12,14 +13,18 @@ class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
                  midi_client: MidiClient,
                  os2l_client: Os2lClient,
+                 overlay_client: OverlayClient,
                  spotify_client: SpotifyClient,
                  autoloop_controller: AutoloopController):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
+        self.overlay_client: OverlayClient = overlay_client
         self.spotify_client: SpotifyClient = spotify_client
         self.autoloop_controller: AutoloopController = autoloop_controller
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
+
+        self.overlay_client.add_overlay(100, 10, [5] * 10)
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
@@ -61,6 +66,7 @@ class LightEngine(IMusicAnalyserHandler):
         current_second = self.analyser.get_song_current_duration().total_seconds()
         beat_strength = self._calculate_current_beat_strength(current_second)
         await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
+        self.overlay_client.toggle_overlay(0)
         logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
 
     async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:

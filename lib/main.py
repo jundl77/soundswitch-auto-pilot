@@ -25,6 +25,7 @@ class SoundSwitchAutoPilot:
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
+        from lib.clients.overlay_client import OverlayClient
         from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
@@ -41,6 +42,7 @@ class SoundSwitchAutoPilot:
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
         self.spotify_client: SpotifyClient = SpotifyClient()
+        self.overlay_client: OverlayClient = OverlayClient()
 
         # construct visualizer
         if self.show_visualizer:
@@ -56,7 +58,8 @@ class SoundSwitchAutoPilot:
 
         # construct engine
         self.autoloop_controller: AutoloopController = AutoloopController(self.midi_client)
-        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.spotify_client, self.autoloop_controller)
+        self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
+                                                     self.spotify_client, self.autoloop_controller)
         self.spotify_client.set_engine(self.light_engine)
 
         # construct analyser
