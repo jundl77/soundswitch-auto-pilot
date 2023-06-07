@@ -46,6 +46,7 @@ class SpotifyTrackAnalysis:
                  track_name: str,
                  album_name: str,
                  artists: List[str],
+                 analysis_ts: datetime.datetime,
                  progress_ms: int,
                  duration_ms: int,
                  bpm: float,
@@ -73,6 +74,7 @@ class SpotifyTrackAnalysis:
         self.track_name: str = track_name
         self.album_name: str = album_name
         self.artists: List[str] = artists
+        self.analysis_ts: datetime.datetime = analysis_ts
         self.progress_ms: int = progress_ms
         self.duration_ms: int = duration_ms
         self.bpm: float = bpm
@@ -214,6 +216,7 @@ class SpotifyClient:
         return SpotifyTrackAnalysis(track_name=track_name,
                                     album_name=album_name,
                                     artists=artist_names,
+                                    analysis_ts=datetime.datetime.now(),
                                     progress_ms=progress_ms,
                                     duration_ms=duration_ms,
                                     bpm=bpm,
@@ -252,7 +255,9 @@ class SpotifyClient:
             await self.engine.on_spotify_track_changed(track_analysis)
             return
 
-        if abs(track_analysis.progress_ms - current_second * 1000) > 1000:
+        now = datetime.datetime.now()
+        offset_since_analysis_ms = (now - track_analysis.analysis_ts).total_seconds() * 1000
+        if abs(track_analysis.progress_ms + offset_since_analysis_ms - (current_second * 1000)) > 1000:
             await self.engine.on_spotify_track_progress_changed(track_analysis)
             return
 

@@ -96,8 +96,11 @@ class MusicAnalyser:
     def inject_spotify_track_analysis(self, track_analysis: Optional[SpotifyTrackAnalysis]):
         self.spotify_track_analysis = track_analysis
         if self.spotify_track_analysis:
+            now = datetime.datetime.now()
+            offset_since_analysis_ms = (now - track_analysis.analysis_ts).total_seconds() * 1000
+            progress_with_offset_ms = track_analysis.progress_ms + offset_since_analysis_ms
             self.beat_count = track_analysis.current_beat_count
-            self.song_start_time = datetime.datetime.now() - datetime.timedelta(milliseconds=track_analysis.progress_ms)
+            self.song_start_time = datetime.datetime.now() - datetime.timedelta(milliseconds=progress_with_offset_ms)
             logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
