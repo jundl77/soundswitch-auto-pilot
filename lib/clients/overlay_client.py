@@ -3,7 +3,7 @@ from struct import *
 
 OVERLAY_PROTOCOL_ID = 0x7799
 UDP_IP = "127.0.0.1"
-UDP_PORT = 1234
+UDP_PORT = 19001
 
 MAX_NUM_DMX_DEVICES = 20
 DMX_UNIVERSE = 0
@@ -14,9 +14,9 @@ class DmxFrame:
         self.data: list = [0] * 512
 
     def pack(self) -> bytes:
-        msg = pack('b', self.data[0])
+        msg = pack('B', self.data[0])
         for i in range(1, 512):
-            msg += pack('b', self.data[i])
+            msg += pack('B', self.data[i])
         return msg
 
 
@@ -35,7 +35,7 @@ class DmxOverlay:
             self.length = self.original_length
 
     def is_active(self):
-        return False
+        return self.active
 
     def pack(self) -> bytes:
         return pack('HH', self.start, self.length)

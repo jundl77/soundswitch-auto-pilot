@@ -24,7 +24,8 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
 
-        self.overlay_client.add_overlay(100, 10, [5] * 10)
+        self.overlay_client.add_overlay(0, 512, [0] * 512)
+        #self.overlay_client.add_overlay(65, 31, [128] * 31)
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser

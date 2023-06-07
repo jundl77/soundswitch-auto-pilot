@@ -11,3 +11,4 @@ python-osc
 scikit-learn
 librosa
 argcomplete
+zeroconf
