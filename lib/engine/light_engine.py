@@ -24,9 +24,6 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
 
-        self.overlay_client.add_overlay(0, 512, [0] * 512)
-        #self.overlay_client.add_overlay(65, 31, [128] * 31)
-
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
 
@@ -67,7 +64,6 @@ class LightEngine(IMusicAnalyserHandler):
         current_second = self.analyser.get_song_current_duration().total_seconds()
         beat_strength = self._calculate_current_beat_strength(current_second)
         await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
-        self.overlay_client.toggle_overlay(0)
         logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
 
     async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
