@@ -1,5 +1,7 @@
 import socket
 from struct import *
+import logging
+from lib.clients.overlay_definitions import OverlayEffect, OverlayDefinition, OVERLAY_EFFECTS
 
 OVERLAY_PROTOCOL_ID = 0x7799
 UDP_IP = "127.0.0.1"
@@ -47,7 +49,7 @@ class DmxOverlays:
         self.current_index: int = -1
         self.dmx_frame: DmxFrame = DmxFrame()
 
-    def add_overlay(self, start, length, dmx_data: list[int]) -> int:
+    def add_overlay(self, start: int, length: int, dmx_data: list[int]):
         assert self.current_index < MAX_NUM_DMX_DEVICES, "full"
         assert start + length <= 512, f"start + length has to be < 512"
         self.current_index += 1
@@ -74,11 +76,6 @@ class DmxOverlays:
         else:
             self.overlays[index].set_active(True)
 
-    def clear(self):
-        self.overlays = [DmxOverlay(0, 0)] * MAX_NUM_DMX_DEVICES
-        self.current_index = -1
-        self.dmx_frame = DmxFrame()
-
     def get_num_overlays(self):
         return self.current_index + 1
 
@@ -94,31 +91,48 @@ class OverlayClient:
     def __init__(self):
         self.socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.overlays: DmxOverlays = DmxOverlays()
+        self.effects_to_overlay_index: dict[OverlayEffect, int] = {}
 
-    def add_overlay(self, start, length, dmx_data: list[int]) -> int:
-        index = self.overlays.add_overlay(start, length, dmx_data)
-        self._send_message()
-        return index
+    def start(self):
+        logging.info(f'[overlay] starting overlay client, adding all effects')
+        for effect, definition in OVERLAY_EFFECTS.items():
+            self._add_overlay(effect, definition)
+        self.deactivate_all()
 
-    def update_overlay_data(self, index: int, dmx_data: list[int]):
+    def update_overlay_data(self, effect: OverlayEffect, dmx_data: list[int]):
+        assert effect in self.effects_to_overlay_index, f"effect {effect.name} does not exists"
+        index: int = self.effects_to_overlay_index[effect]
         self.overlays.update_overlay_data(index, dmx_data)
         self._send_message()
 
-    def toggle_overlay(self, index: int):
+    def toggle_overlay(self, effect: OverlayEffect):
+        assert effect in self.effects_to_overlay_index, f"effect {effect.name} does not exists"
+        index: int = self.effects_to_overlay_index[effect]
         self.overlays.toggle_overlay(index)
         self._send_message()
 
-    def activate_overlay(self, index: int):
+    def activate_overlay(self, effect: OverlayEffect):
+        assert effect in self.effects_to_overlay_index, f"effect {effect.name} does not exists"
+        index: int = self.effects_to_overlay_index[effect]
         self.overlays.activate_overlay(index)
         self._send_message()
 
-    def deactivate_overlay(self, index: int):
+    def deactivate_overlay(self, effect: OverlayEffect):
+        assert effect in self.effects_to_overlay_index, f"effect {effect.name} does not exists"
+        index: int = self.effects_to_overlay_index[effect]
         self.overlays.deactivate_overlay(index)
         self._send_message()
 
-    def clear(self):
-        self.overlays.clear()
+    def deactivate_all(self):
+        for effect in OVERLAY_EFFECTS.keys():
+            self.deactivate_overlay(effect)
+
+    def _add_overlay(self, effect: OverlayEffect, definition: OverlayDefinition):
+        assert effect not in self.effects_to_overlay_index, f"effect {effect.name} already exists"
+        index = self.overlays.add_overlay(definition.start_offset, len(definition.dmx_data), definition.dmx_data)
+        self.effects_to_overlay_index[effect] = index
         self._send_message()
+        logging.info(f'[overlay] added overlay effect: {effect.name}')
 
     def _send_message(self):
         msg: bytes = self._build_message(DMX_UNIVERSE, self.overlays)

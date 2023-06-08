@@ -51,7 +51,11 @@ def on_service_state_change(zeroconf: Zeroconf,
     local_ip = get_local_ip()
 
     if state_change is ServiceStateChange.Added:
-        service_info: Optional[ServiceInfo] = zeroconf.get_service_info(service_type, name)
+        try:
+            service_info: Optional[ServiceInfo] = zeroconf.get_service_info(service_type, name)
+        except:
+            logging.warning(f'[os2l-discovery] errored out on finding service info for name={name}, service_type={service_type}, state_change={state_change.name}')
+            return
         if service_info:
             ipv4_addresses: List[str] = service_info.parsed_scoped_addresses(IPVersion.V4Only)
             kept_addresses = [address for address in ipv4_addresses if address == local_ip]

@@ -30,7 +30,7 @@ class SoundSwitchAutoPilot:
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
-        from lib.engine.autoloop_controller import AutoloopController
+        from lib.engine.effect_controller import EffectController
 
         self.debug_mode: bool = debug_mode
         self.show_visualizer: bool = show_visualizer
@@ -57,9 +57,9 @@ class SoundSwitchAutoPilot:
             self.visualizer_updater: VisualizerUpdater = None
 
         # construct engine
-        self.autoloop_controller: AutoloopController = AutoloopController(self.midi_client)
+        self.effect_controller: EffectController = EffectController(self.midi_client)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
-                                                     self.spotify_client, self.autoloop_controller)
+                                                     self.spotify_client, self.effect_controller)
         self.spotify_client.set_engine(self.light_engine)
 
         # construct analyser
@@ -77,6 +77,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.os2l_client.start()
+        self.overlay_client.start()
         if self.show_visualizer:
             self.visualizer.show()
             self.visualizer_updater.connect()

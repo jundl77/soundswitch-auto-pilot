@@ -1,6 +1,6 @@
 import logging
 from typing import Optional
-from lib.engine.autoloop_controller import AutoloopController
+from lib.engine.effect_controller import EffectController
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient
@@ -15,12 +15,12 @@ class LightEngine(IMusicAnalyserHandler):
                  os2l_client: Os2lClient,
                  overlay_client: OverlayClient,
                  spotify_client: SpotifyClient,
-                 autoloop_controller: AutoloopController):
+                 effect_controller: EffectController):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
         self.spotify_client: SpotifyClient = spotify_client
-        self.autoloop_controller: AutoloopController = autoloop_controller
+        self.effect_controller: EffectController = effect_controller
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
 
@@ -50,7 +50,7 @@ class LightEngine(IMusicAnalyserHandler):
         logging.info('[engine] sound stop')
         self.midi_client.on_sound_stop()
         self.os2l_client.on_sound_stop()
-        self.autoloop_controller.reset_state()
+        self.effect_controller.reset_state()
 
     async def on_cycle(self, intensity):
         pass
@@ -78,7 +78,7 @@ class LightEngine(IMusicAnalyserHandler):
         if not self.analyser.is_song_playing():
             return
         current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        await self.autoloop_controller.check_autoloops(current_second, self.spotify_track_analysis)
+        await self.effect_controller.check_effects(current_second, self.spotify_track_analysis)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
@@ -94,7 +94,7 @@ class LightEngine(IMusicAnalyserHandler):
     def _handle_spotify_state_change(self, spotify_track_analysis: SpotifyTrackAnalysis):
         self.analyser.inject_spotify_track_analysis(spotify_track_analysis)
         self.spotify_track_analysis = spotify_track_analysis
-        self.autoloop_controller.reset_state()
+        self.effect_controller.reset_state()
         self._log_current_track_info()
 
     def _calculate_current_beat_strength(self, current_second: float) -> float:
