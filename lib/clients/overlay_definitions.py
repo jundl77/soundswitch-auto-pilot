@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class OverlayEffect(Enum):
-    EFFECT_1 = 1
+    UV_LIGHT = 1
 
 
 class OverlayDefinition:
@@ -13,5 +13,5 @@ class OverlayDefinition:
 
 
 OVERLAY_EFFECTS = {
-    OverlayEffect.EFFECT_1: OverlayDefinition(0, [0] * 10)
+    OverlayEffect.UV_LIGHT: OverlayDefinition(65, [0, 0, 0, 0, 0, 0, 0, 0] * 4)
 }

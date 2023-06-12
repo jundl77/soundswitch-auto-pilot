@@ -98,6 +98,7 @@ class OverlayClient:
         for effect, definition in OVERLAY_EFFECTS.items():
             self._add_overlay(effect, definition)
         self.deactivate_all()
+        self.activate_overlay(OverlayEffect.UV_LIGHT)
 
     def update_overlay_data(self, effect: OverlayEffect, dmx_data: list[int]):
         assert effect in self.effects_to_overlay_index, f"effect {effect.name} does not exists"
