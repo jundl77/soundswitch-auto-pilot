@@ -112,6 +112,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.close()
         self.os2l_client.stop()
         self.midi_client.stop()
+        self.overlay_client.stop()
         if self.show_visualizer:
             self.visualizer.stop()
             self.visualizer_updater.stop()

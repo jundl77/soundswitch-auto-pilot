@@ -13,5 +13,5 @@ class OverlayDefinition:
 
 
 OVERLAY_EFFECTS = {
-    OverlayEffect.UV_LIGHT: OverlayDefinition(65, [0, 0, 0, 0, 0, 0, 0, 0] * 4)
+    OverlayEffect.UV_LIGHT: OverlayDefinition(64, [128] * 32)
 }
