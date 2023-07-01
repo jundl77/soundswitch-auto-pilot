@@ -34,13 +34,17 @@ class EffectController:
             return
 
         if section_index != self.current_section_index:
-            self.current_section_index = section_index
-            logging.info(f'[effect_controller] audio section change detected,'
-                         f' section_start={audio_section.section_start_sec:.2f} sec,'
-                         f' duration={audio_section.section_duration_sec:.2f} sec,'
-                         f' change_offset={(FIXED_CHANGE_OFFSET_SEC * -1.0):.2f} sec')
-            await self._choose_new_effect(track_analysis, audio_section, self.last_audio_section)
-            self.last_audio_section = audio_section
+            await self.change_effect(current_second, track_analysis)
+
+    async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+        section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
+        self.current_section_index = section_index
+        logging.info(f'[effect_controller] audio section change detected,'
+                     f' section_start={audio_section.section_start_sec:.2f} sec,'
+                     f' duration={audio_section.section_duration_sec:.2f} sec,'
+                     f' change_offset={(FIXED_CHANGE_OFFSET_SEC * -1.0):.2f} sec')
+        await self._choose_new_effect(track_analysis, audio_section, self.last_audio_section)
+        self.last_audio_section = audio_section
 
     def reset_state(self):
         self.current_section_index: int = -1

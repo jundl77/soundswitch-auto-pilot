@@ -20,7 +20,8 @@ class SoundSwitchAutoPilot:
                  input_device_index: int = None,
                  output_device_index: int = None,
                  debug_mode: bool = False,
-                 show_visualizer: bool = False):
+                 show_visualizer: bool = False,
+                 disable_os2l: bool = False):
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
@@ -34,6 +35,7 @@ class SoundSwitchAutoPilot:
 
         self.debug_mode: bool = debug_mode
         self.show_visualizer: bool = show_visualizer
+        self.disable_os2l: bool = disable_os2l
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
 
@@ -76,8 +78,11 @@ class SoundSwitchAutoPilot:
         self.spotify_client.start()
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
-        self.os2l_client.start()
         self.overlay_client.start()
+        if self.disable_os2l:
+            logging.info("[main] OS2L is disabled")
+        else:
+            self.os2l_client.start()
         if self.show_visualizer:
             self.visualizer.show()
             self.visualizer_updater.connect()
@@ -153,7 +158,8 @@ async def run_cmd(args: argparse.Namespace):
                                       input_device_index=input_device_index,
                                       output_device_index=output_device_index,
                                       debug_mode=debug_mode,
-                                      show_visualizer=args.visualizer)
+                                      show_visualizer=args.visualizer,
+                                      disable_os2l=args.no_os2l)
 
     await global_app.run()
 
@@ -186,6 +192,7 @@ async def main():
     subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
     subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
+    subparser.add_argument('--no-os2l', help='Disable OS2L (connection to SoundSwitch). This can be useful for debugging.', required=False, action='store_true')
     subparser.set_defaults(func=run_cmd)
 
     argcomplete.autocomplete(parser)

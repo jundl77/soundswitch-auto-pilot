@@ -5,6 +5,7 @@ import numpy as np
 from typing import Optional
 from scipy.ndimage.filters import gaussian_filter1d
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
+from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.analyser.exp_filter import ExpFilter
 from lib.clients.spotify_client import SpotifyTrackAnalysis
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
@@ -21,6 +22,7 @@ class MusicAnalyser:
         self.buffer_size: int = buffer_size
         self.handler: IMusicAnalyserHandler = handler
         self.visualizer_updater: VisualizerUpdater = visualizer_updater
+        self.yamnet_change_detector: YamnetChangeDetector = YamnetChangeDetector(self.sample_rate, self.buffer_size)
 
         # constants
         self.win_s: int = self.buffer_size * 4  # fft size
@@ -122,11 +124,14 @@ class MusicAnalyser:
         # rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
         # intensity_val = np.min([1, (np.mean(rgb_spec[0]) + np.mean(rgb_spec[1]) + np.mean(rgb_spec[2])) / 3 / 50])
         # if self.is_playing:
-        #     await self.handler.on_cycle(intensity_val)
+        #     await self.handler.on_cyjkl cle(intensity_val)
 
         # rgb_spec, rgb_energy, rgb_scroll = np.zeros((4,)), np.zeros((4,)), np.zeros((4,))
         # if is_onset:
         #     rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
+
+        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration(), self.spotify_track_analysis):
+            await self.handler.on_section_change()
 
         if is_beat:
             audio_signal += self.click_sound

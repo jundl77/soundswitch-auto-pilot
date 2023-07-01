@@ -6,6 +6,9 @@ aubio
 numpy
 pyaudio
 matplotlib
+pandas
+tensorflow
+tensorflow-hub
 scipy
 python-osc
 scikit-learn

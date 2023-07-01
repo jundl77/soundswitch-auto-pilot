@@ -66,6 +66,12 @@ class LightEngine(IMusicAnalyserHandler):
         await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
         logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
 
+    async def on_section_change(self) -> None:
+        logging.info(f"[engine] audio section change detected")
+        current_second = float(self.analyser.get_song_current_duration().total_seconds())
+        if self.spotify_track_analysis is not None:
+            await self.effect_controller.change_effect(current_second, self.spotify_track_analysis)
+
     async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
         logging.info(f"[engine] spotify track change detected")
         self._handle_spotify_state_change(spotify_track_analysis)
