@@ -9,7 +9,9 @@ from scipy import stats
 from scipy.spatial import distance
 
 
+print('loading model..')
 model = hub.load('https://tfhub.dev/google/yamnet/1')
+print('loaded model successfully')
 
 sample_rate = 44100  # Sample rate of the audio
 block_size = 256 * 8 # Block size for audio processing
@@ -19,7 +21,7 @@ p = pyaudio.PyAudio()
 # Start the audio stream from the microphone
 stream = p.open(format=pyaudio.paFloat32,
                 channels=1,
-                input_device_index=4,
+                input_device_index=3,
                 rate=sample_rate,
                 input=True,
                 frames_per_buffer=block_size)
@@ -28,7 +30,7 @@ stream = p.open(format=pyaudio.paFloat32,
 stream.start_stream()
 stream_out = p.open(format=pyaudio.paFloat32,
                     channels=1,
-                    output_device_index=12,
+                    output_device_index=1,
                     rate=sample_rate,
                     output=True,
                     frames_per_buffer=block_size)

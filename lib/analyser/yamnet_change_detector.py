@@ -73,11 +73,13 @@ class ChangeDetectionTracker:
         if self.outlier_count > self.min_outliers_required:
             self.outlier_count = 0
             if not in_cooldown:
-                self.cooldown_start = time.time()
                 return True
             else:
                 logging.info(f"[yamnet] change detected, but in cooldown, ignoring")
         return False
+
+    def start_cooldown(self):
+        self.cooldown_start = time.time()
 
 
 class YamnetChangeDetector:
@@ -152,6 +154,7 @@ class YamnetChangeDetector:
             self.change_tracker.track_similarity(best_similarity, self.rolling_window_similarities)
             if self.change_tracker.is_change() and self.is_in_spotify_range(current_song_duration, track_analysis):
                 logging.info('[yamnet] meaningful change detected')
+                self.change_tracker.start_cooldown()
                 result = True
 
         # delete old data in rolling windows

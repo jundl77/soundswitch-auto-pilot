@@ -33,8 +33,9 @@ class EffectController:
             self.reset_state()
             return
 
-        if section_index != self.current_section_index:
-            await self.change_effect(current_second, track_analysis)
+        # TODO: fix
+        # if section_index != self.current_section_index:
+        #     await self.change_effect(current_second, track_analysis)
 
     async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
         section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
