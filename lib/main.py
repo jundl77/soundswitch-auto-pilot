@@ -79,6 +79,7 @@ class SoundSwitchAutoPilot:
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.overlay_client.start()
+        self.music_analyser.start()
         if self.disable_os2l:
             logging.info("[main] OS2L is disabled")
         else:

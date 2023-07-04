@@ -66,6 +66,9 @@ class MusicAnalyser:
         self.last_beat_detected: datetime.datetime = datetime.datetime.now()
         self.last_note_detected: datetime.datetime = datetime.datetime.now()
 
+    def start(self):
+        self.yamnet_change_detector.start()
+
     def get_start_of_song(self) -> Optional[datetime.datetime]:
         if self.is_playing:
             return self.song_start_time

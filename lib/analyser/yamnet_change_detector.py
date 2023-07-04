@@ -98,11 +98,7 @@ class YamnetChangeDetector:
         self.change_tracker: ChangeDetectionTracker = ChangeDetectionTracker(self.min_outliers_required,
                                                                              self.outlier_tracking_time_window_sec,
                                                                              self.similarity_tracking_time_window_sec)
-
-        logging.info('[yamnet] loading yamnet model..')
-        self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
-        logging.info('[yamnet] loaded yamnet model successfully')
-
+        self.yamnet_model = None
         self.num_blocks_per_sec = round(self.sample_rate / self.agg_buffer_size)
         self.num_blocks_per_100ms = min(1, int(self.num_blocks_per_sec / 10))
         self.elements_per_sec = self.agg_buffer_size * 2 * self.num_blocks_per_sec
@@ -111,6 +107,11 @@ class YamnetChangeDetector:
         self.rolling_window_audio: list = list()
         self.rolling_window_embeddings: list = list()
         self.rolling_window_similarities: deque = deque(maxlen=100)
+
+    def start(self):
+        logging.info('[yamnet] loading yamnet model..')
+        self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+        logging.info('[yamnet] loaded yamnet model successfully')
 
     def detect_change(self, audio_signal: np.ndarray,
                       current_song_duration: datetime.timedelta,
