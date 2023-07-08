@@ -69,10 +69,9 @@ class ChangeDetectionTracker:
             self.outlier_count += 1
 
     def is_change(self) -> bool:
-        in_cooldown: bool = time.time() - self.cooldown_start < self.cooldown_time_window_sec
         if self.outlier_count > self.min_outliers_required:
             self.outlier_count = 0
-            if not in_cooldown:
+            if not self.is_cooldown_active():
                 return True
             else:
                 logging.info(f"[yamnet] change detected, but in cooldown, ignoring")
@@ -80,6 +79,9 @@ class ChangeDetectionTracker:
 
     def start_cooldown(self):
         self.cooldown_start = time.time()
+
+    def is_cooldown_active(self) -> bool:
+        return time.time() - self.cooldown_start < self.cooldown_time_window_sec
 
 
 class YamnetChangeDetector:
@@ -116,6 +118,8 @@ class YamnetChangeDetector:
         logging.info('[yamnet] loaded yamnet model successfully')
 
     def reset(self):
+        if self.change_tracker.is_cooldown_active():
+            return
         logging.info('[yamnet] resetting state, starting cooldown')
         self.change_tracker.start_cooldown()
 
