@@ -215,15 +215,22 @@ class MusicAnalyser:
         # if there was sound, and then we had no sound for 0.3 seconds, set state to is not playing
         if now - self.silence_period_start > datetime.timedelta(seconds=0.3):
             if self.is_playing:
-                self.handler.on_sound_stop()
-            self._reset_state()  # sets is_playing to False
+                self._on_sound_stop()
         else:
             self.song_current_time = now
 
         # if there was no sound, and then we had sound for 0.3 seconds, set state to is playing
         if not self.is_playing and now - self.song_start_time > datetime.timedelta(seconds=0.3):
-            self.handler.on_sound_start()
-            self.is_playing = True
+            self._on_sound_start()
+
+    def _on_sound_start(self):
+        self.is_playing = True
+        self.yamnet_change_detector.reset()
+        self.handler.on_sound_start()
+
+    def _on_sound_stop(self):
+        self._reset_state()  # sets is_playing to False
+        self.handler.on_sound_stop()
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:
         if self.is_playing:
