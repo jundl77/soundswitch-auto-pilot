@@ -224,8 +224,8 @@ class MusicAnalyser:
             self._on_sound_start()
 
     def _on_sound_start(self):
-        self.is_playing = True
-        self.yamnet_change_detector.reset()
+        self._reset_state()     # sets is_playing to False
+        self.is_playing = True  # now set it back to True
         self.handler.on_sound_start()
 
     def _on_sound_stop(self):
