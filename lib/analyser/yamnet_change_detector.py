@@ -6,8 +6,6 @@ import tensorflow as tf
 import tensorflow_hub as hub
 from typing import Optional
 from collections import deque
-from scipy import stats
-from scipy.spatial import distance
 from lib.clients.spotify_client import SpotifyTrackAnalysis
 
 FIXED_CHANGE_OFFSET_SEC = 1
@@ -34,7 +32,6 @@ def detect_outliers_mad(full_data: deque, test_data, threshold=2.5) -> list:
 
 
 def detect_outliers(full_data: deque, test_data):
-    #return detect_outliers_mean_std(full_data, [test_data], std_threshold=2)
     return detect_outliers_mad(full_data, test_data, threshold=2.5)
 
 
@@ -154,7 +151,6 @@ class YamnetChangeDetector:
             similarities: list[float] = []
             while index <= embedding_lookback_index:
                 previous_embedding = self.rolling_window_embeddings[-1 * (index + 1)]
-                #similarity = distance.minkowski(embedding.numpy(), previous_embedding.numpy(), 2)
                 similarity = abs(float(tf.keras.losses.cosine_similarity(previous_embedding, embedding)))
                 similarities.append(abs(float(similarity)))
                 index += self.num_blocks_per_100ms
