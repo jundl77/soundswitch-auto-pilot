@@ -162,8 +162,7 @@ class YamnetChangeDetector:
             best_similarity: float = min(similarities)
             self.rolling_window_similarities.append(best_similarity)
             self.change_tracker.track_similarity(best_similarity, self.rolling_window_similarities)
-            if self.change_tracker.is_change() and self._is_in_spotify_range(current_song_duration, track_analysis):
-                logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio')
+            if self._is_change(current_song_duration, track_analysis):
                 self.change_tracker.start_cooldown()
                 result = True
 
@@ -175,6 +174,19 @@ class YamnetChangeDetector:
             del self.rolling_window_embeddings[:embedding_lookback_index * -1]
 
         return result
+
+    def _is_change(self,
+                   current_song_duration: datetime.timedelta,
+                   track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
+        if not self.change_tracker.is_change():
+            return False
+
+        if not self._is_in_spotify_range(current_song_duration, track_analysis):
+            logging.info(f"[yamnet] change detected, but not in spotify range, ignoring")
+            return False
+
+        logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio')
+        return True
 
     def _is_in_spotify_range(self,
                              current_second: datetime.timedelta,
