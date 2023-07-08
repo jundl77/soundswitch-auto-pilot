@@ -98,7 +98,9 @@ class OverlayClient:
         logging.info(f'[overlay] starting overlay client, adding all effects')
         for effect, definition in OVERLAY_EFFECTS.items():
             self._add_overlay(effect, definition)
-        self.activate_overlay(OverlayEffect.UV_LIGHT)
+
+        # uncomment for permanent UV effect
+        # self.activate_overlay(OverlayEffect.UV_LIGHT)
 
     def stop(self):
         logging.info(f'[overlay] clearing all overlays')
