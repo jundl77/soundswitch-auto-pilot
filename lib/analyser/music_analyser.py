@@ -223,13 +223,13 @@ class MusicAnalyser:
             self._on_sound_start()
 
     def _on_sound_start(self):
-        self.is_playing = True
+        self.is_playing  = True
         self.yamnet_change_detector.reset()
         self.handler.on_sound_start()
 
     def _on_sound_stop(self):
         is_playing = self.is_playing
-        self._reset_state()  # this sets is playing to False, so we save the state before
+        self._reset_state()  # this sets self.is_playing to False, so we save the state before
         if is_playing:
             self.handler.on_sound_stop()
 

@@ -161,7 +161,7 @@ class YamnetChangeDetector:
             self.rolling_window_similarities.append(best_similarity)
             self.change_tracker.track_similarity(best_similarity, self.rolling_window_similarities)
             if self.change_tracker.is_change() and self._is_in_spotify_range(current_song_duration, track_analysis):
-                logging.info('[yamnet] meaningful change detected')
+                logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio')
                 self.change_tracker.start_cooldown()
                 result = True
 
