@@ -122,14 +122,15 @@ class YamnetChangeDetector:
             logging.info('[yamnet] resetting state, starting cooldown')
         self.change_tracker.start_cooldown()
 
-    def detect_change(self, audio_signal: np.ndarray,
+    def detect_change(self,
+                      audio_signal: np.ndarray,
                       current_song_duration: datetime.timedelta,
                       track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
         result = False
 
         # audio signals come in at a smaller size than we need here, so we aggregate
         # them until we have the size we want
-        is_buffer_full, agg_buffer = self.build_agg_buffer(audio_signal)
+        is_buffer_full, agg_buffer = self._build_agg_buffer(audio_signal)
         if not is_buffer_full:
             return False
 
@@ -159,7 +160,7 @@ class YamnetChangeDetector:
             best_similarity: float = min(similarities)
             self.rolling_window_similarities.append(best_similarity)
             self.change_tracker.track_similarity(best_similarity, self.rolling_window_similarities)
-            if self.change_tracker.is_change() and self.is_in_spotify_range(current_song_duration, track_analysis):
+            if self.change_tracker.is_change() and self._is_in_spotify_range(current_song_duration, track_analysis):
                 logging.info('[yamnet] meaningful change detected')
                 self.change_tracker.start_cooldown()
                 result = True
@@ -173,9 +174,9 @@ class YamnetChangeDetector:
 
         return result
 
-    def is_in_spotify_range(self,
-                            current_second: datetime.timedelta,
-                            track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
+    def _is_in_spotify_range(self,
+                             current_second: datetime.timedelta,
+                             track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
         if not track_analysis:
             return True
 
@@ -188,7 +189,7 @@ class YamnetChangeDetector:
                 return True
         return False
 
-    def build_agg_buffer(self, audio_signal: np.ndarray) -> tuple[bool, np.ndarray]:
+    def _build_agg_buffer(self, audio_signal: np.ndarray) -> tuple[bool, np.ndarray]:
         assert len(audio_signal) == self.buffer_size
         # if the aggregated buffer is not full yet, add to it, otherwise return the built buffer
         if len(self.agg_buffer) != self.agg_buffer_size:
