@@ -52,6 +52,7 @@ class MusicAnalyser:
         self.mel_smoothing = ExpFilter(np.tile(1e-1, self.mfcc_filters), alpha_decay=0.5, alpha_rise=0.99)
 
         # tracking state
+        self.yamnet_change_detector.reset()
         self.is_playing: bool = False
         self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
         self.song_start_time: datetime.datetime = datetime.datetime.now()

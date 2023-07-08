@@ -115,6 +115,10 @@ class YamnetChangeDetector:
         self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
         logging.info('[yamnet] loaded yamnet model successfully')
 
+    def reset(self):
+        logging.info('[yamnet] resetting state, starting cooldown')
+        self.change_tracker.start_cooldown()
+
     def detect_change(self, audio_signal: np.ndarray,
                       current_song_duration: datetime.timedelta,
                       track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
