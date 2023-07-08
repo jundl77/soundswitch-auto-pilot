@@ -22,10 +22,12 @@ def detect_outliers_mean_std(full_data, test_data, std_threshold=3):
     return outliers
 
 
-def detect_outliers_mad(full_data: deque, test_data, threshold=2.5):
+def detect_outliers_mad(full_data: deque, test_data, threshold=2.5) -> list:
     median = np.median(full_data)
     deviations = np.abs(full_data - median)
     mad = np.median(deviations)
+    if mad == 0:
+        return []
     modified_z_scores = 0.6745 * (test_data - median) / mad
     outliers = np.where(np.abs(modified_z_scores) > threshold)[0]
     return outliers
