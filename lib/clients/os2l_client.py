@@ -120,7 +120,7 @@ class Os2lClient:
         while len(global_services) == 0:
             if service_discovery_error != '':
                 break
-            if datetime.datetime.now() - search_start > datetime.timedelta(seconds=5):
-                service_discovery_error = 'unable to find soundswitch service after 5sec'
+            if datetime.datetime.now() - search_start > datetime.timedelta(seconds=10):
+                service_discovery_error = 'unable to find soundswitch service after 10sec'
             time.sleep(0.1)
         zeroconf.close()
