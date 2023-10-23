@@ -107,10 +107,11 @@ class MidiClient:
         now = datetime.datetime.now()
         for effect in self._pending_effects:
             if not effect.is_done and now - effect.start_ts > effect.duration:
-                logging.info(f'[midi] activated delayed effect: {effect}')
                 if effect.action == EffectAction.ACTIVATE:
+                    logging.info(f'[midi] activating delayed effect: {effect}')
                     self.midi_out.send_message(mm.get_midi_msg_on(effect.effect))
                 elif effect.action == EffectAction.DEACTIVATE:
+                    logging.info(f'[midi] deactivating effect: {effect}')
                     self.midi_out.send_message(mm.get_midi_msg_off(effect.effect))
                 else:
                     raise RuntimeError(f"unknown EffectAction: {effect.action}")

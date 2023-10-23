@@ -4,7 +4,7 @@ import logging
 from lib.clients.overlay_definitions import OverlayEffect, OverlayDefinition, OVERLAY_EFFECTS
 
 OVERLAY_PROTOCOL_ID = 0x7799
-UDP_IP = "127.0.0.1"
+UDP_IP = "192.168.178.245"
 UDP_PORT = 19001
 
 MAX_NUM_DMX_DEVICES = 100

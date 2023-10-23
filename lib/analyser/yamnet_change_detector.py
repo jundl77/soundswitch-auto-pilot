@@ -5,10 +5,15 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
 from typing import Optional
+from enum import Enum
 from collections import deque
 from lib.clients.spotify_client import SpotifyTrackAnalysis
 
-FIXED_CHANGE_OFFSET_SEC = 1
+
+class ChangeType(Enum):
+    WEAK_CHANGE = 1
+    STRONG_CHANGE = 2
+    NO_CHANGE = 4
 
 
 def detect_outliers_mean_std(full_data, test_data, std_threshold=3):
@@ -51,6 +56,7 @@ class ChangeDetectionTracker:
         self.outlier_count = 0
         self.outlier_tracking_start: time.time = time.time()
         self.cooldown_start: time.time = time.time()
+        self.previous_changes_ts: deque = deque(maxlen=3)
 
     def track_similarity(self, similarity: float, all_similarities: deque):
         now = time.time()
@@ -67,13 +73,27 @@ class ChangeDetectionTracker:
         if len(outliers) > 0:
             self.outlier_count += 1
 
-    def is_change(self) -> bool:
+    def is_change(self) -> ChangeType:
         if self.outlier_count > self.min_outliers_required:
             self.outlier_count = 0
-            if not self.is_cooldown_active():
-                return True
-            else:
+            self.previous_changes_ts.append(time.time())
+            if self.is_cooldown_active():
                 logging.info(f"[yamnet] change detected, but in cooldown, ignoring")
+                return ChangeType.NO_CHANGE
+            if self.is_high_likelihood_change():
+                return ChangeType.STRONG_CHANGE
+            else:
+                return ChangeType.WEAK_CHANGE
+        return ChangeType.NO_CHANGE
+
+    def is_high_likelihood_change(self) -> bool:
+        if len(self.previous_changes_ts) < 3:
+            return False
+        # if the 3rd last change is less than 5sec ago, then we had 3 hits since then,
+        # then this must be a significant change
+        if time.time() - self.previous_changes_ts[0] < 3:
+            self.previous_changes_ts.clear()
+            return True
         return False
 
     def start_cooldown(self):
@@ -91,7 +111,7 @@ class YamnetChangeDetector:
         self.agg_buffer_size_multiplier: int = 16
         self.embedding_lookback_sec: int = 2               # cannot be more than 4, rolling window stores 5 sec of data
         self.audio_lookback_sec: int = 1                   # cannot be more than 4, rolling window stores 5 sec of data
-        self.min_outliers_required: int = 5
+        self.min_outliers_required: int = 4
         self.outlier_tracking_time_window_sec: int = 1
         self.similarity_tracking_time_window_sec: int = 3
 
@@ -174,10 +194,16 @@ class YamnetChangeDetector:
     def _is_change(self,
                    current_song_duration: datetime.timedelta,
                    track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
-        if not self.change_tracker.is_change():
+        change_type: ChangeType = self.change_tracker.is_change()
+        if change_type == ChangeType.NO_CHANGE:
             return False
 
-        if not self._is_in_spotify_range(current_song_duration, track_analysis):
+        if change_type == ChangeType.STRONG_CHANGE:
+            logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio (high-likelihood)')
+            return True
+
+        in_spotify_range: bool = self._is_in_spotify_range(current_song_duration, track_analysis)
+        if change_type == ChangeType.WEAK_CHANGE and not in_spotify_range:
             logging.info(f"[yamnet] change detected, but not in spotify range, ignoring")
             return False
 
@@ -191,11 +217,11 @@ class YamnetChangeDetector:
             return True
 
         for audio_section in track_analysis.audio_sections:
-            section_start_sec = audio_section.section_start_sec - FIXED_CHANGE_OFFSET_SEC
+            section_start_sec = audio_section.section_start_sec
             section_end_sec = section_start_sec + audio_section.section_duration_sec
-            if abs(section_start_sec - current_second.total_seconds()) < 2:
+            if abs(section_start_sec - current_second.total_seconds()) < 5:
                 return True
-            if abs(section_end_sec - current_second.total_seconds()) < 2:
+            if abs(section_end_sec - current_second.total_seconds()) < 5:
                 return True
         return False
 

@@ -3,7 +3,7 @@ from typing import Optional
 from lib.engine.effect_controller import EffectController
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
-from lib.clients.overlay_client import OverlayClient
+from lib.clients.overlay_client import OverlayClient, OverlayEffect
 from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
@@ -54,8 +54,6 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def on_cycle(self, intensity):
         pass
-        # todo: uncomment and fix later
-        #self.midi_client.set_group_intensities(group=2, value=intensity)
 
     async def on_onset(self):
         pass
@@ -83,8 +81,6 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        await self.effect_controller.check_effects(current_second, self.spotify_track_analysis)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
@@ -100,7 +96,8 @@ class LightEngine(IMusicAnalyserHandler):
     def _handle_spotify_state_change(self, spotify_track_analysis: SpotifyTrackAnalysis):
         self.analyser.inject_spotify_track_analysis(spotify_track_analysis)
         self.spotify_track_analysis = spotify_track_analysis
-        self.effect_controller.reset_state()
+        current_second = float(self.analyser.get_song_current_duration().total_seconds())
+        self.effect_controller.update_audio_section(current_second, self.spotify_track_analysis)
         self._log_current_track_info()
 
     def _calculate_current_beat_strength(self, current_second: float) -> float:

@@ -10,7 +10,7 @@ from lib.engine.effect_definitions import EffectSource, OverlayEffect, EffectTyp
 
 # trigger the auto-loop change 1sec before the event because it takes some time for the change to take effect
 FIXED_CHANGE_OFFSET_SEC = 1.0
-APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60
+APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60 * 5
 
 
 class EffectController:
@@ -23,7 +23,7 @@ class EffectController:
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
-    async def check_effects(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+    async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
         if not track_analysis:
             return
 
@@ -33,12 +33,6 @@ class EffectController:
             self.reset_state()
             return
 
-        # TODO: fix
-        # if section_index != self.current_section_index:
-        #     await self.change_effect(current_second, track_analysis)
-
-    async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
-        section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
         self.current_section_index = section_index
         logging.info(f'[effect_controller] audio section change detected,'
                      f' section_start={audio_section.section_start_sec:.2f} sec,'
@@ -54,6 +48,12 @@ class EffectController:
         self.last_special_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE)
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
+
+    def update_audio_section(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+        self.reset_state()
+        section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
+        self.current_section_index: int = section_index
+        self.last_audio_section: Optional[SpotifyAudioSection] = audio_section
 
     async def _choose_new_effect(self,
                                  track_analysis: SpotifyTrackAnalysis,
@@ -87,8 +87,10 @@ class EffectController:
             last_section_loudness = last_audio_section.section_loudness
             to_last_section_ratio = last_section_loudness / current_section_loudness
             if to_last_section_ratio > 1.25:
+                logging.info("[effect_controller] detected high-energy section, selecting high-intensity effect")
                 return self._select_new_random_effect(SPECIAL_EFFECTS, self.last_special_effect)
             if to_last_section_ratio < 0.7:
+                logging.info("[effect_controller] detected slow section, selecting low-intensity effect")
                 return self._select_new_random_effect(LOW_INTENSITY_EFFECTS, self.last_effect)
 
         if section_to_track_ratio < 0.7:
@@ -133,14 +135,24 @@ class EffectController:
     def _find_current_audio_section_index(self,
                                           current_second: float,
                                           spotify_track_analysis: SpotifyTrackAnalysis) -> Tuple[int, Optional[SpotifyAudioSection]]:
-        section_index = 0
-        for audio_section in spotify_track_analysis.audio_sections:
+        for i, audio_section in enumerate(spotify_track_analysis.audio_sections):
             section_start_sec = audio_section.section_start_sec - FIXED_CHANGE_OFFSET_SEC
             section_end_sec = section_start_sec + audio_section.section_duration_sec
+
+            if not (section_start_sec <= current_second < section_end_sec):
+                continue
+
+            time_to_next_section_sec = section_end_sec - current_second
+            time_since_section_start_sec = current_second - section_start_sec
+            next_section_exists: bool = i < len(spotify_track_analysis.audio_sections) - 1
+
+            # we are actually much closer to the next section, e.g. section goes from 8sec to 25sec, and we are at 23sec
+            # i.e. we detected the section change a bit early
+            if next_section_exists and time_to_next_section_sec < time_since_section_start_sec and time_to_next_section_sec < 5:
+                return i + 1, spotify_track_analysis.audio_sections[i + 1]
+
             if section_start_sec <= current_second < section_end_sec:
-                return section_index, audio_section
-            else:
-                section_index += 1
+                return i, audio_section
         return -1, None
 
     def _select_new_random_effect(self, effects: List[Effect], previous_effect: Effect) -> Effect:
