@@ -123,6 +123,7 @@ class LightEngine(IMusicAnalyserHandler):
             logging.info(f"[engine]   first_downbeat_ms:       {self.spotify_track_analysis.first_downbeat_ms}")
             logging.info(f"[engine]   audio_sections_start_ts: {[s.section_start_sec for s in self.spotify_track_analysis.audio_sections]}")
             logging.info(f"[engine]   spotify_bpm:             {self.spotify_track_analysis.bpm}")
+            logging.info(f"[engine]   last_effect:             {self.effect_controller.last_effect}")
         logging.info(f"[engine]   realtime_bpm:            {bpm}")
         logging.info(f"[engine]   current_second:          {current_second}")
 

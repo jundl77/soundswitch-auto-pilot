@@ -99,8 +99,8 @@ class OverlayClient:
         for effect, definition in OVERLAY_EFFECTS.items():
             self._add_overlay(effect, definition)
 
-        # uncomment for permanent UV effect
-        # self.activate_overlay(OverlayEffect.UV_LIGHT)
+        # uncomment for permanent UV / other effects
+        # self.activate_overlay(OverlayEffect.WHITE_LIGHT)
 
     def stop(self):
         logging.info(f'[overlay] clearing all overlays')

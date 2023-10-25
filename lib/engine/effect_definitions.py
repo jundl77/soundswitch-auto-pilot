@@ -26,6 +26,13 @@ class Effect:
         self.midi_channel: MidiChannel = midi_channel
         self.overlay_effect: OverlayEffect = overlay_effect
 
+    def __str__(self):
+        if self.source == EffectSource.MIDI:
+            return f"[midi] type={self.type.name} effect={self.midi_channel.name}"
+        if self.source == EffectSource.OVERLAY:
+            return f"[overlay] type={self.type.name} effect={self.overlay_effect.name}"
+        assert False, "unknown effect"
+
 
 COLOR_OVERRIDES: List[Effect] = [
     Effect(type=EffectType.COLOR_OVERRIDE, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1),
