@@ -138,11 +138,11 @@ class MusicAnalyser:
             await self.handler.on_section_change()
 
         if is_beat:
-            audio_signal += self.click_sound
+            #audio_signal += self.click_sound
             pass
 
         if is_note:
-            #audio_signal += self.click_sound
+            audio_signal += self.click_sound
             pass
 
         # todo: uncomment again
@@ -150,6 +150,7 @@ class MusicAnalyser:
         #     data = VisualizerData(spec.norm, energies, rgb_spec, rgb_energy, rgb_scroll, mfccs, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
         #     self.visualizer_updater.update_data(data)
 
+        await self.handler.on_cycle()
         return audio_signal
 
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
@@ -174,7 +175,7 @@ class MusicAnalyser:
         note = self.notes_o(audio_signal)
         is_note = note[0] > 0 and now - self.last_note_detected > datetime.timedelta(milliseconds=75)
         if is_note:
-            logging.debug(f'[analyser] note {note}, frequency={self._midi_to_hz(note[0])}hz')
+            await self.handler.on_note()
             self.last_note_detected = now
         return is_note, note
 

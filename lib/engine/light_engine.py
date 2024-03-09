@@ -55,23 +55,27 @@ class LightEngine(IMusicAnalyserHandler):
         self.os2l_client.on_sound_stop()
         self.effect_controller.reset_state()
 
-    async def on_cycle(self, intensity):
-        pass
+    async def on_cycle(self):
+        await self.effect_controller.process_effects()
+        self.overlay_client.flush_messages()
 
     async def on_onset(self):
         pass
 
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
-        global beat_c
         current_second = self.analyser.get_song_current_duration().total_seconds()
         beat_strength = self._calculate_current_beat_strength(current_second)
         await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
+        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
+
+    async def on_note(self):
+        global beat_c
         dmx_data = [0] * 24
         beat_c += 3
         beat_c = beat_c % 24
         dmx_data[beat_c] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
-        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
+        logging.info(f'[engine] note detected')
 
     async def on_section_change(self) -> None:
         logging.info(f"[engine] audio section change detected")

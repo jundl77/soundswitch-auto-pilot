@@ -13,7 +13,7 @@ class IMusicAnalyserHandler(ABC):
         pass
 
     @abstractmethod
-    async def on_cycle(self, intensity):
+    async def on_cycle(self):
         pass
 
     @abstractmethod
@@ -22,6 +22,10 @@ class IMusicAnalyserHandler(ABC):
 
     @abstractmethod
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
+        pass
+
+    @abstractmethod
+    async def on_note(self):
         pass
 
     @abstractmethod

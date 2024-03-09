@@ -23,6 +23,9 @@ class EffectController:
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
+    async def process_effects(self):
+        pass
+
     async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
         if not track_analysis:
             return
