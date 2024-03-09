@@ -4,6 +4,7 @@ from enum import Enum
 class OverlayEffect(Enum):
     UV_LIGHT = 1
     WHITE_LIGHT = 2
+    LIGHT_BAR_24 = 3
 
 
 class OverlayDefinition:
@@ -16,5 +17,6 @@ class OverlayDefinition:
 
 OVERLAY_EFFECTS = {
     OverlayEffect.UV_LIGHT: OverlayDefinition(64, [0, 0, 0, 0, 255, 0, 79, 0] * 4),
-    OverlayEffect.WHITE_LIGHT: OverlayDefinition(64, [0, 0, 0, 0, 20, 0, 69, 0] * 4)
+    OverlayEffect.WHITE_LIGHT: OverlayDefinition(64, [0, 0, 0, 0, 20, 0, 69, 0] * 4),
+    OverlayEffect.LIGHT_BAR_24: OverlayDefinition(96, [0] * 24),
 }

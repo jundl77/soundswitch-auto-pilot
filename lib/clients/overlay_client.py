@@ -101,6 +101,7 @@ class OverlayClient:
 
         # uncomment for permanent UV / other effects
         # self.activate_overlay(OverlayEffect.WHITE_LIGHT)
+        self.activate_overlay(OverlayEffect.LIGHT_BAR_24)
 
     def stop(self):
         logging.info(f'[overlay] clearing all overlays')
