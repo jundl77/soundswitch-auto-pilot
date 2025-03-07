@@ -1,7 +1,7 @@
 import time
 import logging
-import socket
 import datetime
+import netifaces
 from typing import List, Optional
 from zeroconf import IPVersion, ServiceBrowser, ServiceStateChange, Zeroconf, ServiceInfo
 from threading import Thread
@@ -27,18 +27,13 @@ global_services: List[Os2lService] = []
 service_discovery_error: str = ''
 
 
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(0)
-    try:
-        # doesn't even have to be reachable
-        s.connect(('8.8.8.8', 1))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
+def get_ip_addresses_for_all_interfaces():
+    ips = []
+    for iface in netifaces.interfaces():
+        iface_data = netifaces.ifaddresses(iface)
+        if netifaces.AF_INET in iface_data:
+            ips.append(netifaces.ifaddresses(iface)[netifaces.AF_INET][0]['addr'])
+    return ips
 
 
 def on_service_state_change(zeroconf: Zeroconf,
@@ -48,7 +43,7 @@ def on_service_state_change(zeroconf: Zeroconf,
     global global_services, service_discovery_error
     logging.info(f'[os2l-discovery] service state changed: [name: {name}, type {service_type}, state change: {state_change}]')
 
-    local_ip = get_local_ip()
+    local_ips = get_ip_addresses_for_all_interfaces()
 
     if state_change is ServiceStateChange.Added:
         try:
@@ -58,12 +53,12 @@ def on_service_state_change(zeroconf: Zeroconf,
             return
         if service_info:
             ipv4_addresses: List[str] = service_info.parsed_scoped_addresses(IPVersion.V4Only)
-            kept_addresses = [address for address in ipv4_addresses if address == local_ip]
+            kept_addresses = [address for address in ipv4_addresses if address in local_ips]
             if len(kept_addresses) == 0:
                 # we time out after 5sec if we don't find anything
                 return
             if len(kept_addresses) != 1:
-                service_discovery_error = f'found more than one os2l service on local ip: {local_ip}, found: {kept_addresses}'
+                service_discovery_error = f'found more than one os2l service on local ips: {local_ips}, found: {kept_addresses}'
                 return
 
             os2l_service = Os2lService(kept_addresses[0], service_info.port, service_info.name, service_info.server)

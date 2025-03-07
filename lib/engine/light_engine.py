@@ -75,7 +75,7 @@ class LightEngine(IMusicAnalyserHandler):
         beat_c = beat_c % 24
         dmx_data[beat_c] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
-        logging.info(f'[engine] note detected')
+        #logging.info(f'[engine] note detected')
 
     async def on_section_change(self) -> None:
         logging.info(f"[engine] audio section change detected")
