@@ -120,7 +120,7 @@ class SpotifyClient:
 
         auth_manager = SpotifyOAuth(client_id=spotify_details.client_id,
                                     client_secret=spotify_details.client_secret,
-                                    redirect_uri="http://localhost:8877/callback",
+                                    redirect_uri="http://127.0.0.1:8877/callback",
                                     scope="user-read-playback-state")
         self.spotify = spotipy.Spotify(auth_manager=auth_manager)
         self.fetching_thread = Thread(target=self._run_query_thread)

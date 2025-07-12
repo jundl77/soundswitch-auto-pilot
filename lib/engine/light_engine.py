@@ -46,6 +46,7 @@ class LightEngine(IMusicAnalyserHandler):
             self.analyser.inject_spotify_track_analysis(self.spotify_track_analysis)
 
         self.midi_client.on_sound_start()
+        self.overlay_client.deactivate_all()
         self.os2l_client.on_sound_start(time_elapsed_ms, beats_to_first_downbeat, first_downbeat_ms, bpm)
         self._log_current_track_info()
 
@@ -54,6 +55,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.midi_client.on_sound_stop()
         self.os2l_client.on_sound_stop()
         self.effect_controller.reset_state()
+        self.overlay_client.deactivate_all()
 
     async def on_cycle(self):
         await self.effect_controller.process_effects()
@@ -75,7 +77,7 @@ class LightEngine(IMusicAnalyserHandler):
         beat_c = beat_c % 24
         dmx_data[beat_c] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
-        #logging.info(f'[engine] note detected')
+        logging.info(f'[engine] note detected')
 
     async def on_section_change(self) -> None:
         logging.info(f"[engine] audio section change detected")
