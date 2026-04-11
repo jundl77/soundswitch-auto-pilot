@@ -103,15 +103,6 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
-def _effect_color(channel: str, effect_type: str) -> str:
-    if effect_type == 'SPECIAL_EFFECT':
-        return '#ff006e'
-    if 'BANK_1' in channel:
-        return '#f4a261'
-    if 'BANK_2' in channel:
-        return '#48cae4'
-    return '#888888'
-
 
 # ---------------------------------------------------------------------------
 # Figure builders
@@ -124,23 +115,23 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
     shapes, annotations = [], []
 
-    for eff in snapshot['effects']:
-        t_start = max(eff['t'], x0)
-        t_end   = min(eff.get('end', now), x1)
+    for entry in snapshot.get('intents', []):
+        t_start = max(entry['t'], x0)
+        t_end   = min(entry.get('end', now), x1)
         if t_end <= t_start:
             continue
-        color = _effect_color(eff['channel'], eff['type'])
+        cfg   = _intent_config(entry['intent'])
+        color = cfg['primary']
         shapes.append(dict(
             type='rect', xref='x', yref='paper',
             x0=t_start, x1=t_end, y0=0.52, y1=0.96,
             fillcolor=color, opacity=0.80, line_width=0,
         ))
         if t_end - t_start > 1.5:
-            label = eff['channel'].split('_')[-1]
             annotations.append(dict(
                 x=(t_start + t_end) / 2, y=0.74, xref='x', yref='paper',
-                text=label, showarrow=False,
-                font=dict(color='rgba(0,0,0,0.85)', size=11, family='monospace'),
+                text=cfg['label'], showarrow=False,
+                font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
 
     # Beat markers — fixed y=0.25, size scales with strength (onset density proxy)

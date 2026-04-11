@@ -20,6 +20,8 @@ class EventBuffer:
         self._beats: deque[dict] = deque(maxlen=3000)
         # Effects: list so we can mutate the last entry to set 'end'
         self._effects: list[dict] = []
+        # Intent history: same structure as effects, used for the timeline
+        self._intents: list[dict] = []
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
 
@@ -60,7 +62,15 @@ class EventBuffer:
 
     def set_intent(self, intent: str) -> None:
         with self._lock:
+            if intent == self._current_intent:
+                return  # no change — don't add a duplicate block
             self._current_intent = intent
+            now = self._now()
+            if self._intents and 'end' not in self._intents[-1]:
+                self._intents[-1]['end'] = now
+            self._intents.append({'t': now, 'intent': intent})
+            cutoff = now - self._window_sec * 2
+            self._intents = [e for e in self._intents if e.get('end', now) >= cutoff]
 
     def set_timing_log(self, log: list[dict]) -> None:
         with self._lock:
@@ -76,6 +86,7 @@ class EventBuffer:
                 'is_playing': self._is_playing,
                 'beats': [b for b in self._beats if b['t'] >= cutoff],
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
+                'intents': [e for e in self._intents if e.get('end', now) >= cutoff],
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
