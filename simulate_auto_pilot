@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""
+simulate_auto_pilot — offline simulation and timing validation tool.
+
+Runs the full MusicAnalyser → LightEngine → DelayedCommandQueue pipeline
+without any hardware (no MIDI device, no audio hardware, no SoundSwitch).
+
+Modes:
+  beep   Synthetic BPM metronome — deterministic timing validation.
+         Every generated click should produce a beat command delayed by
+         exactly `--delay` seconds. Reports pass/fail per command.
+
+  file   Real audio file (MP3/WAV/FLAC) fed through the pipeline at
+         real-time speed. Good for checking that the full stack works
+         with actual music; timing validation still applies (enqueue vs
+         fire times are measured independent of input).
+
+Examples:
+  python simulate_auto_pilot --mode beep --bpm 120 --delay 0.3 --duration 15
+  python simulate_auto_pilot --mode file --audio samples/generate_eric_prydz_192k.mp3 --delay 2.5 --duration 30
+  python simulate_auto_pilot --mode file --audio samples/generate_eric_prydz_192k.mp3 --delay 0.3 --duration 15
+"""
+
+import argparse
+import asyncio
+import logging
+import sys
+import os
+
+# Add project root to path so imports work when called directly
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+logging.basicConfig(
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    level=logging.INFO
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='soundswitch-auto-pilot simulation & timing validator'
+    )
+    parser.add_argument(
+        '--mode', choices=['beep', 'file'], default='beep',
+        help='Audio source mode (default: beep)'
+    )
+    parser.add_argument(
+        '--audio', default='samples/generate_eric_prydz_192k.mp3',
+        help='Path to audio file (used in --mode file)'
+    )
+    parser.add_argument(
+        '--bpm', type=float, default=120.0,
+        help='BPM for synthetic beep mode (default: 120)'
+    )
+    parser.add_argument(
+        '--delay', type=float, default=0.3,
+        help='Lookahead delay in seconds (default: 0.3 for fast simulation; use 2.5 for production)'
+    )
+    parser.add_argument(
+        '--duration', type=float, default=15.0,
+        help='How many seconds to simulate (default: 15)'
+    )
+    parser.add_argument(
+        '--tolerance-ms', type=float, default=50.0,
+        help='Timing pass/fail tolerance in milliseconds (default: 50)'
+    )
+    parser.add_argument(
+        '--verbose', action='store_true',
+        help='Enable debug logging'
+    )
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Build audio client
+    from simulate.fake_audio_client import BeepAudioClient, FileAudioClient
+    SAMPLE_RATE, BUFFER_SIZE = 44100, 256
+
+    if args.mode == 'beep':
+        audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=args.bpm)
+        logging.info(f'[sim] mode=beep  bpm={args.bpm}  delay={args.delay}s  duration={args.duration}s')
+    else:
+        if not os.path.exists(args.audio):
+            print(f'ERROR: audio file not found: {args.audio}')
+            sys.exit(1)
+        audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, path=args.audio)
+        logging.info(f'[sim] mode=file  audio={args.audio}  delay={args.delay}s  duration={args.duration}s')
+
+    # Wire components
+    from simulate.runner import build_simulation, run_simulation, print_timing_report
+    components, command_queue = build_simulation(audio_client, delay_sec=args.delay)
+
+    # Run
+    asyncio.run(run_simulation(components, duration_sec=args.duration))
+
+    # Report
+    tolerance_sec = args.tolerance_ms / 1000.0
+    passed = print_timing_report(command_queue, tolerance_sec=tolerance_sec)
+    sys.exit(0 if passed else 1)
+
+
+if __name__ == '__main__':
+    main()
