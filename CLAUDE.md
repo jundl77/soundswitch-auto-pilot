@@ -180,5 +180,5 @@ pytest                        # unit + integration (~30s)
 - **MusicAnalyser full reset** every 15 min prevents rolling-window memory growth.
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread; the audio/DSP path is async on the main thread — mixing threading models requires care when touching shared state.
-- **BPM-only intent classification is coarse** — BPM alone won't distinguish a calm 130 BPM track from an energetic one. Next improvement: weight by aubio onset density or YAMNet embeddings directly.
+- **BPM-only intent classification is coarse** — BPM alone won't distWe ninguish a calm 130 BPM track from an energetic one. Next improvement: weight by aubio onset density or YAMNet embeddings directly.
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The 10 s cooldown is the main guard.

@@ -115,7 +115,7 @@ class LightEngine(IMusicAnalyserHandler):
             f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  intent={intent.name}'
         )
         if self.event_buffer:
-            self.event_buffer.add_beat(bpm, onset_density / 10.0, bpm_changed)
+            self.event_buffer.add_beat(bpm, onset_density, bpm_changed)
             self.event_buffer.set_intent(intent.value)
         if self._needs_initial_effect:
             self._needs_initial_effect = False

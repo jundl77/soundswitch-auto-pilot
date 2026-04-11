@@ -39,10 +39,13 @@ class EventBuffer:
             return 0.0
         return time.monotonic() - self._start_time
 
-    def add_beat(self, bpm: float, strength: float, change: bool) -> None:
+    def add_beat(self, bpm: float, onset_density: float, change: bool) -> None:
         with self._lock:
             self._beats.append({
-                't': self._now(), 'bpm': bpm, 'strength': strength, 'change': change,
+                't': self._now(), 'bpm': bpm,
+                'onset_density': onset_density,   # onsets/sec (aubio rolling 3s window)
+                'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
+                'change': change,
             })
 
     def add_effect(self, channel: str, effect_type: str) -> None:
@@ -97,9 +100,14 @@ class EventBuffer:
         """Full serializable report for agentic evaluation or JSON export."""
         with self._lock:
             now = self._now()
+
             all_effects = list(self._effects)
             if all_effects and 'end' not in all_effects[-1]:
                 all_effects[-1] = {**all_effects[-1], 'end': now}
+
+            all_intents = list(self._intents)
+            if all_intents and 'end' not in all_intents[-1]:
+                all_intents[-1] = {**all_intents[-1], 'end': now}
 
             tlog = timing_log if timing_log is not None else self._timing_log
             errors_ms = [
@@ -110,14 +118,33 @@ class EventBuffer:
             unique_channels = {e['channel'] for e in all_effects}
             all_beats = list(self._beats)
 
+            # Intent distribution: seconds spent in each intent
+            intent_distribution: dict[str, float] = {}
+            for entry in all_intents:
+                if 'end' not in entry:
+                    continue
+                dur = entry['end'] - entry['t']
+                intent_distribution[entry['intent']] = (
+                    intent_distribution.get(entry['intent'], 0.0) + dur
+                )
+            dominant_intent = (
+                max(intent_distribution, key=intent_distribution.__getitem__)
+                if intent_distribution else None
+            )
+
             return {
                 'duration_sec': now,
                 'beats': all_beats,
                 'effects': all_effects,
+                'intents': all_intents,
                 'timing_log': tlog,
                 'metrics': {
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
+                    'onset_density_mean': (
+                        sum(b['onset_density'] for b in all_beats) / len(all_beats)
+                        if all_beats else 0.0
+                    ),
                     'timing_error_mean_ms': (
                         sum(errors_ms) / len(errors_ms) if errors_ms else 0.0
                     ),
@@ -128,5 +155,12 @@ class EventBuffer:
                         sum(durations) / len(durations) if durations else 0.0
                     ),
                     'unique_channels': sorted(unique_channels),
+                    # Intent classification metrics
+                    'intent_changes_count': len(all_intents),
+                    'unique_intents_count': len(intent_distribution),
+                    'intent_distribution_sec': {
+                        k: round(v, 2) for k, v in sorted(intent_distribution.items())
+                    },
+                    'dominant_intent': dominant_intent,
                 },
             }

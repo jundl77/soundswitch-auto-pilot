@@ -2,31 +2,45 @@
 Agentic evaluator: scores a simulation report against configurable criteria.
 
 Usage (headless / CI):
-  python visualize_auto_pilot file song.mp3 --no-ui --report report.json
+  python auto_pilot simulate file song.mp3 --no-ui --report report.json
   # exit code 0 = PASS, 1 = FAIL
 
 Or in Python:
   from simulate.evaluator import evaluate, print_evaluation
   result = evaluate(report)   # report from EventBuffer.to_report()
   print_evaluation(result)
+
+The report contains:
+  beats[]         — {t, bpm, onset_density, strength, change}
+  intents[]       — {t, intent, end}  (timestamped intent blocks)
+  effects[]       — {t, channel, type, end}
+  metrics         — aggregated stats including intent_distribution_sec
 """
 
 DEFAULT_CRITERIA: dict = {
     'timing_error_mean_ms': {
-        'max': 15.0, 'weight': 0.30,
+        'max': 15.0, 'weight': 0.20,
         'description': 'Mean delay error (ms)',
     },
     'beat_detection_rate': {
-        'min': 10.0, 'weight': 0.30,
+        'min': 10.0, 'weight': 0.20,
         'description': 'Beats detected per minute',
     },
     'unique_effects_count': {
-        'min': 2, 'weight': 0.20,
-        'description': 'Distinct effect channels used',
+        'min': 2, 'weight': 0.10,
+        'description': 'Distinct MIDI channels used',
     },
     'effect_changes_count': {
-        'min': 1, 'weight': 0.20,
+        'min': 1, 'weight': 0.10,
         'description': 'Total effect changes observed',
+    },
+    'intent_changes_count': {
+        'min': 2, 'weight': 0.20,
+        'description': 'Intent transitions detected',
+    },
+    'unique_intents_count': {
+        'min': 2, 'weight': 0.20,
+        'description': 'Distinct intents classified',
     },
 }
 
@@ -51,6 +65,8 @@ def evaluate(report: dict, criteria: dict | None = None) -> dict:
         'beat_detection_rate':  m['beats_detected'] / duration_min,
         'unique_effects_count': float(m['unique_effects_count']),
         'effect_changes_count': float(m['effect_changes_count']),
+        'intent_changes_count': float(m.get('intent_changes_count', 0)),
+        'unique_intents_count': float(m.get('unique_intents_count', 0)),
     }
 
     results: dict = {}
