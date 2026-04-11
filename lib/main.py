@@ -21,7 +21,8 @@ class SoundSwitchAutoPilot:
                  output_device_index: int = None,
                  debug_mode: bool = False,
                  show_visualizer: bool = False,
-                 disable_os2l: bool = False):
+                 disable_os2l: bool = False,
+                 lookahead_delay_sec: float = 0.0):
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
@@ -32,12 +33,16 @@ class SoundSwitchAutoPilot:
         from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
         from lib.engine.effect_controller import EffectController
+        from lib.engine.delayed_command_queue import DelayedCommandQueue
 
         self.debug_mode: bool = debug_mode
         self.show_visualizer: bool = show_visualizer
         self.disable_os2l: bool = disable_os2l
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
+        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(lookahead_delay_sec)
+        if lookahead_delay_sec > 0:
+            logging.info(f'[main] lookahead delay enabled: {lookahead_delay_sec:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
         # construct clients
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
@@ -61,7 +66,8 @@ class SoundSwitchAutoPilot:
         # construct engine
         self.effect_controller: EffectController = EffectController(self.midi_client)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
-                                                     self.spotify_client, self.effect_controller)
+                                                     self.spotify_client, self.effect_controller,
+                                                     self.command_queue)
         self.spotify_client.set_engine(self.light_engine)
 
         # construct analyser
@@ -99,6 +105,7 @@ class SoundSwitchAutoPilot:
             now = datetime.datetime.now()
             audio_signal = self.audio_client.read()
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
+            await self.command_queue.drain()
 
             if self.audio_client.support_output():
                 self.audio_client.play(new_audio_signal)
@@ -155,12 +162,14 @@ async def run_cmd(args: argparse.Namespace):
     midi_port_index: int = int(args.midi_port_index)
     input_device_index = int(args.input_device) if args.input_device is not None else None
     output_device_index = int(args.output_device) if args.output_device is not None else None
+    lookahead_delay_sec = float(args.delay) if args.delay is not None else 0.0
     global_app = SoundSwitchAutoPilot(midi_port_index=midi_port_index,
                                       input_device_index=input_device_index,
                                       output_device_index=output_device_index,
                                       debug_mode=debug_mode,
                                       show_visualizer=args.visualizer,
-                                      disable_os2l=args.no_os2l)
+                                      disable_os2l=args.no_os2l,
+                                      lookahead_delay_sec=lookahead_delay_sec)
 
     await global_app.run()
 
@@ -194,6 +203,7 @@ async def main():
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
     subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
     subparser.add_argument('--no-os2l', help='Disable OS2L (connection to SoundSwitch). This can be useful for debugging.', required=False, action='store_true')
+    subparser.add_argument('--delay', help='Lookahead delay in seconds (must match dmx-enttec-node playback_delay_seconds). Default: 0.0', required=False, default=None)
     subparser.set_defaults(func=run_cmd)
 
     argcomplete.autocomplete(parser)
