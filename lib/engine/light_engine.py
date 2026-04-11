@@ -13,22 +13,52 @@ from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
 
-# BPM thresholds for intent classification.
-# These are arbitrary starting points — tune them with real DJ sets.
-_CALM_MAX_BPM = 90.0
-_GROOVE_MAX_BPM = 120.0
-_ENERGY_MAX_BPM = 145.0
+# ---------------------------------------------------------------------------
+# Intent classifier
+# ---------------------------------------------------------------------------
+# These thresholds are a starting point — tune against real DJ sets.
+# onset_density = onsets/sec over a 3-second rolling window (from aubio).
+#
+# Structure of a typical EDM track and how we detect it:
+#   ATMOSPHERIC — barely any beats or onsets (intro, full breakdown, outro)
+#   BREAKDOWN   — beat present but very sparse onsets (melodic, stripped)
+#   GROOVE      — moderate onsets at mid-tempo (main dance-floor loop)
+#   BUILDUP     — onset density rising; moderately high BPM (pre-drop tension)
+#   DROP        — onset density spikes hard (bass, kick, hat all firing)
+#   PEAK        — sustained very high BPM + high density (post-drop peak)
+
+_ATMOSPHERIC_MAX_BPM    = 75.0
+_BREAKDOWN_MAX_DENSITY  = 1.2   # onsets/sec — sparse = breakdown feel
+_GROOVE_MAX_BPM         = 118.0
+_BUILDUP_MAX_BPM        = 138.0
+_DROP_MIN_DENSITY       = 4.0   # density spike triggers DROP regardless of BPM
+_PEAK_MIN_BPM           = 138.0
 
 
-def _bpm_to_intent(bpm: float) -> LightIntent:
-    if bpm < _CALM_MAX_BPM:
-        return LightIntent.CALM
-    if bpm < _GROOVE_MAX_BPM:
-        return LightIntent.GROOVE
-    if bpm < _ENERGY_MAX_BPM:
-        return LightIntent.ENERGY
-    return LightIntent.PEAK
+def _classify_intent(bpm: float, onset_density: float) -> LightIntent:
+    """Map (BPM, onset_density) → LightIntent.
 
+    Priority order matters: density spike always wins (DROP), then BPM
+    thresholds narrow down the remaining cases.
+    """
+    if bpm < _ATMOSPHERIC_MAX_BPM:
+        return LightIntent.ATMOSPHERIC
+    if onset_density >= _DROP_MIN_DENSITY and bpm >= 100:
+        return LightIntent.DROP
+    if bpm >= _PEAK_MIN_BPM:
+        return LightIntent.PEAK
+    if onset_density < _BREAKDOWN_MAX_DENSITY:
+        return LightIntent.BREAKDOWN
+    if bpm >= _BUILDUP_MAX_BPM:
+        return LightIntent.BUILDUP
+    if bpm >= _GROOVE_MAX_BPM:
+        return LightIntent.BUILDUP
+    return LightIntent.GROOVE
+
+
+# ---------------------------------------------------------------------------
+# LightEngine
+# ---------------------------------------------------------------------------
 
 class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
@@ -78,15 +108,18 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
         current_second = self.analyser.get_song_current_duration().total_seconds()
-        intent = _bpm_to_intent(bpm)
-        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, intent={intent.name}')
+        onset_density = self.analyser.get_onset_density()
+        intent = _classify_intent(bpm, onset_density)
+        logging.info(
+            f'[engine] [{current_second:.2f}s] beat #{beat_number}  '
+            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  intent={intent.name}'
+        )
         if self.event_buffer:
-            self.event_buffer.add_beat(bpm, 0.5, bpm_changed)
+            self.event_buffer.add_beat(bpm, onset_density / 10.0, bpm_changed)
             self.event_buffer.set_intent(intent.value)
         if self._needs_initial_effect:
             self._needs_initial_effect = False
             await self.effect_controller.change_effect(intent)
-        # Capture locals in closure — they must not be read by reference after enqueue
         _change, _pos, _bpm = bpm_changed, beat_number, bpm
         if self.command_queue:
             await self.command_queue.enqueue(
@@ -101,12 +134,13 @@ class LightEngine(IMusicAnalyserHandler):
         self._note_counter = (self._note_counter + 3) % 24
         dmx_data[self._note_counter] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
-        logging.info(f'[engine] note detected')
+        logging.info('[engine] note detected')
 
     async def on_section_change(self) -> None:
-        logging.info(f"[engine] audio section change detected")
+        logging.info('[engine] audio section change detected')
         bpm = self.analyser.get_bpm()
-        intent = _bpm_to_intent(bpm)
+        onset_density = self.analyser.get_onset_density()
+        intent = _classify_intent(bpm, onset_density)
         _intent = intent
         if self.command_queue:
             await self.command_queue.enqueue(
@@ -128,8 +162,12 @@ class LightEngine(IMusicAnalyserHandler):
         if not self.analyser.is_song_playing():
             return
         bpm = int(self.analyser.get_bpm())
+        onset_density = self.analyser.get_onset_density()
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-        logging.info(f"[engine] == current song info ==")
-        logging.info(f"[engine]   realtime_bpm:    {bpm}")
-        logging.info(f"[engine]   current_second:  {current_second}")
-        logging.info(f"[engine]   last_effect:     {self.effect_controller.last_effect}")
+        intent = _classify_intent(float(bpm), onset_density)
+        logging.info(f'[engine] == current state ==')
+        logging.info(f'[engine]   realtime_bpm:    {bpm}')
+        logging.info(f'[engine]   onset_density:   {onset_density:.2f} /s')
+        logging.info(f'[engine]   intent:          {intent.name}')
+        logging.info(f'[engine]   current_second:  {current_second}')
+        logging.info(f'[engine]   last_effect:     {self.effect_controller.last_effect}')

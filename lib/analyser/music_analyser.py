@@ -3,9 +3,12 @@ import logging
 import aubio
 import numpy as np
 from typing import Optional
+from collections import deque
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
+
+_ONSET_DENSITY_WINDOW_SEC = 3.0  # rolling window for onset density calculation
 
 
 class MusicAnalyser:
@@ -58,6 +61,8 @@ class MusicAnalyser:
         self.time_to_last_beat_sec: float = 0
         self.last_beat_detected: datetime.datetime = datetime.datetime.now()
         self.last_note_detected: datetime.datetime = datetime.datetime.now()
+        # rolling window of onset timestamps for onset-density calculation
+        self._onset_times: deque = deque()
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -91,6 +96,14 @@ class MusicAnalyser:
     def is_song_playing(self) -> bool:
         return self.is_playing
 
+    def get_onset_density(self) -> float:
+        """Onsets per second over the last 3 seconds (rolling window)."""
+        now = datetime.datetime.now()
+        cutoff = now - datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC)
+        while self._onset_times and self._onset_times[0] < cutoff:
+            self._onset_times.popleft()
+        return len(self._onset_times) / _ONSET_DENSITY_WINDOW_SEC
+
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
 
@@ -123,6 +136,7 @@ class MusicAnalyser:
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
+            self._onset_times.append(datetime.datetime.now())
             await self.handler.on_onset()
         return is_onset
 

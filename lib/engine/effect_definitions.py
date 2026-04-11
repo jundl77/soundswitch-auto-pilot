@@ -16,22 +16,29 @@ class EffectType(Enum):
 
 
 class LightIntent(Enum):
-    """Semantic intent for the current audio energy level.
+    """Semantic description of the current musical moment in an EDM track.
 
-    Determined from real-time BPM (aubio). This is the single value that
-    drives both MIDI channel selection and the visualizer simulation.
-    Mapping thresholds are intentionally coarse — adjust as needed.
+    Each value maps to a distinct structural "ingredient" of EDM composition.
+    The intent is derived by the classifier in light_engine.py and is the
+    single value that drives both MIDI channel selection and the visualizer.
 
-    BPM thresholds (arbitrary starting point, tune with real sets):
-      CALM  : < 90 BPM
-      GROOVE: 90–119 BPM
-      ENERGY: 120–144 BPM
-      PEAK  : ≥ 145 BPM
+    When moving to direct DMX, replace INTENT_EFFECTS with DMX sequences
+    for each intent — everything above stays unchanged.
+
+    Rough BPM + onset-density classifier (see light_engine._classify_intent):
+      ATMOSPHERIC — very sparse, ambient (intro, outro, full breakdown)
+      BREAKDOWN   — melodic, stripped, emotional (post-drop section)
+      GROOVE      — steady dance-floor mid-energy (main verse/groove loop)
+      BUILDUP     — rising tension pre-drop (onset density climbing)
+      DROP        — maximum impact: bass, kick, full arrangement
+      PEAK        — sustained maximum energy after the drop
     """
-    CALM = 'calm'
-    GROOVE = 'groove'
-    ENERGY = 'energy'
-    PEAK = 'peak'
+    ATMOSPHERIC = 'atmospheric'
+    BREAKDOWN   = 'breakdown'
+    GROOVE      = 'groove'
+    BUILDUP     = 'buildup'
+    DROP        = 'drop'
+    PEAK        = 'peak'
 
 
 class Effect:
@@ -72,28 +79,37 @@ SPECIAL_EFFECTS: List[Effect] = [
     Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.STATIC_LOOK_3),
 ]
 
-# Intent → MIDI channels mapping.
-# Each intent has 3 channels for variety within the same energy level.
-# Replace this dict when moving to direct DMX — everything above stays the same.
+# Intent → MIDI channel pool. Each intent has 3 channels for variety.
+# Swap this dict for DMX sequences when moving off SoundSwitch.
 INTENT_EFFECTS: Dict[LightIntent, List[Effect]] = {
-    LightIntent.CALM: [
+    LightIntent.ATMOSPHERIC: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2A),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2B),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2C),
     ],
-    LightIntent.GROOVE: [
+    LightIntent.BREAKDOWN: [
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2C),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2D),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2E),
-        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2F),
     ],
-    LightIntent.ENERGY: [
+    LightIntent.GROOVE: [
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2F),
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2G),
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2H),
+    ],
+    LightIntent.BUILDUP: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1B),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1C),
     ],
-    LightIntent.PEAK: [
+    LightIntent.DROP: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1D),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1E),
         Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE),
+    ],
+    LightIntent.PEAK: [
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1F),
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1G),
+        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1H),
     ],
 }
