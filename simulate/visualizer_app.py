@@ -82,13 +82,16 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             ))
 
     # Beat markers as thin vertical lines from bottom, height = strength
+    # Beat markers: fixed y=0.25 so they're always visible regardless of strength.
+    # Size scales with Spotify-derived strength when available; minimum ensures
+    # beats always show even without Spotify data (strength == 0).
     beat_x, beat_y, beat_size = [], [], []
     for b in snapshot['beats']:
         if b['t'] < x0:
             continue
         beat_x.append(b['t'])
-        beat_y.append(b['strength'] * 0.22)
-        beat_size.append(max(6, b['strength'] * 28))
+        beat_y.append(0.25)
+        beat_size.append(max(18, b['strength'] * 36))
 
     # "Now" cursor
     shapes.append(dict(
