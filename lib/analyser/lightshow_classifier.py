@@ -1,11 +1,10 @@
-from typing import List
 from enum import Enum
 
 
-LOW_INTENSITY_GENRES: List[str] = ['mellow', 'soft', 'golden', 'trance']
-MEDIUM_INTENSITY_GENRES: List[str] = ['pop']
-HIGH_INTENSITY_GENRES: List[str] = ['dance', 'hard', 'techno', 'house', 'edm', 'electro', 'latin', 'euro', 'reggaeton']
-HIP_HOP_GENRES: List[str] = ['hip hop']
+LOW_INTENSITY_GENRES: list[str] = ['mellow', 'soft', 'golden', 'trance']
+MEDIUM_INTENSITY_GENRES: list[str] = ['pop']
+HIGH_INTENSITY_GENRES: list[str] = ['dance', 'hard', 'techno', 'house', 'edm', 'electro', 'latin', 'euro', 'reggaeton']
+HIP_HOP_GENRES: list[str] = ['hip hop']
 
 
 class LightShowType(Enum):
@@ -15,7 +14,7 @@ class LightShowType(Enum):
     HIP_HOP = 4
 
 
-def classify_track(genres: List[str],
+def classify_track(genres: list[str],
                    bpm: int,
                    energy: float,
                    loudness: float,

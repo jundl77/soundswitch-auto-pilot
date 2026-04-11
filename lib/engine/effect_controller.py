@@ -1,7 +1,6 @@
 import logging
 import random
 import datetime
-from typing import Optional, Tuple, List
 from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection, LightShowType
 from lib.clients.midi_client import MidiClient
 from lib.clients.midi_message import MidiChannel
@@ -17,7 +16,7 @@ class EffectController:
     def __init__(self, midi_client: MidiClient):
         self.midi_client: MidiClient = midi_client
         self.current_section_index: int = -1
-        self.last_audio_section: Optional[SpotifyAudioSection] = None
+        self.last_audio_section: SpotifyAudioSection | None = None
         self.last_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A)
         self.last_special_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE)
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
@@ -26,7 +25,7 @@ class EffectController:
     async def process_effects(self):
         pass
 
-    async def change_effect(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+    async def change_effect(self, current_second: float, track_analysis: SpotifyTrackAnalysis | None):
         if not track_analysis:
             return
 
@@ -46,22 +45,22 @@ class EffectController:
 
     def reset_state(self):
         self.current_section_index: int = -1
-        self.last_audio_section: Optional[SpotifyAudioSection] = None
+        self.last_audio_section: SpotifyAudioSection | None = None
         self.last_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A)
         self.last_special_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE)
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
         self.last_color_override_time: datetime.datetime = datetime.datetime.now()
 
-    def update_audio_section(self, current_second: float, track_analysis: Optional[SpotifyTrackAnalysis]):
+    def update_audio_section(self, current_second: float, track_analysis: SpotifyTrackAnalysis | None):
         self.reset_state()
         section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
         self.current_section_index: int = section_index
-        self.last_audio_section: Optional[SpotifyAudioSection] = audio_section
+        self.last_audio_section: SpotifyAudioSection | None = audio_section
 
     async def _choose_new_effect(self,
                                  track_analysis: SpotifyTrackAnalysis,
                                  current_audio_section: SpotifyAudioSection,
-                                 last_audio_section: Optional[SpotifyAudioSection]):
+                                 last_audio_section: SpotifyAudioSection | None):
         if track_analysis.light_show_type == LightShowType.LOW_INTENSITY:
             new_effect: Effect = self._select_new_random_effect(LOW_INTENSITY_EFFECTS, self.last_effect)
         elif track_analysis.light_show_type == LightShowType.MEDIUM_INTENSITY:
@@ -81,7 +80,7 @@ class EffectController:
     async def _choose_new_effect_high_intensity(self,
                                                 track_analysis: SpotifyTrackAnalysis,
                                                 current_audio_section: SpotifyAudioSection,
-                                                last_audio_section: Optional[SpotifyAudioSection]):
+                                                last_audio_section: SpotifyAudioSection | None):
         track_loudness: float = track_analysis.loudness
         current_section_loudness: float = current_audio_section.section_loudness
         section_to_track_ratio: float = track_loudness / current_section_loudness
@@ -137,7 +136,7 @@ class EffectController:
 
     def _find_current_audio_section_index(self,
                                           current_second: float,
-                                          spotify_track_analysis: SpotifyTrackAnalysis) -> Tuple[int, Optional[SpotifyAudioSection]]:
+                                          spotify_track_analysis: SpotifyTrackAnalysis) -> tuple[int, SpotifyAudioSection | None]:
         for i, audio_section in enumerate(spotify_track_analysis.audio_sections):
             section_start_sec = audio_section.section_start_sec - FIXED_CHANGE_OFFSET_SEC
             section_end_sec = section_start_sec + audio_section.section_duration_sec
@@ -158,7 +157,7 @@ class EffectController:
                 return i, audio_section
         return -1, None
 
-    def _select_new_random_effect(self, effects: List[Effect], previous_effect: Effect) -> Effect:
+    def _select_new_random_effect(self, effects: list[Effect], previous_effect: Effect) -> Effect:
         # make sure we don't select the same channel as last time
         i: int = random.randrange(0, len(effects), 1)
         while effects[i] == previous_effect:
