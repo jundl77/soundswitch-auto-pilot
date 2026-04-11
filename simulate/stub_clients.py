@@ -6,7 +6,6 @@ allowing timing validation after a simulation run.
 
 import time
 import logging
-from typing import List, Optional
 from lib.clients.midi_message import MidiChannel
 from lib.clients.overlay_definitions import OverlayEffect
 
@@ -23,7 +22,7 @@ def _event(label: str, **kwargs) -> dict:
 
 class StubMidiClient:
     def __init__(self):
-        self.events: List[dict] = []
+        self.events: list[dict] = []
         self._pending_effects = []  # kept for interface compat
 
     def list_devices(self): pass
@@ -61,7 +60,7 @@ class StubMidiClient:
 
 class StubOs2lClient:
     def __init__(self):
-        self.events: List[dict] = []
+        self.events: list[dict] = []
 
     def start(self): pass
     def stop(self): pass
@@ -81,7 +80,7 @@ class StubOs2lClient:
 
 class StubOverlayClient:
     def __init__(self):
-        self.events: List[dict] = []
+        self.events: list[dict] = []
         # Mirror the real OverlayClient's effects_to_overlay_index so assertions don't fail
         self.effects_to_overlay_index = {effect: i for i, effect in enumerate(OverlayEffect)}
 

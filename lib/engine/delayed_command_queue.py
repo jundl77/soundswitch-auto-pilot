@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import Callable, Awaitable, List, Tuple
+from typing import Callable, Awaitable
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +27,8 @@ class DelayedCommandQueue:
     def __init__(self, delay_sec: float):
         self._delay_sec = delay_sec
         # (enqueue_time, fire_at, label, factory)
-        self._queue: List[Tuple[float, float, str, CommandFactory]] = []
-        self._timing_log: List[dict] = []
+        self._queue: list[tuple[float, float, str, CommandFactory]] = []
+        self._timing_log: list[dict] = []
 
     @property
     def delay_sec(self) -> float:
@@ -69,5 +69,5 @@ class DelayedCommandQueue:
             })
             await factory()
 
-    def get_timing_log(self) -> List[dict]:
+    def get_timing_log(self) -> list[dict]:
         return list(self._timing_log)

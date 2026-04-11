@@ -17,7 +17,6 @@ Both implement the same interface as PyAudioClient.read() / start_streams() / cl
 import time
 import logging
 import numpy as np
-from typing import List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -42,10 +41,10 @@ class BeepAudioClient:
         self.bpm = bpm
         self._samples_per_beat = sample_rate * 60.0 / bpm
         self._total_samples = 0
-        self._start_time: Optional[float] = None
+        self._start_time: float | None = None
         self._click = self._make_click()
         # (sample_index, wall_clock_time) for each generated click
-        self.click_log: List[dict] = []
+        self.click_log: list[dict] = []
 
     def _make_click(self) -> np.ndarray:
         """10 ms Hann-windowed 1 kHz sine burst — easily detected by Aubio tempo."""
@@ -101,9 +100,9 @@ class FileAudioClient:
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
         self.path = path
-        self._audio: Optional[np.ndarray] = None
+        self._audio: np.ndarray | None = None
         self._pos = 0
-        self._start_time: Optional[float] = None
+        self._start_time: float | None = None
 
     def list_devices(self): pass
     def support_output(self) -> bool: return False

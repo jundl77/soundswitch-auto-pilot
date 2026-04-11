@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.clients.midi_client import MidiClient
@@ -10,9 +9,6 @@ from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 
 
-beat_c = 0
-
-
 class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
                  midi_client: MidiClient,
@@ -20,15 +16,16 @@ class LightEngine(IMusicAnalyserHandler):
                  overlay_client: OverlayClient,
                  spotify_client: SpotifyClient,
                  effect_controller: EffectController,
-                 command_queue: Optional[DelayedCommandQueue] = None):
+                 command_queue: DelayedCommandQueue | None = None):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
         self.spotify_client: SpotifyClient = spotify_client
         self.effect_controller: EffectController = effect_controller
-        self.command_queue: Optional[DelayedCommandQueue] = command_queue
+        self.command_queue: DelayedCommandQueue | None = command_queue
         self.analyser: MusicAnalyser = None
-        self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
+        self.spotify_track_analysis: SpotifyTrackAnalysis | None = None
+        self._note_counter: int = 0
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
@@ -80,11 +77,9 @@ class LightEngine(IMusicAnalyserHandler):
             await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
 
     async def on_note(self):
-        global beat_c
         dmx_data = [0] * 24
-        beat_c += 3
-        beat_c = beat_c % 24
-        dmx_data[beat_c] = 100
+        self._note_counter = (self._note_counter + 3) % 24
+        dmx_data[self._note_counter] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
         logging.info(f'[engine] note detected')
 
