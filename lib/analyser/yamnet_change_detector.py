@@ -4,10 +4,8 @@ import datetime
 import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
-from typing import Optional
 from enum import Enum
 from collections import deque
-from lib.clients.spotify_client import SpotifyTrackAnalysis
 
 
 class ChangeType(Enum):
@@ -143,8 +141,7 @@ class YamnetChangeDetector:
 
     def detect_change(self,
                       audio_signal: np.ndarray,
-                      current_song_duration: datetime.timedelta,
-                      track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
+                      current_song_duration: datetime.timedelta) -> bool:
         result = False
 
         # audio signals come in at a smaller size than we need here, so we aggregate
@@ -178,7 +175,7 @@ class YamnetChangeDetector:
             best_similarity: float = min(similarities)
             self.rolling_window_similarities.append(best_similarity)
             self.change_tracker.track_similarity(best_similarity, self.rolling_window_similarities)
-            if self._is_change(current_song_duration, track_analysis):
+            if self._is_change(current_song_duration):
                 self.change_tracker.start_cooldown()
                 result = True
 
@@ -191,39 +188,16 @@ class YamnetChangeDetector:
 
         return result
 
-    def _is_change(self,
-                   current_song_duration: datetime.timedelta,
-                   track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
+    def _is_change(self, current_song_duration: datetime.timedelta) -> bool:
         change_type: ChangeType = self.change_tracker.is_change()
         if change_type == ChangeType.NO_CHANGE:
             return False
-
         if change_type == ChangeType.STRONG_CHANGE:
             logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio (high-likelihood)')
             return True
-
-        in_spotify_range: bool = self._is_in_spotify_range(current_song_duration, track_analysis)
-        if change_type == ChangeType.WEAK_CHANGE and not in_spotify_range:
-            logging.info(f"[yamnet] change detected, but not in spotify range, ignoring")
-            return False
-
+        # Weak changes are accepted unconditionally now that we have no Spotify sections to gate on.
         logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio')
         return True
-
-    def _is_in_spotify_range(self,
-                             current_second: datetime.timedelta,
-                             track_analysis: Optional[SpotifyTrackAnalysis]) -> bool:
-        if not track_analysis:
-            return True
-
-        for audio_section in track_analysis.audio_sections:
-            section_start_sec = audio_section.section_start_sec
-            section_end_sec = section_start_sec + audio_section.section_duration_sec
-            if abs(section_start_sec - current_second.total_seconds()) < 5:
-                return True
-            if abs(section_end_sec - current_second.total_seconds()) < 5:
-                return True
-        return False
 
     def _build_agg_buffer(self, audio_signal: np.ndarray) -> tuple[bool, np.ndarray]:
         assert len(audio_signal) == self.buffer_size

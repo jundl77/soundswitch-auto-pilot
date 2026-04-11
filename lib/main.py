@@ -31,7 +31,6 @@ class SoundSwitchAutoPilot:
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
         from lib.clients.overlay_client import OverlayClient
-        from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
@@ -54,7 +53,6 @@ class SoundSwitchAutoPilot:
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
-        self.spotify_client: SpotifyClient = SpotifyClient()
         self.overlay_client: OverlayClient = OverlayClient()
 
         # construct visualizer
@@ -76,9 +74,8 @@ class SoundSwitchAutoPilot:
         # construct engine
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
-                                                     self.spotify_client, self.effect_controller,
+                                                     self.effect_controller,
                                                      self.command_queue, event_buffer=self.event_buffer)
-        self.spotify_client.set_engine(self.light_engine)
 
         # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
@@ -91,7 +88,6 @@ class SoundSwitchAutoPilot:
 
     async def run(self):
         logging.info("[main] setting up auto pilot..")
-        self.spotify_client.start()
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.overlay_client.start()
@@ -150,13 +146,11 @@ class SoundSwitchAutoPilot:
         if self.show_visualizer:
             self.visualizer.stop()
             self.visualizer_updater.stop()
-        self.spotify_client.stop()
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
         self.is_running = False
         self.os2l_client.stop()
-        self.spotify_client.stop()
         if self.show_visualizer:
             self.visualizer.stop()
             self.visualizer_updater.stop()

@@ -110,22 +110,3 @@ class StubOverlayClient:
         self.events.append(e)
 
 
-# ---------------------------------------------------------------------------
-# Spotify
-# ---------------------------------------------------------------------------
-
-class StubSpotifyClient:
-    """Returns no track analysis. The pipeline degrades gracefully when Spotify is absent."""
-
-    def __init__(self):
-        self._engine = None
-
-    def start(self): pass
-    def stop(self): pass
-    def set_engine(self, engine): self._engine = engine
-
-    def get_current_track_analysis(self):
-        return None
-
-    async def check_for_track_changes(self, track_analysis, current_second: float):
-        pass

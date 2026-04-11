@@ -21,6 +21,7 @@ class EventBuffer:
         # Effects: list so we can mutate the last entry to set 'end'
         self._effects: list[dict] = []
         self._timing_log: list[dict] = []
+        self._current_intent: str | None = None
 
     def start(self) -> None:
         with self._lock:
@@ -57,6 +58,10 @@ class EventBuffer:
         with self._lock:
             self._is_playing = is_playing
 
+    def set_intent(self, intent: str) -> None:
+        with self._lock:
+            self._current_intent = intent
+
     def set_timing_log(self, log: list[dict]) -> None:
         with self._lock:
             self._timing_log = list(log)
@@ -74,6 +79,7 @@ class EventBuffer:
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
+                'intent': self._current_intent,
             }
 
     def to_report(self, timing_log: list[dict] | None = None) -> dict:

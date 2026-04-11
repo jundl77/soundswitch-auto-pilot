@@ -3,15 +3,31 @@ import logging
 from typing import TYPE_CHECKING
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
+from lib.engine.effect_definitions import LightIntent
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
-from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
+
+# BPM thresholds for intent classification.
+# These are arbitrary starting points — tune them with real DJ sets.
+_CALM_MAX_BPM = 90.0
+_GROOVE_MAX_BPM = 120.0
+_ENERGY_MAX_BPM = 145.0
+
+
+def _bpm_to_intent(bpm: float) -> LightIntent:
+    if bpm < _CALM_MAX_BPM:
+        return LightIntent.CALM
+    if bpm < _GROOVE_MAX_BPM:
+        return LightIntent.GROOVE
+    if bpm < _ENERGY_MAX_BPM:
+        return LightIntent.ENERGY
+    return LightIntent.PEAK
 
 
 class LightEngine(IMusicAnalyserHandler):
@@ -19,19 +35,16 @@ class LightEngine(IMusicAnalyserHandler):
                  midi_client: MidiClient,
                  os2l_client: Os2lClient,
                  overlay_client: OverlayClient,
-                 spotify_client: SpotifyClient,
                  effect_controller: EffectController,
                  command_queue: DelayedCommandQueue | None = None,
                  event_buffer: EventBuffer | None = None):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
-        self.spotify_client: SpotifyClient = spotify_client
         self.effect_controller: EffectController = effect_controller
         self.command_queue: DelayedCommandQueue | None = command_queue
         self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
-        self.spotify_track_analysis: SpotifyTrackAnalysis | None = None
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
 
@@ -40,26 +53,12 @@ class LightEngine(IMusicAnalyserHandler):
 
     def on_sound_start(self):
         logging.info('[engine] sound start')
-        self.spotify_track_analysis = self.spotify_client.get_current_track_analysis()
-
-        first_downbeat_ms = 20000
-        bpm = 120
-        beats_to_first_downbeat = 0
-        time_elapsed_ms = 0
-        if self.spotify_track_analysis:
-            first_downbeat_ms = self.spotify_track_analysis.first_downbeat_ms
-            bpm = self.spotify_track_analysis.bpm
-            beats_to_first_downbeat = self.spotify_track_analysis.beats_to_first_downbeat
-            time_elapsed_ms = self.spotify_track_analysis.progress_ms
-            self.analyser.inject_spotify_track_analysis(self.spotify_track_analysis)
-
         self.midi_client.on_sound_start()
         self.overlay_client.deactivate_all()
-        self.os2l_client.on_sound_start(time_elapsed_ms, beats_to_first_downbeat, first_downbeat_ms, bpm)
+        self.os2l_client.on_sound_start(0, 0, 20000, 120)
         if self.event_buffer:
             self.event_buffer.set_playing(True)
         self._needs_initial_effect = True
-        self._log_current_track_info()
 
     def on_sound_stop(self):
         logging.info('[engine] sound stop')
@@ -79,22 +78,23 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
         current_second = self.analyser.get_song_current_duration().total_seconds()
-        beat_strength = self._calculate_current_beat_strength(current_second)
-        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
+        intent = _bpm_to_intent(bpm)
+        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, intent={intent.name}')
         if self.event_buffer:
-            self.event_buffer.add_beat(bpm, beat_strength, bpm_changed)
+            self.event_buffer.add_beat(bpm, 0.5, bpm_changed)
+            self.event_buffer.set_intent(intent.value)
         if self._needs_initial_effect:
             self._needs_initial_effect = False
-            await self.effect_controller.change_effect(current_second, self.spotify_track_analysis)
+            await self.effect_controller.change_effect(intent)
         # Capture locals in closure — they must not be read by reference after enqueue
-        _change, _pos, _bpm, _strength = bpm_changed, beat_number, bpm, beat_strength
+        _change, _pos, _bpm = bpm_changed, beat_number, bpm
         if self.command_queue:
             await self.command_queue.enqueue(
                 'beat',
-                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm, strength=_strength)
+                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm, strength=0.5)
             )
         else:
-            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
+            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0.5)
 
     async def on_note(self):
         dmx_data = [0] * 24
@@ -105,23 +105,16 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def on_section_change(self) -> None:
         logging.info(f"[engine] audio section change detected")
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        _second, _analysis = current_second, self.spotify_track_analysis
+        bpm = self.analyser.get_bpm()
+        intent = _bpm_to_intent(bpm)
+        _intent = intent
         if self.command_queue:
             await self.command_queue.enqueue(
                 'section_change',
-                lambda: self.effect_controller.change_effect(_second, _analysis)
+                lambda: self.effect_controller.change_effect(_intent)
             )
         else:
-            await self.effect_controller.change_effect(current_second, self.spotify_track_analysis)
-
-    async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
-        logging.info(f"[engine] spotify track change detected")
-        self._handle_spotify_state_change(spotify_track_analysis)
-
-    async def on_spotify_track_progress_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
-        logging.info(f"[engine] spotify track progress change detected")
-        self._handle_spotify_state_change(spotify_track_analysis)
+            await self.effect_controller.change_effect(intent)
 
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
@@ -134,41 +127,9 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_10sec_callback(self):
         if not self.analyser.is_song_playing():
             return
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        await self.spotify_client.check_for_track_changes(self.spotify_track_analysis, current_second)
-        self._log_current_track_info()
-
-    def _handle_spotify_state_change(self, spotify_track_analysis: SpotifyTrackAnalysis):
-        self.analyser.inject_spotify_track_analysis(spotify_track_analysis)
-        self.spotify_track_analysis = spotify_track_analysis
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        self.effect_controller.update_audio_section(current_second, self.spotify_track_analysis)
-        self._log_current_track_info()
-
-    def _calculate_current_beat_strength(self, current_second: float) -> float:
-        if not self.spotify_track_analysis:
-            return 0
-        current_second = int(current_second)
-        if len(self.spotify_track_analysis.beat_strengths_by_sec) <= current_second:
-            return 0
-        return self.spotify_track_analysis.beat_strengths_by_sec[current_second]
-
-    def _log_current_track_info(self):
         bpm = int(self.analyser.get_bpm())
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-
         logging.info(f"[engine] == current song info ==")
-        if self.spotify_track_analysis:
-            logging.info(f"[engine]   name:                    {self.spotify_track_analysis.track_name}")
-            logging.info(f"[engine]   artists:                 [{', '.join(self.spotify_track_analysis.artists)}]")
-            logging.info(f"[engine]   album:                   {self.spotify_track_analysis.album_name}")
-            logging.info(f"[engine]   genres:                  [{', '.join(self.spotify_track_analysis.genres)}]")
-            logging.info(f"[engine]   light_show_type:         {self.spotify_track_analysis.light_show_type.name}")
-            logging.info(f"[engine]   first_downbeat_count:    {self.spotify_track_analysis.beats_to_first_downbeat}")
-            logging.info(f"[engine]   first_downbeat_ms:       {self.spotify_track_analysis.first_downbeat_ms}")
-            logging.info(f"[engine]   audio_sections_start_ts: {[s.section_start_sec for s in self.spotify_track_analysis.audio_sections]}")
-            logging.info(f"[engine]   spotify_bpm:             {self.spotify_track_analysis.bpm}")
-            logging.info(f"[engine]   last_effect:             {self.effect_controller.last_effect}")
-        logging.info(f"[engine]   realtime_bpm:            {bpm}")
-        logging.info(f"[engine]   current_second:          {current_second}")
-
+        logging.info(f"[engine]   realtime_bpm:    {bpm}")
+        logging.info(f"[engine]   current_second:  {current_second}")
+        logging.info(f"[engine]   last_effect:     {self.effect_controller.last_effect}")

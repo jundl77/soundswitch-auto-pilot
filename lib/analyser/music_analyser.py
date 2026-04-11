@@ -2,10 +2,8 @@ import datetime
 import logging
 import aubio
 import numpy as np
-from typing import Optional
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
-from lib.clients.spotify_client import SpotifyTrackAnalysis
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
 
 
@@ -48,7 +46,6 @@ class MusicAnalyser:
         # tracking state
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
-        self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
         self.song_start_time: datetime.datetime = datetime.datetime.now()
         self.song_current_time: datetime.datetime = datetime.datetime.now()
         self.silence_period_start: datetime.datetime = datetime.datetime.now()
@@ -93,16 +90,6 @@ class MusicAnalyser:
     def is_song_playing(self) -> bool:
         return self.is_playing
 
-    def inject_spotify_track_analysis(self, track_analysis: Optional[SpotifyTrackAnalysis]):
-        self.spotify_track_analysis = track_analysis
-        if self.spotify_track_analysis:
-            now = datetime.datetime.now()
-            offset_since_analysis_ms = (now - track_analysis.analysis_ts).total_seconds() * 1000
-            progress_with_offset_ms = track_analysis.progress_ms + offset_since_analysis_ms
-            self.beat_count = track_analysis.current_beat_count
-            self.song_start_time = datetime.datetime.now() - datetime.timedelta(milliseconds=progress_with_offset_ms)
-            logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
-
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
 
@@ -118,7 +105,7 @@ class MusicAnalyser:
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
-        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration(), self.spotify_track_analysis):
+        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration()):
             await self.handler.on_section_change()
 
         if is_beat:

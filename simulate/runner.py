@@ -25,7 +25,7 @@ TIMING_TOLERANCE_SEC = 0.050  # 50 ms
 
 def build_simulation(audio_client, delay_sec: float):
     """Wire all components together with stub clients and return (app_components, command_queue)."""
-    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient, StubSpotifyClient
+    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
     from lib.engine.light_engine import LightEngine
@@ -34,15 +34,13 @@ def build_simulation(audio_client, delay_sec: float):
     midi_client = StubMidiClient()
     os2l_client = StubOs2lClient()
     overlay_client = StubOverlayClient()
-    spotify_client = StubSpotifyClient()
     command_queue = DelayedCommandQueue(delay_sec)
 
     effect_controller = EffectController(midi_client)
     light_engine = LightEngine(
         midi_client, os2l_client, overlay_client,
-        spotify_client, effect_controller, command_queue
+        effect_controller, command_queue
     )
-    spotify_client.set_engine(light_engine)
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, visualizer_updater=None)
     light_engine.set_analyser(music_analyser)
@@ -95,7 +93,7 @@ async def run_simulation(components: dict, duration_sec: float):
 
 def build_visualizer_simulation(audio_client, event_buffer, delay_sec: float):
     """Like build_simulation but the engine emits events to the shared EventBuffer."""
-    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient, StubSpotifyClient
+    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
     from lib.engine.light_engine import LightEngine
@@ -104,16 +102,14 @@ def build_visualizer_simulation(audio_client, event_buffer, delay_sec: float):
     midi_client = StubMidiClient()
     os2l_client = StubOs2lClient()
     overlay_client = StubOverlayClient()
-    spotify_client = StubSpotifyClient()
     command_queue = DelayedCommandQueue(delay_sec)
 
     effect_controller = EffectController(midi_client, event_buffer=event_buffer)
     light_engine = LightEngine(
         midi_client, os2l_client, overlay_client,
-        spotify_client, effect_controller, command_queue,
+        effect_controller, command_queue,
         event_buffer=event_buffer,
     )
-    spotify_client.set_engine(light_engine)
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, visualizer_updater=None)
     light_engine.set_analyser(music_analyser)

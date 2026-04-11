@@ -9,7 +9,6 @@ requires-python = ">=3.11"
 dependencies = [
     "python-rtmidi==1.4.9",
     "cython",
-    "spotipy",
     "aubio",
     "numpy",
     "pyaudio",

@@ -2,13 +2,14 @@
 Dash-based lighting visualizer.
 
 Shows a rolling 30-second timeline of beats and effect changes, plus an 8-slot
-stage view that reflects the currently active effect. Updated every 100 ms via
+stage view that reflects the current LightIntent. Updated every 100 ms via
 dcc.Interval polling the shared EventBuffer.
 
-Color coding:
-  Amber  (#f4a261) — AUTOLOOP BANK 1 (high-intensity scenes)
-  Teal   (#48cae4) — AUTOLOOP BANK 2 (low/medium-intensity scenes)
-  Magenta(#ff006e) — SPECIAL_EFFECT (strobe, static looks)
+Intent → visual mapping (arbitrary, tune to taste):
+  CALM   — blue,   3 active fixtures, slow pulse
+  GROOVE — teal,   5 active fixtures
+  ENERGY — amber,  7 active fixtures
+  PEAK   — red,    8 active fixtures + glow
 """
 
 import dash
@@ -22,12 +23,23 @@ import plotly.graph_objects as go
 SLOT_LABELS = list('ABCDEFGH')
 TIMELINE_WINDOW_SEC = 30.0
 
-BANK_1_COLOR = '#f4a261'   # amber  — high intensity
-BANK_2_COLOR = '#48cae4'   # teal   — low / medium
-SPECIAL_COLOR = '#ff006e'  # magenta — special effects
 DARK_BG = '#0d1117'
 CARD_BG = '#111827'
 BORDER = '#1e2937'
+
+# Effect timeline colors (MIDI channel type)
+BANK_1_COLOR = '#f4a261'   # amber  — high intensity
+BANK_2_COLOR = '#48cae4'   # teal   — low / medium
+SPECIAL_COLOR = '#ff006e'  # magenta — special effects
+
+# Intent → (primary color, active fixture count, label)
+INTENT_DISPLAY = {
+    'calm':   ('#3a86ff', 3,  'CALM'),
+    'groove': ('#48cae4', 5,  'GROOVE'),
+    'energy': ('#f4a261', 7,  'ENERGY'),
+    'peak':   ('#ff006e', 8,  'PEAK'),
+}
+INTENT_DEFAULT = ('#444444', 0, '—')
 
 
 def _channel_to_slot(channel: str) -> int | None:
@@ -73,7 +85,6 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             fillcolor=color, opacity=0.80, line_width=0,
         ))
         if t_end - t_start > 1.5:
-            # Show just the letter (A-H) so it fits
             label = eff['channel'].split('_')[-1]
             annotations.append(dict(
                 x=(t_start + t_end) / 2, y=0.74, xref='x', yref='paper',
@@ -81,10 +92,8 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 font=dict(color='rgba(0,0,0,0.85)', size=11, family='monospace'),
             ))
 
-    # Beat markers as thin vertical lines from bottom, height = strength
     # Beat markers: fixed y=0.25 so they're always visible regardless of strength.
-    # Size scales with Spotify-derived strength when available; minimum ensures
-    # beats always show even without Spotify data (strength == 0).
+    # Size scales with strength when available; minimum ensures beats always show.
     beat_x, beat_y, beat_size = [], [], []
     for b in snapshot['beats']:
         if b['t'] < x0:
@@ -135,22 +144,19 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
 
 def _build_stage(snapshot: dict) -> list:
-    current = snapshot.get('current_effect')
-    active_channel = current['channel'] if current else None
-    active_slot = _channel_to_slot(active_channel) if active_channel else None
-    active_color = _effect_color(active_channel, current['type']) if current else None
+    intent_key = snapshot.get('intent')
+    color, active_count, _ = INTENT_DISPLAY.get(intent_key, INTENT_DEFAULT)
 
     slots = []
     for i, label in enumerate(SLOT_LABELS):
-        on = (i == active_slot)
-        color = active_color if on else None
+        on = i < active_count
         slots.append(html.Div([
             html.Div(style={
                 'width': '38px', 'height': '38px', 'borderRadius': '50%',
-                'background': color or '#1a2332',
+                'background': color if on else '#1a2332',
                 'margin': '0 auto 8px',
                 'boxShadow': f'0 0 22px {color}' if on else 'none',
-                'transition': 'all 0.12s ease',
+                'transition': 'all 0.15s ease',
             }),
             html.Div(label, style={
                 'color': '#ffffff' if on else '#2d3f52',
@@ -162,7 +168,7 @@ def _build_stage(snapshot: dict) -> list:
             'background': CARD_BG,
             'borderRadius': '8px',
             'border': f'1px solid {color}' if on else f'1px solid {BORDER}',
-            'transition': 'all 0.12s ease',
+            'transition': 'all 0.15s ease',
         }))
     return slots
 
@@ -171,9 +177,9 @@ def _build_metrics(snapshot: dict) -> list:
     bpm = snapshot.get('bpm', 0.0)
     beats = snapshot.get('beats_detected', 0)
     elapsed = snapshot.get('now', 0.0)
-    current = snapshot.get('current_effect')
+    intent_key = snapshot.get('intent')
+    _, _, intent_label = INTENT_DISPLAY.get(intent_key, INTENT_DEFAULT)
     is_playing = snapshot.get('is_playing', False)
-    effect_label = current['channel'] if current else '—'
     status_color = '#3fb950' if is_playing else '#6e7681'
     status_label = '● PLAYING' if is_playing else '◌ PAUSED'
     return [
@@ -181,7 +187,7 @@ def _build_metrics(snapshot: dict) -> list:
         html.Span(f'{int(elapsed)}s', style={'color': '#6e7681', 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM', style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats', style={'color': '#3fb950', 'marginRight': '20px'}),
-        html.Span(f'active: {effect_label}', style={'color': '#d2a8ff'}),
+        html.Span(f'intent: {intent_label}', style={'color': '#d2a8ff'}),
     ]
 
 
@@ -196,9 +202,10 @@ def build_app(event_buffer) -> dash.Dash:
         html.Div([
             html.Span('SoundSwitch Visualizer',
                       style={'fontWeight': 'bold', 'color': '#e6edf3', 'marginRight': '28px'}),
-            html.Span('■ HIGH', style={'color': BANK_1_COLOR, 'marginRight': '14px', 'fontSize': '12px'}),
-            html.Span('■ LOW / MED', style={'color': BANK_2_COLOR, 'marginRight': '14px', 'fontSize': '12px'}),
-            html.Span('■ SPECIAL', style={'color': SPECIAL_COLOR, 'fontSize': '12px'}),
+            html.Span('■ CALM', style={'color': INTENT_DISPLAY['calm'][0], 'marginRight': '14px', 'fontSize': '12px'}),
+            html.Span('■ GROOVE', style={'color': INTENT_DISPLAY['groove'][0], 'marginRight': '14px', 'fontSize': '12px'}),
+            html.Span('■ ENERGY', style={'color': INTENT_DISPLAY['energy'][0], 'marginRight': '14px', 'fontSize': '12px'}),
+            html.Span('■ PEAK', style={'color': INTENT_DISPLAY['peak'][0], 'fontSize': '12px'}),
         ], style={
             'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '14px',
