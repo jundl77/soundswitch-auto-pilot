@@ -172,8 +172,12 @@ def _build_metrics(snapshot: dict) -> list:
     beats = snapshot.get('beats_detected', 0)
     elapsed = snapshot.get('now', 0.0)
     current = snapshot.get('current_effect')
+    is_playing = snapshot.get('is_playing', False)
     effect_label = current['channel'] if current else '—'
+    status_color = '#3fb950' if is_playing else '#6e7681'
+    status_label = '● PLAYING' if is_playing else '◌ PAUSED'
     return [
+        html.Span(status_label, style={'color': status_color, 'marginRight': '20px', 'fontWeight': 'bold'}),
         html.Span(f'{int(elapsed)}s', style={'color': '#6e7681', 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM', style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats', style={'color': '#3fb950', 'marginRight': '20px'}),

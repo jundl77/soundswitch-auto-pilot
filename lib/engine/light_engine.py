@@ -33,6 +33,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: SpotifyTrackAnalysis | None = None
         self._note_counter: int = 0
+        self._needs_initial_effect: bool = False
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
@@ -55,6 +56,9 @@ class LightEngine(IMusicAnalyserHandler):
         self.midi_client.on_sound_start()
         self.overlay_client.deactivate_all()
         self.os2l_client.on_sound_start(time_elapsed_ms, beats_to_first_downbeat, first_downbeat_ms, bpm)
+        if self.event_buffer:
+            self.event_buffer.set_playing(True)
+        self._needs_initial_effect = True
         self._log_current_track_info()
 
     def on_sound_stop(self):
@@ -63,6 +67,8 @@ class LightEngine(IMusicAnalyserHandler):
         self.os2l_client.on_sound_stop()
         self.effect_controller.reset_state()
         self.overlay_client.deactivate_all()
+        if self.event_buffer:
+            self.event_buffer.set_playing(False)
 
     async def on_cycle(self):
         await self.effect_controller.process_effects()
@@ -77,6 +83,9 @@ class LightEngine(IMusicAnalyserHandler):
         logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
         if self.event_buffer:
             self.event_buffer.add_beat(bpm, beat_strength, bpm_changed)
+        if self._needs_initial_effect:
+            self._needs_initial_effect = False
+            await self.effect_controller.change_effect(current_second, self.spotify_track_analysis)
         # Capture locals in closure — they must not be read by reference after enqueue
         _change, _pos, _bpm, _strength = bpm_changed, beat_number, bpm, beat_strength
         if self.command_queue:
@@ -97,8 +106,6 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_section_change(self) -> None:
         logging.info(f"[engine] audio section change detected")
         current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        if self.spotify_track_analysis is None:
-            return
         _second, _analysis = current_second, self.spotify_track_analysis
         if self.command_queue:
             await self.command_queue.enqueue(

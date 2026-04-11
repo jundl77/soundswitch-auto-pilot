@@ -15,6 +15,7 @@ class EventBuffer:
         self._lock = threading.Lock()
         self._window_sec = window_sec
         self._start_time: float | None = None
+        self._is_playing: bool = False
         # Beats: high-frequency, bounded deque to avoid unbounded memory growth
         self._beats: deque[dict] = deque(maxlen=3000)
         # Effects: list so we can mutate the last entry to set 'end'
@@ -52,6 +53,10 @@ class EventBuffer:
             cutoff = now - self._window_sec * 2
             self._effects = [e for e in self._effects if e.get('end', now) >= cutoff]
 
+    def set_playing(self, is_playing: bool) -> None:
+        with self._lock:
+            self._is_playing = is_playing
+
     def set_timing_log(self, log: list[dict]) -> None:
         with self._lock:
             self._timing_log = list(log)
@@ -63,6 +68,7 @@ class EventBuffer:
             cutoff = now - self._window_sec
             return {
                 'now': now,
+                'is_playing': self._is_playing,
                 'beats': [b for b in self._beats if b['t'] >= cutoff],
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
                 'current_effect': self._effects[-1] if self._effects else None,

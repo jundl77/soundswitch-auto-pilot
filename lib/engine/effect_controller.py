@@ -33,6 +33,10 @@ class EffectController:
 
     async def change_effect(self, current_second: float, track_analysis: SpotifyTrackAnalysis | None):
         if not track_analysis:
+            # No Spotify: apply a random high-intensity effect as fallback so lights
+            # work even without track analysis.
+            new_effect = self._select_new_random_effect(HIGH_INTENSITY_EFFECTS, self.last_effect)
+            await self._apply_autoloop(new_effect)
             return
 
         section_index, audio_section = self._find_current_audio_section_index(current_second, track_analysis)
