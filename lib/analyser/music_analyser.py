@@ -2,6 +2,7 @@ import datetime
 import logging
 import aubio
 import numpy as np
+from typing import Optional
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
