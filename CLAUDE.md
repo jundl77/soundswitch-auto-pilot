@@ -8,6 +8,8 @@ Intelligent DJ lighting automation system that synchronizes stage effects to liv
 
 **All changes must go through a pull request.** Never commit directly to `master`.
 
+**Every PR must include an update to `CLAUDE.md`** reflecting any architectural, interface, or behavioural changes made in that PR.
+
 Before opening a PR, all tests must pass:
 
 ```bash
