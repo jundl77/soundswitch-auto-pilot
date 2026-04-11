@@ -1,4 +1,6 @@
+from __future__ import annotations
 import logging
+from typing import TYPE_CHECKING
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.clients.midi_client import MidiClient
@@ -8,6 +10,9 @@ from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 
+if TYPE_CHECKING:
+    from lib.engine.event_buffer import EventBuffer
+
 
 class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
@@ -16,13 +21,15 @@ class LightEngine(IMusicAnalyserHandler):
                  overlay_client: OverlayClient,
                  spotify_client: SpotifyClient,
                  effect_controller: EffectController,
-                 command_queue: DelayedCommandQueue | None = None):
+                 command_queue: DelayedCommandQueue | None = None,
+                 event_buffer: EventBuffer | None = None):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
         self.spotify_client: SpotifyClient = spotify_client
         self.effect_controller: EffectController = effect_controller
         self.command_queue: DelayedCommandQueue | None = command_queue
+        self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
         self.spotify_track_analysis: SpotifyTrackAnalysis | None = None
         self._note_counter: int = 0
@@ -68,6 +75,8 @@ class LightEngine(IMusicAnalyserHandler):
         current_second = self.analyser.get_song_current_duration().total_seconds()
         beat_strength = self._calculate_current_beat_strength(current_second)
         logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
+        if self.event_buffer:
+            self.event_buffer.add_beat(bpm, beat_strength, bpm_changed)
         # Capture locals in closure — they must not be read by reference after enqueue
         _change, _pos, _bpm, _strength = bpm_changed, beat_number, bpm, beat_strength
         if self.command_queue:

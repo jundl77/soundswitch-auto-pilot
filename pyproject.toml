@@ -23,6 +23,7 @@ dependencies = [
     "librosa",
     "argcomplete",
     "zeroconf",
+    "netifaces",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "jupyterlab",
+]
+visualizer = [
+    "dash>=2.14",
+    "sounddevice",
 ]
 
 [tool.pytest.ini_options]

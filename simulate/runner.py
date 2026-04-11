@@ -6,18 +6,17 @@ through the full MusicAnalyser → LightEngine → DelayedCommandQueue pipeline,
 a timing validation report at the end.
 
 Usage examples:
-  # Synthetic beeps at 120 BPM, 0.3s delay, run for 15s
-  python simulate_auto_pilot --mode beep --bpm 120 --delay 0.3 --duration 15
+  # Real music file, 2.5s delay (matching dmx-enttec-node config), with Dash UI
+  python auto_pilot simulate file samples/song.mp3 --delay 2.5
 
-  # Real music file, 2.5s delay (matching dmx-enttec-node config), run for 30s
-  python simulate_auto_pilot --mode file --audio samples/generate_eric_prydz_192k.mp3 --delay 2.5 --duration 30
+  # Headless evaluation (no UI, writes report.json, exits 0=PASS / 1=FAIL)
+  python auto_pilot simulate file samples/song.mp3 --no-ui --report report.json
 """
 
 import asyncio
 import datetime
 import logging
 import time
-from typing import Optional
 
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 256
@@ -92,6 +91,43 @@ async def run_simulation(components: dict, duration_sec: float):
 
     audio_client.close()
     logging.info('[sim] simulation complete')
+
+
+def build_visualizer_simulation(audio_client, event_buffer, delay_sec: float):
+    """Like build_simulation but the engine emits events to the shared EventBuffer."""
+    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient, StubSpotifyClient
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+    from lib.engine.effect_controller import EffectController
+    from lib.engine.light_engine import LightEngine
+    from lib.analyser.music_analyser import MusicAnalyser
+
+    midi_client = StubMidiClient()
+    os2l_client = StubOs2lClient()
+    overlay_client = StubOverlayClient()
+    spotify_client = StubSpotifyClient()
+    command_queue = DelayedCommandQueue(delay_sec)
+
+    effect_controller = EffectController(midi_client, event_buffer=event_buffer)
+    light_engine = LightEngine(
+        midi_client, os2l_client, overlay_client,
+        spotify_client, effect_controller, command_queue,
+        event_buffer=event_buffer,
+    )
+    spotify_client.set_engine(light_engine)
+
+    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, visualizer_updater=None)
+    light_engine.set_analyser(music_analyser)
+    music_analyser.yamnet_change_detector.detect_change = lambda *a, **kw: False
+
+    return {
+        'audio_client': audio_client,
+        'midi_client': midi_client,
+        'os2l_client': os2l_client,
+        'overlay_client': overlay_client,
+        'command_queue': command_queue,
+        'music_analyser': music_analyser,
+        'light_engine': light_engine,
+    }, command_queue
 
 
 def print_timing_report(command_queue, tolerance_sec: float = TIMING_TOLERANCE_SEC):

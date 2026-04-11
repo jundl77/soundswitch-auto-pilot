@@ -1,11 +1,16 @@
+from __future__ import annotations
 import logging
 import random
 import datetime
+from typing import TYPE_CHECKING
 from lib.clients.spotify_client import SpotifyTrackAnalysis, SpotifyAudioSection, LightShowType
 from lib.clients.midi_client import MidiClient
 from lib.clients.midi_message import MidiChannel
 from lib.engine.effect_definitions import EffectSource, OverlayEffect, EffectType, Effect,\
     COLOR_OVERRIDES, SPECIAL_EFFECTS, LOW_INTENSITY_EFFECTS, MEDIUM_INTENSITY_EFFECTS, HIGH_INTENSITY_EFFECTS, HIP_HOP_EFFECTS
+
+if TYPE_CHECKING:
+    from lib.engine.event_buffer import EventBuffer
 
 # trigger the auto-loop change 1sec before the event because it takes some time for the change to take effect
 FIXED_CHANGE_OFFSET_SEC = 1.0
@@ -13,8 +18,9 @@ APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60 * 5
 
 
 class EffectController:
-    def __init__(self, midi_client: MidiClient):
+    def __init__(self, midi_client: MidiClient, event_buffer: EventBuffer | None = None):
         self.midi_client: MidiClient = midi_client
+        self.event_buffer: EventBuffer | None = event_buffer
         self.current_section_index: int = -1
         self.last_audio_section: SpotifyAudioSection | None = None
         self.last_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A)
@@ -109,6 +115,8 @@ class EffectController:
         elif special_effect.source == EffectSource.OVERLAY:
             effect_name = special_effect.overlay_effect.name
         logging.info(f'[effect_controller] applying special effect {effect_name}, type={special_effect.type.name}')
+        if self.event_buffer and effect_name:
+            self.event_buffer.add_effect(effect_name, 'SPECIAL_EFFECT')
         self.last_special_effect = special_effect
 
     async def _apply_autoloop(self, autoloop: Effect):
@@ -116,6 +124,8 @@ class EffectController:
         assert autoloop.source == EffectSource.MIDI
         logging.info(f'[effect_controller] changing autoloop to {autoloop.midi_channel.name}')
         await self.midi_client.set_autoloop(autoloop.midi_channel)
+        if self.event_buffer:
+            self.event_buffer.add_effect(autoloop.midi_channel.name, 'AUTOLOOP')
         await self._apply_color_override_if_due()
         self.last_effect = autoloop
 
