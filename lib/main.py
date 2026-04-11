@@ -24,7 +24,8 @@ class SoundSwitchAutoPilot:
                  disable_os2l: bool = False,
                  lookahead_delay_sec: float = 0.0,
                  enable_ui: bool = False,
-                 ui_port: int = 8050):
+                 ui_port: int = 8050,
+                 report_path: str | None = None):
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
@@ -42,6 +43,7 @@ class SoundSwitchAutoPilot:
         self.disable_os2l: bool = disable_os2l
         self.enable_ui: bool = enable_ui
         self._ui_port: int = ui_port
+        self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
         self.command_queue: DelayedCommandQueue = DelayedCommandQueue(lookahead_delay_sec)
@@ -67,9 +69,9 @@ class SoundSwitchAutoPilot:
             self.visualizer: Visualizer = None
             self.visualizer_updater: VisualizerUpdater = None
 
-        # construct event buffer (optional — for --ui mode)
+        # construct event buffer (for --ui and/or --report)
         from lib.engine.event_buffer import EventBuffer
-        self.event_buffer: EventBuffer | None = EventBuffer() if enable_ui else None
+        self.event_buffer: EventBuffer | None = EventBuffer() if (enable_ui or report_path) else None
 
         # construct engine
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
@@ -190,9 +192,19 @@ async def run_cmd(args: argparse.Namespace):
                                       disable_os2l=args.no_os2l,
                                       lookahead_delay_sec=lookahead_delay_sec,
                                       enable_ui=args.ui,
-                                      ui_port=args.ui_port)
+                                      ui_port=args.ui_port,
+                                      report_path=args.report)
 
     await global_app.run()
+
+    if args.report and global_app.event_buffer is not None:
+        import json
+        from simulate.evaluator import evaluate, print_evaluation
+        report = global_app.event_buffer.to_report()
+        with open(args.report, 'w') as f:
+            json.dump(report, f, indent=2, default=str)
+        logging.info(f'[main] report written → {args.report}')
+        print_evaluation(evaluate(report))
 
 
 async def list_cmd(args: argparse.Namespace):
@@ -227,6 +239,7 @@ async def main():
     subparser.add_argument('--delay', help='Lookahead delay in seconds (must match dmx-enttec-node playback_delay_seconds). Default: 0.0', required=False, default=None)
     subparser.add_argument('--ui', help='Launch real-time lighting visualizer (requires dash extra)', required=False, action='store_true')
     subparser.add_argument('--ui-port', type=int, default=8050, help='Visualizer Dash server port (default: 8050)', required=False, dest='ui_port')
+    subparser.add_argument('--report', default=None, help='Write a JSON session report on exit (e.g. report.json); implies event tracking', required=False)
     subparser.set_defaults(func=run_cmd)
 
     from simulate.cli import add_simulate_subparser
