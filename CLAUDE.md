@@ -14,16 +14,23 @@ Before opening a PR, all tests must pass:
 
 ```bash
 # Fast unit tests (run these frequently during development)
-pytest -m "not integration"
+uv run pytest -m "not integration"
 
-# Full suite including integration tests (~30s, requires aubio)
-pytest
+# Full suite including unit + integration tests (~15s)
+uv run pytest
 
 # Run a single test file
-pytest tests/test_delayed_command_queue.py -v
+uv run pytest tests/test_delayed_command_queue.py -v
 ```
 
 The integration tests in `tests/test_simulation.py` run the full pipeline without hardware. If they fail, the pipeline is broken.
+
+### Testing philosophy
+
+- **Coverage over completeness**: aim for broad, confident coverage of critical logic — not 100% line coverage. Tests should catch real regressions, not just pad numbers.
+- **Test the logic, not the wiring**: unit tests target pure functions and isolated methods (e.g. `_classify_intent`, `get_onset_density_trend`). Integration tests verify the full pipeline assembles correctly.
+- **Hardware deps**: modules that import hardware-specific packages (e.g. `netifaces` via `os2l_client`) can be stubbed with `sys.modules.setdefault('netifaces', MagicMock())` at the top of the test file.
+- **Every PR must pass `pytest`** (the full suite, not just unit tests) before merge.
 
 ---
 
@@ -145,8 +152,8 @@ python auto_pilot simulate file samples/song.mp3 --delay 0.3
 python auto_pilot simulate realtime
 
 # Tests
-pytest -m "not integration"   # fast unit tests only
-pytest                        # unit + integration (~30s)
+uv run pytest -m "not integration"   # fast unit tests only
+uv run pytest                        # unit + integration (~15s)
 ```
 
 **Flags (`run`):**
