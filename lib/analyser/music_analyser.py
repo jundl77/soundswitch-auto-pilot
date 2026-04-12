@@ -83,7 +83,7 @@ class MusicAnalyser:
 
     def get_beat_position(self) -> float:
         if self.is_playing and self.time_to_last_beat_sec > 0:
-            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).microseconds / 1000 / 1000
+            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).total_seconds()
             beat_percent_elapsed = time_to_current_beat_sec / self.time_to_last_beat_sec
             return self.beat_count + abs(beat_percent_elapsed)
         else:

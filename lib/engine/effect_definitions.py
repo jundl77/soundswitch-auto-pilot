@@ -60,6 +60,9 @@ class Effect:
                 and self.midi_channel == other.midi_channel
                 and self.overlay_effect == other.overlay_effect)
 
+    def __hash__(self) -> int:
+        return hash((self.type, self.source, self.midi_channel, self.overlay_effect))
+
     def __str__(self):
         if self.source == EffectSource.MIDI:
             return f"[midi] type={self.type.name} effect={self.midi_channel.name}"
