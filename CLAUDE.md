@@ -29,8 +29,8 @@ The integration tests in `tests/test_simulation.py` run the full pipeline withou
 
 - **Coverage over completeness**: aim for broad, confident coverage of critical logic — not 100% line coverage. Tests should catch real regressions, not just pad numbers.
 - **Test the logic, not the wiring**: unit tests target pure functions and isolated methods (e.g. `_classify_intent`, `get_onset_density_trend`). Integration tests verify the full pipeline assembles correctly.
-- **Hardware deps**: modules that import hardware-specific packages (e.g. `netifaces` via `os2l_client`) can be stubbed with `sys.modules.setdefault('netifaces', MagicMock())` at the top of the test file.
-- **Every PR must pass `pytest`** (the full suite, not just unit tests) before merge.
+- **Missing deps**: if a package is declared in `pyproject.toml` but absent from the venv, run `uv sync` — do not mock it.
+- **Every PR must pass `uv run pytest`** (the full suite, not just unit tests) before merge.
 
 ---
 

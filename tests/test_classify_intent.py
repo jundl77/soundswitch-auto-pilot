@@ -1,11 +1,4 @@
-import sys
 import pytest
-from unittest.mock import MagicMock
-
-# light_engine imports os2l_client which requires netifaces (hardware dep).
-# Stub it so the classifier can be tested without physical MIDI hardware.
-sys.modules.setdefault('netifaces', MagicMock())
-
 from lib.engine.light_engine import _classify_intent
 from lib.engine.effect_definitions import LightIntent
 
