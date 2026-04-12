@@ -32,7 +32,7 @@ The integration tests in `tests/test_simulation.py` run the full pipeline withou
 1. Reads audio from a microphone/line input at 44.1 kHz, 256-sample buffers (~5.8 ms windows)
 2. Extracts musical features via Aubio (pitch, BPM, onsets, notes, MFCCs)
 3. Detects musical section changes via a YAMNet TensorFlow embedding + cosine similarity outlier detection
-4. Classifies audio energy as a `LightIntent` (CALM / GROOVE / ENERGY / PEAK) from real-time BPM
+4. Classifies audio energy as a `LightIntent` (ATMOSPHERIC / BREAKDOWN / GROOVE / BUILDUP / DROP / PEAK) from real-time BPM + onset density + density trend
 5. Selects and sends MIDI lighting effects to SoundSwitch based on intent; also sends OS2L beat events to VirtualDJ and DMX overlays via UDP
 
 ---
@@ -45,7 +45,7 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
         YamnetChangeDetector          EffectController    MIDI / OS2L / Overlay
                                              ↑
                                        LightIntent
-                                    (BPM → CALM/GROOVE/ENERGY/PEAK)
+                              (BPM + onset density + trend)
 ```
 
 ### Key Files
@@ -75,14 +75,20 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 
 `LightIntent` is the semantic bridge between audio analysis and lighting output. It lives in `lib/engine/effect_definitions.py`.
 
-### BPM → Intent mapping (in `lib/engine/light_engine.py`)
+### Intent classifier (in `lib/engine/light_engine.py`)
 
-| Intent | BPM range | MIDI pool | Active fixtures (visualizer) |
+Classification uses three signals: BPM, onset density (onsets/sec over a 1.5 s rolling window), and onset density trend (ratio of recent vs past beats, from `get_onset_density_trend()`).
+
+| Intent | Detection method | MIDI pool | Visualizer fixtures |
 |---|---|---|---|
-| CALM   | < 90      | BANK_2A/B/C | 3 (blue)   |
-| GROOVE | 90–119    | BANK_2D/E/F | 5 (teal)   |
-| ENERGY | 120–144   | BANK_1A/B/C | 7 (amber)  |
-| PEAK   | ≥ 145     | BANK_1D/E + STROBE | 8 (red) |
+| ATMOSPHERIC | Beat absence > 2.5 s (via `on_100ms_callback`) | BANK_2A/B/C | 2 center (deep blue/violet) |
+| BREAKDOWN | density < 3.0 onsets/s | BANK_2C/D/E | 3 center (purple/rose) |
+| GROOVE | density ≥ 3.0 and trend < 1.3 | BANK_2F/G/H | 5 spread (teal/sky) |
+| BUILDUP | density ≥ 3.0 and trend ≥ 1.3 (rising energy) | BANK_1A/B/C | 6 fixtures (amber/gold) |
+| DROP | density ≥ 8.0 and BPM ≥ 100 | BANK_1D/E + STROBE | 8 all (crimson/magenta) |
+| PEAK | BPM ≥ 138 | BANK_1F/G/H | 8 all (white-hot/red) |
+
+**ATMOSPHERIC** is the only intent set outside `_classify_intent`: `on_100ms_callback` detects beat absence (> 2.5 s without a beat), fires ATMOSPHERIC once via `_atmospheric_sent` flag (not every 100 ms), and triggers a MIDI effect change. The first beat after ATMOSPHERIC immediately re-classifies and changes the MIDI effect.
 
 ### DMX migration path
 
@@ -98,18 +104,19 @@ When moving away from SoundSwitch to direct DMX:
 ```
 Audio buffer (256 samples)
   → Aubio: pitch, BPM, onset confidence, MFCCs, mel energies
-  → beat detected? → LightEngine.on_beat()
-      → _bpm_to_intent(bpm) → LightIntent
-      → on first beat: EffectController.change_effect(intent)
-      → MIDI autoloop / OS2L beat
-  → onset detected? → LightEngine.on_onset()
+  → onset detected? → _onset_times.append(now) → on_onset()
+  → beat detected? → _density_samples.append(density) → LightEngine.on_beat()
+      → _classify_intent(bpm, onset_density, density_trend) → LightIntent
+      → on first beat OR returning from ATMOSPHERIC: EffectController.change_effect(intent)
+      → EventBuffer.set_intent() / add_beat()
+      → OS2L beat (via DelayedCommandQueue if delay > 0)
   → note detected? → LightEngine.on_note() → DMX overlay
   → YAMNet buffer full (4096 samples)?
       → embed → cosine similarity → outlier? → section change
       → LightEngine.on_section_change()
-          → _bpm_to_intent(bpm) → EffectController.change_effect(intent)
-          → select MIDI channel from intent pool (avoids repeats)
-          → send MIDI note-on/off to SoundSwitch
+          → _classify_intent(bpm, onset_density, density_trend) → EffectController.change_effect(intent)
+  → every 100 ms: on_100ms_callback()
+      → if no beat for > 2.5 s: set ATMOSPHERIC intent + fire MIDI effect once
 ```
 
 ---
@@ -135,7 +142,7 @@ python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 
 # Simulation (no hardware required)
 python auto_pilot simulate file samples/song.mp3 --delay 0.3
-python auto_pilot simulate realtime --bpm 128 --duration 30
+python auto_pilot simulate realtime
 
 # Tests
 pytest -m "not integration"   # fast unit tests only
@@ -159,9 +166,12 @@ pytest                        # unit + integration (~30s)
 |---|---|---|---|
 | `BUFFER_SIZE` | `pyaudio_client.py` | 256 | Audio frames per callback |
 | `SAMPLE_RATE` | `music_analyser.py` | 44100 | Hz |
-| `_CALM_MAX_BPM` | `light_engine.py` | 90 | BPM threshold: CALM → GROOVE |
-| `_GROOVE_MAX_BPM` | `light_engine.py` | 120 | BPM threshold: GROOVE → ENERGY |
-| `_ENERGY_MAX_BPM` | `light_engine.py` | 145 | BPM threshold: ENERGY → PEAK |
+| `_ONSET_DENSITY_WINDOW_SEC` | `music_analyser.py` | 1.5 s | Rolling window for onset density |
+| `_BREAKDOWN_MAX_DENSITY` | `light_engine.py` | 3.0 | onsets/s ceiling for BREAKDOWN |
+| `_BUILDUP_MIN_TREND` | `light_engine.py` | 1.3 | Density trend ratio floor for BUILDUP |
+| `_DROP_MIN_DENSITY` | `light_engine.py` | 8.0 | onsets/s floor for DROP |
+| `_PEAK_MIN_BPM` | `light_engine.py` | 138 | BPM floor for PEAK |
+| `_BEAT_ABSENCE_SEC` | `light_engine.py` | 2.5 s | Beat silence threshold for ATMOSPHERIC |
 | `SECTION_CHANGE_COOLDOWN` | `yamnet_change_detector.py` | 10 s | Min gap between YAMNet-triggered changes |
 | `APPLY_COLOR_OVERRIDE_INTERVAL_SEC` | `effect_controller.py` | 300 | Color override rotation every 5 min |
 | OS2L beat update | `os2l_client.py` | 25 ms | Beat position broadcast interval |
@@ -171,7 +181,7 @@ pytest                        # unit + integration (~30s)
 ## ML / DSP Components
 
 - **Aubio** — real-time pitch, BPM, onset, note, MFCC. All tuned for 44.1 kHz / 256-sample windows.
-- **YAMNet (TensorFlow Hub)** — Google's pre-trained audio classifier; used here for 1024-dim embeddings only (not tags). Cosine similarity + MAD-based outlier detection across a 2 s lookback finds section transitions.
+- **YAMNet (TensorFlow Hub)** — Google's pre-trained audio classifier; used here for 1024-dim embeddings only (not tags). Cosine similarity + MAD-based outlier detection across a 2 s lookback finds section transitions. Degrades gracefully if model fails to load (logs a warning, section detection disabled).
 
 ---
 
@@ -182,5 +192,6 @@ pytest                        # unit + integration (~30s)
 - **MusicAnalyser full reset** every 15 min prevents rolling-window memory growth.
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread; the audio/DSP path is async on the main thread — mixing threading models requires care when touching shared state.
-- **BPM-only intent classification is coarse** — BPM alone won't distWe ninguish a calm 130 BPM track from an energetic one. Next improvement: weight by aubio onset density or YAMNet embeddings directly.
+- **Beat dropout false ATMOSPHERIC**: aubio can miss beats during heavy sidechain compression. The 2.5 s threshold (≈5 missed beats at 128 BPM) guards against single-beat dropouts but not sustained compression artifacts.
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The 10 s cooldown is the main guard.
+- **Density trend needs 4 beats to warm up**: `get_onset_density_trend()` returns 1.0 (neutral) until 4 beat-density samples have been collected. During this window BUILDUP cannot be detected via trend; it falls through to GROOVE.

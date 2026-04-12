@@ -145,7 +145,7 @@ def add_simulate_subparser(subparsers):
     sim.set_defaults(func=simulate_cmd)
 
 
-async def simulate_cmd(args):
+def simulate_cmd(args):
     if args.sim_mode == 'file':
         run_file(args)
     elif args.sim_mode == 'realtime':

@@ -17,41 +17,40 @@ if TYPE_CHECKING:
 # Intent classifier
 # ---------------------------------------------------------------------------
 # These thresholds are a starting point — tune against real DJ sets.
-# onset_density = onsets/sec over a 3-second rolling window (from aubio).
+# onset_density = onsets/sec over a 1.5-second rolling window (from aubio).
 #
 # Structure of a typical EDM track and how we detect it:
-#   ATMOSPHERIC — barely any beats or onsets (intro, full breakdown, outro)
+#   ATMOSPHERIC — no beats detected for >2 s (intro, full breakdown, outro)
+#                 Detected via beat-absence in on_100ms_callback, NOT here.
 #   BREAKDOWN   — beat present but very sparse onsets (melodic, stripped)
 #   GROOVE      — moderate onsets at mid-tempo (main dance-floor loop)
 #   BUILDUP     — onset density rising; moderately high BPM (pre-drop tension)
 #   DROP        — onset density spikes hard (bass, kick, hat all firing)
 #   PEAK        — sustained very high BPM + high density (post-drop peak)
 
-_ATMOSPHERIC_MAX_BPM    = 75.0
-_BREAKDOWN_MAX_DENSITY  = 1.2   # onsets/sec — sparse = breakdown feel
-_GROOVE_MAX_BPM         = 118.0
-_BUILDUP_MAX_BPM        = 138.0
-_DROP_MIN_DENSITY       = 4.0   # density spike triggers DROP regardless of BPM
+_BREAKDOWN_MAX_DENSITY  = 3.0   # onsets/sec — sparse = breakdown feel
+_BUILDUP_MIN_TREND      = 1.3   # density trend ratio — rising 30% → BUILDUP
+_DROP_MIN_DENSITY       = 8.0   # hi-hat alone sits at 4–8 onsets/s; DROP needs more
 _PEAK_MIN_BPM           = 138.0
 
+_BEAT_ABSENCE_SEC       = 2.5   # seconds without a beat → ATMOSPHERIC (5+ missed beats at 128 BPM)
 
-def _classify_intent(bpm: float, onset_density: float) -> LightIntent:
-    """Map (BPM, onset_density) → LightIntent.
+
+def _classify_intent(bpm: float, onset_density: float, density_trend: float = 1.0) -> LightIntent:
+    """Map (BPM, onset_density, density_trend) → LightIntent.
 
     Priority order matters: density spike always wins (DROP), then BPM
     thresholds narrow down the remaining cases.
+    ATMOSPHERIC is NOT detected here — it is set in on_100ms_callback via beat absence.
+    BUILDUP requires rising onset density (trend ≥ 1.3); steady high-BPM grooves are GROOVE.
     """
-    if bpm < _ATMOSPHERIC_MAX_BPM:
-        return LightIntent.ATMOSPHERIC
     if onset_density >= _DROP_MIN_DENSITY and bpm >= 100:
         return LightIntent.DROP
     if bpm >= _PEAK_MIN_BPM:
         return LightIntent.PEAK
     if onset_density < _BREAKDOWN_MAX_DENSITY:
         return LightIntent.BREAKDOWN
-    if bpm >= _BUILDUP_MAX_BPM:
-        return LightIntent.BUILDUP
-    if bpm >= _GROOVE_MAX_BPM:
+    if density_trend >= _BUILDUP_MIN_TREND:
         return LightIntent.BUILDUP
     return LightIntent.GROOVE
 
@@ -77,6 +76,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = None
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
+        self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
@@ -98,6 +98,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.overlay_client.deactivate_all()
         if self.event_buffer:
             self.event_buffer.set_playing(False)
+        self._atmospheric_sent = False
 
     async def on_cycle(self):
         await self.effect_controller.process_effects()
@@ -109,15 +110,20 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
         current_second = self.analyser.get_song_current_duration().total_seconds()
         onset_density = self.analyser.get_onset_density()
-        intent = _classify_intent(bpm, onset_density)
+        density_trend = self.analyser.get_onset_density_trend()
+        intent = _classify_intent(bpm, onset_density, density_trend)
         logging.info(
             f'[engine] [{current_second:.2f}s] beat #{beat_number}  '
-            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  intent={intent.name}'
+            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  trend={density_trend:.2f}  intent={intent.name}'
         )
         if self.event_buffer:
             self.event_buffer.add_beat(bpm, onset_density, bpm_changed)
             self.event_buffer.set_intent(intent.value)
-        if self._needs_initial_effect:
+        was_atmospheric = self._atmospheric_sent
+        self._atmospheric_sent = False
+        if self._needs_initial_effect or was_atmospheric:
+            # Trigger an immediate MIDI effect change on first beat and on returning
+            # from a beat-absence ATMOSPHERIC period.
             self._needs_initial_effect = False
             await self.effect_controller.change_effect(intent)
         _change, _pos, _bpm = bpm_changed, beat_number, bpm
@@ -140,7 +146,8 @@ class LightEngine(IMusicAnalyserHandler):
         logging.info('[engine] audio section change detected')
         bpm = self.analyser.get_bpm()
         onset_density = self.analyser.get_onset_density()
-        intent = _classify_intent(bpm, onset_density)
+        density_trend = self.analyser.get_onset_density_trend()
+        intent = _classify_intent(bpm, onset_density, density_trend)
         _intent = intent
         if self.command_queue:
             await self.command_queue.enqueue(
@@ -153,6 +160,12 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
+        if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
+            if self.event_buffer:
+                self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value)
+            if not self._atmospheric_sent:
+                self._atmospheric_sent = True
+                await self.effect_controller.change_effect(LightIntent.ATMOSPHERIC)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
@@ -163,8 +176,9 @@ class LightEngine(IMusicAnalyserHandler):
             return
         bpm = int(self.analyser.get_bpm())
         onset_density = self.analyser.get_onset_density()
+        density_trend = self.analyser.get_onset_density_trend()
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-        intent = _classify_intent(float(bpm), onset_density)
+        intent = _classify_intent(float(bpm), onset_density, density_trend)
         logging.info(f'[engine] == current state ==')
         logging.info(f'[engine]   realtime_bpm:    {bpm}')
         logging.info(f'[engine]   onset_density:   {onset_density:.2f} /s')

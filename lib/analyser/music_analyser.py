@@ -8,7 +8,7 @@ from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
 
-_ONSET_DENSITY_WINDOW_SEC = 3.0  # rolling window for onset density calculation
+_ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
 
 class MusicAnalyser:
@@ -62,7 +62,9 @@ class MusicAnalyser:
         self.last_beat_detected: datetime.datetime = datetime.datetime.now()
         self.last_note_detected: datetime.datetime = datetime.datetime.now()
         # rolling window of onset timestamps for onset-density calculation
-        self._onset_times: deque = deque()
+        self._onset_times: deque = deque(maxlen=500)
+        # per-beat density samples for trend detection (maxlen=12 ≈ ~6s at 120 BPM)
+        self._density_samples: deque = deque(maxlen=12)
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -97,12 +99,30 @@ class MusicAnalyser:
         return self.is_playing
 
     def get_onset_density(self) -> float:
-        """Onsets per second over the last 3 seconds (rolling window)."""
+        """Onsets per second over the last 1.5 seconds (rolling window)."""
         now = datetime.datetime.now()
         cutoff = now - datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC)
         while self._onset_times and self._onset_times[0] < cutoff:
             self._onset_times.popleft()
         return len(self._onset_times) / _ONSET_DENSITY_WINDOW_SEC
+
+    def get_onset_density_trend(self) -> float:
+        """Ratio of recent vs past onset density.
+
+        Returns >1.0 when density is rising (buildup feel), <1.0 when falling.
+        Returns 1.0 when there is insufficient data (< 4 samples).
+        """
+        samples = list(self._density_samples)
+        if len(samples) < 4:
+            return 1.0
+        mid = len(samples) // 2
+        past_mean = sum(samples[:mid]) / mid
+        recent_mean = sum(samples[mid:]) / (len(samples) - mid)
+        return recent_mean / past_mean if past_mean > 0 else 1.0
+
+    def get_seconds_since_last_beat(self) -> float:
+        """Seconds elapsed since the last detected beat."""
+        return (datetime.datetime.now() - self.last_beat_detected).total_seconds()
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
@@ -146,9 +166,10 @@ class MusicAnalyser:
             this_bpm: float = self.get_bpm()
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
+            self._density_samples.append(self.get_onset_density())
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
-            self.time_to_last_beat_sec = (now - self.last_beat_detected).microseconds / 1000 / 1000
+            self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
             self.last_beat_detected = now
         return is_beat
 

@@ -52,6 +52,14 @@ class Effect:
         self.midi_channel: MidiChannel = midi_channel
         self.overlay_effect: OverlayEffect = overlay_effect
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Effect):
+            return NotImplemented
+        return (self.type == other.type
+                and self.source == other.source
+                and self.midi_channel == other.midi_channel
+                and self.overlay_effect == other.overlay_effect)
+
     def __str__(self):
         if self.source == EffectSource.MIDI:
             return f"[midi] type={self.type.name} effect={self.midi_channel.name}"

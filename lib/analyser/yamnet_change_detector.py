@@ -131,8 +131,12 @@ class YamnetChangeDetector:
 
     def start(self):
         logging.info('[yamnet] loading yamnet model..')
-        self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
-        logging.info('[yamnet] loaded yamnet model successfully')
+        try:
+            self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+            logging.info('[yamnet] loaded yamnet model successfully')
+        except Exception as exc:
+            logging.warning(f'[yamnet] model load failed — section detection disabled: {exc}')
+            self.yamnet_model = None
 
     def reset(self):
         if not self.change_tracker.is_cooldown_active():
@@ -142,6 +146,8 @@ class YamnetChangeDetector:
     def detect_change(self,
                       audio_signal: np.ndarray,
                       current_song_duration: datetime.timedelta) -> bool:
+        if self.yamnet_model is None:
+            return False
         result = False
 
         # audio signals come in at a smaller size than we need here, so we aggregate

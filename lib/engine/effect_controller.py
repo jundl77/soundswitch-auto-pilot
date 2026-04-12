@@ -89,6 +89,7 @@ class EffectController:
         self.last_color_override_time = now
 
     def _select_new_random_effect(self, effects: list[Effect], previous_effect: Effect) -> Effect:
+        assert len(effects) > 1, f'effect pool must have >1 entries to avoid an infinite loop (got {len(effects)})'
         i: int = random.randrange(0, len(effects), 1)
         while effects[i] == previous_effect:
             i = random.randrange(0, len(effects), 1)
