@@ -2,10 +2,13 @@ import time
 import logging
 import datetime
 import numpy as np
-import tensorflow as tf
-import tensorflow_hub as hub
 from enum import Enum
 from collections import deque
+
+# tensorflow and tensorflow_hub are imported lazily inside start() so that the
+# module can be imported without them installed (e.g. during unit tests).
+tf = None
+hub = None
 
 
 class ChangeType(Enum):
@@ -130,8 +133,13 @@ class YamnetChangeDetector:
         self.rolling_window_similarities: deque = deque(maxlen=100)
 
     def start(self):
+        global tf, hub
         logging.info('[yamnet] loading yamnet model..')
         try:
+            import tensorflow as _tf
+            import tensorflow_hub as _hub
+            tf = _tf
+            hub = _hub
             self.yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
             logging.info('[yamnet] loaded yamnet model successfully')
         except Exception as exc:

@@ -2,20 +2,23 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+packages = []   # application, not a library — nothing to install
+
 [project]
 name = "soundswitch-auto-pilot"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "python-rtmidi==1.4.9",
+    "python-rtmidi>=1.5,<2",
     "cython",
     "aubio",
-    "numpy",
+    "numpy>=1.26,<2",
     "pyaudio",
     "matplotlib",
     "pandas",
-    "tensorflow",
-    "tensorflow-hub",
+    "tensorflow>=2.16,<2.17",
+    "tensorflow-hub>=0.16,<0.17",
     "scipy",
     "python-osc",
     "scikit-learn",
@@ -23,6 +26,7 @@ dependencies = [
     "argcomplete",
     "zeroconf",
     "netifaces",
+    "setuptools",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +39,9 @@ visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
+
+[tool.uv]
+extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
