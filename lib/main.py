@@ -22,13 +22,15 @@ class SoundSwitchAutoPilot:
                  debug_mode: bool = False,
                  show_visualizer: bool = False,
                  disable_os2l: bool = False,
-                 lookahead_delay_sec: float = 0.0):
+                 lookahead_delay_sec: float = 0.0,
+                 enable_ui: bool = False,
+                 ui_port: int = 8050,
+                 report_path: str | None = None):
         # import here to avoid loading expensive dependencies during arg parsing
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
         from lib.clients.overlay_client import OverlayClient
-        from lib.clients.spotify_client import SpotifyClient
         from lib.analyser.music_analyser import MusicAnalyser
         from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
@@ -38,6 +40,9 @@ class SoundSwitchAutoPilot:
         self.debug_mode: bool = debug_mode
         self.show_visualizer: bool = show_visualizer
         self.disable_os2l: bool = disable_os2l
+        self.enable_ui: bool = enable_ui
+        self._ui_port: int = ui_port
+        self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
         self.command_queue: DelayedCommandQueue = DelayedCommandQueue(lookahead_delay_sec)
@@ -48,7 +53,6 @@ class SoundSwitchAutoPilot:
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
-        self.spotify_client: SpotifyClient = SpotifyClient()
         self.overlay_client: OverlayClient = OverlayClient()
 
         # construct visualizer
@@ -63,12 +67,15 @@ class SoundSwitchAutoPilot:
             self.visualizer: Visualizer = None
             self.visualizer_updater: VisualizerUpdater = None
 
+        # construct event buffer (for --ui and/or --report)
+        from lib.engine.event_buffer import EventBuffer
+        self.event_buffer: EventBuffer | None = EventBuffer() if (enable_ui or report_path) else None
+
         # construct engine
-        self.effect_controller: EffectController = EffectController(self.midi_client)
+        self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
-                                                     self.spotify_client, self.effect_controller,
-                                                     self.command_queue)
-        self.spotify_client.set_engine(self.light_engine)
+                                                     self.effect_controller,
+                                                     self.command_queue, event_buffer=self.event_buffer)
 
         # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
@@ -81,7 +88,6 @@ class SoundSwitchAutoPilot:
 
     async def run(self):
         logging.info("[main] setting up auto pilot..")
-        self.spotify_client.start()
         self.audio_client.start_streams(start_stream_out=self.debug_mode)
         self.midi_client.start()
         self.overlay_client.start()
@@ -93,6 +99,17 @@ class SoundSwitchAutoPilot:
         if self.show_visualizer:
             self.visualizer.show()
             self.visualizer_updater.connect()
+        if self.event_buffer is not None:
+            self.event_buffer.start()
+            import threading
+            from simulate.visualizer_app import run_app
+            ui_thread = threading.Thread(
+                target=run_app,
+                args=(self.event_buffer, self._ui_port),
+                daemon=True,
+            )
+            ui_thread.start()
+            logging.info(f'[main] visualizer started → http://localhost:{self._ui_port}')
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
@@ -129,13 +146,11 @@ class SoundSwitchAutoPilot:
         if self.show_visualizer:
             self.visualizer.stop()
             self.visualizer_updater.stop()
-        self.spotify_client.stop()
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
         self.is_running = False
         self.os2l_client.stop()
-        self.spotify_client.stop()
         if self.show_visualizer:
             self.visualizer.stop()
             self.visualizer_updater.stop()
@@ -169,9 +184,21 @@ async def run_cmd(args: argparse.Namespace):
                                       debug_mode=debug_mode,
                                       show_visualizer=args.visualizer,
                                       disable_os2l=args.no_os2l,
-                                      lookahead_delay_sec=lookahead_delay_sec)
+                                      lookahead_delay_sec=lookahead_delay_sec,
+                                      enable_ui=args.ui,
+                                      ui_port=args.ui_port,
+                                      report_path=args.report)
 
     await global_app.run()
+
+    if args.report and global_app.event_buffer is not None:
+        import json
+        from simulate.evaluator import evaluate, print_evaluation
+        report = global_app.event_buffer.to_report()
+        with open(args.report, 'w') as f:
+            json.dump(report, f, indent=2, default=str)
+        logging.info(f'[main] report written → {args.report}')
+        print_evaluation(evaluate(report))
 
 
 async def list_cmd(args: argparse.Namespace):
@@ -204,7 +231,13 @@ async def main():
     subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
     subparser.add_argument('--no-os2l', help='Disable OS2L (connection to SoundSwitch). This can be useful for debugging.', required=False, action='store_true')
     subparser.add_argument('--delay', help='Lookahead delay in seconds (must match dmx-enttec-node playback_delay_seconds). Default: 0.0', required=False, default=None)
+    subparser.add_argument('--ui', help='Launch real-time lighting visualizer (requires dash extra)', required=False, action='store_true')
+    subparser.add_argument('--ui-port', type=int, default=8050, help='Visualizer Dash server port (default: 8050)', required=False, dest='ui_port')
+    subparser.add_argument('--report', default=None, help='Write a JSON session report on exit (e.g. report.json); implies event tracking', required=False)
     subparser.set_defaults(func=run_cmd)
+
+    from simulate.cli import add_simulate_subparser
+    add_simulate_subparser(subparsers)
 
     argcomplete.autocomplete(parser)
     args = parser.parse_args()

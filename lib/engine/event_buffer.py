@@ -1,0 +1,166 @@
+"""
+Thread-safe store of pipeline events.
+
+Written to from the asyncio pipeline thread (via stub clients), read from the
+Dash server thread via snapshot(). The only shared state between threads.
+"""
+
+import threading
+import time
+from collections import deque
+
+
+class EventBuffer:
+    def __init__(self, window_sec: float = 60.0):
+        self._lock = threading.Lock()
+        self._window_sec = window_sec
+        self._start_time: float | None = None
+        self._is_playing: bool = False
+        # Beats: high-frequency, bounded deque to avoid unbounded memory growth
+        self._beats: deque[dict] = deque(maxlen=3000)
+        # Effects: list so we can mutate the last entry to set 'end'
+        self._effects: list[dict] = []
+        # Intent history: same structure as effects, used for the timeline
+        self._intents: list[dict] = []
+        self._timing_log: list[dict] = []
+        self._current_intent: str | None = None
+
+    def start(self) -> None:
+        with self._lock:
+            self._start_time = time.monotonic()
+
+    def elapsed(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.monotonic() - self._start_time
+
+    def _now(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.monotonic() - self._start_time
+
+    def add_beat(self, bpm: float, onset_density: float, change: bool) -> None:
+        with self._lock:
+            self._beats.append({
+                't': self._now(), 'bpm': bpm,
+                'onset_density': onset_density,   # onsets/sec (aubio rolling 3s window)
+                'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
+                'change': change,
+            })
+
+    def add_effect(self, channel: str, effect_type: str) -> None:
+        with self._lock:
+            now = self._now()
+            # Close the previous open effect band
+            if self._effects and 'end' not in self._effects[-1]:
+                self._effects[-1]['end'] = now
+            self._effects.append({'t': now, 'channel': channel, 'type': effect_type})
+            # Prune entries well outside the window to prevent unbounded growth
+            cutoff = now - self._window_sec * 2
+            self._effects = [e for e in self._effects if e.get('end', now) >= cutoff]
+
+    def set_playing(self, is_playing: bool) -> None:
+        with self._lock:
+            self._is_playing = is_playing
+
+    def set_intent(self, intent: str) -> None:
+        with self._lock:
+            if intent == self._current_intent:
+                return  # no change — don't add a duplicate block
+            self._current_intent = intent
+            now = self._now()
+            if self._intents and 'end' not in self._intents[-1]:
+                self._intents[-1]['end'] = now
+            self._intents.append({'t': now, 'intent': intent})
+            cutoff = now - self._window_sec * 2
+            self._intents = [e for e in self._intents if e.get('end', now) >= cutoff]
+
+    def set_timing_log(self, log: list[dict]) -> None:
+        with self._lock:
+            self._timing_log = list(log)
+
+    def snapshot(self) -> dict:
+        """Thread-safe copy of recent state — called from Dash every 100 ms."""
+        with self._lock:
+            now = self._now()
+            cutoff = now - self._window_sec
+            return {
+                'now': now,
+                'is_playing': self._is_playing,
+                'beats': [b for b in self._beats if b['t'] >= cutoff],
+                'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
+                'intents': [e for e in self._intents if e.get('end', now) >= cutoff],
+                'current_effect': self._effects[-1] if self._effects else None,
+                'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
+                'beats_detected': len(self._beats),
+                'intent': self._current_intent,
+            }
+
+    def to_report(self, timing_log: list[dict] | None = None) -> dict:
+        """Full serializable report for agentic evaluation or JSON export."""
+        with self._lock:
+            now = self._now()
+
+            all_effects = list(self._effects)
+            if all_effects and 'end' not in all_effects[-1]:
+                all_effects[-1] = {**all_effects[-1], 'end': now}
+
+            all_intents = list(self._intents)
+            if all_intents and 'end' not in all_intents[-1]:
+                all_intents[-1] = {**all_intents[-1], 'end': now}
+
+            tlog = timing_log if timing_log is not None else self._timing_log
+            errors_ms = [
+                abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000
+                for e in tlog
+            ]
+            durations = [e['end'] - e['t'] for e in all_effects if 'end' in e]
+            unique_channels = {e['channel'] for e in all_effects}
+            all_beats = list(self._beats)
+
+            # Intent distribution: seconds spent in each intent
+            intent_distribution: dict[str, float] = {}
+            for entry in all_intents:
+                if 'end' not in entry:
+                    continue
+                dur = entry['end'] - entry['t']
+                intent_distribution[entry['intent']] = (
+                    intent_distribution.get(entry['intent'], 0.0) + dur
+                )
+            dominant_intent = (
+                max(intent_distribution, key=intent_distribution.__getitem__)
+                if intent_distribution else None
+            )
+
+            return {
+                'duration_sec': now,
+                'beats': all_beats,
+                'effects': all_effects,
+                'intents': all_intents,
+                'timing_log': tlog,
+                'metrics': {
+                    'beats_detected': len(all_beats),
+                    'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
+                    'onset_density_mean': (
+                        sum(b['onset_density'] for b in all_beats) / len(all_beats)
+                        if all_beats else 0.0
+                    ),
+                    'timing_error_mean_ms': (
+                        sum(errors_ms) / len(errors_ms) if errors_ms else 0.0
+                    ),
+                    'timing_error_max_ms': max(errors_ms) if errors_ms else 0.0,
+                    'unique_effects_count': len(unique_channels),
+                    'effect_changes_count': len(all_effects),
+                    'avg_effect_duration_sec': (
+                        sum(durations) / len(durations) if durations else 0.0
+                    ),
+                    'unique_channels': sorted(unique_channels),
+                    # Intent classification metrics
+                    'intent_changes_count': len(all_intents),
+                    'unique_intents_count': len(intent_distribution),
+                    'intent_distribution_sec': {
+                        k: round(v, 2) for k, v in sorted(intent_distribution.items())
+                    },
+                    'dominant_intent': dominant_intent,
+                },
+            }

@@ -3,13 +3,12 @@ import logging
 import aubio
 import numpy as np
 from typing import Optional
-from scipy.ndimage.filters import gaussian_filter1d
+from collections import deque
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
-from lib.analyser.exp_filter import ExpFilter
-from lib.clients.spotify_client import SpotifyTrackAnalysis
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
-from lib.effects.rgb_visualizer import RgbVisualizer
+
+_ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
 
 class MusicAnalyser:
@@ -47,14 +46,10 @@ class MusicAnalyser:
         self.energy_filter = aubio.filterbank(self.mfcc_filters, self.win_s)
         self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
 
-        self.rgb_visualizer = RgbVisualizer(num_mel_bins=self.mfcc_filters, num_pixels=60)
-        self.mel_gain = ExpFilter(np.tile(1e-1, self.mfcc_filters), alpha_decay=0.01, alpha_rise=0.99)
-        self.mel_smoothing = ExpFilter(np.tile(1e-1, self.mfcc_filters), alpha_decay=0.5, alpha_rise=0.99)
 
         # tracking state
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
-        self.spotify_track_analysis: Optional[SpotifyTrackAnalysis] = None
         self.song_start_time: datetime.datetime = datetime.datetime.now()
         self.song_current_time: datetime.datetime = datetime.datetime.now()
         self.silence_period_start: datetime.datetime = datetime.datetime.now()
@@ -66,6 +61,10 @@ class MusicAnalyser:
         self.time_to_last_beat_sec: float = 0
         self.last_beat_detected: datetime.datetime = datetime.datetime.now()
         self.last_note_detected: datetime.datetime = datetime.datetime.now()
+        # rolling window of onset timestamps for onset-density calculation
+        self._onset_times: deque = deque(maxlen=500)
+        # per-beat density samples for trend detection (maxlen=12 ≈ ~6s at 120 BPM)
+        self._density_samples: deque = deque(maxlen=12)
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -84,7 +83,7 @@ class MusicAnalyser:
 
     def get_beat_position(self) -> float:
         if self.is_playing and self.time_to_last_beat_sec > 0:
-            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).microseconds / 1000 / 1000
+            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).total_seconds()
             beat_percent_elapsed = time_to_current_beat_sec / self.time_to_last_beat_sec
             return self.beat_count + abs(beat_percent_elapsed)
         else:
@@ -99,15 +98,31 @@ class MusicAnalyser:
     def is_song_playing(self) -> bool:
         return self.is_playing
 
-    def inject_spotify_track_analysis(self, track_analysis: Optional[SpotifyTrackAnalysis]):
-        self.spotify_track_analysis = track_analysis
-        if self.spotify_track_analysis:
-            now = datetime.datetime.now()
-            offset_since_analysis_ms = (now - track_analysis.analysis_ts).total_seconds() * 1000
-            progress_with_offset_ms = track_analysis.progress_ms + offset_since_analysis_ms
-            self.beat_count = track_analysis.current_beat_count
-            self.song_start_time = datetime.datetime.now() - datetime.timedelta(milliseconds=progress_with_offset_ms)
-            logging.info(f'[analyser] applied spotify adjustments: beat_count={self.beat_count}, song_start={self.song_start_time}')
+    def get_onset_density(self) -> float:
+        """Onsets per second over the last 1.5 seconds (rolling window)."""
+        now = datetime.datetime.now()
+        cutoff = now - datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC)
+        while self._onset_times and self._onset_times[0] < cutoff:
+            self._onset_times.popleft()
+        return len(self._onset_times) / _ONSET_DENSITY_WINDOW_SEC
+
+    def get_onset_density_trend(self) -> float:
+        """Ratio of recent vs past onset density.
+
+        Returns >1.0 when density is rising (buildup feel), <1.0 when falling.
+        Returns 1.0 when there is insufficient data (< 4 samples).
+        """
+        samples = list(self._density_samples)
+        if len(samples) < 4:
+            return 1.0
+        mid = len(samples) // 2
+        past_mean = sum(samples[:mid]) / mid
+        recent_mean = sum(samples[mid:]) / (len(samples) - mid)
+        return recent_mean / past_mean if past_mean > 0 else 1.0
+
+    def get_seconds_since_last_beat(self) -> float:
+        """Seconds elapsed since the last detected beat."""
+        return (datetime.datetime.now() - self.last_beat_detected).total_seconds()
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
@@ -124,17 +139,7 @@ class MusicAnalyser:
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
-        # todo: uncomment and fix again
-        # rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
-        # intensity_val = np.min([1, (np.mean(rgb_spec[0]) + np.mean(rgb_spec[1]) + np.mean(rgb_spec[2])) / 3 / 50])
-        # if self.is_playing:
-        #     await self.handler.on_cyjkl cle(intensity_val)
-
-        # rgb_spec, rgb_energy, rgb_scroll = np.zeros((4,)), np.zeros((4,)), np.zeros((4,))
-        # if is_onset:
-        #     rgb_spec, rgb_energy, rgb_scroll = self._compute_rgb_visualizations(energies)
-
-        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration(), self.spotify_track_analysis):
+        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration()):
             await self.handler.on_section_change()
 
         if is_beat:
@@ -145,17 +150,13 @@ class MusicAnalyser:
             audio_signal += self.click_sound
             pass
 
-        # todo: uncomment again
-        # if self.visualizer_updater is not None:
-        #     data = VisualizerData(spec.norm, energies, rgb_spec, rgb_energy, rgb_scroll, mfccs, np.array([pitch_hz]), np.array([is_onset]), np.array([is_beat]), np.array([is_note]))
-        #     self.visualizer_updater.update_data(data)
-
         await self.handler.on_cycle()
         return audio_signal
 
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
+            self._onset_times.append(datetime.datetime.now())
             await self.handler.on_onset()
         return is_onset
 
@@ -165,9 +166,10 @@ class MusicAnalyser:
             this_bpm: float = self.get_bpm()
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
+            self._density_samples.append(self.get_onset_density())
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
-            self.time_to_last_beat_sec = (now - self.last_beat_detected).microseconds / 1000 / 1000
+            self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
             self.last_beat_detected = now
         return is_beat
 
@@ -188,23 +190,6 @@ class MusicAnalyser:
         self.energies = np.vstack([self.energies, energies_out])
 
         return spec, mfcc_out, energies_out
-
-    def _compute_rgb_visualizations(self, energies: np.ndarray) -> [np.ndarray, np.ndarray, np.ndarray]:
-        # Scale data to values more suitable for visualization
-        mel = np.atleast_2d(energies).T * energies.T
-        mel = np.sum(mel, axis=0)
-        mel = mel**2.0
-
-        # Gain normalization
-        self.mel_gain.update(np.max(gaussian_filter1d(mel, sigma=1.0)))
-        mel /= self.mel_gain.value
-        mel = self.mel_smoothing.update(mel)
-
-        rgb_spec = self.rgb_visualizer.visualize_spectrum(mel)
-        rgb_energy = self.rgb_visualizer.visualize_energy(mel)
-        rgb_scroll = self.rgb_visualizer.visualize_scroll(mel)
-
-        return rgb_spec, rgb_energy, rgb_scroll
 
     def _track_song_duration(self, energies: np.ndarray, now: datetime.datetime) -> None:
         is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)

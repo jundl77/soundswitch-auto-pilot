@@ -1,54 +1,94 @@
+from __future__ import annotations
 import logging
+from typing import TYPE_CHECKING
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
+from lib.engine.effect_definitions import LightIntent
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
-from lib.clients.spotify_client import SpotifyClient, SpotifyTrackAnalysis
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 
+if TYPE_CHECKING:
+    from lib.engine.event_buffer import EventBuffer
+
+# ---------------------------------------------------------------------------
+# Intent classifier
+# ---------------------------------------------------------------------------
+# These thresholds are a starting point — tune against real DJ sets.
+# onset_density = onsets/sec over a 1.5-second rolling window (from aubio).
+#
+# Structure of a typical EDM track and how we detect it:
+#   ATMOSPHERIC — no beats detected for >2 s (intro, full breakdown, outro)
+#                 Detected via beat-absence in on_100ms_callback, NOT here.
+#   BREAKDOWN   — beat present but very sparse onsets (melodic, stripped)
+#   GROOVE      — moderate onsets at mid-tempo (main dance-floor loop)
+#   BUILDUP     — onset density rising; moderately high BPM (pre-drop tension)
+#   DROP        — onset density spikes hard (bass, kick, hat all firing)
+#   PEAK        — sustained very high BPM + high density (post-drop peak)
+
+_BREAKDOWN_MAX_DENSITY  = 3.0   # onsets/sec — sparse = breakdown feel
+_BUILDUP_MIN_TREND      = 1.3   # density trend ratio — rising 30% → BUILDUP
+_DROP_MIN_DENSITY       = 8.0   # hi-hat alone sits at 4–8 onsets/s; DROP needs more
+_PEAK_MIN_BPM           = 138.0
+
+_BEAT_ABSENCE_SEC       = 2.5   # seconds without a beat → ATMOSPHERIC (5+ missed beats at 128 BPM)
+
+
+def _classify_intent(bpm: float, onset_density: float, density_trend: float = 1.0) -> LightIntent:
+    """Map (BPM, onset_density, density_trend) → LightIntent.
+
+    Priority order matters: density spike always wins (DROP), then BPM
+    thresholds narrow down the remaining cases.
+    ATMOSPHERIC is NOT detected here — it is set in on_100ms_callback via beat absence.
+    BUILDUP requires rising onset density (trend ≥ 1.3); steady high-BPM grooves are GROOVE.
+    """
+    if onset_density >= _DROP_MIN_DENSITY and bpm >= 100:
+        return LightIntent.DROP
+    if bpm >= _PEAK_MIN_BPM:
+        return LightIntent.PEAK
+    if onset_density < _BREAKDOWN_MAX_DENSITY:
+        return LightIntent.BREAKDOWN
+    if density_trend >= _BUILDUP_MIN_TREND:
+        return LightIntent.BUILDUP
+    return LightIntent.GROOVE
+
+
+# ---------------------------------------------------------------------------
+# LightEngine
+# ---------------------------------------------------------------------------
 
 class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
                  midi_client: MidiClient,
                  os2l_client: Os2lClient,
                  overlay_client: OverlayClient,
-                 spotify_client: SpotifyClient,
                  effect_controller: EffectController,
-                 command_queue: DelayedCommandQueue | None = None):
+                 command_queue: DelayedCommandQueue | None = None,
+                 event_buffer: EventBuffer | None = None):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
-        self.spotify_client: SpotifyClient = spotify_client
         self.effect_controller: EffectController = effect_controller
         self.command_queue: DelayedCommandQueue | None = command_queue
+        self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
-        self.spotify_track_analysis: SpotifyTrackAnalysis | None = None
         self._note_counter: int = 0
+        self._needs_initial_effect: bool = False
+        self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
 
     def on_sound_start(self):
         logging.info('[engine] sound start')
-        self.spotify_track_analysis = self.spotify_client.get_current_track_analysis()
-
-        first_downbeat_ms = 20000
-        bpm = 120
-        beats_to_first_downbeat = 0
-        time_elapsed_ms = 0
-        if self.spotify_track_analysis:
-            first_downbeat_ms = self.spotify_track_analysis.first_downbeat_ms
-            bpm = self.spotify_track_analysis.bpm
-            beats_to_first_downbeat = self.spotify_track_analysis.beats_to_first_downbeat
-            time_elapsed_ms = self.spotify_track_analysis.progress_ms
-            self.analyser.inject_spotify_track_analysis(self.spotify_track_analysis)
-
         self.midi_client.on_sound_start()
         self.overlay_client.deactivate_all()
-        self.os2l_client.on_sound_start(time_elapsed_ms, beats_to_first_downbeat, first_downbeat_ms, bpm)
-        self._log_current_track_info()
+        self.os2l_client.on_sound_start(0, 0, 20000, 120)
+        if self.event_buffer:
+            self.event_buffer.set_playing(True)
+        self._needs_initial_effect = True
 
     def on_sound_stop(self):
         logging.info('[engine] sound stop')
@@ -56,6 +96,9 @@ class LightEngine(IMusicAnalyserHandler):
         self.os2l_client.on_sound_stop()
         self.effect_controller.reset_state()
         self.overlay_client.deactivate_all()
+        if self.event_buffer:
+            self.event_buffer.set_playing(False)
+        self._atmospheric_sent = False
 
     async def on_cycle(self):
         await self.effect_controller.process_effects()
@@ -66,50 +109,63 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
         current_second = self.analyser.get_song_current_duration().total_seconds()
-        beat_strength = self._calculate_current_beat_strength(current_second)
-        logging.info(f'[engine] [{current_second:.2f} sec] beat detected, change={bpm_changed}, beat_number={beat_number}, bpm={bpm:.2f}, strength={beat_strength:.2f}')
-        # Capture locals in closure — they must not be read by reference after enqueue
-        _change, _pos, _bpm, _strength = bpm_changed, beat_number, bpm, beat_strength
+        onset_density = self.analyser.get_onset_density()
+        density_trend = self.analyser.get_onset_density_trend()
+        intent = _classify_intent(bpm, onset_density, density_trend)
+        logging.info(
+            f'[engine] [{current_second:.2f}s] beat #{beat_number}  '
+            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  trend={density_trend:.2f}  intent={intent.name}'
+        )
+        if self.event_buffer:
+            self.event_buffer.add_beat(bpm, onset_density, bpm_changed)
+            self.event_buffer.set_intent(intent.value)
+        was_atmospheric = self._atmospheric_sent
+        self._atmospheric_sent = False
+        if self._needs_initial_effect or was_atmospheric:
+            # Trigger an immediate MIDI effect change on first beat and on returning
+            # from a beat-absence ATMOSPHERIC period.
+            self._needs_initial_effect = False
+            await self.effect_controller.change_effect(intent)
+        _change, _pos, _bpm = bpm_changed, beat_number, bpm
         if self.command_queue:
             await self.command_queue.enqueue(
                 'beat',
-                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm, strength=_strength)
+                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm, strength=0.5)
             )
         else:
-            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=beat_strength)
+            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0.5)
 
     async def on_note(self):
         dmx_data = [0] * 24
         self._note_counter = (self._note_counter + 3) % 24
         dmx_data[self._note_counter] = 100
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
-        logging.info(f'[engine] note detected')
+        logging.info('[engine] note detected')
 
     async def on_section_change(self) -> None:
-        logging.info(f"[engine] audio section change detected")
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        if self.spotify_track_analysis is None:
-            return
-        _second, _analysis = current_second, self.spotify_track_analysis
+        logging.info('[engine] audio section change detected')
+        bpm = self.analyser.get_bpm()
+        onset_density = self.analyser.get_onset_density()
+        density_trend = self.analyser.get_onset_density_trend()
+        intent = _classify_intent(bpm, onset_density, density_trend)
+        _intent = intent
         if self.command_queue:
             await self.command_queue.enqueue(
                 'section_change',
-                lambda: self.effect_controller.change_effect(_second, _analysis)
+                lambda: self.effect_controller.change_effect(_intent)
             )
         else:
-            await self.effect_controller.change_effect(current_second, self.spotify_track_analysis)
-
-    async def on_spotify_track_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
-        logging.info(f"[engine] spotify track change detected")
-        self._handle_spotify_state_change(spotify_track_analysis)
-
-    async def on_spotify_track_progress_changed(self, spotify_track_analysis: SpotifyTrackAnalysis) -> None:
-        logging.info(f"[engine] spotify track progress change detected")
-        self._handle_spotify_state_change(spotify_track_analysis)
+            await self.effect_controller.change_effect(intent)
 
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
+        if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
+            if self.event_buffer:
+                self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value)
+            if not self._atmospheric_sent:
+                self._atmospheric_sent = True
+                await self.effect_controller.change_effect(LightIntent.ATMOSPHERIC)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
@@ -118,41 +174,14 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_10sec_callback(self):
         if not self.analyser.is_song_playing():
             return
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        await self.spotify_client.check_for_track_changes(self.spotify_track_analysis, current_second)
-        self._log_current_track_info()
-
-    def _handle_spotify_state_change(self, spotify_track_analysis: SpotifyTrackAnalysis):
-        self.analyser.inject_spotify_track_analysis(spotify_track_analysis)
-        self.spotify_track_analysis = spotify_track_analysis
-        current_second = float(self.analyser.get_song_current_duration().total_seconds())
-        self.effect_controller.update_audio_section(current_second, self.spotify_track_analysis)
-        self._log_current_track_info()
-
-    def _calculate_current_beat_strength(self, current_second: float) -> float:
-        if not self.spotify_track_analysis:
-            return 0
-        current_second = int(current_second)
-        if len(self.spotify_track_analysis.beat_strengths_by_sec) <= current_second:
-            return 0
-        return self.spotify_track_analysis.beat_strengths_by_sec[current_second]
-
-    def _log_current_track_info(self):
         bpm = int(self.analyser.get_bpm())
+        onset_density = self.analyser.get_onset_density()
+        density_trend = self.analyser.get_onset_density_trend()
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-
-        logging.info(f"[engine] == current song info ==")
-        if self.spotify_track_analysis:
-            logging.info(f"[engine]   name:                    {self.spotify_track_analysis.track_name}")
-            logging.info(f"[engine]   artists:                 [{', '.join(self.spotify_track_analysis.artists)}]")
-            logging.info(f"[engine]   album:                   {self.spotify_track_analysis.album_name}")
-            logging.info(f"[engine]   genres:                  [{', '.join(self.spotify_track_analysis.genres)}]")
-            logging.info(f"[engine]   light_show_type:         {self.spotify_track_analysis.light_show_type.name}")
-            logging.info(f"[engine]   first_downbeat_count:    {self.spotify_track_analysis.beats_to_first_downbeat}")
-            logging.info(f"[engine]   first_downbeat_ms:       {self.spotify_track_analysis.first_downbeat_ms}")
-            logging.info(f"[engine]   audio_sections_start_ts: {[s.section_start_sec for s in self.spotify_track_analysis.audio_sections]}")
-            logging.info(f"[engine]   spotify_bpm:             {self.spotify_track_analysis.bpm}")
-            logging.info(f"[engine]   last_effect:             {self.effect_controller.last_effect}")
-        logging.info(f"[engine]   realtime_bpm:            {bpm}")
-        logging.info(f"[engine]   current_second:          {current_second}")
-
+        intent = _classify_intent(float(bpm), onset_density, density_trend)
+        logging.info(f'[engine] == current state ==')
+        logging.info(f'[engine]   realtime_bpm:    {bpm}')
+        logging.info(f'[engine]   onset_density:   {onset_density:.2f} /s')
+        logging.info(f'[engine]   intent:          {intent.name}')
+        logging.info(f'[engine]   current_second:  {current_second}')
+        logging.info(f'[engine]   last_effect:     {self.effect_controller.last_effect}')
