@@ -35,6 +35,16 @@ def test_late_transition_positive_offset():
     assert abs(result['boundaries'][0]['offset_ms'] - 1000.0) < 1
 
 
+def test_early_transition_negative_offset():
+    """Predicted 1s before GT → offset_ms = -1000, passed=False."""
+    intents = _make_intents((0.0, 'atmospheric'), (9.0, 'breakdown'))
+    labels  = _make_labels((0.0, 10.0, 'atmospheric'), (10.0, 40.0, 'breakdown'))
+    result  = evaluate_against_labels(intents, labels, look_ahead_sec=0.0)
+    assert result['missed_count'] == 0
+    assert abs(result['boundaries'][0]['offset_ms'] - (-1000.0)) < 1
+    assert result['boundaries'][0]['passed'] is False
+
+
 def test_missed_boundary_beyond_search_window():
     """No predicted transition within ±2s → missed."""
     intents = _make_intents((0.0, 'atmospheric'), (20.0, 'breakdown'))

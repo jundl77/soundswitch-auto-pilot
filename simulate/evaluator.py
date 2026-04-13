@@ -135,6 +135,7 @@ def print_evaluation(result: dict, transition_accuracy: dict | None = None) -> N
 
 
 _SEARCH_WINDOW_SEC = 2.0
+_PASS_THRESHOLD_MS = 100.0
 
 
 def evaluate_against_labels(
@@ -174,6 +175,8 @@ def evaluate_against_labels(
         T = gt['gt_sec']
         best_idx, best_dist = None, float('inf')
         for j, pt in enumerate(pred_times):
+            if j in matched_pred_indices:
+                continue
             d = abs(pt - T)
             if d < best_dist and d <= search_window_sec:
                 best_dist, best_idx = d, j
@@ -198,7 +201,7 @@ def evaluate_against_labels(
                 'predicted_sec':    round(pred_times[best_idx], 3),
                 'offset_ms':        round(offset_ms, 1),
                 'missed':           False,
-                'passed':           abs(offset_ms) <= 100.0,
+                'passed':           abs(offset_ms) <= _PASS_THRESHOLD_MS,
             })
 
     false_boundaries = [
