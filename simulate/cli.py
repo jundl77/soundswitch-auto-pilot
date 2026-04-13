@@ -82,7 +82,7 @@ def _write_report_and_evaluate(event_buffer, command_queue, report_path: str,
         json.dump(report, f, indent=2, default=str)
     print(f'[simulate] report written → {report_path}')
     result = evaluate(report)
-    print_evaluation(result)  # TODO(Task 3): pass report.get('transition_accuracy') once print_evaluation accepts it
+    print_evaluation(result, report.get('transition_accuracy'))
     return result['passed']
 
 
