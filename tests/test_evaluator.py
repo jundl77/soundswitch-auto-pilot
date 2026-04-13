@@ -104,3 +104,63 @@ def test_sweep_score_weighted_combo():
     }
     # 0.6 * 100 + 0.4 * 200 = 60 + 80 = 140
     assert abs(_sweep_score(ta) - 140.0) < 0.01
+
+
+from simulate.evaluator import _replay_feature_log
+
+
+def _make_feature_log(beats: list[tuple]) -> list[dict]:
+    """Build feature log: list of (audio_time_sec, bpm, onset_density, kick_strength) tuples.
+    density_trend=1.0, centroid_trend=1.0, sub_bass_ratio=0.3 as defaults.
+    """
+    return [
+        {
+            'audio_time_sec': t,
+            'bpm':            bpm,
+            'onset_density':  density,
+            'kick_strength':  kick,
+            'density_trend':  1.0,
+            'centroid_trend': 1.0,
+            'sub_bass_ratio': 0.3,
+        }
+        for t, bpm, density, kick in beats
+    ]
+
+
+_BASE_CFG = {
+    '_BREAKDOWN_MAX_DENSITY_ENTER': 3.0,
+    '_BREAKDOWN_MAX_DENSITY_EXIT':  3.5,
+    '_BUILDUP_MIN_TREND':           1.3,
+    '_DROP_MIN_DENSITY_ENTER':      8.5,
+    '_DROP_MIN_DENSITY_EXIT':       7.0,
+    '_KICK_PRESENCE_THRESHOLD':     1.3,
+    '_CENTROID_BUILDUP_TREND':      1.1,
+    '_VOTE_BUFFER_SIZE':            1,   # single vote for fast convergence in tests
+    '_MIN_DWELL_BEATS':             1,
+}
+
+
+def test_replay_detects_drop_transition():
+    """High-density beats after a sparse section → DROP detected."""
+    sparse = [(float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(10)]
+    dense  = [(5.0 + float(i) * 0.5, 128.0, 9.5, 2.5) for i in range(10)]
+    log    = _make_feature_log(sparse + dense)
+    result = _replay_feature_log(log, _BASE_CFG, look_ahead_sec=0.5)
+    intents = [r['intent'] for r in result]
+    assert 'drop' in intents
+
+
+def test_replay_starts_atmospheric():
+    """Replay always begins with atmospheric (initial state)."""
+    log    = _make_feature_log([(float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(5)])
+    result = _replay_feature_log(log, _BASE_CFG, look_ahead_sec=0.5)
+    assert result[0]['intent'] == 'atmospheric'
+
+
+def test_replay_blocks_invalid_transition():
+    """ATMOSPHERIC → DROP is an invalid transition and must be blocked."""
+    log = _make_feature_log([(0.0, 128.0, 9.5, 2.5)])
+    cfg = {**_BASE_CFG, '_VOTE_BUFFER_SIZE': 1, '_MIN_DWELL_BEATS': 0}
+    result = _replay_feature_log(log, cfg, look_ahead_sec=0.5)
+    intents = [r['intent'] for r in result]
+    assert 'drop' not in intents

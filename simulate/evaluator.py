@@ -224,6 +224,122 @@ def evaluate_against_labels(
     }
 
 
+def _sweep_classify_intent(
+    bpm: float,
+    onset_density: float,
+    density_trend: float,
+    current_intent_value: str | None,
+    sub_bass_ratio: float,
+    kick_strength: float,
+    centroid_trend: float,
+    cfg: dict,
+) -> str:
+    """Mirrors light_engine._classify_intent with explicit threshold dict.
+
+    Priority: DROP → PEAK → BREAKDOWN → BUILDUP → GROOVE.
+    Returns intent as a string value (matching LightIntent.value).
+    """
+    currently_drop      = current_intent_value == 'drop'
+    currently_peak      = current_intent_value == 'peak'
+    currently_breakdown = current_intent_value == 'breakdown'
+
+    drop_threshold      = cfg['_DROP_MIN_DENSITY_EXIT']      if currently_drop      else cfg['_DROP_MIN_DENSITY_ENTER']
+    peak_threshold      = 135.0                               if currently_peak      else 140.0
+    breakdown_threshold = cfg['_BREAKDOWN_MAX_DENSITY_EXIT']  if currently_breakdown else cfg['_BREAKDOWN_MAX_DENSITY_ENTER']
+
+    kick_present = kick_strength >= cfg['_KICK_PRESENCE_THRESHOLD']
+
+    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= 0.0:
+        return 'drop'
+    if bpm >= peak_threshold:
+        return 'peak'
+    if onset_density < breakdown_threshold:
+        return 'breakdown'
+    if not kick_present and onset_density < 6.0:
+        return 'breakdown'
+    if density_trend >= cfg['_BUILDUP_MIN_TREND'] or centroid_trend >= cfg['_CENTROID_BUILDUP_TREND']:
+        return 'buildup'
+    return 'groove'
+
+
+_INVALID_TRANSITIONS = frozenset({
+    ('atmospheric', 'drop'),
+    ('atmospheric', 'buildup'),
+    ('atmospheric', 'peak'),
+    ('peak',        'buildup'),
+})
+
+
+def _replay_feature_log(
+    feature_log: list[dict],
+    cfg: dict,
+    look_ahead_sec: float = 2.5,
+) -> list[dict]:
+    """Replay feature log through the stability pipeline with given thresholds.
+
+    Returns list of {'t': float, 'intent': str} representing intent changes,
+    starting with {'t': 0.0, 'intent': 'atmospheric'}.
+
+    Timestamps are in raw audio time (same reference as the GT label CSV).
+    """
+    from collections import deque
+
+    vote_buffer_size = int(cfg['_VOTE_BUFFER_SIZE'])
+    min_dwell_beats  = int(cfg['_MIN_DWELL_BEATS'])
+
+    current_intent  = 'atmospheric'
+    vote_buffer     = deque(maxlen=vote_buffer_size)
+    beats_in_intent = 0
+    predicted       = [{'t': 0.0, 'intent': current_intent}]
+
+    for beat in feature_log:
+        t = beat['audio_time_sec']
+
+        # Build symmetric look-ahead/look-behind window
+        window = [b for b in feature_log if abs(b['audio_time_sec'] - t) <= look_ahead_sec]
+
+        # Windowed features (mirrors _classify_windowed in light_engine.py)
+        densities    = [b['onset_density'] for b in window]
+        sorted_d     = sorted(densities)
+        median_d     = sorted_d[len(sorted_d) // 2]
+        mean_sub     = sum(b['sub_bass_ratio'] for b in window) / len(window)
+        mean_kick    = sum(b['kick_strength']  for b in window) / len(window)
+        mean_ctrd    = sum(b['centroid_trend'] for b in window) / len(window)
+        mid          = len(densities) // 2
+        past         = densities[:mid] if mid > 0 else densities
+        future       = densities[mid:] if mid > 0 else densities
+        past_mean    = sum(past) / len(past)
+        future_mean  = sum(future) / len(future)
+        window_trend = future_mean / past_mean if past_mean > 0 else 1.0
+
+        raw = _sweep_classify_intent(
+            beat['bpm'], median_d, window_trend,
+            current_intent, mean_sub, mean_kick, mean_ctrd, cfg,
+        )
+
+        vote_buffer.append(raw)
+        beats_in_intent += 1
+
+        # Vote consensus check
+        if len(vote_buffer) < vote_buffer_size:
+            continue
+        if not all(v == raw for v in vote_buffer):
+            continue
+        if raw == current_intent:
+            continue
+        if beats_in_intent < min_dwell_beats:
+            continue
+        if (current_intent, raw) in _INVALID_TRANSITIONS:
+            continue
+
+        # Commit the intent change
+        predicted.append({'t': t, 'intent': raw})
+        current_intent  = raw
+        beats_in_intent = 0
+
+    return predicted
+
+
 def _sweep_score(ta: dict) -> float:
     """Composite score. Lower is better.
 
