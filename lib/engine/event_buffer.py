@@ -26,6 +26,7 @@ class EventBuffer:
         self._current_intent: str | None = None
         # Sound start/stop events for timeline markers
         self._sound_events: list[dict] = []
+        self._feature_log: list[dict] = []
 
     def start(self) -> None:
         with self._lock:
@@ -82,6 +83,10 @@ class EventBuffer:
         with self._lock:
             self._timing_log = list(log)
 
+    def set_feature_log(self, log: list[dict]) -> None:
+        with self._lock:
+            self._feature_log = list(log)
+
     def snapshot(self) -> dict:
         """Thread-safe copy of recent state — called from Dash every 100 ms."""
         with self._lock:
@@ -111,7 +116,7 @@ class EventBuffer:
                 'timing_stats': timing_stats,
             }
 
-    def to_report(self, timing_log: list[dict] | None = None) -> dict:
+    def to_report(self, timing_log: list[dict] | None = None, feature_log: list[dict] | None = None) -> dict:
         """Full serializable report for agentic evaluation or JSON export."""
         with self._lock:
             now = self._now()
@@ -125,6 +130,7 @@ class EventBuffer:
                 all_intents[-1] = {**all_intents[-1], 'end': now}
 
             tlog = timing_log if timing_log is not None else self._timing_log
+            flog = feature_log if feature_log is not None else self._feature_log
             errors_ms = [
                 abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000
                 for e in tlog
@@ -153,6 +159,7 @@ class EventBuffer:
                 'effects': all_effects,
                 'intents': all_intents,
                 'timing_log': tlog,
+                'feature_log': flog,
                 'metrics': {
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
