@@ -41,6 +41,15 @@ _DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled �
 _PEAK_MIN_BPM_ENTER          = 140.0 # enter PEAK when BPM ≥ this
 _PEAK_MIN_BPM_EXIT           = 135.0 # exit PEAK when BPM falls below this
 
+# Kick detection gate: kick_strength below this means no kick on beats → BREAKDOWN even at
+# moderate onset density.  1.3 = kick sub-bass is 30% stronger on beat than the rolling mean.
+_KICK_PRESENCE_THRESHOLD          = 1.3
+# When kick is absent, clamp BREAKDOWN entry to density below this (prevents misclassifying
+# a hi-hat-only pattern with no bass as BREAKDOWN when density is very high).
+_BREAKDOWN_NO_KICK_MAX_DENSITY    = 6.0
+# Spectral centroid trend threshold: centroid rising ≥10% → BUILDUP signal (riser/sweep).
+_CENTROID_BUILDUP_TREND           = 1.1
+
 _BEAT_ABSENCE_SEC            = 2.5   # seconds without a beat → ATMOSPHERIC (5+ missed beats at 128 BPM)
 
 # Stability: vote buffer requires this many consecutive identical votes before committing a switch.
@@ -64,19 +73,23 @@ def _classify_intent(
     density_trend: float = 1.0,
     current_intent: LightIntent | None = None,
     sub_bass_ratio: float = 0.0,
+    kick_strength: float = 2.0,
+    centroid_trend: float = 1.0,
 ) -> LightIntent:
     """Map audio features → LightIntent using hysteresis thresholds.
 
-    Priority order matters: density spike always wins (DROP), then BPM
-    thresholds narrow down the remaining cases.
+    Priority order: DROP → PEAK → BREAKDOWN → BUILDUP → GROOVE.
 
     Hysteresis (Schmitt trigger): when `current_intent` is provided, the exit
     threshold for the current intent is used instead of the entry threshold.
-    This prevents rapid flickering at intent boundaries.
 
-    ATMOSPHERIC is NOT detected here — it is set in on_100ms_callback via beat absence.
-    BUILDUP requires rising onset density (trend ≥ 1.3); steady high-BPM grooves are GROOVE.
-    sub_bass_ratio gates DROP: a high ratio (kick/bass) confirms a genuine DROP vs hi-hat spam.
+    kick_strength (default 2.0 = kick assumed present) gates DROP and BREAKDOWN:
+      - DROP requires kick on beats — prevents hi-hat-only high-density passages from triggering.
+      - BREAKDOWN can fire at moderate density when kick is absent (stripped arrangement).
+    centroid_trend fires BUILDUP independently of density_trend — catches riser sweeps
+      where the spectral centroid climbs before onset density rises.
+
+    ATMOSPHERIC is NOT detected here — fired via beat-absence timer in on_100ms_callback.
     """
     currently_drop      = (current_intent == LightIntent.DROP)
     currently_peak      = (current_intent == LightIntent.PEAK)
@@ -86,19 +99,27 @@ def _classify_intent(
     peak_threshold      = _PEAK_MIN_BPM_EXIT           if currently_peak      else _PEAK_MIN_BPM_ENTER
     breakdown_threshold = _BREAKDOWN_MAX_DENSITY_EXIT  if currently_breakdown else _BREAKDOWN_MAX_DENSITY_ENTER
 
-    if onset_density >= drop_threshold and bpm >= 100 and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
+    kick_present = kick_strength >= _KICK_PRESENCE_THRESHOLD
+
+    # DROP: density spike + kick confirmed on beats + (optional) sub-bass gate
+    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
         return LightIntent.DROP
     if bpm >= peak_threshold:
         return LightIntent.PEAK
+    # BREAKDOWN: either very sparse density, or kick absent at moderate density
+    # (stripped arrangement with hi-hats only should not read as GROOVE)
     if onset_density < breakdown_threshold:
         return LightIntent.BREAKDOWN
-    if density_trend >= _BUILDUP_MIN_TREND:
+    if not kick_present and onset_density < _BREAKDOWN_NO_KICK_MAX_DENSITY:
+        return LightIntent.BREAKDOWN
+    # BUILDUP: rising density trend OR rising spectral centroid (riser sweep)
+    if density_trend >= _BUILDUP_MIN_TREND or centroid_trend >= _CENTROID_BUILDUP_TREND:
         return LightIntent.BUILDUP
     return LightIntent.GROOVE
 
 
-# BeatRecord: (monotonic_time, onset_density, bpm, sub_bass_ratio, rms_energy)
-BeatRecord = tuple[float, float, float, float, float]
+# BeatRecord: (monotonic_time, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend)
+BeatRecord = tuple[float, float, float, float, float, float, float]
 
 
 def _classify_windowed(
@@ -112,13 +133,11 @@ def _classify_windowed(
     the time we need to commit a classification for beat T the window contains
     both past and future beats relative to T.  This gives us:
 
-      - Median density    → robust to single-beat transient spikes; a genuine DROP
-                            must sustain high density across the window to win.
-      - Forward trend     → compare the second half of the window (future beats)
-                            against the first half (past beats) to detect whether
-                            energy is rising or falling around T.
-      - Mean sub-bass     → averaged over the window; passed to _classify_intent for
-                            the DROP sub-bass gate (currently disabled: threshold = 0.0).
+      - Median density      → robust to single-beat transient spikes.
+      - Forward density trend → second half vs first half of window.
+      - Mean sub-bass       → for DROP sub-bass gate.
+      - Mean kick_strength  → averaged over window; kick must be consistently present for DROP.
+      - Mean centroid_trend → rising centroid across the window confirms BUILDUP riser.
 
     Falls back to GROOVE if the window is empty.
     current_intent is forwarded to _classify_intent for hysteresis-aware thresholds.
@@ -126,23 +145,26 @@ def _classify_windowed(
     if not window:
         return LightIntent.GROOVE
 
-    densities    = [entry[1] for entry in window]
-    sub_bass_vals = [entry[3] for entry in window] if len(window[0]) >= 5 else [0.0] * len(window)
+    n = len(window[0])
+    densities      = [entry[1] for entry in window]
+    sub_bass_vals  = [entry[3] for entry in window] if n >= 5 else [0.0] * len(window)
+    kick_vals      = [entry[5] for entry in window] if n >= 7 else []
+    centroid_vals  = [entry[6] for entry in window] if n >= 7 else []
 
-    # Median is more robust than mean against short transient spikes
     sorted_d = sorted(densities)
-    median_density = sorted_d[len(sorted_d) // 2]
-    mean_sub_bass  = sum(sub_bass_vals) / len(sub_bass_vals)
+    median_density    = sorted_d[len(sorted_d) // 2]
+    mean_sub_bass     = sum(sub_bass_vals) / len(sub_bass_vals)
+    mean_kick         = sum(kick_vals) / len(kick_vals) if kick_vals else 2.0   # default: kick assumed present
+    mean_centroid_trend = sum(centroid_vals) / len(centroid_vals) if centroid_vals else 1.0
 
-    # Trend: past half vs future half of the symmetric window
     mid = len(densities) // 2
-    past   = densities[:mid] if mid > 0 else densities
-    future = densities[mid:] if mid > 0 else densities
+    past        = densities[:mid] if mid > 0 else densities
+    future      = densities[mid:] if mid > 0 else densities
     past_mean   = sum(past) / len(past)
     future_mean = sum(future) / len(future)
     window_trend = future_mean / past_mean if past_mean > 0 else 1.0
 
-    return _classify_intent(bpm, median_density, window_trend, current_intent, mean_sub_bass)
+    return _classify_intent(bpm, median_density, window_trend, current_intent, mean_sub_bass, mean_kick, mean_centroid_trend)
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +240,13 @@ class LightEngine(IMusicAnalyserHandler):
         onset_density = self.analyser.get_onset_density()
         density_trend = self.analyser.get_onset_density_trend()
         sub_bass_ratio = self.analyser.get_sub_bass_ratio()
-        rms_energy = self.analyser.get_rms_energy()
+        rms_energy     = self.analyser.get_rms_energy()
+        kick_strength  = self.analyser.get_kick_strength()
+        centroid_trend = self.analyser.get_spectral_centroid_trend()
 
         # Always record beat to history so _commit_intent has forward context.
         now_mono = time.monotonic()
-        self._beat_history.append((now_mono, onset_density, bpm, sub_bass_ratio, rms_energy))
+        self._beat_history.append((now_mono, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend))
         # Prune entries older than 2 × look_ahead_sec (or 5 s minimum for the
         # instantaneous path) so the deque stays bounded.
         history_window = max(self._look_ahead_sec * 2, 5.0)
@@ -244,7 +268,7 @@ class LightEngine(IMusicAnalyserHandler):
             # with instantaneous classification (no delay, no window — the beat itself
             # is the confirmation we need).
             self._needs_initial_effect = False
-            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio)
+            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio, kick_strength, centroid_trend)
             logging.info(f'[engine] [immediate] intent={intent.name}')
             if self.event_buffer:
                 self.event_buffer.set_intent(intent.value)
@@ -267,7 +291,7 @@ class LightEngine(IMusicAnalyserHandler):
             # Instantaneous mode (look_ahead_sec == 0): classify and update the
             # event buffer immediately. Effect changes are driven by section
             # changes and atmospheric detection — not every beat.
-            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio)
+            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio, kick_strength, centroid_trend)
             logging.info(f'[engine] intent={intent.name}')
             if self.event_buffer:
                 self.event_buffer.set_intent(intent.value)

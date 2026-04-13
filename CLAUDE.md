@@ -109,7 +109,7 @@ For the specific thresholds and tuning constants that drive classification, see 
 
 ### How classification works
 
-Classification uses BPM, onset density (rhythmic busyness), onset density trend (rising vs. falling energy), and sub-bass energy ratio (bass/kick vs. hi-hat discrimination). See `lib/analyser/CLAUDE.md` for the full feature breakdown.
+Classification uses BPM, onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (beat-synchronous sub-bass ratio — distinguishes kick drum from hi-hat-only patterns), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
 
 **Windowed look-ahead:** the engine runs 2.5 s ahead of what the audience hears (matching `playback_delay_seconds` in dmx-enttec-node). Each beat is classified using a symmetric window of past *and* future beats, giving more confident classifications than a causal-only approach. This is why a single anomalous beat cannot flip the intent: it is outvoted by its neighbours via median density.
 

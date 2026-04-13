@@ -69,6 +69,13 @@ class MusicAnalyser:
         # maxlen≈26 ≈ 150 ms of buffers at 5.8 ms/buffer — long enough for a stable mean.
         self._mel_energies_window: deque = deque(maxlen=26)
         self._rms_window: deque = deque(maxlen=26)
+        # Kick detection: compare raw sub-bass energy at beat timestamps vs. overall mean.
+        # All-samples window covers ~1.2 s so beats are always a small fraction of the total.
+        self._all_sub_bass_samples: deque = deque(maxlen=200)
+        self._beat_sub_bass_samples: deque = deque(maxlen=20)
+        # Spectral centroid tracked per-buffer and at beat times (for trend detection).
+        self._centroid_window: deque = deque(maxlen=26)
+        self._beat_centroid_samples: deque = deque(maxlen=12)
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -150,6 +157,49 @@ class MusicAnalyser:
             return 0.0
         return sum(self._rms_window) / len(self._rms_window)
 
+    def get_kick_strength(self) -> float:
+        """Ratio of sub-bass energy at beat times vs. rolling mean sub-bass energy.
+
+        A kick drum causes a strong sub-bass spike exactly on beat positions, so this
+        ratio is substantially above 1.0 when a kick pattern is present.  Sparse or
+        kick-free sections (breakdowns, atmospheric intros) keep the ratio near 1.0.
+
+        Returns 1.0 when insufficient data (interpreted as kick presence unknown).
+        """
+        if not self._beat_sub_bass_samples or not self._all_sub_bass_samples:
+            return 1.0
+        beat_mean = sum(self._beat_sub_bass_samples) / len(self._beat_sub_bass_samples)
+        all_mean = sum(self._all_sub_bass_samples) / len(self._all_sub_bass_samples)
+        if all_mean < 1e-8:
+            return 1.0
+        return beat_mean / all_mean
+
+    def get_spectral_centroid(self) -> float:
+        """Mean spectral centroid (in mel-band index units, 0–39) over the last ~150 ms.
+
+        Low values indicate bass-heavy content; high values indicate treble-heavy content.
+        Returns 0.0 when no frames have been processed yet.
+        """
+        if not self._centroid_window:
+            return 0.0
+        return sum(self._centroid_window) / len(self._centroid_window)
+
+    def get_spectral_centroid_trend(self) -> float:
+        """Trend of the spectral centroid across recent beats (ratio of recent vs. past half).
+
+        > 1.0 means the centroid is rising — energy moving toward higher frequencies.
+        This is the defining signature of a BUILDUP riser (sweep filter opening, noise sweep).
+        < 1.0 means centroid is falling — energy concentrating in the bass (DROP incoming).
+        Returns 1.0 (neutral) when fewer than 4 beat samples have been collected.
+        """
+        samples = list(self._beat_centroid_samples)
+        if len(samples) < 4:
+            return 1.0
+        mid = len(samples) // 2
+        past_mean   = sum(samples[:mid]) / mid
+        recent_mean = sum(samples[mid:]) / (len(samples) - mid)
+        return recent_mean / (past_mean + 1e-8)
+
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
 
@@ -195,6 +245,11 @@ class MusicAnalyser:
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
             self._density_samples.append(self.get_onset_density())
+            # Snapshot sub-bass and centroid at beat time for kick/centroid-trend features.
+            if self._all_sub_bass_samples:
+                self._beat_sub_bass_samples.append(self._all_sub_bass_samples[-1])
+            if self._centroid_window:
+                self._beat_centroid_samples.append(self._centroid_window[-1])
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
             self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
@@ -217,6 +272,15 @@ class MusicAnalyser:
         self.mfccs = np.vstack((self.mfccs, mfcc_out))
         self.energies = np.vstack([self.energies, energies_out])
         self._mel_energies_window.append(energies_out.copy())
+
+        # Kick detection: raw sub-bass energy (not normalised — we want the actual spike magnitude).
+        raw_sub_bass = float(np.sum(energies_out[:5]))
+        self._all_sub_bass_samples.append(raw_sub_bass)
+
+        # Spectral centroid in mel-band index units (0–39).
+        total_energy = float(np.sum(energies_out))
+        centroid = float(np.dot(np.arange(40), energies_out)) / (total_energy + 1e-8)
+        self._centroid_window.append(centroid)
 
         return spec, mfcc_out, energies_out
 

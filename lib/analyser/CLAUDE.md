@@ -14,15 +14,27 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 **Onset density trend** (ratio of recent vs. past beats) — detects whether energy is rising. BUILDUP requires both sufficient density *and* a rising trend. A steady groove at the same density level stays in GROOVE even if the density is high. Needs a few beats to warm up before it carries signal.
 
-**Sub-bass ratio** (mel filterbank bands 0–4 / total energy) — discriminates kick-and-bass patterns from hi-hat-heavy patterns. Both can produce high onset density; only one has heavy sub-bass. Currently used as a gate on the DROP classifier but disabled (threshold = 0) until calibrated against real tracks. The feature is computed and stored per-beat for future use. See `music_analyser.py` for the filterbank setup.
+**Sub-bass ratio** (mel filterbank bands 0–4 / total energy) — normalised fraction of energy in the bass register. Stored per-beat. A secondary signal; `kick_strength` (below) is more discriminating for DROP detection.
 
-**RMS energy** — mean amplitude over a short rolling window. Stored in the beat record alongside the other features. Not yet used in classification, but available as a loudness proxy (PEAK is loud and sustained; a quiet passage at high BPM is something else). Future use: PEAK vs. GROOVE disambiguation.
+**Kick strength** — ratio of raw sub-bass energy *at beat timestamps* vs. the rolling mean sub-bass energy over all frames. A kick drum creates a concentrated sub-bass spike exactly on beat positions, pushing this ratio well above 1.0. A hi-hat-dominated pattern with no kick keeps the ratio near 1.0 because sub-bass is spread evenly. This is the primary DROP gate and the primary BREAKDOWN signal when density is moderate (stripped arrangement with no kick). See `music_analyser.py` for the implementation.
+
+**Spectral centroid** (mel-band index units, 0–39) — centre of mass of the frequency spectrum. Low = bass-heavy; high = treble-heavy. Tracked per-buffer and at beat timestamps. The *trend* of the centroid across recent beats is the key feature: a rising centroid (energy moving toward higher frequencies) is the defining signature of a BUILDUP riser or sweep filter. A falling centroid (energy concentrating downward) signals a DROP approach. The trend is computed the same way as onset density trend: recent beats vs. past beats. See `music_analyser.py` for details.
+
+**RMS energy** — mean amplitude over a short rolling window. Stored in the beat record. Not yet used in classification directly, but available as a loudness proxy. Future use: PEAK confirmation (loud + high BPM).
 
 **YAMNet embeddings** — 1024-dimensional audio embeddings (not tag predictions). Used to detect structural section changes via cosine similarity outlier detection across a rolling lookback. The cooldown constant in `yamnet_change_detector.py` controls how often section changes can fire.
 
 ---
 
 ## Classifier Design Decisions
+
+### Why kick strength as a feature rather than sub-bass ratio alone?
+
+Sub-bass ratio (bands 0–4 / total energy) normalises by total energy, which means when a kick fires and total energy spikes, the ratio may not rise as dramatically as the raw energy does. More importantly, the ratio says nothing about *when* in the beat the sub-bass appears. Kick strength explicitly compares sub-bass *at beat timestamps* to the off-beat average, which directly tests whether the bass is rhythmically locked to the beat pattern — the defining feature of a kick drum. Hi-hat patterns have high onset density but their sub-bass is flat across the beat cycle; the ratio stays near 1.0.
+
+### Why spectral centroid trend rather than just centroid value?
+
+An absolute centroid value depends on the track and mix — a bass-heavy track has a low centroid throughout, and a bright track has a high centroid throughout. The *trend* is mix-invariant: it asks whether the centroid is rising or falling relative to its own recent history. A riser in any track will push the centroid upward regardless of where it starts. This makes the trend a reliable BUILDUP signal without requiring per-track calibration.
 
 ### Why hysteresis (Schmitt trigger)?
 
@@ -83,7 +95,8 @@ The JSON report contains the full beat list, intent timeline, and timing log. In
 
 ## Future Work
 
-- **Sub-bass gate calibration**: find the ratio threshold that reliably separates kick+bass from hi-hat-only patterns on real tracks.
+- **Kick strength calibration**: measure `get_kick_strength()` values on real tracks across kick-present vs. kick-absent sections to validate `_KICK_PRESENCE_THRESHOLD`. Also tune `_BREAKDOWN_NO_KICK_MAX_DENSITY` against passages where kick drops out mid-groove.
+- **Centroid trend calibration**: measure `get_spectral_centroid_trend()` during genuine buildup sections vs. steady grooves to validate `_CENTROID_BUILDUP_TREND`. The threshold is more reliable than sub-bass ratio but still needs real data.
 - **RMS energy in classification**: use as a PEAK confirmation signal (loud + high BPM = PEAK; quiet + high BPM = probably just tempo, not energy).
 - **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for detecting timbral drops (e.g. a low-pass filter sweep releasing into the drop).
 - **Labelled data**: once enough real-track simulations exist, label the intent timeline manually and use it to validate or calibrate thresholds systematically rather than by ear.

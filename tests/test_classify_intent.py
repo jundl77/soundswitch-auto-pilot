@@ -4,6 +4,8 @@ from lib.engine.light_engine import (
     _DROP_MIN_DENSITY_ENTER, _DROP_MIN_DENSITY_EXIT,
     _PEAK_MIN_BPM_ENTER, _PEAK_MIN_BPM_EXIT,
     _BREAKDOWN_MAX_DENSITY_ENTER, _BREAKDOWN_MAX_DENSITY_EXIT,
+    _KICK_PRESENCE_THRESHOLD, _CENTROID_BUILDUP_TREND,
+    _BREAKDOWN_NO_KICK_MAX_DENSITY,
 )
 from lib.engine.effect_definitions import LightIntent
 
@@ -12,9 +14,10 @@ from lib.engine.effect_definitions import LightIntent
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _window(densities: list[float], bpm: float = 128.0, sub_bass: float = 0.0) -> list[tuple]:
-    """Build a fake window of BeatRecords (5-tuples) at evenly spaced monotonic times."""
-    return [(float(i), d, bpm, sub_bass, 0.5) for i, d in enumerate(densities)]
+def _window(densities: list[float], bpm: float = 128.0, sub_bass: float = 0.0,
+            kick: float = 2.0, centroid_trend: float = 1.0) -> list[tuple]:
+    """Build a fake window of BeatRecords (7-tuples) at evenly spaced monotonic times."""
+    return [(float(i), d, bpm, sub_bass, 0.5, kick, centroid_trend) for i, d in enumerate(densities)]
 
 
 def test_drop_on_density_spike_at_dance_bpm():
@@ -171,3 +174,84 @@ def test_breakdown_hysteresis_exits_above_exit_threshold():
     above_exit = _BREAKDOWN_MAX_DENSITY_EXIT + 0.1
     result = _classify_intent(128.0, above_exit, current_intent=LightIntent.BREAKDOWN)
     assert result != LightIntent.BREAKDOWN
+
+
+# ---------------------------------------------------------------------------
+# Kick-strength tests
+# ---------------------------------------------------------------------------
+
+def test_drop_requires_kick_presence():
+    # High density but no kick → should NOT be DROP
+    no_kick = _KICK_PRESENCE_THRESHOLD - 0.1
+    result = _classify_intent(128.0, _DROP_MIN_DENSITY_ENTER + 1, kick_strength=no_kick)
+    assert result != LightIntent.DROP
+
+
+def test_drop_with_kick_present():
+    kick = _KICK_PRESENCE_THRESHOLD + 0.2
+    assert _classify_intent(128.0, _DROP_MIN_DENSITY_ENTER + 1, kick_strength=kick) == LightIntent.DROP
+
+
+def test_breakdown_at_moderate_density_with_no_kick():
+    # Density between BREAKDOWN and BREAKDOWN_NO_KICK max — kick absent → BREAKDOWN
+    mid_density = (_BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_NO_KICK_MAX_DENSITY) / 2
+    no_kick = _KICK_PRESENCE_THRESHOLD - 0.1
+    assert _classify_intent(128.0, mid_density, kick_strength=no_kick) == LightIntent.BREAKDOWN
+
+
+def test_groove_at_moderate_density_with_kick():
+    # Same density as above but kick present → GROOVE, not BREAKDOWN
+    mid_density = (_BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_NO_KICK_MAX_DENSITY) / 2
+    kick = _KICK_PRESENCE_THRESHOLD + 0.2
+    assert _classify_intent(128.0, mid_density, kick_strength=kick) == LightIntent.GROOVE
+
+
+def test_high_density_no_kick_above_breakdown_no_kick_max_stays_groove():
+    # If density exceeds the no-kick BREAKDOWN ceiling, GROOVE wins even without kick
+    above_max = _BREAKDOWN_NO_KICK_MAX_DENSITY + 0.5
+    no_kick = _KICK_PRESENCE_THRESHOLD - 0.1
+    result = _classify_intent(128.0, above_max, kick_strength=no_kick)
+    # Not DROP (no kick), not BREAKDOWN (density too high) — should be GROOVE or BUILDUP
+    assert result not in (LightIntent.DROP, LightIntent.BREAKDOWN)
+
+
+# ---------------------------------------------------------------------------
+# Spectral centroid trend tests
+# ---------------------------------------------------------------------------
+
+def test_buildup_via_centroid_trend_without_density_trend():
+    # Rising centroid alone (density trend neutral) → BUILDUP
+    rising = _CENTROID_BUILDUP_TREND + 0.05
+    result = _classify_intent(120.0, 5.0, density_trend=1.0, centroid_trend=rising)
+    assert result == LightIntent.BUILDUP
+
+
+def test_groove_when_centroid_trend_is_neutral():
+    # Neutral centroid trend + neutral density trend → GROOVE
+    assert _classify_intent(120.0, 5.0, density_trend=1.0, centroid_trend=1.0) == LightIntent.GROOVE
+
+
+def test_buildup_via_either_trend_signal():
+    # Either rising density OR rising centroid is sufficient for BUILDUP
+    below_density_threshold = _CENTROID_BUILDUP_TREND - 0.05  # density trend not rising
+    above_centroid_threshold = _CENTROID_BUILDUP_TREND + 0.05
+    assert _classify_intent(120.0, 5.0, density_trend=below_density_threshold,
+                            centroid_trend=above_centroid_threshold) == LightIntent.BUILDUP
+
+
+# ---------------------------------------------------------------------------
+# Windowed: kick and centroid propagate through the window
+# ---------------------------------------------------------------------------
+
+def test_windowed_drop_blocked_without_kick():
+    # All beats have high density but no kick — should NOT classify as DROP
+    no_kick = _KICK_PRESENCE_THRESHOLD - 0.1
+    densities = [9.0, 9.5, 10.0, 9.2, 8.8]
+    assert _classify_windowed(_window(densities, kick=no_kick), bpm=128.0) != LightIntent.DROP
+
+
+def test_windowed_buildup_via_rising_centroid():
+    # Flat density (would be GROOVE without centroid) but rising centroid → BUILDUP
+    rising = _CENTROID_BUILDUP_TREND + 0.1
+    densities = [4.5, 4.5, 4.5, 4.5, 4.5]
+    assert _classify_windowed(_window(densities, centroid_trend=rising), bpm=120.0) == LightIntent.BUILDUP
