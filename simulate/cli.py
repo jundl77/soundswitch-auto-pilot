@@ -70,11 +70,14 @@ def _write_report_and_evaluate(event_buffer, command_queue, report_path: str,
     from simulate.evaluator import evaluate, print_evaluation
     report = event_buffer.to_report(command_queue.get_timing_log())
     if labels:
-        from simulate.runner import LOOK_AHEAD_SEC
-        from simulate.evaluator import evaluate_against_labels
-        report['transition_accuracy'] = evaluate_against_labels(
-            report['intents'], labels, look_ahead_sec=LOOK_AHEAD_SEC
-        )
+        try:
+            from simulate.evaluator import evaluate_against_labels
+            from simulate.runner import LOOK_AHEAD_SEC
+            report['transition_accuracy'] = evaluate_against_labels(
+                report['intents'], labels, look_ahead_sec=LOOK_AHEAD_SEC
+            )
+        except ImportError:
+            print('[simulate] evaluate_against_labels not yet available — skipping transition accuracy')
     with open(report_path, 'w') as f:
         json.dump(report, f, indent=2, default=str)
     print(f'[simulate] report written → {report_path}')
