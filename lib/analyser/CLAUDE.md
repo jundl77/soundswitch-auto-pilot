@@ -86,17 +86,44 @@ The JSON report contains the full beat list, intent timeline, and timing log. In
 
 ### Tuning workflow
 
-1. Run simulation on a track with a known structure (e.g. the drop starts at T=90 s).
-2. Inspect the intent timeline: does the DROP intent start and end where the drop does?
-3. Adjust thresholds in `lib/engine/light_engine.py` and re-run.
-4. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
+Now automated. Run:
+
+```bash
+python auto_pilot simulate file samples/song.mp3 --no-ui --report report.json --sweep
+```
+
+The `--sweep` flag runs a 10k-sample Latin-hypercube threshold sweep via fast feature-log replay, writes top-50 configs to `report.json` under `sweep_results`, and prints a summary. Claude then reads the report, applies the best config to `lib/engine/light_engine.py`, re-runs the full simulation to verify, and iterates. See `simulate/evaluator.py::sweep_thresholds` and `specs/2026-04-13-ground-truth-evaluation-and-threshold-optimization.md` for the full architecture.
+
+### Threshold calibration status (as of 2026-04-13, Eric Prydz "Generate" 128 BPM)
+
+Sweep-optimized against `samples/generate_eric_prydz_192k.csv` (8 GT boundaries).
+
+**Current accuracy: 3/8 boundaries detected (offsets 440–600 ms), 5 missed, 1 false.**
+
+| Boundary | Offset | Notes |
+|---|---|---|
+| atmospheric → breakdown (9.04s) | MISSED | Spurious initial PEAK from double-BPM aubio artifact delays BREAKDOWN entry |
+| breakdown → buildup (39.12s) | +603ms | Detected; offset from 4-vote buffer + window alignment |
+| buildup → drop (45.77s) | MISSED | DROP undetectable — see below |
+| drop → groove (60.92s) | MISSED | Cannot exit DROP if never entered |
+| groove → breakdown (76.06s) | +504ms | Detected |
+| breakdown → buildup (106.48s) | MISSED | Insufficient density/trend signal |
+| buildup → peak (128.90s) | MISSED | PEAK undetectable at 128 BPM — see below |
+| peak → atmospheric (159.28s) | +439ms | Detected via beat-absence transition |
+
+**Known hard limits for this track:**
+
+- **DROP undetectable**: Max onset density in the actual drop section is 4.67 — indistinguishable from the breakdown density (~3.77). Eric Prydz's heavy sidechain compression suppresses onset spikes during the drop. The density feature cannot separate this section from breakdown without additional signal (RMS, spectral flux, or sub-bass power).
+- **PEAK undetectable**: `_PEAK_MIN_BPM_ENTER=140` cannot be satisfied at 128 BPM. The PEAK classification needs a different gate (RMS energy sustained high, or density + kick sustained).
+- **Transition lag ~500ms**: with `_VOTE_BUFFER_SIZE=4` at 128 BPM (0.47s/beat), 4 votes = ~1.9s of buffer lag. The look-ahead window (2.5s) partially compensates, but window alignment effects leave ~500ms residual lag for clean section boundaries.
 
 ---
 
 ## Future Work
 
-- **Kick strength calibration**: measure `get_kick_strength()` values on real tracks across kick-present vs. kick-absent sections to validate `_KICK_PRESENCE_THRESHOLD`. Also tune `_BREAKDOWN_NO_KICK_MAX_DENSITY` against passages where kick drops out mid-groove.
-- **Centroid trend calibration**: measure `get_spectral_centroid_trend()` during genuine buildup sections vs. steady grooves to validate `_CENTROID_BUILDUP_TREND`. The threshold is more reliable than sub-bass ratio but still needs real data.
-- **RMS energy in classification**: use as a PEAK confirmation signal (loud + high BPM = PEAK; quiet + high BPM = probably just tempo, not energy).
-- **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for detecting timbral drops (e.g. a low-pass filter sweep releasing into the drop).
-- **Labelled data**: once enough real-track simulations exist, label the intent timeline manually and use it to validate or calibrate thresholds systematically rather than by ear.
+- **RMS energy in classification**: critical for PEAK detection in tracks where BPM stays constant. "Loud + sustained kick" is a better PEAK gate than BPM alone.
+- **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for sidechain-compressed drops where onset density is suppressed.
+- **DROP sub-bass gate**: `_DROP_MIN_SUB_BASS_RATIO` is disabled (0.0). Calibrate against real kick+bass vs. hi-hat-only passages once per-beat sub-bass data is validated.
+- **Kick strength calibration**: the Eric Prydz track has kick_mean=0.59–1.06 throughout — consistently below the old 1.3 threshold. With `_KICK_PRESENCE_THRESHOLD=1.173`, kick is detected only in a few sections. Measure on more tracks to find a robust cross-track value.
+- **Multi-track sweep**: current sweep is calibrated against one track. Add more annotated tracks and sweep against all simultaneously to avoid overfitting to a single track's density profile.
+- **Vote buffer lag**: with `_VOTE_BUFFER_SIZE=4`, the minimum structural transition lag is ~4 beats (~1.9s at 128 BPM). Reducing to 2–3 with a sharper dwell check could lower lag without introducing flickering; needs multi-track validation.
