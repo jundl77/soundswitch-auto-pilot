@@ -16,8 +16,6 @@ SAMPLE_RATE = 44100
 # Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
 # so that local monitoring stays in sync with the analysis.
 LOOK_AHEAD_SEC = 2.5
-_SILENCE = None  # initialised lazily as np.zeros(BUFFER_SIZE, dtype=np.float32)
-
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
 
@@ -126,15 +124,10 @@ class SoundSwitchAutoPilot:
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
         # FIFO buffer that delays local audio playback by LOOK_AHEAD_SEC so debug
         # monitoring (headphones) stays in sync with the classified-and-delayed lights.
-        import numpy as np
-        global _SILENCE
-        _SILENCE = np.zeros(BUFFER_SIZE, dtype=np.float32)
-
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
         # Use wall-clock time for the delay threshold — counting loop iterations is
-        # unreliable because each iteration is double-clocked by both the input read()
-        # and the output write(), making iteration time ~2× a single buffer period.
+        # unreliable because loop speed varies with analyse() overhead.
         _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
 
         while self.is_running:
@@ -150,11 +143,6 @@ class SoundSwitchAutoPilot:
                         logging.info('[main] audio delay buffer ready, starting delayed playback')
                         _audio_playback_started = True
                     self.audio_client.play(audio_delay_buf.popleft())
-                else:
-                    # Feed silence while the delay buffer fills to keep the output
-                    # stream alive — a starved PyAudio blocking stream on macOS/CoreAudio
-                    # can enter a dead state and never recover.
-                    self.audio_client.play(_SILENCE)
 
             if now - last_100ms_callback_execution > datetime.timedelta(milliseconds=100):
                 last_100ms_callback_execution = now
