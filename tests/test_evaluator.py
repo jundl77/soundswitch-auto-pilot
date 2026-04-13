@@ -201,3 +201,19 @@ def test_replay_dwell_guard_prevents_immediate_switch():
         # drop transition must happen after at least 5 beats in prior intent
         first_drop_t = drop_entries[0]['t']
         assert first_drop_t >= 2.0  # at least past the sparse section
+
+
+from simulate.evaluator import sweep_thresholds
+
+
+def test_sweep_returns_sorted_top50():
+    """sweep_thresholds returns at most 50 configs sorted by score ascending."""
+    sparse = [(float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(3)]
+    dense  = [(2.0 + float(i) * 0.5, 128.0, 9.5, 2.5) for i in range(3)]
+    log    = _make_feature_log(sparse + dense)
+    labels = _make_labels((0.0, 2.0, 'atmospheric'), (2.0, 5.0, 'drop'))
+    results = sweep_thresholds(log, labels, look_ahead_sec=0.5, n_samples=20)
+    assert len(results) <= 50
+    scores = [r['score'] for r in results]
+    assert scores == sorted(scores)
+    assert all('config' in r and 'transition_accuracy' in r for r in results)

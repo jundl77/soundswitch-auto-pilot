@@ -360,3 +360,55 @@ def _sweep_score(ta: dict) -> float:
         + ta['missed_count'] * 5000.0
         + ta['false_boundary_count'] * 500.0
     )
+
+
+_PARAM_RANGES: dict[str, tuple] = {
+    '_BREAKDOWN_MAX_DENSITY_ENTER': (1.5,  5.0,  'float'),
+    '_BUILDUP_MIN_TREND':           (1.1,  2.0,  'float'),
+    '_DROP_MIN_DENSITY_ENTER':      (6.0,  12.0, 'float'),
+    '_KICK_PRESENCE_THRESHOLD':     (1.0,  2.0,  'float'),
+    '_CENTROID_BUILDUP_TREND':      (1.05, 1.5,  'float'),
+    '_VOTE_BUFFER_SIZE':            (1,    4,    'int'),
+    '_MIN_DWELL_BEATS':             (1,    6,    'int'),
+}
+
+
+def sweep_thresholds(
+    feature_log: list[dict],
+    labels: list[dict],
+    look_ahead_sec: float = 2.5,
+    n_samples: int = 10_000,
+) -> list[dict]:
+    """Sample n_samples random threshold configs, replay each against feature_log,
+    score against labels. Returns top-50 configs sorted by score ascending.
+
+    feature_log timestamps must be in raw audio time (same reference as labels).
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(42)
+    results = []
+
+    for _ in range(n_samples):
+        cfg: dict = {}
+        for param, (lo, hi, typ) in _PARAM_RANGES.items():
+            v = float(rng.uniform(lo, hi + (1 if typ == 'int' else 0)))
+            cfg[param] = int(v) if typ == 'int' else round(float(v), 3)
+        # Derive locked hysteresis thresholds from swept entry values
+        cfg['_BREAKDOWN_MAX_DENSITY_EXIT'] = round(cfg['_BREAKDOWN_MAX_DENSITY_ENTER'] + 0.5, 3)
+        cfg['_DROP_MIN_DENSITY_EXIT']      = round(max(cfg['_DROP_MIN_DENSITY_ENTER'] - 1.5, 3.0), 3)
+        # Fixed non-swept thresholds (at current production values)
+        cfg['_BREAKDOWN_NO_KICK_MAX_DENSITY'] = 6.0
+        cfg['_DROP_MIN_SUB_BASS_RATIO']       = 0.0
+
+        predicted = _replay_feature_log(feature_log, cfg, look_ahead_sec)
+        ta        = evaluate_against_labels(predicted, labels, look_ahead_sec=0.0)
+        score     = _sweep_score(ta)
+        results.append({
+            'score':               round(score, 1),
+            'config':              cfg,
+            'transition_accuracy': ta,
+        })
+
+    results.sort(key=lambda x: x['score'])
+    return results[:50]

@@ -86,6 +86,35 @@ def _write_report_and_evaluate(event_buffer, command_queue, report_path: str,
     return result['passed']
 
 
+def _run_sweep(event_buffer, labels: list[dict], report_path: str) -> None:
+    from simulate.evaluator import sweep_thresholds
+    from simulate.runner import LOOK_AHEAD_SEC
+    import json
+
+    feature_log = event_buffer._feature_log
+    if not feature_log:
+        print('[sweep] no feature log available — skipping sweep.')
+        return
+
+    print('[sweep] running 10 000-sample threshold sweep …')
+    results = sweep_thresholds(feature_log, labels, look_ahead_sec=LOOK_AHEAD_SEC)
+
+    # Merge sweep_results into existing report
+    try:
+        with open(report_path) as f:
+            report = json.load(f)
+    except Exception:
+        report = {}
+    report['sweep_results'] = results
+
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2, default=str)
+
+    best = results[0] if results else None
+    score_str = f'{best["score"]:.1f}' if best else 'N/A'
+    print(f'[sweep] done — 10 000 combos evaluated, best score {score_str}, written to {report_path}')
+
+
 def run_file(args):
     from lib.engine.event_buffer import EventBuffer
     from simulate.fake_audio_client import FileAudioClient
@@ -126,6 +155,11 @@ def run_file(args):
         print(f'[simulate] running headlessly for {duration_sec:.0f}s …')
         thread.join()
         passed = _write_report_and_evaluate(event_buffer, command_queue, args.report, labels=labels)
+        if getattr(args, 'sweep', False):
+            if not labels:
+                print('[sweep] error: --sweep requires a ground-truth CSV alongside the audio file.')
+                sys.exit(1)
+            _run_sweep(event_buffer, labels, args.report)
         sys.exit(0 if passed else 1)
 
     from simulate.visualizer_app import run_app
@@ -173,6 +207,8 @@ def add_simulate_subparser(subparsers):
                     help='Headless: run to completion, write report, evaluate (exit 0=PASS, 1=FAIL)')
     fp.add_argument('--report', default='report.json',
                     help='Report output path (--no-ui only, default: report.json)')
+    fp.add_argument('--sweep', action='store_true',
+                    help='After simulation: sweep 10k threshold combos against ground-truth CSV. Requires --no-ui and a label CSV alongside the audio.')
     fp.add_argument('--port', type=int, default=8050, help='Dash server port')
 
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')
