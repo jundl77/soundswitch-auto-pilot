@@ -97,6 +97,41 @@ Classification uses three signals: BPM, onset density (onsets/sec over a 1.5 s r
 
 **ATMOSPHERIC** is the only intent set outside `_classify_intent`: `on_100ms_callback` detects beat absence (> 2.5 s without a beat), fires ATMOSPHERIC once via `_atmospheric_sent` flag (not every 100 ms), and triggers a MIDI effect change. The first beat after ATMOSPHERIC immediately re-classifies and changes the MIDI effect.
 
+### Windowed classification (look-ahead mode)
+
+When `--delay N` is set (matching `playback_delay_seconds` in dmx-enttec-node), the engine runs in **windowed classification mode**:
+
+```
+Audio stream (real-time analysis)
+    ↓
+on_beat() → store (mono_time, density, bpm) in _beat_history
+          → enqueue _commit_intent(T, bpm) to DelayedCommandQueue with delay=N
+                                ↓ N seconds later
+                  _commit_intent fires — audience hears audio from T right now
+                  Window [T−N, T+N] is fully populated in _beat_history
+                  _classify_windowed(window, bpm) → intent using symmetric context
+                  Effect changes only when intent differs from _current_intent
+```
+
+**Why symmetric window beats causal-only classification:**
+
+| Signal | Causal (current) | Windowed |
+|---|---|---|
+| Single-beat density spike | Triggers DROP for 1 beat, snaps back | Spike is outvoted by surrounding normal beats via median — stays GROOVE |
+| Real DROP | Fires correctly | Fires correctly; all window beats agree |
+| BUILDUP start | Detects after trend has already risen | Forward beats confirm the rising curve; fires at the actual onset |
+
+**`_classify_windowed(window, bpm)`** (module-level pure function in `light_engine.py`):
+- **Median density** over the window — robust to transient spikes
+- **Forward trend** = mean(future half) / mean(past half) — uses future beats to confirm rising energy
+- Calls `_classify_intent(bpm, median_density, forward_trend)` — same thresholds, better signals
+
+**Effect change policy in windowed mode:** `_commit_intent` fires `change_effect` only when the intent differs from `_current_intent`. This makes effect changes intent-driven rather than locked to YAMNet section boundaries alone.
+
+**ATMOSPHERIC bypass:** always fires in real-time via `on_100ms_callback` (no delay). If atmospheric fires while a windowed commit is pending, `_commit_intent` detects `_atmospheric_sent=True` and skips to avoid overriding it.
+
+**Delay is configurable** (`--delay` flag, default 0.0 s). Must match `playback_delay_seconds` in dmx-enttec-node config. Recommended range: 2.0–5.0 s (longer = more forward context, but more latency for the engineer monitoring on headphones).
+
 ### DMX migration path
 
 When moving away from SoundSwitch to direct DMX:
@@ -178,6 +213,7 @@ uv run pytest                        # unit + integration (~15s)
 | `_DROP_MIN_DENSITY` | `light_engine.py` | 8.0 | onsets/s floor for DROP |
 | `_PEAK_MIN_BPM` | `light_engine.py` | 138 | BPM floor for PEAK |
 | `_BEAT_ABSENCE_SEC` | `light_engine.py` | 2.5 s | Beat silence threshold for ATMOSPHERIC |
+| `look_ahead_sec` | `LightEngine.__init__` / `--delay` flag | 0.0 s | Symmetric window half-width; must match dmx-enttec-node `playback_delay_seconds` |
 | `SECTION_CHANGE_COOLDOWN` | `yamnet_change_detector.py` | 10 s | Min gap between YAMNet-triggered changes |
 | `APPLY_COLOR_OVERRIDE_INTERVAL_SEC` | `effect_controller.py` | 300 | Color override rotation every 5 min |
 | OS2L beat update | `os2l_client.py` | 25 ms | Beat position broadcast interval |

@@ -1,6 +1,15 @@
 import pytest
-from lib.engine.light_engine import _classify_intent
+from lib.engine.light_engine import _classify_intent, _classify_windowed
 from lib.engine.effect_definitions import LightIntent
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _window(densities: list[float], bpm: float = 128.0) -> list[tuple[float, float, float]]:
+    """Build a fake window of BeatRecords at evenly spaced monotonic times."""
+    return [(float(i), d, bpm) for i, d in enumerate(densities)]
 
 
 def test_drop_on_density_spike_at_dance_bpm():
@@ -55,3 +64,40 @@ def test_buildup_trend_threshold_boundary():
     assert _classify_intent(120.0, 5.0, density_trend=1.3) == LightIntent.BUILDUP
     # trend just below threshold falls to GROOVE
     assert _classify_intent(120.0, 5.0, density_trend=1.29) == LightIntent.GROOVE
+
+
+# ---------------------------------------------------------------------------
+# _classify_windowed
+# ---------------------------------------------------------------------------
+
+def test_windowed_drop_requires_sustained_density():
+    # A single spike surrounded by normal density → median stays below DROP threshold → GROOVE
+    densities = [4.0, 4.0, 9.5, 4.0, 4.0]
+    assert _classify_windowed(_window(densities), bpm=128.0) != LightIntent.DROP
+
+
+def test_windowed_drop_on_sustained_high_density():
+    # Genuine DROP: all beats in window have high density
+    densities = [9.0, 9.5, 10.0, 9.2, 8.8]
+    assert _classify_windowed(_window(densities), bpm=128.0) == LightIntent.DROP
+
+
+def test_windowed_buildup_detected_via_forward_context():
+    # Past half: low density; future half: high density → forward trend ≥ 1.3 → BUILDUP
+    densities = [3.0, 3.2, 5.0, 5.5, 6.0]
+    assert _classify_windowed(_window(densities), bpm=120.0) == LightIntent.BUILDUP
+
+
+def test_windowed_stable_groove_not_classified_as_buildup():
+    # Flat density across the window → trend ≈ 1.0 → GROOVE
+    densities = [4.5, 4.5, 4.5, 4.5, 4.5]
+    assert _classify_windowed(_window(densities), bpm=120.0) == LightIntent.GROOVE
+
+
+def test_windowed_empty_window_returns_groove():
+    assert _classify_windowed([], bpm=128.0) == LightIntent.GROOVE
+
+
+def test_windowed_breakdown_on_sustained_low_density():
+    densities = [1.0, 1.2, 0.8, 1.1, 0.9]
+    assert _classify_windowed(_window(densities), bpm=128.0) == LightIntent.BREAKDOWN

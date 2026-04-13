@@ -1,5 +1,7 @@
 from __future__ import annotations
+import time
 import logging
+from collections import deque
 from typing import TYPE_CHECKING
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
@@ -55,6 +57,45 @@ def _classify_intent(bpm: float, onset_density: float, density_trend: float = 1.
     return LightIntent.GROOVE
 
 
+# BeatRecord: (monotonic_time, onset_density, bpm)
+BeatRecord = tuple[float, float, float]
+
+
+def _classify_windowed(window: list[BeatRecord], bpm: float) -> LightIntent:
+    """Classify intent using a symmetric look-ahead/look-behind window of beats.
+
+    Because audio playback is delayed by look_ahead_sec (dmx-enttec-node), by
+    the time we need to commit a classification for beat T the window contains
+    both past and future beats relative to T.  This gives us:
+
+      - Median density  → robust to single-beat transient spikes; a genuine DROP
+                          must sustain high density across the window to win.
+      - Forward trend   → compare the second half of the window (future beats)
+                          against the first half (past beats) to detect whether
+                          energy is rising or falling around T.
+
+    Falls back to GROOVE if the window is empty.
+    """
+    if not window:
+        return LightIntent.GROOVE
+
+    densities = [d for _, d, _ in window]
+
+    # Median is more robust than mean against short transient spikes
+    sorted_d = sorted(densities)
+    median_density = sorted_d[len(sorted_d) // 2]
+
+    # Trend: past half vs future half of the symmetric window
+    mid = len(densities) // 2
+    past = densities[:mid] if mid > 0 else densities
+    future = densities[mid:] if mid > 0 else densities
+    past_mean = sum(past) / len(past)
+    future_mean = sum(future) / len(future)
+    window_trend = future_mean / past_mean if past_mean > 0 else 1.0
+
+    return _classify_intent(bpm, median_density, window_trend)
+
+
 # ---------------------------------------------------------------------------
 # LightEngine
 # ---------------------------------------------------------------------------
@@ -66,7 +107,8 @@ class LightEngine(IMusicAnalyserHandler):
                  overlay_client: OverlayClient,
                  effect_controller: EffectController,
                  command_queue: DelayedCommandQueue | None = None,
-                 event_buffer: EventBuffer | None = None):
+                 event_buffer: EventBuffer | None = None,
+                 look_ahead_sec: float = 0.0):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
@@ -74,9 +116,14 @@ class LightEngine(IMusicAnalyserHandler):
         self.command_queue: DelayedCommandQueue | None = command_queue
         self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
+        self._look_ahead_sec: float = look_ahead_sec
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
         self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
+        self._current_intent: LightIntent | None = None  # last committed intent (for change detection)
+        # Rolling history of beats for windowed classification: (monotonic_time, density, bpm)
+        # Kept for 2 × look_ahead_sec so the symmetric window is always available at commit time.
+        self._beat_history: deque[BeatRecord] = deque()
 
     def set_analyser(self, analyser: MusicAnalyser):
         self.analyser: MusicAnalyser = analyser
@@ -99,6 +146,8 @@ class LightEngine(IMusicAnalyserHandler):
         if self.event_buffer:
             self.event_buffer.set_playing(False)
         self._atmospheric_sent = False
+        self._current_intent = None
+        self._beat_history.clear()
 
     async def on_cycle(self):
         await self.effect_controller.process_effects()
@@ -111,29 +160,101 @@ class LightEngine(IMusicAnalyserHandler):
         current_second = self.analyser.get_song_current_duration().total_seconds()
         onset_density = self.analyser.get_onset_density()
         density_trend = self.analyser.get_onset_density_trend()
-        intent = _classify_intent(bpm, onset_density, density_trend)
+
+        # Always record beat to history so _commit_intent has forward context.
+        now_mono = time.monotonic()
+        self._beat_history.append((now_mono, onset_density, bpm))
+        # Prune entries older than 2 × look_ahead_sec (or 5 s minimum for the
+        # instantaneous path) so the deque stays bounded.
+        history_window = max(self._look_ahead_sec * 2, 5.0)
+        while self._beat_history and now_mono - self._beat_history[0][0] > history_window:
+            self._beat_history.popleft()
+
         logging.info(
             f'[engine] [{current_second:.2f}s] beat #{beat_number}  '
-            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  trend={density_trend:.2f}  intent={intent.name}'
+            f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  trend={density_trend:.2f}'
         )
         if self.event_buffer:
             self.event_buffer.add_beat(bpm, onset_density, bpm_changed)
-            self.event_buffer.set_intent(intent.value)
+
         was_atmospheric = self._atmospheric_sent
         self._atmospheric_sent = False
+
         if self._needs_initial_effect or was_atmospheric:
-            # Trigger an immediate MIDI effect change on first beat and on returning
-            # from a beat-absence ATMOSPHERIC period.
+            # First beat or returning from beat-absence ATMOSPHERIC: commit immediately
+            # with instantaneous classification (no delay, no window — the beat itself
+            # is the confirmation we need).
             self._needs_initial_effect = False
+            intent = _classify_intent(bpm, onset_density, density_trend)
+            logging.info(f'[engine] [immediate] intent={intent.name}')
+            if self.event_buffer:
+                self.event_buffer.set_intent(intent.value)
+            self._current_intent = intent
             await self.effect_controller.change_effect(intent)
-        _change, _pos, _bpm = bpm_changed, beat_number, bpm
+        elif self._look_ahead_sec > 0 and self.command_queue:
+            # Windowed mode: schedule classification commit after look_ahead_sec.
+            # By then the window [T - look_ahead_sec, T + look_ahead_sec] is fully
+            # populated in _beat_history and we can classify using both past and
+            # future context relative to this beat.
+            _enqueue_time = now_mono
+            _bpm = bpm
+            await self.command_queue.enqueue(
+                'intent',
+                lambda: self._commit_intent(_enqueue_time, _bpm)
+            )
+        else:
+            # Instantaneous mode (look_ahead_sec == 0): classify and update the
+            # event buffer immediately. Effect changes are driven by section
+            # changes and atmospheric detection — not every beat.
+            intent = _classify_intent(bpm, onset_density, density_trend)
+            logging.info(f'[engine] intent={intent.name}')
+            if self.event_buffer:
+                self.event_buffer.set_intent(intent.value)
+
+        # OS2L beat — always goes through the queue so it fires in sync with audio.
+        _change, _pos, _bpm2 = bpm_changed, beat_number, bpm
         if self.command_queue:
             await self.command_queue.enqueue(
                 'beat',
-                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm, strength=0.5)
+                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm2, strength=0.5)
             )
         else:
             await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0.5)
+
+    async def _commit_intent(self, enqueue_time: float, bpm: float) -> None:
+        """Fired by DelayedCommandQueue after look_ahead_sec.
+
+        At this point the beat at `enqueue_time` is exactly when the audience
+        hears the audio.  _beat_history now contains beats from
+        [enqueue_time - look_ahead_sec, enqueue_time + look_ahead_sec], giving
+        a symmetric window for a confident classification.
+
+        Drives an effect change when the intent has changed — this is safe
+        because the window suppresses transients.
+        """
+        if self._atmospheric_sent:
+            # Beat absence was detected after this beat was enqueued; ATMOSPHERIC
+            # already fired in real-time.  Skip to avoid overriding it.
+            logging.debug('[engine] [windowed] skipping commit — currently in ATMOSPHERIC')
+            return
+
+        window = [
+            entry for entry in self._beat_history
+            if abs(entry[0] - enqueue_time) <= self._look_ahead_sec
+        ]
+        intent = _classify_windowed(window, bpm)
+        logging.info(
+            f'[engine] [windowed] intent={intent.name}  '
+            f'window={len(window)} beats  '
+            f'densities=[{", ".join(f"{d:.1f}" for _, d, _ in window)}]'
+        )
+
+        if self.event_buffer:
+            self.event_buffer.set_intent(intent.value)
+
+        if intent != self._current_intent:
+            self._current_intent = intent
+            await self.effect_controller.change_effect(intent)
 
     async def on_note(self):
         dmx_data = [0] * 24
@@ -147,7 +268,15 @@ class LightEngine(IMusicAnalyserHandler):
         bpm = self.analyser.get_bpm()
         onset_density = self.analyser.get_onset_density()
         density_trend = self.analyser.get_onset_density_trend()
-        intent = _classify_intent(bpm, onset_density, density_trend)
+
+        if self._look_ahead_sec > 0:
+            # Use the windowed classification for section changes too — the window
+            # is already populated since beats have been flowing.
+            window = list(self._beat_history)
+            intent = _classify_windowed(window, bpm)
+        else:
+            intent = _classify_intent(bpm, onset_density, density_trend)
+
         _intent = intent
         if self.command_queue:
             await self.command_queue.enqueue(
@@ -165,6 +294,7 @@ class LightEngine(IMusicAnalyserHandler):
                 self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value)
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True
+                self._current_intent = LightIntent.ATMOSPHERIC
                 await self.effect_controller.change_effect(LightIntent.ATMOSPHERIC)
 
     async def on_1sec_callback(self):

@@ -75,7 +75,8 @@ class SoundSwitchAutoPilot:
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
-                                                     self.command_queue, event_buffer=self.event_buffer)
+                                                     self.command_queue, event_buffer=self.event_buffer,
+                                                     look_ahead_sec=lookahead_delay_sec)
 
         # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
