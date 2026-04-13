@@ -20,7 +20,7 @@ BUFFER_SIZE = 256
 async def test_simulation_runs_without_error():
     """Smoke test: the full pipeline runs for 5 seconds without raising."""
     audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0)
-    components, command_queue = build_simulation(audio_client, delay_sec=0.1)
+    components, command_queue = build_simulation(audio_client)
     await run_simulation(components, duration_sec=5.0)
 
 
@@ -31,7 +31,7 @@ async def test_simulation_timing_passes():
     If no beats were detected (rare with synthetic audio), the test is skipped.
     """
     audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0)
-    components, command_queue = build_simulation(audio_client, delay_sec=0.1)
+    components, command_queue = build_simulation(audio_client)
     await run_simulation(components, duration_sec=8.0)
 
     log = command_queue.get_timing_log()

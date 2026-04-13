@@ -6,8 +6,8 @@ through the full MusicAnalyser → LightEngine → DelayedCommandQueue pipeline,
 a timing validation report at the end.
 
 Usage examples:
-  # Real music file, 2.5s delay (matching dmx-enttec-node config), with Dash UI
-  python auto_pilot simulate file samples/song.mp3 --delay 2.5
+  # Real music file with Dash UI
+  python auto_pilot simulate file samples/song.mp3
 
   # Headless evaluation (no UI, writes report.json, exits 0=PASS / 1=FAIL)
   python auto_pilot simulate file samples/song.mp3 --no-ui --report report.json
@@ -21,9 +21,11 @@ import time
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 256
 TIMING_TOLERANCE_SEC = 0.050  # 50 ms
+# Must match LOOK_AHEAD_SEC in lib/main.py and playback_delay_seconds in dmx-enttec-node.
+LOOK_AHEAD_SEC = 2.5
 
 
-def build_simulation(audio_client, delay_sec: float):
+def build_simulation(audio_client):
     """Wire all components together with stub clients and return (app_components, command_queue)."""
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
@@ -34,12 +36,13 @@ def build_simulation(audio_client, delay_sec: float):
     midi_client = StubMidiClient()
     os2l_client = StubOs2lClient()
     overlay_client = StubOverlayClient()
-    command_queue = DelayedCommandQueue(delay_sec)
+    command_queue = DelayedCommandQueue(LOOK_AHEAD_SEC)
 
     effect_controller = EffectController(midi_client)
     light_engine = LightEngine(
         midi_client, os2l_client, overlay_client,
-        effect_controller, command_queue
+        effect_controller, command_queue,
+        look_ahead_sec=LOOK_AHEAD_SEC,
     )
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, visualizer_updater=None)
@@ -91,7 +94,7 @@ async def run_simulation(components: dict, duration_sec: float):
     logging.info('[sim] simulation complete')
 
 
-def build_visualizer_simulation(audio_client, event_buffer, delay_sec: float):
+def build_visualizer_simulation(audio_client, event_buffer):
     """Like build_simulation but the engine emits events to the shared EventBuffer."""
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
@@ -102,13 +105,14 @@ def build_visualizer_simulation(audio_client, event_buffer, delay_sec: float):
     midi_client = StubMidiClient()
     os2l_client = StubOs2lClient()
     overlay_client = StubOverlayClient()
-    command_queue = DelayedCommandQueue(delay_sec)
+    command_queue = DelayedCommandQueue(LOOK_AHEAD_SEC)
 
     effect_controller = EffectController(midi_client, event_buffer=event_buffer)
     light_engine = LightEngine(
         midi_client, os2l_client, overlay_client,
         effect_controller, command_queue,
         event_buffer=event_buffer,
+        look_ahead_sec=LOOK_AHEAD_SEC,
     )
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, visualizer_updater=None)

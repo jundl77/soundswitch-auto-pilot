@@ -6,9 +6,9 @@ MODES
   realtime  — capture from microphone in real time with Dash timeline
 
 EXAMPLES
-  python auto_pilot simulate file samples/song.mp3 --delay 2.5 --play-audio
+  python auto_pilot simulate file samples/song.mp3 --play-audio
   python auto_pilot simulate file samples/song.mp3 --no-ui --report report.json
-  python auto_pilot simulate realtime --device-index 1 --delay 0.3
+  python auto_pilot simulate realtime --device-index 1
 
 EXIT CODE (--no-ui / file mode only)
   0 = PASS
@@ -53,7 +53,7 @@ def run_file(args):
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     event_buffer = EventBuffer()
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer, args.delay)
+    components, command_queue = build_visualizer_simulation(audio_client, event_buffer)
 
     try:
         import librosa
@@ -102,7 +102,7 @@ def run_realtime(args):
         input_device_index=args.device_index,
     )
     event_buffer = EventBuffer()
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer, args.delay)
+    components, command_queue = build_visualizer_simulation(audio_client, event_buffer)
     event_buffer.start()
 
     thread = threading.Thread(
@@ -125,8 +125,6 @@ def add_simulate_subparser(subparsers):
 
     fp = sub.add_parser('file', help='Simulate from an audio file')
     fp.add_argument('audio', help='Path to audio file (MP3 / WAV / FLAC)')
-    fp.add_argument('--delay', type=float, default=0.0,
-                    help='Lookahead delay in seconds')
     fp.add_argument('--play-audio', action='store_true',
                     help='Play audio from speakers (requires sounddevice)')
     fp.add_argument('--no-ui', action='store_true',
@@ -138,8 +136,6 @@ def add_simulate_subparser(subparsers):
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')
     rp.add_argument('--device-index', type=int, default=None,
                     help='PyAudio input device index (default: system default)')
-    rp.add_argument('--delay', type=float, default=0.0,
-                    help='Lookahead delay in seconds')
     rp.add_argument('--port', type=int, default=8050, help='Dash server port')
 
     sim.set_defaults(func=simulate_cmd)

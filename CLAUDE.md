@@ -99,7 +99,7 @@ Classification uses three signals: BPM, onset density (onsets/sec over a 1.5 s r
 
 ### Windowed classification (look-ahead mode)
 
-When `--delay N` is set (matching `playback_delay_seconds` in dmx-enttec-node), the engine runs in **windowed classification mode**:
+The engine always runs in **windowed classification mode** with a fixed 2.5 s look-ahead (matching `playback_delay_seconds` in dmx-enttec-node):
 
 ```
 Audio stream (real-time analysis)
@@ -130,7 +130,7 @@ on_beat() → store (mono_time, density, bpm) in _beat_history
 
 **ATMOSPHERIC bypass:** always fires in real-time via `on_100ms_callback` (no delay). If atmospheric fires while a windowed commit is pending, `_commit_intent` detects `_atmospheric_sent=True` and skips to avoid overriding it.
 
-**Delay is configurable** (`--delay` flag, default 0.0 s). Must match `playback_delay_seconds` in dmx-enttec-node config. Recommended range: 2.0–5.0 s (longer = more forward context, but more latency for the engineer monitoring on headphones).
+**Delay is always 2.5 s** (`LOOK_AHEAD_SEC` constant in `lib/main.py` and `simulate/runner.py`). Must match `playback_delay_seconds` in dmx-enttec-node config. Local debug audio playback is delayed by the same 2.5 s so headphone monitoring stays in sync with the classified lights. To change: update `LOOK_AHEAD_SEC` in both files and the dmx-enttec-node config together.
 
 ### DMX migration path
 
@@ -182,7 +182,7 @@ python auto_pilot run 0 --ui
 python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 
 # Simulation (no hardware required)
-python auto_pilot simulate file samples/song.mp3 --delay 0.3
+python auto_pilot simulate file samples/song.mp3
 python auto_pilot simulate realtime
 
 # Tests
@@ -213,7 +213,7 @@ uv run pytest                        # unit + integration (~15s)
 | `_DROP_MIN_DENSITY` | `light_engine.py` | 8.0 | onsets/s floor for DROP |
 | `_PEAK_MIN_BPM` | `light_engine.py` | 138 | BPM floor for PEAK |
 | `_BEAT_ABSENCE_SEC` | `light_engine.py` | 2.5 s | Beat silence threshold for ATMOSPHERIC |
-| `look_ahead_sec` | `LightEngine.__init__` / `--delay` flag | 0.0 s | Symmetric window half-width; must match dmx-enttec-node `playback_delay_seconds` |
+| `LOOK_AHEAD_SEC` | `lib/main.py`, `simulate/runner.py` | 2.5 s | Symmetric window half-width; must match dmx-enttec-node `playback_delay_seconds` |
 | `SECTION_CHANGE_COOLDOWN` | `yamnet_change_detector.py` | 10 s | Min gap between YAMNet-triggered changes |
 | `APPLY_COLOR_OVERRIDE_INTERVAL_SEC` | `effect_controller.py` | 300 | Color override rotation every 5 min |
 | OS2L beat update | `os2l_client.py` | 25 ms | Beat position broadcast interval |
