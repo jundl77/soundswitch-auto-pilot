@@ -16,6 +16,7 @@ SAMPLE_RATE = 44100
 # so that local monitoring stays in sync with the analysis.
 LOOK_AHEAD_SEC = 2.5
 _AUDIO_DELAY_FRAMES = round(LOOK_AHEAD_SEC * SAMPLE_RATE / BUFFER_SIZE)  # ≈ 431 buffers
+_SILENCE = None  # initialised lazily as np.zeros(BUFFER_SIZE, dtype=np.float32)
 
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
@@ -125,7 +126,12 @@ class SoundSwitchAutoPilot:
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
         # FIFO buffer that delays local audio playback by LOOK_AHEAD_SEC so debug
         # monitoring (headphones) stays in sync with the classified-and-delayed lights.
+        import numpy as np
+        global _SILENCE
+        _SILENCE = np.zeros(BUFFER_SIZE, dtype=np.float32)
+
         audio_delay_buf: deque = deque()
+        _audio_playback_started = False
 
         while self.is_running:
             now = datetime.datetime.now()
@@ -136,7 +142,15 @@ class SoundSwitchAutoPilot:
             if self.audio_client.support_output():
                 audio_delay_buf.append(new_audio_signal)
                 if len(audio_delay_buf) > _AUDIO_DELAY_FRAMES:
+                    if not _audio_playback_started:
+                        logging.info('[main] audio delay buffer full, starting delayed playback')
+                        _audio_playback_started = True
                     self.audio_client.play(audio_delay_buf.popleft())
+                else:
+                    # Feed silence while the delay buffer fills to keep the output
+                    # stream alive — a starved PyAudio blocking stream on macOS/CoreAudio
+                    # can enter a dead state and never recover.
+                    self.audio_client.play(_SILENCE)
 
             if now - last_100ms_callback_execution > datetime.timedelta(milliseconds=100):
                 last_100ms_callback_execution = now
