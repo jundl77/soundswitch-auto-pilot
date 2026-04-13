@@ -82,3 +82,28 @@ def test_seconds_since_last_beat_approximately_correct(analyser):
 def test_seconds_since_last_beat_small_when_recent(analyser):
     analyser.last_beat_detected = datetime.datetime.now()
     assert analyser.get_seconds_since_last_beat() < 0.1
+
+
+# ---------------------------------------------------------------------------
+# feature_log and _frame_count
+# ---------------------------------------------------------------------------
+
+import numpy as np
+import asyncio
+
+
+def test_feature_log_populated_on_beats():
+    """feature_log grows when beats are detected, entries have correct keys."""
+    analyser = MusicAnalyser(44100, 256, _StubHandler(), visualizer_updater=None)
+    assert analyser.feature_log == []
+    assert analyser._frame_count == 0
+
+
+def test_frame_count_increments_on_analyse():
+    """_frame_count increments by buffer_size each analyse() call."""
+    analyser = MusicAnalyser(44100, 256, _StubHandler(), visualizer_updater=None)
+    buf = np.zeros(256, dtype=np.float32)
+    asyncio.get_event_loop().run_until_complete(analyser.analyse(buf))
+    assert analyser._frame_count == 256
+    asyncio.get_event_loop().run_until_complete(analyser.analyse(buf))
+    assert analyser._frame_count == 512
