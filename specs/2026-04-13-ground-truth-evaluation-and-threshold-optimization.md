@@ -94,7 +94,7 @@ One entry per beat, in beat order. Timestamps are in simulation elapsed time as 
 }
 ```
 
-`passed` per boundary: `|offset_ms| < 500 ms` initially (realistic given the stability pipeline lag). Tighten as optimization converges.
+`passed` per boundary: `|offset_ms| < 100 ms` — the target accuracy. A missed boundary (no predicted transition within ±2 s search window) is reported separately and carries a heavy score penalty (see Sweep Scoring below).
 
 ---
 
@@ -104,7 +104,7 @@ One entry per beat, in beat order. Timestamps are in simulation elapsed time as 
 
 New function. Takes the `intents[]` list from the report and the loaded label segments. For each ground-truth boundary, finds the nearest predicted intent change and computes the offset. Returns the `transition_accuracy` dict above.
 
-Matching strategy: for each GT boundary at time T, find the predicted transition `argmin |predicted_t - T|`. If no predicted transition exists within a search window (e.g. ±5 s), mark as `missed`.
+Matching strategy: for each GT boundary at time T, find the predicted transition `argmin |predicted_t - T|`. If no predicted transition exists within ±2 s, mark as `missed`. False boundaries (predicted transitions with no GT boundary within ±2 s) are counted separately.
 
 Called automatically from `_write_report_and_evaluate()` whenever labels are present. Also called from `print_evaluation()` for console output.
 
@@ -116,7 +116,7 @@ Called automatically from `_write_report_and_evaluate()` whenever labels are pre
 
 ### 3. `sweep_thresholds(feature_log, labels, grid)` — `simulate/evaluator.py`
 
-New function. Replays `feature_log` through `_classify_intent()` for each threshold combo in `grid`. Applies the full stability pipeline (vote buffer, dwell, invalid-transition guard) in pure Python — no side effects, no I/O. Scores each combo using `evaluate_against_labels()`. Returns a list of `(score, config_dict)` sorted by mean transition offset ascending.
+New function. Replays `feature_log` through `_classify_intent()` for each threshold combo in `grid`. Applies the full stability pipeline (vote buffer, dwell, invalid-transition guard) in pure Python — no side effects, no I/O. Scores each combo using `evaluate_against_labels()`. Returns a list of `(score, config_dict)` sorted by score ascending (lower is better).
 
 The stability pipeline replay must be a self-contained Python function (not calling into `LightEngine`) to avoid side effects and keep it fast.
 
@@ -129,12 +129,25 @@ The stability pipeline replay must be a self-contained Python function (not call
 | `_DROP_MIN_DENSITY_ENTER` | 8.5 | 6.0 – 12.0 | 7 |
 | `_KICK_PRESENCE_THRESHOLD` | 1.3 | 1.0 – 2.0 | 6 |
 | `_CENTROID_BUILDUP_TREND` | 1.1 | 1.05 – 1.5 | 6 |
-| `_VOTE_BUFFER_SIZE` | 3 | 1 – 5 | 5 |
+| `_VOTE_BUFFER_SIZE` | 3 | 1 – 4 | 4 |
 | `_MIN_DWELL_BEATS` | 4 | 1 – 6 | 6 |
 
-Total grid: ~8×6×7×6×6×5×6 ≈ 604,800 combos. Reduce with random sampling (10k points via Latin hypercube) for the first pass; refine around the top-10 configs with a dense local grid.
+Total grid: ~8×6×7×6×6×4×6 ≈ 483,840 combos. Reduce with random sampling (10k points via Latin hypercube) for the first pass; refine around the top-10 configs with a dense local grid.
 
-Hysteresis exit thresholds are kept locked to their entry counterparts with a fixed offset (e.g. exit = entry + 0.5) during the sweep to reduce dimensionality.
+Hysteresis exit thresholds are locked to their entry counterparts with a fixed offset (e.g. exit = entry + 0.5) during the sweep to reduce dimensionality.
+
+**Sweep scoring function:**
+
+```
+score = 0.6 × mean_offset_ms
+      + 0.4 × max_offset_ms
+      + missed_boundaries × 5000      # heavy penalty per missed boundary
+      + false_boundaries × 500        # per spurious switch
+```
+
+Lower score is better. A config with any missed boundary will score at least 5000 — effectively ranked last unless all others also miss. False boundaries are penalized per occurrence to discourage flickery configs that hit a real boundary by accident.
+
+**Sweep output:** Results are written to `report.json` under key `sweep_results` as a ranked list of the top-50 configs (score, all threshold values, boundary-by-boundary offset breakdown). No console output. Claude reads the report and applies the best config to `light_engine.py`.
 
 ### 4. `--sweep` flag on `simulate file`
 
@@ -142,14 +155,15 @@ Hysteresis exit thresholds are kept locked to their entry counterparts with a fi
 
 1. Run the full audio simulation (feature log is always captured now).
 2. After the simulation, call `sweep_thresholds(feature_log, labels, grid)`.
-3. Print the top-5 configs as a ready-to-paste Python block for `light_engine.py`.
-4. Write the sweep results into the report JSON under key `sweep_results`.
+3. Write the top-50 configs into `report.json` under key `sweep_results`. No console output — Claude reads the file and applies the best config.
+4. Print a single summary line: `[sweep] done — N combos evaluated, best score X.X, written to report.json`.
 
 If no labels are found, `--sweep` exits with a clear error: "sweep requires a ground-truth CSV alongside the audio file."
+`--sweep` requires `--no-ui` (sweep runs after the audio pass completes; the Dash UI blocks).
 
 ### 5. Ground-truth overlay in Dash visualizer — `simulate/visualizer_app.py`
 
-When labels are present, draw them as a semi-transparent background lane behind the predicted intent timeline. One coloured band per segment, same color scheme as the intent colors. No new interaction — purely informational. The engineer can see predicted vs. ground-truth at a glance while the audio plays.
+When labels are present, draw them as a hatched band layer behind the predicted intent timeline. One hatched band per segment using the same intent color scheme. Hatching makes ground-truth unmistakably distinct from the solid predicted bars at a glance — no overlap ambiguity. No new interaction — purely informational.
 
 ---
 
@@ -157,10 +171,11 @@ When labels are present, draw them as a semi-transparent background lane behind 
 
 ### Primary — transition accuracy
 
-- **Mean transition offset (ms)**: lower is better. Target: <500 ms initially, <50 ms aspirationally.
-- **Max transition offset (ms)**: worst-case boundary. Must not exceed one full musical phrase (8 beats ≈ 3.75 s at 128 BPM).
-- **Missed boundaries**: GT boundaries with no predicted transition within ±5 s search window.
-- **False boundaries**: predicted transitions with no nearby GT boundary (spurious switches).
+- **Mean transition offset (ms)**: lower is better. Target: <100 ms.
+- **Max transition offset (ms)**: worst-case boundary. Target: <100 ms.
+- **Missed boundaries**: GT boundaries with no predicted transition within ±2 s. Target: 0.
+- **False boundaries**: predicted transitions with no GT boundary within ±2 s. Target: 0.
+- **Composite sweep score**: `0.6 × mean_offset + 0.4 × max_offset + misses × 5000 + false × 500`.
 
 ### Secondary — frame accuracy
 
