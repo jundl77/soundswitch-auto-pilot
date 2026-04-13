@@ -300,6 +300,9 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
             return
+        # Refresh timing stats in the event buffer so the visualizer can display them.
+        if self.event_buffer and self.command_queue:
+            self.event_buffer.set_timing_log(self.command_queue.get_timing_log())
 
     async def on_10sec_callback(self):
         if not self.analyser.is_song_playing():

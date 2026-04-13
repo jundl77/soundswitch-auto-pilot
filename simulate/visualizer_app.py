@@ -115,6 +115,16 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
     shapes, annotations = [], []
 
+    # Minor gridlines every 1 s (drawn first so intent bands render on top)
+    t_grid = int(x0)
+    while t_grid <= x1:
+        shapes.append(dict(
+            type='line', xref='x', yref='paper',
+            x0=t_grid, x1=t_grid, y0=0, y1=1,
+            line=dict(color='#151e2b', width=0.8),
+        ))
+        t_grid += 1
+
     for entry in snapshot.get('intents', []):
         t_start = max(entry['t'], x0)
         t_end   = min(entry.get('end', now), x1)
@@ -133,6 +143,25 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 text=cfg['label'], showarrow=False,
                 font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
+
+    # Sound start / stop markers
+    for ev in snapshot.get('sound_events', []):
+        if ev['t'] < x0:
+            continue
+        is_start = ev['playing']
+        color    = '#3fb950' if is_start else '#f85149'   # green / red
+        label    = '▶ START' if is_start else '■ STOP'
+        shapes.append(dict(
+            type='line', xref='x', yref='paper',
+            x0=ev['t'], x1=ev['t'], y0=0, y1=1,
+            line=dict(color=color, width=1.5, dash='dash'),
+        ))
+        annotations.append(dict(
+            x=ev['t'], y=0.04, xref='x', yref='paper',
+            text=label, showarrow=False,
+            font=dict(color=color, size=9, family='monospace'),
+            xanchor='left',
+        ))
 
     # Beat markers — fixed y=0.25, size scales with strength (onset density proxy)
     beat_x, beat_y, beat_size = [], [], []
@@ -164,8 +193,15 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
     fig.update_layout(
         shapes=shapes, annotations=annotations,
-        xaxis=dict(range=[x0, x1], gridcolor='#1a2332', color='#6e7681',
-                   tickformat='.0f', ticksuffix='s', showline=False),
+        xaxis=dict(
+            range=[x0, x1],
+            dtick=5.0,              # major labelled tick every 5 s
+            tickformat='.0f',
+            ticksuffix='s',
+            gridcolor='#1a2332',    # major gridlines (5 s)
+            color='#6e7681',
+            showline=False,
+        ),
         yaxis=dict(range=[0, 1], showticklabels=False, showgrid=False),
         plot_bgcolor=DARK_BG, paper_bgcolor=DARK_BG,
         height=175, margin=dict(l=8, r=8, t=6, b=36),
@@ -236,13 +272,31 @@ def _build_metrics(snapshot: dict) -> list:
     is_playing  = snapshot.get('is_playing', False)
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
-    return [
+
+    ts          = snapshot.get('timing_stats', {})
+    mean_delta  = ts.get('mean_delta_sec')
+    max_err     = ts.get('max_error_ms')
+    n_samples   = ts.get('samples', 0)
+    if mean_delta is not None and n_samples > 0:
+        delay_str   = f'cmd delay: {mean_delta:.3f}s'
+        delay_col   = '#3fb950' if abs(mean_delta - 2.5) < 0.05 else '#f0883e'
+        err_str     = f'max err: {max_err:.1f}ms'
+    else:
+        delay_str  = 'cmd delay: —'
+        delay_col  = '#6e7681'
+        err_str    = ''
+
+    items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'{int(elapsed)}s', style={'color': '#6e7681', 'marginRight': '20px'}),
+        html.Span(f'{elapsed:.1f}s', style={'color': '#6e7681', 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats',   style={'color': '#3fb950', 'marginRight': '20px'}),
-        html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold'}),
+        html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
+        html.Span(delay_str, style={'color': delay_col, 'marginRight': '12px'}),
     ]
+    if err_str:
+        items.append(html.Span(err_str, style={'color': '#6e7681'}))
+    return items
 
 
 # ---------------------------------------------------------------------------

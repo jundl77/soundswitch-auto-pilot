@@ -24,6 +24,8 @@ class EventBuffer:
         self._intents: list[dict] = []
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
+        # Sound start/stop events for timeline markers
+        self._sound_events: list[dict] = []
 
     def start(self) -> None:
         with self._lock:
@@ -62,6 +64,7 @@ class EventBuffer:
     def set_playing(self, is_playing: bool) -> None:
         with self._lock:
             self._is_playing = is_playing
+            self._sound_events.append({'t': self._now(), 'playing': is_playing})
 
     def set_intent(self, intent: str) -> None:
         with self._lock:
@@ -84,6 +87,16 @@ class EventBuffer:
         with self._lock:
             now = self._now()
             cutoff = now - self._window_sec
+            # Timing stats from the command queue (updated by LightEngine.on_1sec_callback)
+            tlog = self._timing_log
+            errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000 for e in tlog]
+            deltas = [e['actual_delta_sec'] for e in tlog]
+            timing_stats = {
+                'samples': len(tlog),
+                'mean_delta_sec': sum(deltas) / len(deltas) if deltas else None,
+                'mean_error_ms': sum(errors_ms) / len(errors_ms) if errors_ms else None,
+                'max_error_ms': max(errors_ms) if errors_ms else None,
+            }
             return {
                 'now': now,
                 'is_playing': self._is_playing,
@@ -94,6 +107,8 @@ class EventBuffer:
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
                 'intent': self._current_intent,
+                'sound_events': [e for e in self._sound_events if e['t'] >= cutoff],
+                'timing_stats': timing_stats,
             }
 
     def to_report(self, timing_log: list[dict] | None = None) -> dict:
