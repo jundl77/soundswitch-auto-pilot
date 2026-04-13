@@ -17,6 +17,8 @@ The report contains:
   metrics         — aggregated stats including intent_distribution_sec
 """
 
+from collections import deque
+
 DEFAULT_CRITERIA: dict = {
     'timing_error_mean_ms': {
         'max': 15.0, 'weight': 0.20,
@@ -249,13 +251,13 @@ def _sweep_classify_intent(
 
     kick_present = kick_strength >= cfg['_KICK_PRESENCE_THRESHOLD']
 
-    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= 0.0:
+    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= cfg['_DROP_MIN_SUB_BASS_RATIO']:
         return 'drop'
     if bpm >= peak_threshold:
         return 'peak'
     if onset_density < breakdown_threshold:
         return 'breakdown'
-    if not kick_present and onset_density < 6.0:
+    if not kick_present and onset_density < cfg['_BREAKDOWN_NO_KICK_MAX_DENSITY']:
         return 'breakdown'
     if density_trend >= cfg['_BUILDUP_MIN_TREND'] or centroid_trend >= cfg['_CENTROID_BUILDUP_TREND']:
         return 'buildup'
@@ -282,8 +284,6 @@ def _replay_feature_log(
 
     Timestamps are in raw audio time (same reference as the GT label CSV).
     """
-    from collections import deque
-
     vote_buffer_size = int(cfg['_VOTE_BUFFER_SIZE'])
     min_dwell_beats  = int(cfg['_MIN_DWELL_BEATS'])
 
@@ -292,11 +292,16 @@ def _replay_feature_log(
     beats_in_intent = 0
     predicted       = [{'t': 0.0, 'intent': current_intent}]
 
-    for beat in feature_log:
+    # Pre-compute window boundaries with two pointers (O(n) total, not O(n²))
+    left = 0
+    for i, beat in enumerate(feature_log):
         t = beat['audio_time_sec']
-
-        # Build symmetric look-ahead/look-behind window
-        window = [b for b in feature_log if abs(b['audio_time_sec'] - t) <= look_ahead_sec]
+        while feature_log[left]['audio_time_sec'] < t - look_ahead_sec:
+            left += 1
+        right = i + 1
+        while right < len(feature_log) and feature_log[right]['audio_time_sec'] <= t + look_ahead_sec:
+            right += 1
+        window = feature_log[left:right]
 
         # Windowed features (mirrors _classify_windowed in light_engine.py)
         densities    = [b['onset_density'] for b in window]
@@ -323,7 +328,7 @@ def _replay_feature_log(
         # Vote consensus check
         if len(vote_buffer) < vote_buffer_size:
             continue
-        if not all(v == raw for v in vote_buffer):
+        if len(set(vote_buffer)) != 1:
             continue
         if raw == current_intent:
             continue
@@ -336,6 +341,7 @@ def _replay_feature_log(
         predicted.append({'t': t, 'intent': raw})
         current_intent  = raw
         beats_in_intent = 0
+        vote_buffer.clear()
 
     return predicted
 

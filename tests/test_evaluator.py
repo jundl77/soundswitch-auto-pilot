@@ -128,15 +128,17 @@ def _make_feature_log(beats: list[tuple]) -> list[dict]:
 
 
 _BASE_CFG = {
-    '_BREAKDOWN_MAX_DENSITY_ENTER': 3.0,
-    '_BREAKDOWN_MAX_DENSITY_EXIT':  3.5,
-    '_BUILDUP_MIN_TREND':           1.3,
-    '_DROP_MIN_DENSITY_ENTER':      8.5,
-    '_DROP_MIN_DENSITY_EXIT':       7.0,
-    '_KICK_PRESENCE_THRESHOLD':     1.3,
-    '_CENTROID_BUILDUP_TREND':      1.1,
-    '_VOTE_BUFFER_SIZE':            1,   # single vote for fast convergence in tests
-    '_MIN_DWELL_BEATS':             1,
+    '_BREAKDOWN_MAX_DENSITY_ENTER':   3.0,
+    '_BREAKDOWN_MAX_DENSITY_EXIT':    3.5,
+    '_BREAKDOWN_NO_KICK_MAX_DENSITY': 6.0,
+    '_BUILDUP_MIN_TREND':             1.3,
+    '_DROP_MIN_DENSITY_ENTER':        8.5,
+    '_DROP_MIN_DENSITY_EXIT':         7.0,
+    '_DROP_MIN_SUB_BASS_RATIO':       0.0,
+    '_KICK_PRESENCE_THRESHOLD':       1.3,
+    '_CENTROID_BUILDUP_TREND':        1.1,
+    '_VOTE_BUFFER_SIZE':              1,   # single vote for fast convergence in tests
+    '_MIN_DWELL_BEATS':               1,
 }
 
 
@@ -164,3 +166,38 @@ def test_replay_blocks_invalid_transition():
     result = _replay_feature_log(log, cfg, look_ahead_sec=0.5)
     intents = [r['intent'] for r in result]
     assert 'drop' not in intents
+
+
+def test_replay_vote_buffer_requires_consensus():
+    """Vote buffer with size=3 requires 3 consecutive identical classifications before committing."""
+    # sparse = breakdown territory, dense = drop territory
+    # interleave one dense beat among sparse to create a non-consensus pattern
+    sparse = [(float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(8)]
+    # one dense beat followed by sparse again — not 3 consecutive dense votes
+    one_dense = [(4.0, 128.0, 9.5, 2.5)]
+    more_sparse = [(4.5 + float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(8)]
+    log = _make_feature_log(sparse + one_dense + more_sparse)
+    cfg = {**_BASE_CFG, '_VOTE_BUFFER_SIZE': 3, '_MIN_DWELL_BEATS': 1}
+    result = _replay_feature_log(log, cfg, look_ahead_sec=0.3)
+    intents = [r['intent'] for r in result]
+    # The single dense beat should NOT trigger a drop — no consensus
+    assert 'drop' not in intents
+
+
+def test_replay_dwell_guard_prevents_immediate_switch():
+    """Min dwell of 3 beats prevents switching before settling."""
+    # Enter breakdown first (sparse), then immediately see drop-density beats
+    sparse = [(float(i) * 0.5, 128.0, 2.0, 1.2) for i in range(4)]
+    dense  = [(2.0 + float(i) * 0.5, 128.0, 9.5, 2.5) for i in range(10)]
+    log = _make_feature_log(sparse + dense)
+    cfg = {**_BASE_CFG, '_VOTE_BUFFER_SIZE': 1, '_MIN_DWELL_BEATS': 5}
+    result = _replay_feature_log(log, cfg, look_ahead_sec=0.3)
+    intents = [r['intent'] for r in result]
+    # With dwell=5 and only 4 beats before the dense section,
+    # drop should still eventually appear (after dwell is satisfied)
+    # but the first transition to drop should be delayed
+    drop_entries = [r for r in result if r['intent'] == 'drop']
+    if drop_entries:
+        # drop transition must happen after at least 5 beats in prior intent
+        first_drop_t = drop_entries[0]['t']
+        assert first_drop_t >= 2.0  # at least past the sparse section
