@@ -84,18 +84,25 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 
 ### Intent classifier (in `lib/engine/light_engine.py`)
 
-Classification uses three signals: BPM, onset density (onsets/sec over a 1.5 s rolling window), and onset density trend (ratio of recent vs past beats, from `get_onset_density_trend()`).
+Classification uses four signals: BPM, onset density (onsets/sec over a 1.5 s rolling window), onset density trend (ratio of recent vs past beats, from `get_onset_density_trend()`), and sub-bass ratio (mel filterbank bands 0–4 / total energy, from `get_sub_bass_ratio()`).
 
-| Intent | Detection method | MIDI pool | Visualizer fixtures |
-|---|---|---|---|
-| ATMOSPHERIC | Beat absence > 2.5 s (via `on_100ms_callback`) | BANK_2A/B/C | 2 center (deep blue/violet) |
-| BREAKDOWN | density < 3.0 onsets/s | BANK_2C/D/E | 3 center (purple/rose) |
-| GROOVE | density ≥ 3.0 and trend < 1.3 | BANK_2F/G/H | 5 spread (teal/sky) |
-| BUILDUP | density ≥ 3.0 and trend ≥ 1.3 (rising energy) | BANK_1A/B/C | 6 fixtures (amber/gold) |
-| DROP | density ≥ 8.0 and BPM ≥ 100 | BANK_1D/E + STROBE | 8 all (crimson/magenta) |
-| PEAK | BPM ≥ 138 | BANK_1F/G/H | 8 all (white-hot/red) |
+**Hysteresis thresholds** (Schmitt trigger — separate entry/exit per intent, prevents threshold-boundary oscillation):
+
+| Intent | Entry condition | Exit condition | MIDI pool | Visualizer fixtures |
+|---|---|---|---|---|
+| ATMOSPHERIC | Beat absence > 2.5 s (via `on_100ms_callback`) | First beat detected | BANK_2A/B/C | 2 center (deep blue/violet) |
+| BREAKDOWN | density < 3.0 /s | density > 3.5 /s | BANK_2C/D/E | 3 center (purple/rose) |
+| GROOVE | density ≥ 3.0, trend < 1.3 | (falls through) | BANK_2F/G/H | 5 spread (teal/sky) |
+| BUILDUP | density ≥ 3.0, trend ≥ 1.3 (rising energy) | trend < 1.3 | BANK_1A/B/C | 6 fixtures (amber/gold) |
+| DROP | density ≥ 8.5 and BPM ≥ 100 | density < 7.0 | BANK_1D/E + STROBE | 8 all (crimson/magenta) |
+| PEAK | BPM ≥ 140 | BPM < 135 | BANK_1F/G/H | 8 all (white-hot/red) |
 
 **ATMOSPHERIC** is the only intent set outside `_classify_intent`: `on_100ms_callback` detects beat absence (> 2.5 s without a beat), fires ATMOSPHERIC once via `_atmospheric_sent` flag (not every 100 ms), and triggers a MIDI effect change. The first beat after ATMOSPHERIC immediately re-classifies and changes the MIDI effect.
+
+**Stability pipeline** (in `_commit_intent`, applied on every delayed commit):
+1. **Vote buffer** (`_VOTE_BUFFER_SIZE = 3`): 3 consecutive identical classifications required before committing.
+2. **Minimum dwell** (`_MIN_DWELL_BEATS = 4`): ≥ 4 beats must have elapsed in the current intent before switching away.
+3. **Invalid-transition guard**: blocks musically impossible jumps — `ATMOSPHERIC → DROP/BUILDUP/PEAK` and `PEAK → BUILDUP`.
 
 ### Windowed classification (look-ahead mode)
 
@@ -104,7 +111,7 @@ The engine always runs in **windowed classification mode** with a fixed 2.5 s lo
 ```
 Audio stream (real-time analysis)
     ↓
-on_beat() → store (mono_time, density, bpm) in _beat_history
+on_beat() → store (mono_time, density, bpm, sub_bass_ratio, rms_energy) in _beat_history
           → enqueue _commit_intent(T, bpm) to DelayedCommandQueue with delay=N
                                 ↓ N seconds later
                   _commit_intent fires — audience hears audio from T right now
@@ -121,10 +128,11 @@ on_beat() → store (mono_time, density, bpm) in _beat_history
 | Real DROP | Fires correctly | Fires correctly; all window beats agree |
 | BUILDUP start | Detects after trend has already risen | Forward beats confirm the rising curve; fires at the actual onset |
 
-**`_classify_windowed(window, bpm)`** (module-level pure function in `light_engine.py`):
+**`_classify_windowed(window, bpm, current_intent)`** (module-level pure function in `light_engine.py`):
 - **Median density** over the window — robust to transient spikes
 - **Forward trend** = mean(future half) / mean(past half) — uses future beats to confirm rising energy
-- Calls `_classify_intent(bpm, median_density, forward_trend)` — same thresholds, better signals
+- **Mean sub-bass ratio** — averaged over window beats; passed to `_classify_intent` for the DROP gate
+- Calls `_classify_intent(bpm, median_density, forward_trend, current_intent, mean_sub_bass)` — hysteresis-aware
 
 **Effect change policy in windowed mode:** `_commit_intent` fires `change_effect` only when the intent differs from `_current_intent`. This makes effect changes intent-driven rather than locked to YAMNet section boundaries alone.
 
@@ -208,11 +216,17 @@ uv run pytest                        # unit + integration (~15s)
 | `BUFFER_SIZE` | `pyaudio_client.py` | 256 | Audio frames per callback |
 | `SAMPLE_RATE` | `music_analyser.py` | 44100 | Hz |
 | `_ONSET_DENSITY_WINDOW_SEC` | `music_analyser.py` | 1.5 s | Rolling window for onset density |
-| `_BREAKDOWN_MAX_DENSITY` | `light_engine.py` | 3.0 | onsets/s ceiling for BREAKDOWN |
+| `_BREAKDOWN_MAX_DENSITY_ENTER` | `light_engine.py` | 3.0 | onsets/s — enter BREAKDOWN below this |
+| `_BREAKDOWN_MAX_DENSITY_EXIT` | `light_engine.py` | 3.5 | onsets/s — exit BREAKDOWN above this |
 | `_BUILDUP_MIN_TREND` | `light_engine.py` | 1.3 | Density trend ratio floor for BUILDUP |
-| `_DROP_MIN_DENSITY` | `light_engine.py` | 8.0 | onsets/s floor for DROP |
-| `_PEAK_MIN_BPM` | `light_engine.py` | 138 | BPM floor for PEAK |
+| `_DROP_MIN_DENSITY_ENTER` | `light_engine.py` | 8.5 | onsets/s — enter DROP at or above this |
+| `_DROP_MIN_DENSITY_EXIT` | `light_engine.py` | 7.0 | onsets/s — exit DROP below this |
+| `_DROP_MIN_SUB_BASS_RATIO` | `light_engine.py` | 0.0 | Sub-bass gate for DROP (disabled — calibrate later) |
+| `_PEAK_MIN_BPM_ENTER` | `light_engine.py` | 140 | BPM — enter PEAK at or above this |
+| `_PEAK_MIN_BPM_EXIT` | `light_engine.py` | 135 | BPM — exit PEAK below this |
 | `_BEAT_ABSENCE_SEC` | `light_engine.py` | 2.5 s | Beat silence threshold for ATMOSPHERIC |
+| `_VOTE_BUFFER_SIZE` | `light_engine.py` | 3 | Consecutive identical votes needed to commit a switch |
+| `_MIN_DWELL_BEATS` | `light_engine.py` | 4 | Beats in current intent before switching allowed |
 | `LOOK_AHEAD_SEC` | `lib/main.py`, `simulate/runner.py` | 2.5 s | Symmetric window half-width; must match dmx-enttec-node `playback_delay_seconds` |
 | `SECTION_CHANGE_COOLDOWN` | `yamnet_change_detector.py` | 10 s | Min gap between YAMNet-triggered changes |
 | `APPLY_COLOR_OVERRIDE_INTERVAL_SEC` | `effect_controller.py` | 300 | Color override rotation every 5 min |
