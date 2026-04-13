@@ -6,3 +6,6 @@ venv
 spotify_details.json
 .cache
 *.egg-info/
+.DS_Store
+*.mp3
+*.pkl
