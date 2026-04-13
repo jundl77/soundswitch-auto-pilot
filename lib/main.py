@@ -6,6 +6,7 @@ import logging
 import asyncio
 import signal
 import datetime
+import time
 from collections import deque
 
 BUFFER_SIZE = 256
@@ -15,7 +16,6 @@ SAMPLE_RATE = 44100
 # Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
 # so that local monitoring stays in sync with the analysis.
 LOOK_AHEAD_SEC = 2.5
-_AUDIO_DELAY_FRAMES = round(LOOK_AHEAD_SEC * SAMPLE_RATE / BUFFER_SIZE)  # ≈ 431 buffers
 _SILENCE = None  # initialised lazily as np.zeros(BUFFER_SIZE, dtype=np.float32)
 
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
@@ -132,6 +132,10 @@ class SoundSwitchAutoPilot:
 
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
+        # Use wall-clock time for the delay threshold — counting loop iterations is
+        # unreliable because each iteration is double-clocked by both the input read()
+        # and the output write(), making iteration time ~2× a single buffer period.
+        _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
 
         while self.is_running:
             now = datetime.datetime.now()
@@ -141,9 +145,9 @@ class SoundSwitchAutoPilot:
 
             if self.audio_client.support_output():
                 audio_delay_buf.append(new_audio_signal)
-                if len(audio_delay_buf) > _AUDIO_DELAY_FRAMES:
+                if time.monotonic() >= _playback_ready_at:
                     if not _audio_playback_started:
-                        logging.info('[main] audio delay buffer full, starting delayed playback')
+                        logging.info('[main] audio delay buffer ready, starting delayed playback')
                         _audio_playback_started = True
                     self.audio_client.play(audio_delay_buf.popleft())
                 else:
