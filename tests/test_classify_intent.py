@@ -21,7 +21,7 @@ def _window(densities: list[float], bpm: float = 128.0, sub_bass: float = 0.0,
 
 
 def test_drop_on_density_spike_at_dance_bpm():
-    assert _classify_intent(128.0, 9.0) == LightIntent.DROP
+    assert _classify_intent(128.0, 12.0) == LightIntent.DROP
 
 
 def test_drop_requires_bpm_floor():
@@ -31,8 +31,8 @@ def test_drop_requires_bpm_floor():
 
 
 def test_drop_beats_peak_at_high_bpm_high_density():
-    # 140 BPM + 9 density: density spike wins, DROP before PEAK
-    assert _classify_intent(140.0, 9.0) == LightIntent.DROP
+    # 140 BPM + 12 density: density spike wins, DROP before PEAK
+    assert _classify_intent(140.0, 12.0) == LightIntent.DROP
 
 
 def test_peak_at_high_bpm_moderate_density():
@@ -69,9 +69,9 @@ def test_atmospheric_never_returned_by_classifier():
 
 def test_buildup_trend_threshold_boundary():
     # trend exactly at threshold fires BUILDUP
-    assert _classify_intent(120.0, 5.0, density_trend=1.3) == LightIntent.BUILDUP
+    assert _classify_intent(120.0, 5.0, density_trend=1.438) == LightIntent.BUILDUP
     # trend just below threshold falls to GROOVE
-    assert _classify_intent(120.0, 5.0, density_trend=1.29) == LightIntent.GROOVE
+    assert _classify_intent(120.0, 5.0, density_trend=1.437) == LightIntent.GROOVE
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +85,8 @@ def test_windowed_drop_requires_sustained_density():
 
 
 def test_windowed_drop_on_sustained_high_density():
-    # Genuine DROP: all beats in window have high density
-    densities = [9.0, 9.5, 10.0, 9.2, 8.8]
+    # Genuine DROP: all beats in window have high density (above _DROP_MIN_DENSITY_ENTER=11.82)
+    densities = [12.0, 12.5, 13.0, 12.2, 11.9]
     assert _classify_windowed(_window(densities), bpm=128.0) == LightIntent.DROP
 
 
