@@ -87,6 +87,10 @@ class EventBuffer:
         with self._lock:
             self._feature_log = list(log)
 
+    def get_feature_log(self) -> list[dict]:
+        with self._lock:
+            return list(self._feature_log)
+
     def snapshot(self) -> dict:
         """Thread-safe copy of recent state — called from Dash every 100 ms."""
         with self._lock:

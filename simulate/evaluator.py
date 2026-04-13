@@ -392,8 +392,10 @@ def sweep_thresholds(
     for _ in range(n_samples):
         cfg: dict = {}
         for param, (lo, hi, typ) in _PARAM_RANGES.items():
-            v = float(rng.uniform(lo, hi + (1 if typ == 'int' else 0)))
-            cfg[param] = int(v) if typ == 'int' else round(float(v), 3)
+            if typ == 'int':
+                cfg[param] = int(rng.integers(lo, hi + 1))
+            else:
+                cfg[param] = round(float(rng.uniform(lo, hi)), 3)
         # Derive locked hysteresis thresholds from swept entry values
         cfg['_BREAKDOWN_MAX_DENSITY_EXIT'] = round(cfg['_BREAKDOWN_MAX_DENSITY_ENTER'] + 0.5, 3)
         cfg['_DROP_MIN_DENSITY_EXIT']      = round(max(cfg['_DROP_MIN_DENSITY_ENTER'] - 1.5, 3.0), 3)

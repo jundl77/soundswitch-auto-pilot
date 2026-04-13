@@ -91,7 +91,7 @@ def _run_sweep(event_buffer, labels: list[dict], report_path: str) -> None:
     from simulate.runner import LOOK_AHEAD_SEC
     import json
 
-    feature_log = event_buffer._feature_log
+    feature_log = event_buffer.get_feature_log()
     if not feature_log:
         print('[sweep] no feature log available — skipping sweep.')
         return
