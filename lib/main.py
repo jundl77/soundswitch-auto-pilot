@@ -6,10 +6,16 @@ import logging
 import asyncio
 import signal
 import datetime
+import time
+from collections import deque
 
 BUFFER_SIZE = 256
 SAMPLE_RATE = 44100
-
+# Look-ahead delay: analysis runs LOOK_AHEAD_SEC ahead of what the audience hears.
+# Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
+# Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
+# so that local monitoring stays in sync with the analysis.
+LOOK_AHEAD_SEC = 2.5
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
 
@@ -22,7 +28,6 @@ class SoundSwitchAutoPilot:
                  debug_mode: bool = False,
                  show_visualizer: bool = False,
                  disable_os2l: bool = False,
-                 lookahead_delay_sec: float = 0.0,
                  enable_ui: bool = False,
                  ui_port: int = 8050,
                  report_path: str | None = None):
@@ -45,9 +50,8 @@ class SoundSwitchAutoPilot:
         self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
-        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(lookahead_delay_sec)
-        if lookahead_delay_sec > 0:
-            logging.info(f'[main] lookahead delay enabled: {lookahead_delay_sec:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
+        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(LOOK_AHEAD_SEC)
+        logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
         # construct clients
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
@@ -75,7 +79,8 @@ class SoundSwitchAutoPilot:
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
-                                                     self.command_queue, event_buffer=self.event_buffer)
+                                                     self.command_queue, event_buffer=self.event_buffer,
+                                                     look_ahead_sec=LOOK_AHEAD_SEC)
 
         # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
@@ -117,6 +122,13 @@ class SoundSwitchAutoPilot:
         last_100ms_callback_execution: datetime.datetime = datetime.datetime.now()
         last_1sec_callback_execution: datetime.datetime = datetime.datetime.now()
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
+        # FIFO buffer that delays local audio playback by LOOK_AHEAD_SEC so debug
+        # monitoring (headphones) stays in sync with the classified-and-delayed lights.
+        audio_delay_buf: deque = deque()
+        _audio_playback_started = False
+        # Use wall-clock time for the delay threshold — counting loop iterations is
+        # unreliable because loop speed varies with analyse() overhead.
+        _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
 
         while self.is_running:
             now = datetime.datetime.now()
@@ -125,7 +137,12 @@ class SoundSwitchAutoPilot:
             await self.command_queue.drain()
 
             if self.audio_client.support_output():
-                self.audio_client.play(new_audio_signal)
+                audio_delay_buf.append(new_audio_signal)
+                if time.monotonic() >= _playback_ready_at:
+                    if not _audio_playback_started:
+                        logging.info('[main] audio delay buffer ready, starting delayed playback')
+                        _audio_playback_started = True
+                    self.audio_client.play(audio_delay_buf.popleft())
 
             if now - last_100ms_callback_execution > datetime.timedelta(milliseconds=100):
                 last_100ms_callback_execution = now
@@ -177,14 +194,12 @@ async def run_cmd(args: argparse.Namespace):
     midi_port_index: int = int(args.midi_port_index)
     input_device_index = int(args.input_device) if args.input_device is not None else None
     output_device_index = int(args.output_device) if args.output_device is not None else None
-    lookahead_delay_sec = float(args.delay) if args.delay is not None else 0.0
     global_app = SoundSwitchAutoPilot(midi_port_index=midi_port_index,
                                       input_device_index=input_device_index,
                                       output_device_index=output_device_index,
                                       debug_mode=debug_mode,
                                       show_visualizer=args.visualizer,
                                       disable_os2l=args.no_os2l,
-                                      lookahead_delay_sec=lookahead_delay_sec,
                                       enable_ui=args.ui,
                                       ui_port=args.ui_port,
                                       report_path=args.report)
@@ -230,7 +245,6 @@ async def main():
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
     subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
     subparser.add_argument('--no-os2l', help='Disable OS2L (connection to SoundSwitch). This can be useful for debugging.', required=False, action='store_true')
-    subparser.add_argument('--delay', help='Lookahead delay in seconds (must match dmx-enttec-node playback_delay_seconds). Default: 0.0', required=False, default=None)
     subparser.add_argument('--ui', help='Launch real-time lighting visualizer (requires dash extra)', required=False, action='store_true')
     subparser.add_argument('--ui-port', type=int, default=8050, help='Visualizer Dash server port (default: 8050)', required=False, dest='ui_port')
     subparser.add_argument('--report', default=None, help='Write a JSON session report on exit (e.g. report.json); implies event tracking', required=False)

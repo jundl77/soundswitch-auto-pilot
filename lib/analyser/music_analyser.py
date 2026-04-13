@@ -65,6 +65,10 @@ class MusicAnalyser:
         self._onset_times: deque = deque(maxlen=500)
         # per-beat density samples for trend detection (maxlen=12 ≈ ~6s at 120 BPM)
         self._density_samples: deque = deque(maxlen=12)
+        # Rolling mel-energy frames and RMS values for sub-bass / energy features.
+        # maxlen≈26 ≈ 150 ms of buffers at 5.8 ms/buffer — long enough for a stable mean.
+        self._mel_energies_window: deque = deque(maxlen=26)
+        self._rms_window: deque = deque(maxlen=26)
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -124,11 +128,35 @@ class MusicAnalyser:
         """Seconds elapsed since the last detected beat."""
         return (datetime.datetime.now() - self.last_beat_detected).total_seconds()
 
+    def get_sub_bass_ratio(self) -> float:
+        """Fraction of mel filterbank energy in sub-bass bands (bands 0–4, ~60–250 Hz).
+
+        Returns 0.0 when no frames have been processed yet.  A high ratio (≥ 0.25)
+        strongly suggests a kick drum or bass-heavy DROP rather than a hi-hat pattern.
+        """
+        if not self._mel_energies_window:
+            return 0.0
+        mean_energies = np.mean(np.array(list(self._mel_energies_window)), axis=0)
+        total = float(np.sum(mean_energies)) + 1e-8
+        sub_bass = float(np.sum(mean_energies[:5]))
+        return sub_bass / total
+
+    def get_rms_energy(self) -> float:
+        """Mean RMS amplitude over the recent analysis window (last ~150 ms).
+
+        Returns 0.0 when no frames have been processed yet.
+        """
+        if not self._rms_window:
+            return 0.0
+        return sum(self._rms_window) / len(self._rms_window)
+
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = datetime.datetime.now()
 
         pitch_hz = self.pitch_o(audio_signal)[0]
         pitch_confidence = self.pitch_o.get_confidence()
+        rms = float(np.sqrt(np.mean(audio_signal ** 2)))
+        self._rms_window.append(rms)
         spec, mfccs, energies = self._compute_mfcc(audio_signal)
         self._track_song_duration(energies, now)
 
@@ -188,6 +216,7 @@ class MusicAnalyser:
 
         self.mfccs = np.vstack((self.mfccs, mfcc_out))
         self.energies = np.vstack([self.energies, energies_out])
+        self._mel_energies_window.append(energies_out.copy())
 
         return spec, mfcc_out, energies_out
 
