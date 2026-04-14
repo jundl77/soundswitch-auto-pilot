@@ -145,7 +145,10 @@ class OverlayClient:
     def flush_messages(self):
         if self._should_flush:
             msg: bytes = self._build_message(DMX_UNIVERSE, self.overlays)
-            self.socket.sendto(msg, (UDP_IP, UDP_PORT))
+            try:
+                self.socket.sendto(msg, (UDP_IP, UDP_PORT))
+            except OSError as e:
+                logging.warning(f'[overlay] UDP send failed ({e}); is {UDP_IP}:{UDP_PORT} reachable?')
             self._should_flush = False
 
     def _add_overlay(self, effect: OverlayEffect, definition: OverlayDefinition):

@@ -235,6 +235,8 @@ def _sweep_classify_intent(
     kick_strength: float,
     centroid_trend: float,
     cfg: dict,
+    rms_energy: float = 0.0,
+    spectral_flux: float = 0.0,
 ) -> str:
     """Mirrors light_engine._classify_intent with explicit threshold dict.
 
@@ -254,7 +256,10 @@ def _sweep_classify_intent(
 
     if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= sub_bass_threshold:
         return 'drop'
-    if bpm >= peak_threshold:
+    rms_peak = (rms_energy >= cfg.get('_PEAK_MIN_RMS', 999.0)
+                and kick_present
+                and onset_density >= cfg.get('_PEAK_MIN_DENSITY_FOR_RMS_PEAK', 3.5))
+    if bpm >= peak_threshold or rms_peak:
         return 'peak'
     if onset_density < breakdown_threshold:
         return 'breakdown'
@@ -262,6 +267,16 @@ def _sweep_classify_intent(
         return 'breakdown'
     if density_trend >= cfg['_BUILDUP_MIN_TREND'] or centroid_trend >= cfg['_CENTROID_BUILDUP_TREND']:
         return 'buildup'
+    # Secondary BREAKDOWN: moderate density + absent sub-bass (mirrors light_engine compound rule).
+    # Governs both entry and stay — prevents oscillation when density fluctuates above
+    # normal exit threshold but sub-bass is still absent.
+    _bd_max_density_low_sub = cfg.get('_BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS', 999.0)
+    _bd_max_sub             = cfg.get('_BREAKDOWN_MAX_SUB_BASS',                  0.0)
+    bd_enter                = cfg['_BREAKDOWN_MAX_DENSITY_ENTER']
+    if (onset_density > bd_enter
+            and onset_density < _bd_max_density_low_sub
+            and sub_bass_ratio < _bd_max_sub):
+        return 'breakdown'
     return 'groove'
 
 
@@ -311,6 +326,8 @@ def _replay_feature_log(
         mean_sub     = sum(b['sub_bass_ratio'] for b in window) / len(window)
         mean_kick    = sum(b['kick_strength']  for b in window) / len(window)
         mean_ctrd    = sum(b['centroid_trend'] for b in window) / len(window)
+        mean_rms     = sum(b.get('rms_energy',    0.0) for b in window) / len(window)
+        mean_flux    = sum(b.get('spectral_flux', 0.0) for b in window) / len(window)
         mid          = len(densities) // 2
         past         = densities[:mid] if mid > 0 else densities
         future       = densities[mid:] if mid > 0 else densities
@@ -321,6 +338,7 @@ def _replay_feature_log(
         raw = _sweep_classify_intent(
             beat['bpm'], median_d, window_trend,
             current_intent, mean_sub, mean_kick, mean_ctrd, cfg,
+            rms_energy=mean_rms, spectral_flux=mean_flux,
         )
 
         vote_buffer.append(raw)
@@ -367,10 +385,11 @@ _PARAM_RANGES: dict[str, tuple] = {
     '_BREAKDOWN_MAX_DENSITY_ENTER': (1.5,  5.0,  'float'),
     '_BUILDUP_MIN_TREND':           (1.1,  2.0,  'float'),
     '_DROP_MIN_DENSITY_ENTER':      (3.0,  6.0,  'float'),
-    '_DROP_MIN_SUB_BASS_RATIO':     (0.20, 0.28, 'float'),  # entry gate
-    '_DROP_MIN_SUB_BASS_RATIO_EXIT':(0.10, 0.22, 'float'),  # exit gate; enforced ≤ entry in sweep
+    '_DROP_MIN_SUB_BASS_RATIO':     (0.20, 0.30, 'float'),  # entry gate
+    '_DROP_MIN_SUB_BASS_RATIO_EXIT':(0.10, 0.25, 'float'),  # exit gate; enforced ≤ entry in sweep
     '_KICK_PRESENCE_THRESHOLD':     (0.5,  1.2,  'float'),
     '_CENTROID_BUILDUP_TREND':      (1.05, 1.5,  'float'),
+    '_PEAK_MIN_RMS':                (0.02, 0.20, 'float'),  # energy-based PEAK gate
     '_VOTE_BUFFER_SIZE':            (2,    8,    'int'),
     '_MIN_DWELL_BEATS':             (2,    10,   'int'),
 }

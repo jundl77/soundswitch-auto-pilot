@@ -4,10 +4,12 @@ from lib.engine.light_engine import (
     _DROP_MIN_DENSITY_ENTER, _DROP_MIN_DENSITY_EXIT,
     _DROP_MIN_SUB_BASS_RATIO,
     _PEAK_MIN_BPM_ENTER, _PEAK_MIN_BPM_EXIT,
+    _PEAK_MIN_RMS, _PEAK_MIN_DENSITY_FOR_RMS_PEAK,
     _BREAKDOWN_MAX_DENSITY_ENTER, _BREAKDOWN_MAX_DENSITY_EXIT,
     _KICK_PRESENCE_THRESHOLD, _CENTROID_BUILDUP_TREND,
     _BUILDUP_MIN_TREND,
     _BREAKDOWN_NO_KICK_MAX_DENSITY,
+    _BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS, _BREAKDOWN_MAX_SUB_BASS,
 )
 from lib.engine.effect_definitions import LightIntent
 
@@ -17,9 +19,13 @@ from lib.engine.effect_definitions import LightIntent
 # ---------------------------------------------------------------------------
 
 def _window(densities: list[float], bpm: float = 128.0, sub_bass: float = 0.0,
-            kick: float = 2.0, centroid_trend: float = 1.0) -> list[tuple]:
-    """Build a fake window of BeatRecords (7-tuples) at evenly spaced monotonic times."""
-    return [(float(i), d, bpm, sub_bass, 0.5, kick, centroid_trend) for i, d in enumerate(densities)]
+            kick: float = 2.0, centroid_trend: float = 1.0, spectral_flux: float = 0.0,
+            rms: float = 0.0) -> list[tuple]:
+    """Build a fake window of BeatRecords (8-tuples) at evenly spaced monotonic times.
+
+    rms defaults to 0.0 so the RMS PEAK gate does not fire unless tests explicitly set it.
+    """
+    return [(float(i), d, bpm, sub_bass, rms, kick, centroid_trend, spectral_flux) for i, d in enumerate(densities)]
 
 
 def test_drop_on_density_spike_at_dance_bpm():
@@ -180,8 +186,11 @@ def test_breakdown_hysteresis_stays_in_breakdown_below_exit_threshold():
 
 
 def test_breakdown_hysteresis_exits_above_exit_threshold():
+    # With groove-level sub-bass (no compound-rule interference), density above the
+    # exit threshold must leave BREAKDOWN → normal hysteresis still works.
     above_exit = _BREAKDOWN_MAX_DENSITY_EXIT + 0.1
-    result = _classify_intent(128.0, above_exit, current_intent=LightIntent.BREAKDOWN)
+    result = _classify_intent(128.0, above_exit, current_intent=LightIntent.BREAKDOWN,
+                              sub_bass_ratio=0.25)
     assert result != LightIntent.BREAKDOWN
 
 
@@ -265,3 +274,46 @@ def test_windowed_buildup_via_rising_centroid():
     rising = _CENTROID_BUILDUP_TREND + 0.1
     densities = [4.5, 4.5, 4.5, 4.5, 4.5]
     assert _classify_windowed(_window(densities, centroid_trend=rising), bpm=120.0) == LightIntent.BUILDUP
+
+
+# ---------------------------------------------------------------------------
+# Compound BREAKDOWN rule tests
+# (moderate density + absent sub-bass → BREAKDOWN for stripped arrangements)
+# ---------------------------------------------------------------------------
+
+def test_compound_breakdown_fires_for_stripped_arrangement():
+    # density in gap above BREAKDOWN_MAX_DENSITY_ENTER with low sub-bass → BREAKDOWN
+    mid_density = (_BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS) / 2
+    low_sub = _BREAKDOWN_MAX_SUB_BASS - 0.05
+    assert _classify_intent(128.0, mid_density, sub_bass_ratio=low_sub) == LightIntent.BREAKDOWN
+
+
+def test_compound_breakdown_does_not_fire_with_bass_present():
+    # Same density range but sub-bass at or above threshold → GROOVE
+    mid_density = (_BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS) / 2
+    assert _classify_intent(128.0, mid_density, sub_bass_ratio=_BREAKDOWN_MAX_SUB_BASS) != LightIntent.BREAKDOWN
+
+
+def test_compound_breakdown_extends_stay_with_low_subbass():
+    # When in BREAKDOWN with low sub-bass, compound rule keeps us there even above
+    # the normal sparse-density exit threshold — prevents density-fluctuation oscillation.
+    above_exit = _BREAKDOWN_MAX_DENSITY_EXIT + 0.1
+    low_sub = _BREAKDOWN_MAX_SUB_BASS - 0.05
+    result = _classify_intent(128.0, above_exit, current_intent=LightIntent.BREAKDOWN,
+                              sub_bass_ratio=low_sub)
+    assert result == LightIntent.BREAKDOWN
+
+
+def test_compound_breakdown_superseded_by_buildup():
+    # Rising density trend fires BUILDUP before compound BREAKDOWN check.
+    mid_density = (_BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS) / 2
+    low_sub = _BREAKDOWN_MAX_SUB_BASS - 0.05
+    assert _classify_intent(128.0, mid_density, density_trend=_BUILDUP_MIN_TREND,
+                            sub_bass_ratio=low_sub) == LightIntent.BUILDUP
+
+
+def test_compound_breakdown_does_not_fire_above_density_ceiling():
+    # density at or above the compound rule ceiling → not caught → GROOVE
+    at_ceiling = _BREAKDOWN_MAX_DENSITY_WITH_LOW_SUBBASS
+    low_sub = _BREAKDOWN_MAX_SUB_BASS - 0.05
+    assert _classify_intent(128.0, at_ceiling, sub_bass_ratio=low_sub) != LightIntent.BREAKDOWN

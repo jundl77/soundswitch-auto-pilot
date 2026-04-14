@@ -82,6 +82,10 @@ class MusicAnalyser:
         # Spectral centroid tracked per-buffer and at beat times (for trend detection).
         self._centroid_window: deque = deque(maxlen=26)
         self._beat_centroid_samples: deque = deque(maxlen=12)
+        # Spectral flux: frame-to-frame absolute change in mel energies.
+        # High flux = transient-rich content (kick, snare); low flux = sustained/tonal (pads, breakdown).
+        self._prev_mel_energies: np.ndarray | None = None
+        self._flux_window: deque = deque(maxlen=26)  # ~150 ms
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -190,6 +194,17 @@ class MusicAnalyser:
             return 0.0
         return sum(self._centroid_window) / len(self._centroid_window)
 
+    def get_spectral_flux(self) -> float:
+        """Mean frame-to-frame absolute change in mel energies over the recent window (~150 ms).
+
+        High values indicate transient-rich content (kick, snare, full percussion).
+        Low values indicate sustained or tonal content (pads, sustained chords, breakdown).
+        Returns 0.0 when fewer than 2 frames have been processed.
+        """
+        if not self._flux_window:
+            return 0.0
+        return sum(self._flux_window) / len(self._flux_window)
+
     def get_spectral_centroid_trend(self) -> float:
         """Trend of the spectral centroid across recent beats (ratio of recent vs. past half).
 
@@ -265,6 +280,8 @@ class MusicAnalyser:
                 'kick_strength':  self.get_kick_strength(),
                 'centroid_trend': self.get_spectral_centroid_trend(),
                 'sub_bass_ratio': self.get_sub_bass_ratio(),
+                'rms_energy':     self.get_rms_energy(),
+                'spectral_flux':  self.get_spectral_flux(),
             })
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
@@ -297,6 +314,12 @@ class MusicAnalyser:
         total_energy = float(np.sum(energies_out))
         centroid = float(np.dot(np.arange(40), energies_out)) / (total_energy + 1e-8)
         self._centroid_window.append(centroid)
+
+        # Spectral flux: mean absolute difference from previous frame.
+        if self._prev_mel_energies is not None:
+            flux = float(np.mean(np.abs(energies_out - self._prev_mel_energies)))
+            self._flux_window.append(flux)
+        self._prev_mel_energies = energies_out.copy()
 
         return spec, mfcc_out, energies_out
 
