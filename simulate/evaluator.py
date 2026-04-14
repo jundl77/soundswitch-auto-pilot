@@ -245,13 +245,14 @@ def _sweep_classify_intent(
     currently_peak      = current_intent_value == 'peak'
     currently_breakdown = current_intent_value == 'breakdown'
 
-    drop_threshold      = cfg['_DROP_MIN_DENSITY_EXIT']      if currently_drop      else cfg['_DROP_MIN_DENSITY_ENTER']
-    peak_threshold      = 135.0                               if currently_peak      else 140.0
-    breakdown_threshold = cfg['_BREAKDOWN_MAX_DENSITY_EXIT']  if currently_breakdown else cfg['_BREAKDOWN_MAX_DENSITY_ENTER']
+    drop_threshold      = cfg['_DROP_MIN_DENSITY_EXIT']       if currently_drop      else cfg['_DROP_MIN_DENSITY_ENTER']
+    peak_threshold      = 135.0                                if currently_peak      else 140.0
+    breakdown_threshold = cfg['_BREAKDOWN_MAX_DENSITY_EXIT']   if currently_breakdown else cfg['_BREAKDOWN_MAX_DENSITY_ENTER']
+    sub_bass_threshold  = cfg['_DROP_MIN_SUB_BASS_RATIO_EXIT'] if currently_drop      else cfg['_DROP_MIN_SUB_BASS_RATIO']
 
     kick_present = kick_strength >= cfg['_KICK_PRESENCE_THRESHOLD']
 
-    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= cfg['_DROP_MIN_SUB_BASS_RATIO']:
+    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= sub_bass_threshold:
         return 'drop'
     if bpm >= peak_threshold:
         return 'peak'
@@ -365,11 +366,13 @@ def _sweep_score(ta: dict) -> float:
 _PARAM_RANGES: dict[str, tuple] = {
     '_BREAKDOWN_MAX_DENSITY_ENTER': (1.5,  5.0,  'float'),
     '_BUILDUP_MIN_TREND':           (1.1,  2.0,  'float'),
-    '_DROP_MIN_DENSITY_ENTER':      (6.0,  12.0, 'float'),
-    '_KICK_PRESENCE_THRESHOLD':     (1.0,  2.0,  'float'),
+    '_DROP_MIN_DENSITY_ENTER':      (3.0,  6.0,  'float'),
+    '_DROP_MIN_SUB_BASS_RATIO':     (0.20, 0.28, 'float'),  # entry gate
+    '_DROP_MIN_SUB_BASS_RATIO_EXIT':(0.10, 0.22, 'float'),  # exit gate; enforced ≤ entry in sweep
+    '_KICK_PRESENCE_THRESHOLD':     (0.5,  1.2,  'float'),
     '_CENTROID_BUILDUP_TREND':      (1.05, 1.5,  'float'),
-    '_VOTE_BUFFER_SIZE':            (1,    4,    'int'),
-    '_MIN_DWELL_BEATS':             (1,    6,    'int'),
+    '_VOTE_BUFFER_SIZE':            (2,    8,    'int'),
+    '_MIN_DWELL_BEATS':             (2,    10,   'int'),
 }
 
 
@@ -399,9 +402,11 @@ def sweep_thresholds(
         # Derive locked hysteresis thresholds from swept entry values
         cfg['_BREAKDOWN_MAX_DENSITY_EXIT'] = round(cfg['_BREAKDOWN_MAX_DENSITY_ENTER'] + 0.5, 3)
         cfg['_DROP_MIN_DENSITY_EXIT']      = round(max(cfg['_DROP_MIN_DENSITY_ENTER'] - 1.5, 3.0), 3)
-        # Fixed non-swept thresholds (at current production values)
+        # Enforce sub-bass hysteresis invariant: exit threshold ≤ entry threshold
+        cfg['_DROP_MIN_SUB_BASS_RATIO_EXIT'] = min(cfg['_DROP_MIN_SUB_BASS_RATIO_EXIT'],
+                                                    cfg['_DROP_MIN_SUB_BASS_RATIO'])
+        # Fixed non-swept threshold
         cfg['_BREAKDOWN_NO_KICK_MAX_DENSITY'] = 6.0
-        cfg['_DROP_MIN_SUB_BASS_RATIO']       = 0.0
 
         predicted = _replay_feature_log(feature_log, cfg, look_ahead_sec)
         ta        = evaluate_against_labels(predicted, labels, look_ahead_sec=0.0)

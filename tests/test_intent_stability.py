@@ -48,18 +48,20 @@ def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
 
 
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
-                       kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7):
+                       kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7,
+                       sub_bass: float = 0.3):
     """Fill _beat_history with beats spread symmetrically around time.monotonic().
 
     All beats land within look_ahead_sec of now so they are included in the
     window when _commit_intent(enqueue_time=now, ...) is called immediately after.
     kick=2.0 means kick assumed present (above any reasonable threshold).
+    sub_bass=0.3 satisfies the sub-bass gate regardless of the calibrated threshold.
     """
     now = time.monotonic()
     half = engine._look_ahead_sec * 0.9
     for i in range(n):
         t = now - half + i * (2 * half / max(n - 1, 1))
-        engine._beat_history.append((t, density, bpm, 0.0, 0.5, kick, centroid_trend))
+        engine._beat_history.append((t, density, bpm, sub_bass, 0.5, kick, centroid_trend))
     return now  # use as enqueue_time
 
 

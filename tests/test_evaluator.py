@@ -135,6 +135,7 @@ _BASE_CFG = {
     '_DROP_MIN_DENSITY_ENTER':        8.5,
     '_DROP_MIN_DENSITY_EXIT':         7.0,
     '_DROP_MIN_SUB_BASS_RATIO':       0.0,
+    '_DROP_MIN_SUB_BASS_RATIO_EXIT':  0.0,
     '_KICK_PRESENCE_THRESHOLD':       1.3,
     '_CENTROID_BUILDUP_TREND':        1.1,
     '_VOTE_BUFFER_SIZE':              1,   # single vote for fast convergence in tests

@@ -183,4 +183,4 @@ uv run pytest                        # unit + integration (~15s)
 - **Beat dropout false ATMOSPHERIC**: aubio can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts.
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
-- **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
+- **Sub-bass gate calibrated**: `_DROP_MIN_SUB_BASS_RATIO` and `_DROP_MIN_SUB_BASS_RATIO_EXIT` are calibrated against Eric Prydz "Generate" (128 BPM). They may need re-tuning on other tracks — run the `--sweep` flag against an annotated sample to re-optimize.

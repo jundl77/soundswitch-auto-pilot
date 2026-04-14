@@ -32,28 +32,29 @@ if TYPE_CHECKING:
 
 # Hysteresis thresholds (Schmitt trigger) — separate entry and exit values per intent
 # prevent threshold-boundary oscillation ("flickering") at the edges of each zone.
-_BREAKDOWN_MAX_DENSITY_ENTER = 3.346 # enter BREAKDOWN when density < this
-_BREAKDOWN_MAX_DENSITY_EXIT  = 3.846 # exit BREAKDOWN when density exceeds this
-_BUILDUP_MIN_TREND           = 1.438 # density trend ratio — rising ≥44% → BUILDUP
-_DROP_MIN_DENSITY_ENTER      = 11.82 # enter DROP when density ≥ this
-_DROP_MIN_DENSITY_EXIT       = 10.32 # exit DROP when density falls below this
-_DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — calibrate later)
+_BREAKDOWN_MAX_DENSITY_ENTER = 4.169 # enter BREAKDOWN when density < this
+_BREAKDOWN_MAX_DENSITY_EXIT  = 4.669 # exit BREAKDOWN when density exceeds this
+_BUILDUP_MIN_TREND           = 1.861 # density trend ratio — rising ≥86% → BUILDUP
+_DROP_MIN_DENSITY_ENTER      = 3.247 # enter DROP when density ≥ this
+_DROP_MIN_DENSITY_EXIT       = 3.0   # exit DROP when density falls below this
+_DROP_MIN_SUB_BASS_RATIO       = 0.224 # enter DROP: sub-bass must be at least this (0.0 = gate open)
+_DROP_MIN_SUB_BASS_RATIO_EXIT  = 0.224 # stay in DROP: sub-bass must exceed this (≤ entry value)
 _PEAK_MIN_BPM_ENTER          = 140.0 # enter PEAK when BPM ≥ this
 _PEAK_MIN_BPM_EXIT           = 135.0 # exit PEAK when BPM falls below this
 
 # Kick detection gate: kick_strength below this means no kick on beats → BREAKDOWN even at
-# moderate onset density.  1.173 = calibrated against Eric Prydz "Generate" (128 BPM track).
-_KICK_PRESENCE_THRESHOLD          = 1.173
+# moderate onset density.  0.533 = calibrated against Eric Prydz "Generate" (128 BPM track).
+_KICK_PRESENCE_THRESHOLD          = 0.533
 # When kick is absent, clamp BREAKDOWN entry to density below this (prevents misclassifying
 # a hi-hat-only pattern with no bass as BREAKDOWN when density is very high).
 _BREAKDOWN_NO_KICK_MAX_DENSITY    = 6.0
-# Spectral centroid trend threshold: centroid rising ≥19% → BUILDUP signal (riser/sweep).
-_CENTROID_BUILDUP_TREND           = 1.194
+# Spectral centroid trend threshold: centroid rising ≥11% → BUILDUP signal (riser/sweep).
+_CENTROID_BUILDUP_TREND           = 1.106
 
 _BEAT_ABSENCE_SEC            = 2.5   # seconds without a beat → ATMOSPHERIC (5+ missed beats at 128 BPM)
 
 # Stability: vote buffer requires this many consecutive identical votes before committing a switch.
-_VOTE_BUFFER_SIZE = 4
+_VOTE_BUFFER_SIZE = 8
 # Minimum beats spent in current intent before a switch is allowed.
 _MIN_DWELL_BEATS  = 2
 
@@ -98,11 +99,12 @@ def _classify_intent(
     drop_threshold      = _DROP_MIN_DENSITY_EXIT       if currently_drop      else _DROP_MIN_DENSITY_ENTER
     peak_threshold      = _PEAK_MIN_BPM_EXIT           if currently_peak      else _PEAK_MIN_BPM_ENTER
     breakdown_threshold = _BREAKDOWN_MAX_DENSITY_EXIT  if currently_breakdown else _BREAKDOWN_MAX_DENSITY_ENTER
+    sub_bass_threshold  = _DROP_MIN_SUB_BASS_RATIO_EXIT if currently_drop      else _DROP_MIN_SUB_BASS_RATIO
 
     kick_present = kick_strength >= _KICK_PRESENCE_THRESHOLD
 
-    # DROP: density spike + kick confirmed on beats + (optional) sub-bass gate
-    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
+    # DROP: density spike + kick confirmed on beats + (optional) sub-bass gate (separate entry/exit)
+    if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= sub_bass_threshold:
         return LightIntent.DROP
     if bpm >= peak_threshold:
         return LightIntent.PEAK

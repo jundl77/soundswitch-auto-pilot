@@ -221,6 +221,11 @@ async def list_cmd(args: argparse.Namespace):
     app.list_devices()
 
 
+async def label_cmd(args: argparse.Namespace):
+    from simulate.label_tool import run_label_tool
+    run_label_tool(args.audio)
+
+
 def death_handler(signum, frame):
     if global_app is not None:
         logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
@@ -252,6 +257,10 @@ async def main():
 
     from simulate.cli import add_simulate_subparser
     add_simulate_subparser(subparsers)
+
+    lp = subparsers.add_parser('label', help='Interactively annotate an audio file with ground-truth intent labels')
+    lp.add_argument('audio', nargs='?', default=None, help='Path to audio file (MP3 / WAV / FLAC); omit to pick from samples/')
+    lp.set_defaults(func=label_cmd)
 
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
