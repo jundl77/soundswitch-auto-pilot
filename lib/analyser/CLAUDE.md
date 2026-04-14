@@ -86,17 +86,47 @@ The JSON report contains the full beat list, intent timeline, and timing log. In
 
 ### Tuning workflow
 
-1. Run simulation on a track with a known structure (e.g. the drop starts at T=90 s).
-2. Inspect the intent timeline: does the DROP intent start and end where the drop does?
-3. Adjust thresholds in `lib/engine/light_engine.py` and re-run.
-4. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
+Now automated. Run:
+
+```bash
+python auto_pilot simulate file samples/song.mp3 --no-ui --report report.json --sweep
+```
+
+The `--sweep` flag runs a 10k-sample Latin-hypercube threshold sweep via fast feature-log replay, writes top-50 configs to `report.json` under `sweep_results`, and prints a summary. Claude then reads the report, applies the best config to `lib/engine/light_engine.py`, re-runs the full simulation to verify, and iterates. See `simulate/evaluator.py::sweep_thresholds` and `specs/2026-04-13-ground-truth-evaluation-and-threshold-optimization.md` for the full architecture.
+
+### Threshold calibration status (as of 2026-04-14, Eric Prydz "Generate" 128 BPM)
+
+Sweep-optimized against `samples/generate_eric_prydz_192k.csv` (8 GT boundaries). Sub-bass gate (`_DROP_MIN_SUB_BASS_RATIO`) and separate hysteresis exit (`_DROP_MIN_SUB_BASS_RATIO_EXIT`) were introduced to enable DROP detection via windowed sub-bass signal. 10,000-sample Latin-hypercube sweep across 9 parameters.
+
+**Current accuracy: 6/8 boundaries detected (offsets 86–1519 ms), 2 missed, 3 false.**
+
+| Boundary | Offset | Notes |
+|---|---|---|
+| atmospheric → breakdown (9.04s) | +1381ms | Detected via look-ahead windowed breakdown density |
+| breakdown → buildup (39.12s) | MISSED | Hard limit — features identical to breakdown section; see below |
+| buildup → drop (45.77s) | +1519ms | Detected via sub-bass gate; offset from window alignment |
+| drop → groove (60.92s) | MISSED | Hard limit — windowed sub-bass lags 3s past transition; see below |
+| groove → breakdown (76.06s) | −905ms | Detected |
+| breakdown → buildup (106.48s) | +86ms | Detected ✓ |
+| buildup → peak (128.90s) | +1064ms | Detected by time proximity; BPM gate unmet — see below |
+| peak → atmospheric (159.28s) | +445ms | Detected via beat-absence transition |
+
+**Known hard limits for this track:**
+
+- **breakdown→buildup (39.12s) undetectable**: The buildup section (39–45s) has the same onset density (2.67–4.67), sub-bass, and centroid trend as the preceding breakdown. The musical change (filter sweep, kick fade) is not captured by any current feature.
+- **drop→groove (60.92s) undetectable**: The windowed sub-bass (±2.5s window) doesn't drop below the exit threshold until ~t=63s because the look-ahead window still overlaps the high-sub-bass drop section. Physical limit of the windowed approach: the 2.5s look-ahead window blurs the transition by ~3s.
+- **PEAK (128.90s) not entered**: `_PEAK_MIN_BPM_ENTER=140` cannot be satisfied at 128 BPM. Time proximity matches the buildup→peak boundary because a transition occurs near 130s. True PEAK detection requires a non-BPM gate (RMS energy, sustained density+kick).
+- **Transition lag 900ms–1500ms**: with `_VOTE_BUFFER_SIZE=8` at 128 BPM (0.47s/beat), 8 votes = ~3.8s of potential lag, but the look-ahead window (2.5s) partially compensates. Net residual lag for clean section boundaries is ~900–1500ms.
+
+**Best achievable with current features: 6/8** (7/8 configs exist but require 12–15 false boundaries — too erratic for live use).
 
 ---
 
 ## Future Work
 
-- **Kick strength calibration**: measure `get_kick_strength()` values on real tracks across kick-present vs. kick-absent sections to validate `_KICK_PRESENCE_THRESHOLD`. Also tune `_BREAKDOWN_NO_KICK_MAX_DENSITY` against passages where kick drops out mid-groove.
-- **Centroid trend calibration**: measure `get_spectral_centroid_trend()` during genuine buildup sections vs. steady grooves to validate `_CENTROID_BUILDUP_TREND`. The threshold is more reliable than sub-bass ratio but still needs real data.
-- **RMS energy in classification**: use as a PEAK confirmation signal (loud + high BPM = PEAK; quiet + high BPM = probably just tempo, not energy).
-- **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for detecting timbral drops (e.g. a low-pass filter sweep releasing into the drop).
-- **Labelled data**: once enough real-track simulations exist, label the intent timeline manually and use it to validate or calibrate thresholds systematically rather than by ear.
+- **RMS energy in classification**: critical for PEAK detection in tracks where BPM stays constant. "Loud + sustained kick" is a better PEAK gate than BPM alone. Must be added to the feature log in `music_analyser.py` and swept.
+- **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for sidechain-compressed drops where onset density is suppressed and for detecting the breakdown→buildup transition.
+- **Asymmetric look-ahead for DROP exit**: the 2.5s symmetric window causes ~3s lag on DROP→GROOVE transitions (window still overlaps high-sub-bass drop section). A shorter forward window specifically for exit classification could eliminate this hard limit.
+- **Multi-track sweep**: current sweep is calibrated against one track. Add more annotated tracks and sweep against all simultaneously to avoid overfitting to a single track's density profile. The current `_BREAKDOWN_MAX_DENSITY_ENTER=4.169` may be too high for tracks where breakdown truly has low density.
+- **Sub-bass exit hysteresis calibration**: `_DROP_MIN_SUB_BASS_RATIO_EXIT` is now separately tunable. Currently set equal to `_DROP_MIN_SUB_BASS_RATIO` (same threshold for entry and exit). A lower exit threshold would make DROP easier to exit without requiring a full sub-bass drop.
+- **Vote buffer lag**: with `_VOTE_BUFFER_SIZE=8`, transitions can lag up to ~3.8s at 128 BPM. The sweep favoured 8 for stability (3 false) vs 1–3 (12–15 false). Multi-track validation needed to find a better vote/false-boundary tradeoff.

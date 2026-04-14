@@ -16,12 +16,41 @@ EXIT CODE (--no-ui / file mode only)
 """
 
 import asyncio
+import csv
 import json
+import os
 import sys
 import threading
 
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 256
+
+
+def _load_labels(audio_path: str) -> list[dict] | None:
+    """Load ground-truth labels from a CSV file with the same stem as the audio file.
+
+    Expected format (header row required):
+        start_sec,end_sec,intent
+        0.0,45.0,atmospheric
+        45.0,90.0,groove
+        ...
+
+    Returns None if no label file exists alongside the audio.
+    """
+    label_path = os.path.splitext(audio_path)[0] + '.csv'
+    if not os.path.exists(label_path):
+        return None
+    labels = []
+    with open(label_path, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            labels.append({
+                'start':  float(row['start_sec']),
+                'end':    float(row['end_sec']),
+                'intent': row['intent'].lower().strip(),
+            })
+    print(f'[simulate] loaded {len(labels)} ground-truth labels from {label_path}')
+    return labels or None
 
 
 def _run_pipeline(components, duration_sec: float, event_buffer, command_queue):
@@ -32,18 +61,58 @@ def _run_pipeline(components, duration_sec: float, event_buffer, command_queue):
         loop.run_until_complete(run_simulation(components, duration_sec))
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
+        event_buffer.set_feature_log(components['music_analyser'].feature_log)
         loop.close()
 
 
-def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
+def _write_report_and_evaluate(event_buffer, command_queue, report_path: str,
+                                labels: list[dict] | None = None) -> bool:
     from simulate.evaluator import evaluate, print_evaluation
     report = event_buffer.to_report(command_queue.get_timing_log())
+    if labels:
+        try:
+            from simulate.evaluator import evaluate_against_labels
+            from simulate.runner import LOOK_AHEAD_SEC
+            report['transition_accuracy'] = evaluate_against_labels(
+                report['intents'], labels, look_ahead_sec=LOOK_AHEAD_SEC
+            )
+        except ImportError:
+            print('[simulate] evaluate_against_labels not yet available — skipping transition accuracy')
     with open(report_path, 'w') as f:
         json.dump(report, f, indent=2, default=str)
     print(f'[simulate] report written → {report_path}')
     result = evaluate(report)
-    print_evaluation(result)
+    print_evaluation(result, report.get('transition_accuracy'))
     return result['passed']
+
+
+def _run_sweep(event_buffer, labels: list[dict], report_path: str) -> None:
+    from simulate.evaluator import sweep_thresholds
+    from simulate.runner import LOOK_AHEAD_SEC
+    import json
+
+    feature_log = event_buffer.get_feature_log()
+    if not feature_log:
+        print('[sweep] no feature log available — skipping sweep.')
+        return
+
+    print('[sweep] running 10 000-sample threshold sweep …')
+    results = sweep_thresholds(feature_log, labels, look_ahead_sec=LOOK_AHEAD_SEC)
+
+    # Merge sweep_results into existing report
+    try:
+        with open(report_path) as f:
+            report = json.load(f)
+    except Exception:
+        report = {}
+    report['sweep_results'] = results
+
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2, default=str)
+
+    best = results[0] if results else None
+    score_str = f'{best["score"]:.1f}' if best else 'N/A'
+    print(f'[sweep] done — 10 000 combos evaluated, best score {score_str}, written to {report_path}')
 
 
 def run_file(args):
@@ -80,14 +149,21 @@ def run_file(args):
         except ImportError as e:
             print(f'[simulate] warning: {e} — audio playback skipped')
 
+    labels = _load_labels(args.audio)
+
     if args.no_ui:
         print(f'[simulate] running headlessly for {duration_sec:.0f}s …')
         thread.join()
-        passed = _write_report_and_evaluate(event_buffer, command_queue, args.report)
+        passed = _write_report_and_evaluate(event_buffer, command_queue, args.report, labels=labels)
+        if getattr(args, 'sweep', False):
+            if not labels:
+                print('[sweep] error: --sweep requires a ground-truth CSV alongside the audio file.')
+                sys.exit(1)
+            _run_sweep(event_buffer, labels, args.report)
         sys.exit(0 if passed else 1)
 
     from simulate.visualizer_app import run_app
-    run_app(event_buffer, port=args.port)
+    run_app(event_buffer, port=args.port, labels=labels)
 
 
 def run_realtime(args):
@@ -131,6 +207,8 @@ def add_simulate_subparser(subparsers):
                     help='Headless: run to completion, write report, evaluate (exit 0=PASS, 1=FAIL)')
     fp.add_argument('--report', default='report.json',
                     help='Report output path (--no-ui only, default: report.json)')
+    fp.add_argument('--sweep', action='store_true',
+                    help='After simulation: sweep 10k threshold combos against ground-truth CSV. Requires --no-ui and a label CSV alongside the audio.')
     fp.add_argument('--port', type=int, default=8050, help='Dash server port')
 
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')

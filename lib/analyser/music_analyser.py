@@ -34,6 +34,12 @@ class MusicAnalyser:
 
         self._reset_state()
 
+        # Feature log: per-beat raw features for threshold sweep.
+        # Intentionally NOT in _reset_state() — survives the 15-min MusicAnalyser reset.
+        self.feature_log: list[dict] = []
+        # Monotonically increasing sample count — gives us audio time independent of wall-clock.
+        self._frame_count: int = 0
+
     def _reset_state(self) -> None:
         # audio analysers
         self.pitch_o: aubio.pitch = aubio.pitch("default", self.win_s_large, self.hop_s, self.sample_rate)
@@ -76,6 +82,10 @@ class MusicAnalyser:
         # Spectral centroid tracked per-buffer and at beat times (for trend detection).
         self._centroid_window: deque = deque(maxlen=26)
         self._beat_centroid_samples: deque = deque(maxlen=12)
+        # Spectral flux: frame-to-frame absolute change in mel energies.
+        # High flux = transient-rich content (kick, snare); low flux = sustained/tonal (pads, breakdown).
+        self._prev_mel_energies: np.ndarray | None = None
+        self._flux_window: deque = deque(maxlen=26)  # ~150 ms
 
     def start(self):
         self.yamnet_change_detector.start()
@@ -184,6 +194,17 @@ class MusicAnalyser:
             return 0.0
         return sum(self._centroid_window) / len(self._centroid_window)
 
+    def get_spectral_flux(self) -> float:
+        """Mean frame-to-frame absolute change in mel energies over the recent window (~150 ms).
+
+        High values indicate transient-rich content (kick, snare, full percussion).
+        Low values indicate sustained or tonal content (pads, sustained chords, breakdown).
+        Returns 0.0 when fewer than 2 frames have been processed.
+        """
+        if not self._flux_window:
+            return 0.0
+        return sum(self._flux_window) / len(self._flux_window)
+
     def get_spectral_centroid_trend(self) -> float:
         """Trend of the spectral centroid across recent beats (ratio of recent vs. past half).
 
@@ -229,6 +250,7 @@ class MusicAnalyser:
             pass
 
         await self.handler.on_cycle()
+        self._frame_count += self.buffer_size
         return audio_signal
 
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
@@ -250,6 +272,17 @@ class MusicAnalyser:
                 self._beat_sub_bass_samples.append(self._all_sub_bass_samples[-1])
             if self._centroid_window:
                 self._beat_centroid_samples.append(self._centroid_window[-1])
+            self.feature_log.append({
+                'audio_time_sec': self._frame_count / self.sample_rate,
+                'bpm':            this_bpm,
+                'onset_density':  self.get_onset_density(),
+                'density_trend':  self.get_onset_density_trend(),
+                'kick_strength':  self.get_kick_strength(),
+                'centroid_trend': self.get_spectral_centroid_trend(),
+                'sub_bass_ratio': self.get_sub_bass_ratio(),
+                'rms_energy':     self.get_rms_energy(),
+                'spectral_flux':  self.get_spectral_flux(),
+            })
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
             self.last_bpm = self.get_bpm()
             self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
@@ -281,6 +314,12 @@ class MusicAnalyser:
         total_energy = float(np.sum(energies_out))
         centroid = float(np.dot(np.arange(40), energies_out)) / (total_energy + 1e-8)
         self._centroid_window.append(centroid)
+
+        # Spectral flux: mean absolute difference from previous frame.
+        if self._prev_mel_energies is not None:
+            flux = float(np.mean(np.abs(energies_out - self._prev_mel_energies)))
+            self._flux_window.append(flux)
+        self._prev_mel_energies = energies_out.copy()
 
         return spec, mfcc_out, energies_out
 

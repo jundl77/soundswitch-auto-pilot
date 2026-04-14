@@ -108,10 +108,22 @@ def _intent_config(intent_key):
 # Figure builders
 # ---------------------------------------------------------------------------
 
-def _build_timeline(snapshot: dict) -> go.Figure:
+def _build_timeline(snapshot: dict, labels: list[dict] | None = None) -> go.Figure:
     now   = snapshot['now']
     x0    = now - TIMELINE_WINDOW_SEC
     x1    = now + 0.5
+
+    has_labels = bool(labels)
+    # When ground-truth labels are loaded, split the band into two rows.
+    # Top row = predicted intent; bottom row = ground truth.
+    if has_labels:
+        pred_y0, pred_y1 = 0.54, 0.97
+        gt_y0,   gt_y1   = 0.03, 0.46
+        beat_y            = 0.50
+    else:
+        pred_y0, pred_y1 = 0.52, 0.96
+        gt_y0,   gt_y1   = None, None
+        beat_y            = 0.25
 
     shapes, annotations = [], []
 
@@ -125,6 +137,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
         ))
         t_grid += 1
 
+    # Predicted intent bands
     for entry in snapshot.get('intents', []):
         t_start = max(entry['t'], x0)
         t_end   = min(entry.get('end', now), x1)
@@ -134,15 +147,60 @@ def _build_timeline(snapshot: dict) -> go.Figure:
         color = cfg['primary']
         shapes.append(dict(
             type='rect', xref='x', yref='paper',
-            x0=t_start, x1=t_end, y0=0.52, y1=0.96,
+            x0=t_start, x1=t_end, y0=pred_y0, y1=pred_y1,
             fillcolor=color, opacity=0.80, line_width=0,
         ))
         if t_end - t_start > 1.5:
             annotations.append(dict(
-                x=(t_start + t_end) / 2, y=0.74, xref='x', yref='paper',
+                x=(t_start + t_end) / 2, y=(pred_y0 + pred_y1) / 2,
+                xref='x', yref='paper',
                 text=cfg['label'], showarrow=False,
                 font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
+
+    # Ground-truth bands (when a label file is loaded)
+    if has_labels:
+        for lbl in labels:
+            t_start = max(lbl['start'], x0)
+            t_end   = min(lbl['end'],   x1)
+            if t_end <= t_start:
+                continue
+            cfg   = _intent_config(lbl['intent'])
+            # Base fill: same color but lower opacity so it reads as "reference"
+            shapes.append(dict(
+                type='rect', xref='x', yref='paper',
+                x0=t_start, x1=t_end, y0=gt_y0, y1=gt_y1,
+                fillcolor=cfg['primary'], opacity=0.30, line_width=0,
+            ))
+            # Diagonal hatch lines (one every 1.5s across the band)
+            stripe_x = t_start
+            while stripe_x < t_end:
+                shapes.append(dict(
+                    type='line', xref='x', yref='paper',
+                    x0=stripe_x, x1=min(stripe_x + 1.0, t_end),
+                    y0=gt_y0,    y1=gt_y1,
+                    line=dict(color=cfg['primary'], width=1.5),
+                ))
+                stripe_x += 1.5
+            if t_end - t_start > 1.5:
+                annotations.append(dict(
+                    x=(t_start + t_end) / 2, y=(gt_y0 + gt_y1) / 2,
+                    xref='x', yref='paper',
+                    text=cfg['label'], showarrow=False,
+                    font=dict(color='rgba(255,255,255,0.70)', size=10, family='monospace'),
+                ))
+
+        # Row labels pinned to left edge
+        annotations.append(dict(
+            x=0.005, y=(pred_y0 + pred_y1) / 2, xref='paper', yref='paper',
+            text='PRED', showarrow=False, xanchor='left',
+            font=dict(color='#6e7681', size=8, family='monospace'),
+        ))
+        annotations.append(dict(
+            x=0.005, y=(gt_y0 + gt_y1) / 2, xref='paper', yref='paper',
+            text='GT', showarrow=False, xanchor='left',
+            font=dict(color='#6e7681', size=8, family='monospace'),
+        ))
 
     # Sound start / stop markers
     for ev in snapshot.get('sound_events', []):
@@ -163,13 +221,13 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             xanchor='left',
         ))
 
-    # Beat markers — fixed y=0.25, size scales with strength (onset density proxy)
-    beat_x, beat_y, beat_size = [], [], []
+    # Beat markers — y position depends on whether GT row is present
+    beat_x, beat_y_list, beat_size = [], [], []
     for b in snapshot['beats']:
         if b['t'] < x0:
             continue
         beat_x.append(b['t'])
-        beat_y.append(0.25)
+        beat_y_list.append(beat_y)
         beat_size.append(max(16, b['strength'] * 40))
 
     # "Now" cursor
@@ -182,7 +240,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     fig = go.Figure()
     if beat_x:
         fig.add_trace(go.Scatter(
-            x=beat_x, y=beat_y, mode='markers',
+            x=beat_x, y=beat_y_list, mode='markers',
             marker=dict(
                 symbol='line-ns', size=beat_size,
                 color='rgba(168,218,220,0.65)',
@@ -303,7 +361,7 @@ def _build_metrics(snapshot: dict) -> list:
 # App factory
 # ---------------------------------------------------------------------------
 
-def build_app(event_buffer) -> dash.Dash:
+def build_app(event_buffer, labels: list[dict] | None = None) -> dash.Dash:
     legend_items = [
         html.Span('SoundSwitch Visualizer',
                   style={'fontWeight': 'bold', 'color': '#e6edf3', 'marginRight': '28px'}),
@@ -341,12 +399,12 @@ def build_app(event_buffer) -> dash.Dash:
     )
     def refresh(_):
         snap = event_buffer.snapshot()
-        return _build_timeline(snap), _build_stage(snap), _build_metrics(snap)
+        return _build_timeline(snap, labels=labels), _build_stage(snap), _build_metrics(snap)
 
     return app
 
 
-def run_app(event_buffer, port: int = 8050) -> None:
-    app = build_app(event_buffer)
+def run_app(event_buffer, port: int = 8050, labels: list[dict] | None = None) -> None:
+    app = build_app(event_buffer, labels=labels)
     print(f'\n  Visualizer → http://localhost:{port}\n')
     app.run(host='0.0.0.0', port=port, debug=False)

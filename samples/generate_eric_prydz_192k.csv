@@ -1,0 +1,10 @@
+start_sec,end_sec,intent
+0.0,9.04,atmospheric
+9.04,39.115,breakdown
+39.115,45.765,buildup
+45.765,60.923,drop
+60.923,76.065,groove
+76.065,106.485,breakdown
+106.485,128.902,buildup
+128.902,159.282,peak
+159.282,165.094,atmospheric

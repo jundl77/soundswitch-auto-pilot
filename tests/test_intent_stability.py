@@ -48,18 +48,20 @@ def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
 
 
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
-                       kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7):
+                       kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7,
+                       sub_bass: float = 0.3, spectral_flux: float = 0.0):
     """Fill _beat_history with beats spread symmetrically around time.monotonic().
 
     All beats land within look_ahead_sec of now so they are included in the
     window when _commit_intent(enqueue_time=now, ...) is called immediately after.
     kick=2.0 means kick assumed present (above any reasonable threshold).
+    sub_bass=0.3 satisfies the sub-bass gate regardless of the calibrated threshold.
     """
     now = time.monotonic()
     half = engine._look_ahead_sec * 0.9
     for i in range(n):
         t = now - half + i * (2 * half / max(n - 1, 1))
-        engine._beat_history.append((t, density, bpm, 0.0, 0.5, kick, centroid_trend))
+        engine._beat_history.append((t, density, bpm, sub_bass, 0.0, kick, centroid_trend, spectral_flux))
     return now  # use as enqueue_time
 
 
@@ -130,18 +132,22 @@ async def test_mixed_votes_do_not_switch():
 
 @pytest.mark.asyncio
 async def test_dwell_prevents_early_switch():
-    """Unanimous votes cannot switch until _MIN_DWELL_BEATS beats have elapsed."""
+    """Vote buffer consensus is required before a switch — one vote short means no switch.
+
+    Note: With current settings _VOTE_BUFFER_SIZE >= _MIN_DWELL_BEATS, so the vote
+    buffer is the binding constraint. Once the buffer is full and unanimous, dwell is
+    always satisfied. This test verifies that consensus (not dwell) is the guard.
+    """
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
-    engine._beats_in_current_intent = 0  # just entered GROOVE
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 1  # dwell fully satisfied
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
-    # Fill vote buffer with unanimous DROP votes — but dwell counter is too low
-    for _ in range(_VOTE_BUFFER_SIZE):
+    # One vote short of consensus — no switch even though dwell is satisfied
+    for _ in range(_VOTE_BUFFER_SIZE - 1):
         await engine._commit_intent(enqueue_time, 128.0)
 
-    # After _VOTE_BUFFER_SIZE calls, dwell = _VOTE_BUFFER_SIZE which is < _MIN_DWELL_BEATS
     assert engine._current_intent == LightIntent.GROOVE
     engine.effect_controller.change_effect.assert_not_awaited()
 
