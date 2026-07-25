@@ -2,7 +2,7 @@
 Agentic evaluator: scores a simulation report against configurable criteria.
 
 Usage (headless / CI):
-  python auto_pilot simulate file song.mp3 --no-ui --report report.json
+  python auto_pilot simulate file song.mp3 --report report.json
   # exit code 0 = PASS, 1 = FAIL
 
 Or in Python:
