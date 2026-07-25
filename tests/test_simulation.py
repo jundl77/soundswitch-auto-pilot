@@ -37,8 +37,9 @@ async def test_simulation_runs_without_error():
 @pytest.mark.integration
 async def test_simulation_timing_passes():
     """
-    Timing validation: beat commands enqueued at T must fire within 50 ms of
-    T + delay (virtual time — exact to one buffer quantum).
+    Timing validation: beat commands enqueued at T must fire within 10 ms of
+    T + delay. In virtual time the error cannot exceed one buffer quantum
+    (256/44100 ≈ 5.8 ms), so 10 ms is a meaningful regression guard.
     """
     clock = VirtualClock()
     audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
@@ -48,8 +49,8 @@ async def test_simulation_timing_passes():
     log = command_queue.get_timing_log()
     assert log, 'expected beat commands on the virtual clock (deterministic input)'
 
-    passed = print_timing_report(command_queue, tolerance_sec=0.050)
-    assert passed, 'one or more beat commands exceeded 50 ms timing tolerance'
+    passed = print_timing_report(command_queue, tolerance_sec=0.010)
+    assert passed, 'one or more beat commands exceeded 10 ms timing tolerance'
 
 
 async def _run_fast_beep_sim(duration_sec: float) -> dict:
