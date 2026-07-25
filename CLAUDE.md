@@ -72,6 +72,7 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 |---|---|
 | `auto_pilot` | CLI entry point (`run MIDI_PORT`, `list`, `simulate`) |
 | `lib/main.py` | `SoundSwitchAutoPilot` — async event loop, 100 ms / 1 s / 10 s callbacks |
+| `lib/clock.py` | `Clock` abstraction — `SystemClock` (prod default) vs `VirtualClock` (fast sim); every time-based component takes an injectable clock |
 | `lib/analyser/music_analyser.py` | `MusicAnalyser` — per-buffer DSP, beat/onset/note events, YAMNet trigger |
 | `lib/analyser/yamnet_change_detector.py` | `YamnetChangeDetector` — TF Hub YAMNet embeddings, MAD outlier detection |
 | `lib/analyser/CLAUDE.md` | Analysis pipeline detail: features, classification design, evaluation strategy |
@@ -84,7 +85,7 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 | `lib/clients/pyaudio_client.py` | Mono 44.1 kHz audio input (and optional debug output passthrough) |
 | `lib/clients/overlay_client.py` | UDP binary DMX overlay (hardcoded IP — must match venue) |
 | `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics |
-| `simulate/runner.py` | Simulation runner — stub clients, full pipeline, timing report |
+| `simulate/runner.py` | Simulation runner — stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing for the live UI |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
 | `lib/visualizer/` | Optional matplotlib spectrogram UI via multiprocessing + TCP |
 
@@ -119,6 +120,8 @@ Classification uses BPM, onset density (rhythmic busyness), onset density trend 
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock — the full pipeline (identical code path to production) processes a track ~25–40× faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Report timestamps are song-position seconds, so intent timelines align directly with track structure. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+
 ### DMX migration path
 
 When moving away from SoundSwitch to direct DMX:
@@ -147,8 +150,9 @@ python auto_pilot run 0 --ui
 python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 
 # Simulation (no hardware required)
-python auto_pilot simulate file samples/song.mp3
-python auto_pilot simulate realtime
+python auto_pilot simulate file samples/song.mp3          # fast headless: full song in seconds, report + evaluation
+python auto_pilot simulate file samples/song.mp3 --ui     # real-time paced with live Dash timeline
+python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
@@ -184,3 +188,4 @@ uv run pytest                        # unit + integration (~15s)
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
+- **Decode cache**: `simulate file` writes `<song>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.
