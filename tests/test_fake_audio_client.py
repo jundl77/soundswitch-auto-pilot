@@ -78,7 +78,7 @@ def test_file_client_decode_cache_roundtrip(wav_file):
     clock = VirtualClock()
     c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=clock)
     c1.start_streams()
-    cache = wav_file + '.npy'
+    cache = f'{wav_file}.{SAMPLE_RATE}.npy'
     assert os.path.exists(cache), 'first load must write the .npy cache'
 
     c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
@@ -90,7 +90,7 @@ def test_file_client_stale_cache_is_refreshed(wav_file, tmp_path):
     import os
     c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
     c1.start_streams()
-    cache = wav_file + '.npy'
+    cache = f'{wav_file}.{SAMPLE_RATE}.npy'
     # Make the cache look older than the source → must be regenerated, not trusted.
     os.utime(cache, (1, 1))
     np.save(cache, np.zeros(10, dtype=np.float32))
@@ -98,3 +98,10 @@ def test_file_client_stale_cache_is_refreshed(wav_file, tmp_path):
     c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
     c2.start_streams()
     assert len(c2._audio) == len(c1._audio)  # re-decoded, not the 10-sample fake
+
+
+def test_pyaudio_client_satisfies_exhausted_interface():
+    """The runner's loop reads audio_client.exhausted — the REAL client must
+    provide it too (regression: mic mode crashed with AttributeError)."""
+    from lib.clients.pyaudio_client import PyAudioClient
+    assert isinstance(getattr(PyAudioClient, 'exhausted', None), property)

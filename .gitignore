@@ -9,3 +9,4 @@ spotify_details.json
 .DS_Store
 *.pkl
 *.npy
+report.json

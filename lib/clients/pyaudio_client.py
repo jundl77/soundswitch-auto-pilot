@@ -25,6 +25,10 @@ class PyAudioClient:
     def support_output(self) -> bool:
         return self.stream_out is not None
 
+    @property
+    def exhausted(self) -> bool:
+        return False  # live input never ends
+
     def start_streams(self, start_stream_out: bool = False) -> None:
         if self.input_device_index is None:
             default_input_device_info = self.py_audio.get_default_input_device_info()

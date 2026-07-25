@@ -27,7 +27,7 @@ Before opening a PR, all tests must pass:
 # Fast unit tests (run these frequently during development)
 uv run pytest -m "not integration"
 
-# Full suite including unit + integration tests (~15s)
+# Full suite including unit + integration tests (~6s)
 uv run pytest
 
 # Run a single test file
@@ -156,7 +156,7 @@ python auto_pilot simulate realtime                       # microphone input wit
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
-uv run pytest                        # unit + integration (~15s)
+uv run pytest                        # unit + integration (~6s)
 ```
 
 **Flags (`run`):**
@@ -188,4 +188,4 @@ uv run pytest                        # unit + integration (~15s)
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
-- **Decode cache**: `simulate file` writes `<song>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.
+- **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.

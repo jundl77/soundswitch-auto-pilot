@@ -117,7 +117,7 @@ class FileAudioClient:
     def support_output(self) -> bool: return False
 
     def start_streams(self, start_stream_out: bool = False):
-        cache_path = self.path + '.npy'
+        cache_path = f'{self.path}.{self.sample_rate}.npy'
         src_mtime = os.path.getmtime(self.path)
         if os.path.exists(cache_path) and os.path.getmtime(cache_path) > src_mtime:
             log.info(f'[fake_audio] loading decode cache {cache_path}')
