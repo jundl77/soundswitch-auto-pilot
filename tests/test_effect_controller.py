@@ -86,7 +86,13 @@ async def test_color_override_cooldown_uses_injected_clock(stub_midi):
     await controller._apply_color_override_if_due()
     first_time = controller.last_color_override_time
 
+    # First call should NOT have sent a color override (cooldown active).
+    assert not any(e['label'] == 'set_color_override' for e in stub_midi.events)
+
     # Advance virtual time past the cooldown — the override must now fire.
     clock.advance(APPLY_COLOR_OVERRIDE_INTERVAL_SEC + 1)
     await controller._apply_color_override_if_due()
     assert controller.last_color_override_time != first_time
+
+    # Second call should have sent a color override (cooldown elapsed).
+    assert any(e['label'] == 'set_color_override' for e in stub_midi.events)
