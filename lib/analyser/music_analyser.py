@@ -7,6 +7,7 @@ from collections import deque
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
+from lib.clock import Clock, SYSTEM_CLOCK
 
 _ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
@@ -16,7 +17,9 @@ class MusicAnalyser:
                  sample_rate: int,
                  buffer_size: int,
                  handler: IMusicAnalyserHandler,
-                 visualizer_updater: VisualizerUpdater):
+                 visualizer_updater: VisualizerUpdater,
+                 clock: Clock = SYSTEM_CLOCK):
+        self._clock: Clock = clock
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
         self.handler: IMusicAnalyserHandler = handler
@@ -50,17 +53,17 @@ class MusicAnalyser:
         # tracking state
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
-        self.song_start_time: datetime.datetime = datetime.datetime.now()
-        self.song_current_time: datetime.datetime = datetime.datetime.now()
-        self.silence_period_start: datetime.datetime = datetime.datetime.now()
-        self.last_mfcc_sample_time: datetime.datetime = datetime.datetime.now()
+        self.song_start_time: datetime.datetime = self._clock.now()
+        self.song_current_time: datetime.datetime = self._clock.now()
+        self.silence_period_start: datetime.datetime = self._clock.now()
+        self.last_mfcc_sample_time: datetime.datetime = self._clock.now()
         self.mfccs = np.zeros([self.mfcc_coeffs,])
         self.energies = np.zeros((40,))
         self.last_bpm: float = 0.0
         self.beat_count: int = 0
         self.time_to_last_beat_sec: float = 0
-        self.last_beat_detected: datetime.datetime = datetime.datetime.now()
-        self.last_note_detected: datetime.datetime = datetime.datetime.now()
+        self.last_beat_detected: datetime.datetime = self._clock.now()
+        self.last_note_detected: datetime.datetime = self._clock.now()
         # rolling window of onset timestamps for onset-density calculation
         self._onset_times: deque = deque(maxlen=500)
         # per-beat density samples for trend detection (maxlen=12 ≈ ~6s at 120 BPM)
@@ -94,7 +97,7 @@ class MusicAnalyser:
 
     def get_beat_position(self) -> float:
         if self.is_playing and self.time_to_last_beat_sec > 0:
-            time_to_current_beat_sec = (datetime.datetime.now() - self.last_beat_detected).total_seconds()
+            time_to_current_beat_sec = (self._clock.now() - self.last_beat_detected).total_seconds()
             beat_percent_elapsed = time_to_current_beat_sec / self.time_to_last_beat_sec
             return self.beat_count + abs(beat_percent_elapsed)
         else:
@@ -111,7 +114,7 @@ class MusicAnalyser:
 
     def get_onset_density(self) -> float:
         """Onsets per second over the last 1.5 seconds (rolling window)."""
-        now = datetime.datetime.now()
+        now = self._clock.now()
         cutoff = now - datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC)
         while self._onset_times and self._onset_times[0] < cutoff:
             self._onset_times.popleft()
@@ -133,7 +136,7 @@ class MusicAnalyser:
 
     def get_seconds_since_last_beat(self) -> float:
         """Seconds elapsed since the last detected beat."""
-        return (datetime.datetime.now() - self.last_beat_detected).total_seconds()
+        return (self._clock.now() - self.last_beat_detected).total_seconds()
 
     def get_sub_bass_ratio(self) -> float:
         """Fraction of mel filterbank energy in sub-bass bands (bands 0–4, ~60–250 Hz).
@@ -201,7 +204,7 @@ class MusicAnalyser:
         return recent_mean / (past_mean + 1e-8)
 
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
-        now = datetime.datetime.now()
+        now = self._clock.now()
 
         pitch_hz = self.pitch_o(audio_signal)[0]
         pitch_confidence = self.pitch_o.get_confidence()
@@ -234,7 +237,7 @@ class MusicAnalyser:
     async def _track_onset(self, audio_signal: np.ndarray) -> bool:
         is_onset: bool = self.onset_o(audio_signal)[0] > 0
         if is_onset:
-            self._onset_times.append(datetime.datetime.now())
+            self._onset_times.append(self._clock.now())
             await self.handler.on_onset()
         return is_onset
 

@@ -82,3 +82,39 @@ def test_seconds_since_last_beat_approximately_correct(analyser):
 def test_seconds_since_last_beat_small_when_recent(analyser):
     analyser.last_beat_detected = datetime.datetime.now()
     assert analyser.get_seconds_since_last_beat() < 0.1
+
+
+# ---------------------------------------------------------------------------
+# Virtual clock
+# ---------------------------------------------------------------------------
+
+from lib.clock import VirtualClock
+
+
+def _make_analyser(clock):
+    return MusicAnalyser(
+        sample_rate=44100,
+        buffer_size=256,
+        handler=_StubHandler(),
+        visualizer_updater=None,
+        clock=clock,
+    )
+
+
+def test_seconds_since_last_beat_on_virtual_clock():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    analyser.last_beat_detected = clock.now()
+    clock.advance(1.5)
+    assert analyser.get_seconds_since_last_beat() == 1.5
+
+
+def test_onset_density_window_prunes_on_virtual_time():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    # Two onsets now, then advance beyond the 1.5 s rolling window.
+    analyser._onset_times.append(clock.now())
+    analyser._onset_times.append(clock.now())
+    assert analyser.get_onset_density() == 2 / 1.5
+    clock.advance(2.0)
+    assert analyser.get_onset_density() == 0.0
