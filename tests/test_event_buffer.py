@@ -29,6 +29,32 @@ def test_infinite_window_keeps_old_events():
     assert [e['channel'] for e in report['effects']] == ['CH_A', 'CH_B']
 
 
+def test_mark_end_freezes_timeline():
+    """After mark_end, later recordings clamp to the end timestamp — the flush
+    tail must not inflate report durations past the audio length."""
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    clock.advance(10.0)
+    buf.mark_end()
+    clock.advance(2.5)  # flush tail advances the clock past the end
+    buf.set_intent('DROP')
+    report = buf.to_report()
+    assert report['duration_sec'] == 10.0
+    assert report['intents'][-1]['t'] == 10.0  # clamped, not 12.5
+
+
+def test_infinite_window_beats_are_unbounded():
+    """The inf-window contract promises complete reports — the live-mode 3000
+    beat cap must not apply."""
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    for _ in range(3005):
+        buf.add_beat(bpm=128.0, onset_density=4.0, change=False)
+    assert buf.to_report()['metrics']['beats_detected'] == 3005
+
+
 def test_default_window_prunes_old_effects():
     clock = VirtualClock()
     buf = EventBuffer(window_sec=60.0, clock=clock)

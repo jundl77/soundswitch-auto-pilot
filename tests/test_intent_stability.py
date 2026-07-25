@@ -8,7 +8,6 @@ These tests drive _commit_intent directly with a synthetic _beat_history,
 bypassing on_beat() and the audio pipeline entirely.
 """
 
-import time
 import pytest
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
@@ -49,13 +48,13 @@ def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
 
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
                        kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7):
-    """Fill _beat_history with beats spread symmetrically around time.monotonic().
+    """Fill _beat_history with beats spread symmetrically around the engine clock's now.
 
     All beats land within look_ahead_sec of now so they are included in the
     window when _commit_intent(enqueue_time=now, ...) is called immediately after.
     kick=2.0 means kick assumed present (above any reasonable threshold).
     """
-    now = time.monotonic()
+    now = engine._clock.monotonic()  # the engine's own clock, whatever it is
     half = engine._look_ahead_sec * 0.9
     for i in range(n):
         t = now - half + i * (2 * half / max(n - 1, 1))
@@ -256,9 +255,9 @@ async def test_beat_history_uses_injected_clock():
     from lib.engine.light_engine import LightEngine
 
     clock = VirtualClock()
-    midi = StubMidiClient()
+    midi = StubMidiClient(clock=clock)
     engine = LightEngine(
-        midi, StubOs2lClient(), StubOverlayClient(),
+        midi, StubOs2lClient(clock=clock), StubOverlayClient(clock=clock),
         EffectController(midi, clock=clock),
         DelayedCommandQueue(2.5, clock=clock),
         look_ahead_sec=2.5,

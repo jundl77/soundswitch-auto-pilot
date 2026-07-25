@@ -77,7 +77,7 @@ ATMOSPHERIC is detected by beat *absence*, not by any feature value. No density 
 python auto_pilot simulate file samples/song.mp3 --report report.json
 ```
 
-Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Report timestamps are song-position seconds, so intent blocks can be read directly against the track structure.
+Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay.
 
 The JSON report contains the full beat list, intent timeline, and timing log. Inspect:
 

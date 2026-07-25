@@ -1,12 +1,10 @@
 """Fast-runner behavior: virtual pacing, exhaustion stop, look-ahead flush."""
 import time
 
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import VirtualClock
 from simulate.fake_audio_client import BeepAudioClient
 from simulate.runner import build_simulation, run_simulation, LOOK_AHEAD_SEC
-
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
 
 
 async def test_fast_run_is_much_faster_than_real_time():

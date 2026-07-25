@@ -35,6 +35,11 @@ class DelayedCommandQueue:
     def delay_sec(self) -> float:
         return self._delay_sec
 
+    @property
+    def pending(self) -> int:
+        """Number of commands enqueued but not yet fired."""
+        return len(self._queue)
+
     async def enqueue(self, label: str, factory: CommandFactory) -> None:
         """Schedule factory() to be called after delay_sec.
         Values used inside factory must be captured in a closure at call time."""
@@ -47,6 +52,10 @@ class DelayedCommandQueue:
         if not self._queue:
             return
         now = self._clock.monotonic()
+        # fire_at is nondecreasing (fixed delay + monotonic clock), so if the
+        # head is not due, nothing is — skips the scan on the ~172 Hz idle path.
+        if self._queue[0][1] > now:
+            return
         due = [(et, ft, lbl, f) for et, ft, lbl, f in self._queue if ft <= now]
         if not due:
             return

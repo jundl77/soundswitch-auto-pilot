@@ -15,7 +15,6 @@ dependencies = [
     "aubio",
     "numpy>=1.26,<2",
     "pyaudio",
-    "matplotlib",
     "pandas",
     "tensorflow>=2.16,<2.22",
     "tensorflow-hub>=0.16,<0.17",

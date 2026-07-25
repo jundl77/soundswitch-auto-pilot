@@ -88,7 +88,6 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 | `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics |
 | `simulate/runner.py` | Simulation runner — stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing for the live UI |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
-| `lib/visualizer/` | Optional matplotlib spectrogram UI via multiprocessing + TCP |
 
 ---
 
@@ -121,7 +120,7 @@ Classification uses BPM, onset density (rhythmic busyness), onset density trend 
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
-**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock — the full pipeline (identical code path to production) processes a track ~30–50× faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Report timestamps are song-position seconds, so intent timelines align directly with track structure. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock — the full pipeline (identical code path to production) processes a track ~30–50× faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them — one look-ahead delay after the beats that caused them — so expect intent blocks to trail the track structure by that delay when reading reports. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
 
 ### DMX migration path
 
@@ -163,7 +162,6 @@ uv run pytest                        # unit + integration (~6s)
 **Flags (`run`):**
 - `-i / -o` — audio device indices from `list`
 - `-d` — debug: plays audio back with a click on detected notes
-- `-v` — show matplotlib visualizer
 - `--no-os2l` — disable VirtualDJ connection
 - `--ui` — launch Dash real-time visualizer at http://localhost:8050
 - `--ui-port N` — change visualizer port

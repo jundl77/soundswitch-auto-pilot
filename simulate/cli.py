@@ -18,6 +18,8 @@ EXAMPLES
 
 import asyncio
 import json
+import logging
+import os
 import sys
 import threading
 import time
@@ -51,6 +53,9 @@ def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) ->
 
 
 async def run_file(args):
+    if not os.path.isfile(args.audio):
+        print(f'[simulate] error: audio file not found: {args.audio}')
+        sys.exit(2)
     if args.play_audio and not args.ui:
         print('[simulate] error: --play-audio requires --ui '
               '(audio cannot play at fast-simulation speed)')
@@ -65,6 +70,10 @@ async def _run_file_fast(args):
     """Fast headless mode: virtual clock, no UI, report + evaluation + exit code."""
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import run_fast_simulation
+
+    # A fast run emits thousands of per-beat/per-note INFO lines that bury the
+    # report and cost real wall time on console I/O — warnings only.
+    logging.getLogger().setLevel(logging.WARNING)
 
     wall_start = time.monotonic()
     audio_client, event_buffer, command_queue = await run_fast_simulation(

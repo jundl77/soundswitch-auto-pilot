@@ -4,11 +4,9 @@ import time
 import numpy as np
 import pytest
 
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import VirtualClock
 from simulate.fake_audio_client import BeepAudioClient, FileAudioClient
-
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
 
 
 def test_beep_client_read_does_not_sleep():
@@ -44,7 +42,7 @@ def test_beep_client_click_log_uses_virtual_clock():
     for _ in range(200):
         client.read()
     assert client.click_log, 'expected at least one click'
-    assert client.click_log[0]['wall_time'] == pytest.approx(0.5, abs=0.01)
+    assert client.click_log[0]['time'] == pytest.approx(0.5, abs=0.01)
 
 
 @pytest.fixture

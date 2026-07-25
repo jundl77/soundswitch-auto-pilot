@@ -80,6 +80,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
         'command_queue': command_queue,
         'music_analyser': music_analyser,
         'light_engine': light_engine,
+        'event_buffer': event_buffer,
     }, command_queue
 
 
@@ -99,6 +100,13 @@ async def run_fast_simulation(make_audio_client, duration_sec: float = float('in
     random.seed(seed)
     clock = VirtualClock()
     audio_client = make_audio_client(clock)
+    if duration_sec == float('inf') and not hasattr(audio_client, 'duration_sec'):
+        # Endless sources (BeepAudioClient) never set `exhausted`; without a
+        # duration bound the loop would spin forever at CPU speed.
+        raise ValueError(
+            'infinite duration_sec requires a finite audio source '
+            '(one exposing duration_sec) — pass duration_sec explicitly'
+        )
     # Infinite window: reports must never prune, whatever the song length.
     event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
@@ -134,6 +142,7 @@ async def run_simulation(components: dict, duration_sec: float,
 
     last_100ms = clock.now()
     last_1s = clock.now()
+    last_10s = clock.now()
 
     logging.info(f'[sim] starting simulation loop for {duration_sec:.1f}s '
                  f'({"virtual" if is_virtual else "wall"} time)')
@@ -161,11 +170,27 @@ async def run_simulation(components: dict, duration_sec: float,
             last_1s = now
             await components['light_engine'].on_1sec_callback()
 
+        if now - last_10s > datetime.timedelta(seconds=10):
+            last_10s = now
+            await components['light_engine'].on_10sec_callback()
+
+    # The audio has ended: freeze the event timeline so report durations and
+    # flush-tail commits reflect the song length, not the flushed clock.
+    event_buffer = components.get('event_buffer')
+    if event_buffer is not None:
+        event_buffer.mark_end()
+
     if is_virtual:
         # Flush tail: advance past the look-ahead delay so pending commands fire.
         flush_until = clock.monotonic() + command_queue.delay_sec
         while clock.monotonic() < flush_until:
             clock.advance(buffer_sec)
+            await command_queue.drain()
+    elif pace_real_time:
+        # Real-time (--ui) tail: wait out the look-ahead so the final commands
+        # reach the timeline instead of being dropped at end-of-file.
+        while command_queue.pending:
+            await asyncio.sleep(buffer_sec)
             await command_queue.drain()
 
     audio_client.close()

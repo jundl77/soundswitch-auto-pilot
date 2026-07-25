@@ -9,6 +9,7 @@ Marked @pytest.mark.integration so you can skip with:
 
 import pytest
 
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import VirtualClock
 from simulate.fake_audio_client import BeepAudioClient
 from simulate.runner import (
@@ -17,9 +18,6 @@ from simulate.runner import (
     run_simulation,
     print_timing_report,
 )
-
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
 
 
 @pytest.mark.integration
@@ -69,3 +67,20 @@ async def test_fast_simulation_is_deterministic():
     report_a = await _run_fast_beep_sim(20.0)
     report_b = await _run_fast_beep_sim(20.0)
     assert report_a == report_b
+
+
+@pytest.mark.integration
+async def test_report_duration_matches_run_not_flush_tail():
+    """The flush tail advances the clock past the end; the report must not
+    inflate duration_sec by that tail (it would bias beat_detection_rate)."""
+    report = await _run_fast_beep_sim(20.0)
+    assert report['duration_sec'] == pytest.approx(20.0, abs=0.02)
+
+
+async def test_fast_simulation_rejects_endless_source_with_infinite_duration():
+    """Default duration is infinite; a source that never exhausts must be
+    rejected up front instead of spinning the loop forever."""
+    with pytest.raises(ValueError, match='duration_sec'):
+        await run_fast_simulation(
+            lambda clock: BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
+        )

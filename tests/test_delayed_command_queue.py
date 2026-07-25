@@ -144,3 +144,19 @@ async def test_virtual_clock_timing_log_is_exact():
     log = q.get_timing_log()
     assert len(log) == 1
     assert log[0]['actual_delta_sec'] == 2.5
+
+
+async def test_pending_counts_unfired_commands():
+    clock = VirtualClock()
+    q = DelayedCommandQueue(2.5, clock=clock)
+
+    async def cmd():
+        pass
+
+    assert q.pending == 0
+    await q.enqueue('a', cmd)
+    await q.enqueue('b', cmd)
+    assert q.pending == 2
+    clock.advance(2.5)
+    await q.drain()
+    assert q.pending == 0

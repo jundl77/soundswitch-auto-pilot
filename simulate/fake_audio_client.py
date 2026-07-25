@@ -87,7 +87,7 @@ class BeepAudioClient:
             length = end - offset
             buf[offset:end] += self._click[:length] * 0.8
             click_time = self._start_time + next_beat_sample / self.sample_rate
-            self.click_log.append({'sample': next_beat_sample, 'wall_time': click_time})
+            self.click_log.append({'sample': next_beat_sample, 'time': click_time})
             log.debug(f'[fake_audio] click at sample={next_beat_sample}, t={next_beat_sample / self.sample_rate:.3f}s')
 
         self._total_samples += self.buffer_size
