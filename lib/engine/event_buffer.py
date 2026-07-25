@@ -6,14 +6,16 @@ Dash server thread via snapshot(). The only shared state between threads.
 """
 
 import threading
-import time
 from collections import deque
+
+from lib.clock import Clock, SYSTEM_CLOCK
 
 
 class EventBuffer:
-    def __init__(self, window_sec: float = 60.0):
+    def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK):
         self._lock = threading.Lock()
         self._window_sec = window_sec
+        self._clock = clock
         self._start_time: float | None = None
         self._is_playing: bool = False
         # Beats: high-frequency, bounded deque to avoid unbounded memory growth
@@ -29,17 +31,17 @@ class EventBuffer:
 
     def start(self) -> None:
         with self._lock:
-            self._start_time = time.monotonic()
+            self._start_time = self._clock.monotonic()
 
     def elapsed(self) -> float:
         if self._start_time is None:
             return 0.0
-        return time.monotonic() - self._start_time
+        return self._clock.monotonic() - self._start_time
 
     def _now(self) -> float:
         if self._start_time is None:
             return 0.0
-        return time.monotonic() - self._start_time
+        return self._clock.monotonic() - self._start_time
 
     def add_beat(self, bpm: float, onset_density: float, change: bool) -> None:
         with self._lock:
@@ -120,9 +122,19 @@ class EventBuffer:
             if all_effects and 'end' not in all_effects[-1]:
                 all_effects[-1] = {**all_effects[-1], 'end': now}
 
+            # Prune effects outside the 2x window if window is finite
+            if self._window_sec != float('inf'):
+                cutoff = now - self._window_sec * 2
+                all_effects = [e for e in all_effects if e['t'] >= cutoff]
+
             all_intents = list(self._intents)
             if all_intents and 'end' not in all_intents[-1]:
                 all_intents[-1] = {**all_intents[-1], 'end': now}
+
+            # Prune intents outside the 2x window if window is finite
+            if self._window_sec != float('inf'):
+                cutoff = now - self._window_sec * 2
+                all_intents = [e for e in all_intents if e['t'] >= cutoff]
 
             tlog = timing_log if timing_log is not None else self._timing_log
             errors_ms = [
