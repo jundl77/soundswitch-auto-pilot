@@ -9,6 +9,7 @@ from lib.engine.effect_definitions import (
     EffectSource, EffectType, Effect, LightIntent,
     COLOR_OVERRIDES, SPECIAL_EFFECTS, INTENT_EFFECTS,
 )
+from lib.clock import Clock, SYSTEM_CLOCK
 
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
@@ -18,13 +19,15 @@ APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60 * 5
 
 
 class EffectController:
-    def __init__(self, midi_client: MidiClient, event_buffer: EventBuffer | None = None):
+    def __init__(self, midi_client: MidiClient, event_buffer: EventBuffer | None = None,
+                 clock: Clock = SYSTEM_CLOCK):
         self.midi_client: MidiClient = midi_client
         self.event_buffer: EventBuffer | None = event_buffer
+        self._clock: Clock = clock
         self.last_effect: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A)
         self.last_special_effect: Effect = Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE)
         self.last_color_override: Effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
-        self.last_color_override_time: datetime.datetime = datetime.datetime.now()
+        self.last_color_override_time: datetime.datetime = self._clock.now()
 
     async def process_effects(self):
         pass
@@ -48,7 +51,7 @@ class EffectController:
         self.last_effect = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1A)
         self.last_special_effect = Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE)
         self.last_color_override = Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.COLOR_OVERRIDE_1)
-        self.last_color_override_time = datetime.datetime.now()
+        self.last_color_override_time = self._clock.now()
 
     async def _apply_special_effect(self, special_effect: Effect):
         assert special_effect.type == EffectType.SPECIAL_EFFECT
@@ -74,7 +77,7 @@ class EffectController:
         self.last_effect = autoloop
 
     async def _apply_color_override_if_due(self):
-        now = datetime.datetime.now()
+        now = self._clock.now()
         time_diff = now - self.last_color_override_time
         if time_diff < datetime.timedelta(seconds=APPLY_COLOR_OVERRIDE_INTERVAL_SEC):
             logging.info(f'[effect_controller] set color override in the last {APPLY_COLOR_OVERRIDE_INTERVAL_SEC} sec,'

@@ -1,4 +1,5 @@
 import pytest
+from lib.engine.effect_controller import EffectController
 from lib.engine.effect_definitions import (
     LightIntent,
     EffectType,
@@ -66,3 +67,26 @@ async def test_reset_state_clears_last_effect(effect_controller):
     await effect_controller.change_effect(LightIntent.BUILDUP)
     effect_controller.reset_state()
     assert effect_controller.last_effect.midi_channel.name == 'AUTOLOOP_BANK_1A'
+
+
+# ---------------------------------------------------------------------------
+# Virtual clock — color override cooldown runs on injected time
+# ---------------------------------------------------------------------------
+
+from lib.clock import VirtualClock
+from lib.engine.effect_controller import APPLY_COLOR_OVERRIDE_INTERVAL_SEC
+
+
+@pytest.mark.asyncio
+async def test_color_override_cooldown_uses_injected_clock(stub_midi):
+    clock = VirtualClock()
+    controller = EffectController(stub_midi, clock=clock)
+
+    # Immediately after construction the cooldown is active.
+    await controller._apply_color_override_if_due()
+    first_time = controller.last_color_override_time
+
+    # Advance virtual time past the cooldown — the override must now fire.
+    clock.advance(APPLY_COLOR_OVERRIDE_INTERVAL_SEC + 1)
+    await controller._apply_color_override_if_due()
+    assert controller.last_color_override_time != first_time
