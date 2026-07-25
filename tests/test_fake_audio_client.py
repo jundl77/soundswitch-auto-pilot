@@ -59,8 +59,7 @@ def wav_file(tmp_path):
 
 
 def test_file_client_reads_unthrottled_and_exhausts(wav_file):
-    clock = VirtualClock()
-    client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=clock)
+    client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file)
     client.start_streams()
     assert client.exhausted is False
     start = time.monotonic()
@@ -75,27 +74,26 @@ def test_file_client_reads_unthrottled_and_exhausts(wav_file):
 
 def test_file_client_decode_cache_roundtrip(wav_file):
     import os
-    clock = VirtualClock()
-    c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=clock)
+    c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file)
     c1.start_streams()
     cache = f'{wav_file}.{SAMPLE_RATE}.npy'
     assert os.path.exists(cache), 'first load must write the .npy cache'
 
-    c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
+    c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file)
     c2.start_streams()
     assert np.array_equal(c1._audio, c2._audio)
 
 
 def test_file_client_stale_cache_is_refreshed(wav_file, tmp_path):
     import os
-    c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
+    c1 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file)
     c1.start_streams()
     cache = f'{wav_file}.{SAMPLE_RATE}.npy'
     # Make the cache look older than the source → must be regenerated, not trusted.
     os.utime(cache, (1, 1))
     np.save(cache, np.zeros(10, dtype=np.float32))
     os.utime(cache, (1, 1))
-    c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file, clock=VirtualClock())
+    c2 = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, wav_file)
     c2.start_streams()
     assert len(c2._audio) == len(c1._audio)  # re-decoded, not the 10-sample fake
 

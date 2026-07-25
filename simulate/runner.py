@@ -26,58 +26,26 @@ Usage examples:
 import asyncio
 import datetime
 import logging
+import random
 import time
 
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import Clock, SYSTEM_CLOCK, VirtualClock
 
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
 TIMING_TOLERANCE_SEC = 0.050  # 50 ms
 # Must match LOOK_AHEAD_SEC in lib/main.py and playback_delay_seconds in dmx-enttec-node.
 LOOK_AHEAD_SEC = 2.5
+# Fixed seed for fast headless runs: effect selection is random by design, but
+# fast-sim reports must be reproducible run-to-run.
+FAST_SIM_RANDOM_SEED = 1337
 
 
-def build_simulation(audio_client, clock: Clock = SYSTEM_CLOCK):
-    """Wire all components together with stub clients and return (app_components, command_queue)."""
-    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
-    from lib.engine.delayed_command_queue import DelayedCommandQueue
-    from lib.engine.effect_controller import EffectController
-    from lib.engine.light_engine import LightEngine
-    from lib.analyser.music_analyser import MusicAnalyser
+def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK):
+    """Wire the full pipeline with stub clients; return (app_components, command_queue).
 
-    midi_client = StubMidiClient(clock=clock)
-    os2l_client = StubOs2lClient(clock=clock)
-    overlay_client = StubOverlayClient(clock=clock)
-    command_queue = DelayedCommandQueue(LOOK_AHEAD_SEC, clock=clock)
-
-    effect_controller = EffectController(midi_client, clock=clock)
-    light_engine = LightEngine(
-        midi_client, os2l_client, overlay_client,
-        effect_controller, command_queue,
-        look_ahead_sec=LOOK_AHEAD_SEC,
-        clock=clock,
-    )
-
-    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine,
-                                   visualizer_updater=None, clock=clock)
-    light_engine.set_analyser(music_analyser)
-    # Skip YAMNet loading — section detection disabled in simulation for speed.
-    # To enable: call music_analyser.start() (requires internet on first run to download model).
-    music_analyser.yamnet_change_detector.detect_change = lambda *a, **kw: False
-
-    return {
-        'audio_client': audio_client,
-        'midi_client': midi_client,
-        'os2l_client': os2l_client,
-        'overlay_client': overlay_client,
-        'command_queue': command_queue,
-        'music_analyser': music_analyser,
-        'light_engine': light_engine,
-    }, command_queue
-
-
-def build_visualizer_simulation(audio_client, event_buffer, clock: Clock = SYSTEM_CLOCK):
-    """Like build_simulation but the engine emits events to the shared EventBuffer."""
+    With an EventBuffer, the engine emits beats/effects/intents into it (used by
+    the Dash timeline and the JSON report); without one, events are discarded.
+    """
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
@@ -98,9 +66,10 @@ def build_visualizer_simulation(audio_client, event_buffer, clock: Clock = SYSTE
         clock=clock,
     )
 
-    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine,
-                                   visualizer_updater=None, clock=clock)
+    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, clock=clock)
     light_engine.set_analyser(music_analyser)
+    # Skip YAMNet loading — section detection disabled in simulation for speed.
+    # To enable: call music_analyser.start() (requires internet on first run to download model).
     music_analyser.yamnet_change_detector.detect_change = lambda *a, **kw: False
 
     return {
@@ -112,6 +81,30 @@ def build_visualizer_simulation(audio_client, event_buffer, clock: Clock = SYSTE
         'music_analyser': music_analyser,
         'light_engine': light_engine,
     }, command_queue
+
+
+async def run_fast_simulation(make_audio_client, duration_sec: float = float('inf'),
+                              seed: int = FAST_SIM_RANDOM_SEED):
+    """Deterministic fast run — the single home of the fast-mode contract:
+    seeded RNG + fresh VirtualClock + infinite event window + flush tail.
+
+    make_audio_client: callable(clock) -> audio client. Clients that timestamp
+    events (BeepAudioClient's click log) need the run's clock; others may
+    ignore the argument.
+
+    Returns (audio_client, event_buffer, command_queue) for report extraction.
+    """
+    from lib.engine.event_buffer import EventBuffer
+
+    random.seed(seed)
+    clock = VirtualClock()
+    audio_client = make_audio_client(clock)
+    # Infinite window: reports must never prune, whatever the song length.
+    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+    components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
+    event_buffer.start()
+    await run_simulation(components, duration_sec, clock=clock)
+    return audio_client, event_buffer, command_queue
 
 
 async def run_simulation(components: dict, duration_sec: float,

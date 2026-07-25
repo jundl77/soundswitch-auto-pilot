@@ -9,8 +9,7 @@ import datetime
 import time
 from collections import deque
 
-BUFFER_SIZE = 256
-SAMPLE_RATE = 44100
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 # Look-ahead delay: analysis runs LOOK_AHEAD_SEC ahead of what the audience hears.
 # Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
 # Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
@@ -83,7 +82,7 @@ class SoundSwitchAutoPilot:
                                                      look_ahead_sec=LOOK_AHEAD_SEC)
 
         # construct analyser
-        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
+        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 

@@ -26,9 +26,6 @@ from lib.clock import Clock, SYSTEM_CLOCK
 
 log = logging.getLogger(__name__)
 
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
-
 
 # ---------------------------------------------------------------------------
 # Beep audio client
@@ -102,14 +99,16 @@ class BeepAudioClient:
 # ---------------------------------------------------------------------------
 
 class FileAudioClient:
-    """Decodes an audio file and feeds 256-sample buffers (no throttling)."""
+    """Decodes an audio file and feeds 256-sample buffers (no throttling).
 
-    def __init__(self, sample_rate: int, buffer_size: int, path: str,
-                 clock: Clock = SYSTEM_CLOCK):
+    Takes no clock: it is a pure sample pump — read() walks a position, nothing
+    here consults time (unlike BeepAudioClient, which timestamps its click log).
+    """
+
+    def __init__(self, sample_rate: int, buffer_size: int, path: str):
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
         self.path = path
-        self._clock = clock
         self._audio: np.ndarray | None = None
         self._pos = 0
 

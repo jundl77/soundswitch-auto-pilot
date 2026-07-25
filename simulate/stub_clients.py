@@ -21,10 +21,8 @@ def _event(label: str, t: float, **kwargs) -> dict:
 # ---------------------------------------------------------------------------
 
 class StubMidiClient:
-    def __init__(self, event_buffer=None, clock: Clock = SYSTEM_CLOCK):
+    def __init__(self, clock: Clock = SYSTEM_CLOCK):
         self.events: list[dict] = []
-        self._pending_effects = []  # kept for interface compat
-        self._event_buffer = event_buffer
         self._clock = clock
 
     def list_devices(self): pass
@@ -40,15 +38,11 @@ class StubMidiClient:
     async def set_autoloop(self, auto_loop: MidiChannel):
         e = _event('set_autoloop', self._clock.monotonic(), channel=auto_loop.name)
         self.events.append(e)
-        if self._event_buffer:
-            self._event_buffer.add_effect(auto_loop.name, 'AUTOLOOP')
         log.info(f'[stub_midi] set_autoloop: {auto_loop.name}')
 
     async def set_special_effect(self, special_effect: MidiChannel, duration_sec: int):
         e = _event('set_special_effect', self._clock.monotonic(), channel=special_effect.name, duration_sec=duration_sec)
         self.events.append(e)
-        if self._event_buffer:
-            self._event_buffer.add_effect(special_effect.name, 'SPECIAL_EFFECT')
         log.info(f'[stub_midi] set_special_effect: {special_effect.name}')
 
     async def set_color_override(self, color: MidiChannel):
@@ -65,9 +59,8 @@ class StubMidiClient:
 # ---------------------------------------------------------------------------
 
 class StubOs2lClient:
-    def __init__(self, event_buffer=None, clock: Clock = SYSTEM_CLOCK):
+    def __init__(self, clock: Clock = SYSTEM_CLOCK):
         self.events: list[dict] = []
-        self._event_buffer = event_buffer
         self._clock = clock
 
     def start(self): pass
@@ -79,8 +72,6 @@ class StubOs2lClient:
     async def send_beat(self, change: bool, pos: int, bpm: float, strength: float):
         e = _event('beat', self._clock.monotonic(), change=change, pos=pos, bpm=bpm, strength=strength)
         self.events.append(e)
-        if self._event_buffer:
-            self._event_buffer.add_beat(bpm, strength, change)
         log.debug(f'[stub_os2l] beat: pos={pos}, bpm={bpm:.1f}, strength={strength:.2f}')
 
 
@@ -109,5 +100,6 @@ class StubOverlayClient:
     def clear_all(self): pass
 
     def flush_messages(self):
-        e = _event('overlay_flush', self._clock.monotonic())
-        self.events.append(e)
+        # Called every buffer (~5.8 ms of song time) — recording an event here
+        # would allocate ~28k unread dicts per fast run, so it stays a no-op.
+        pass

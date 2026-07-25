@@ -3,7 +3,7 @@ Simulation CLI handlers — wired into 'auto_pilot simulate' subcommand.
 
 MODES
   file            — FAST headless (default): run the whole file through the
-                    pipeline on a virtual clock (~25-30× real-time), write the
+                    pipeline on a virtual clock (~25-40× real-time), write the
                     JSON report, print the evaluation, exit 0=PASS / 1=FAIL.
   file --ui       — real-time paced run with the live Dash timeline (previous
                     default behavior; --play-audio available here).
@@ -18,17 +18,11 @@ EXAMPLES
 
 import asyncio
 import json
-import random
 import sys
 import threading
 import time
 
-SAMPLE_RATE = 44100
-BUFFER_SIZE = 256
-
-# Fixed seed for the fast headless mode: effect selection is random by design,
-# but fast-sim reports must be reproducible run-to-run.
-FAST_SIM_RANDOM_SEED = 1337
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 
 def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
@@ -69,21 +63,13 @@ async def run_file(args):
 
 async def _run_file_fast(args):
     """Fast headless mode: virtual clock, no UI, report + evaluation + exit code."""
-    from lib.clock import VirtualClock
-    from lib.engine.event_buffer import EventBuffer
     from simulate.fake_audio_client import FileAudioClient
-    from simulate.runner import build_visualizer_simulation, run_simulation
+    from simulate.runner import run_fast_simulation
 
-    random.seed(FAST_SIM_RANDOM_SEED)
-    clock = VirtualClock()
-    audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio, clock=clock)
-    # Infinite window: keep the entire song's events — reports must never prune.
-    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer, clock=clock)
-
-    event_buffer.start()
     wall_start = time.monotonic()
-    await run_simulation(components, duration_sec=float('inf'), clock=clock)
+    audio_client, event_buffer, command_queue = await run_fast_simulation(
+        lambda clock: FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
+    )
     wall_elapsed = time.monotonic() - wall_start
 
     song_sec = audio_client.duration_sec
@@ -98,11 +84,11 @@ def _run_file_realtime_ui(args):
     """Real-time paced run with the live Dash timeline (previous default behavior)."""
     from lib.engine.event_buffer import EventBuffer
     from simulate.fake_audio_client import FileAudioClient
-    from simulate.runner import build_visualizer_simulation
+    from simulate.runner import build_simulation
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     event_buffer = EventBuffer()
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer)
+    components, command_queue = build_simulation(audio_client, event_buffer)
 
     try:
         import librosa
@@ -136,7 +122,7 @@ def _run_file_realtime_ui(args):
 def run_realtime(args):
     from lib.engine.event_buffer import EventBuffer
     from lib.clients.pyaudio_client import PyAudioClient
-    from simulate.runner import build_visualizer_simulation
+    from simulate.runner import build_simulation
     from simulate.visualizer_app import run_app
 
     audio_client = PyAudioClient(
@@ -145,7 +131,7 @@ def run_realtime(args):
         input_device_index=args.device_index,
     )
     event_buffer = EventBuffer()
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer)
+    components, command_queue = build_simulation(audio_client, event_buffer)
     event_buffer.start()
 
     # Microphone input is hardware-paced — no artificial pacing needed.

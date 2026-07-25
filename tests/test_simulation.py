@@ -7,16 +7,13 @@ Marked @pytest.mark.integration so you can skip with:
   pytest -m "not integration"
 """
 
-import random
-
 import pytest
 
 from lib.clock import VirtualClock
-from lib.engine.event_buffer import EventBuffer
 from simulate.fake_audio_client import BeepAudioClient
 from simulate.runner import (
     build_simulation,
-    build_visualizer_simulation,
+    run_fast_simulation,
     run_simulation,
     print_timing_report,
 )
@@ -54,14 +51,15 @@ async def test_simulation_timing_passes():
 
 
 async def _run_fast_beep_sim(duration_sec: float) -> dict:
-    """One fast, seeded, virtual-clock run → full report dict."""
-    random.seed(1337)
-    clock = VirtualClock()
-    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
-    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
-    components, command_queue = build_visualizer_simulation(audio_client, event_buffer, clock=clock)
-    event_buffer.start()
-    await run_simulation(components, duration_sec=duration_sec, clock=clock)
+    """One fast, seeded, virtual-clock run → full report dict.
+
+    Uses run_fast_simulation so this test exercises the exact same determinism
+    contract (seed + virtual clock + infinite window) as the CLI's fast mode.
+    """
+    _, event_buffer, command_queue = await run_fast_simulation(
+        lambda clock: BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock),
+        duration_sec=duration_sec,
+    )
     return event_buffer.to_report(command_queue.get_timing_log())
 
 

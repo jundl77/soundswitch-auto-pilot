@@ -1,7 +1,6 @@
 """
-Tests for MusicAnalyser methods introduced in this PR:
-  - get_onset_density_trend()
-  - get_seconds_since_last_beat()
+Unit tests for MusicAnalyser: onset-density trend, beat timing, virtual-clock
+behaviour, and the vectorized silence check.
 """
 import datetime
 import pytest
@@ -27,7 +26,6 @@ def analyser():
         sample_rate=44100,
         buffer_size=256,
         handler=_StubHandler(),
-        visualizer_updater=None,
     )
 
 
@@ -97,7 +95,6 @@ def _make_analyser(clock):
         sample_rate=44100,
         buffer_size=256,
         handler=_StubHandler(),
-        visualizer_updater=None,
         clock=clock,
     )
 

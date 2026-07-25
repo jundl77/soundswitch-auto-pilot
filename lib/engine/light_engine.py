@@ -145,17 +145,16 @@ def _classify_windowed(
     if not window:
         return LightIntent.GROOVE
 
-    n = len(window[0])
     densities      = [entry[1] for entry in window]
-    sub_bass_vals  = [entry[3] for entry in window] if n >= 5 else [0.0] * len(window)
-    kick_vals      = [entry[5] for entry in window] if n >= 7 else []
-    centroid_vals  = [entry[6] for entry in window] if n >= 7 else []
+    sub_bass_vals  = [entry[3] for entry in window]
+    kick_vals      = [entry[5] for entry in window]
+    centroid_vals  = [entry[6] for entry in window]
 
     sorted_d = sorted(densities)
     median_density    = sorted_d[len(sorted_d) // 2]
     mean_sub_bass     = sum(sub_bass_vals) / len(sub_bass_vals)
-    mean_kick         = sum(kick_vals) / len(kick_vals) if kick_vals else 2.0   # default: kick assumed present
-    mean_centroid_trend = sum(centroid_vals) / len(centroid_vals) if centroid_vals else 1.0
+    mean_kick         = sum(kick_vals) / len(kick_vals)
+    mean_centroid_trend = sum(centroid_vals) / len(centroid_vals)
 
     mid = len(densities) // 2
     past        = densities[:mid] if mid > 0 else densities
@@ -194,7 +193,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._needs_initial_effect: bool = False
         self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
         self._current_intent: LightIntent | None = None  # last committed intent (for change detection)
-        # Rolling history of beats for windowed classification: 5-tuple BeatRecord.
+        # Rolling history of BeatRecord entries for windowed classification.
         # Kept for 2 × look_ahead_sec so the symmetric window is always available at commit time.
         self._beat_history: deque[BeatRecord] = deque()
         # Stability: vote buffer (rolling deque of last _VOTE_BUFFER_SIZE classified intents).
@@ -441,12 +440,11 @@ class LightEngine(IMusicAnalyserHandler):
             return
         bpm = int(self.analyser.get_bpm())
         onset_density = self.analyser.get_onset_density()
-        density_trend = self.analyser.get_onset_density_trend()
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-        intent = _classify_intent(float(bpm), onset_density, density_trend, self._current_intent)
+        intent_name = self._current_intent.name if self._current_intent else 'None'
         logging.info(f'[engine] == current state ==')
         logging.info(f'[engine]   realtime_bpm:    {bpm}')
         logging.info(f'[engine]   onset_density:   {onset_density:.2f} /s')
-        logging.info(f'[engine]   intent:          {intent.name}')
+        logging.info(f'[engine]   intent:          {intent_name}')
         logging.info(f'[engine]   current_second:  {current_second}')
         logging.info(f'[engine]   last_effect:     {self.effect_controller.last_effect}')

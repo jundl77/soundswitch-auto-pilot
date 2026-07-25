@@ -48,7 +48,7 @@ The integration tests in `tests/test_simulation.py` run the full pipeline withou
 ## What It Does
 
 1. Reads audio from a microphone/line input
-2. Extracts musical features via Aubio (pitch, BPM, onsets, notes, MFCCs, mel filterbank energies)
+2. Extracts musical features via Aubio (BPM, onsets, notes, mel filterbank energies)
 3. Detects musical section changes via a YAMNet TensorFlow embedding + cosine similarity outlier detection
 4. Classifies audio energy as a `LightIntent` (ATMOSPHERIC / BREAKDOWN / GROOVE / BUILDUP / DROP / PEAK)
 5. Selects and sends MIDI lighting effects to SoundSwitch based on intent; also sends OS2L beat events to VirtualDJ and DMX overlays via UDP
@@ -73,6 +73,7 @@ PyAudio → MusicAnalyser (Aubio DSP) → LightEngine (IMusicAnalyserHandler)
 | `auto_pilot` | CLI entry point (`run MIDI_PORT`, `list`, `simulate`) |
 | `lib/main.py` | `SoundSwitchAutoPilot` — async event loop, 100 ms / 1 s / 10 s callbacks |
 | `lib/clock.py` | `Clock` abstraction — `SystemClock` (prod default) vs `VirtualClock` (fast sim); every time-based component takes an injectable clock |
+| `lib/audio_config.py` | Canonical `SAMPLE_RATE` / `BUFFER_SIZE` — single source for live pipeline, simulation, and virtual-clock timing math |
 | `lib/analyser/music_analyser.py` | `MusicAnalyser` — per-buffer DSP, beat/onset/note events, YAMNet trigger |
 | `lib/analyser/yamnet_change_detector.py` | `YamnetChangeDetector` — TF Hub YAMNet embeddings, MAD outlier detection |
 | `lib/analyser/CLAUDE.md` | Analysis pipeline detail: features, classification design, evaluation strategy |
@@ -120,7 +121,7 @@ Classification uses BPM, onset density (rhythmic busyness), onset density trend 
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
-**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock — the full pipeline (identical code path to production) processes a track ~25–40× faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Report timestamps are song-position seconds, so intent timelines align directly with track structure. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock — the full pipeline (identical code path to production) processes a track ~30–50× faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Report timestamps are song-position seconds, so intent timelines align directly with track structure. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
 
 ### DMX migration path
 
@@ -161,7 +162,7 @@ uv run pytest                        # unit + integration (~6s)
 
 **Flags (`run`):**
 - `-i / -o` — audio device indices from `list`
-- `-d` — debug: plays audio back with click on beats/notes
+- `-d` — debug: plays audio back with a click on detected notes
 - `-v` — show matplotlib visualizer
 - `--no-os2l` — disable VirtualDJ connection
 - `--ui` — launch Dash real-time visualizer at http://localhost:8050
@@ -172,7 +173,7 @@ uv run pytest                        # unit + integration (~6s)
 
 ## ML / DSP Components
 
-- **Aubio** — real-time pitch, BPM, onset, note, MFCC, mel filterbank energies. Tuned for low-latency real-time use.
+- **Aubio** — real-time BPM, onset, note, and mel filterbank energies. Tuned for low-latency real-time use.
 - **YAMNet (TensorFlow Hub)** — Google's pre-trained audio classifier; used here for embeddings only (not tag predictions). Cosine similarity + MAD-based outlier detection finds section transitions. Degrades gracefully if model fails to load.
 
 ---

@@ -2,11 +2,9 @@ import datetime
 import logging
 import aubio
 import numpy as np
-from typing import Optional
 from collections import deque
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
-from lib.visualizer.visualizer import VisualizerUpdater, VisualizerData
 from lib.clock import Clock, SYSTEM_CLOCK
 
 _ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
@@ -17,38 +15,31 @@ class MusicAnalyser:
                  sample_rate: int,
                  buffer_size: int,
                  handler: IMusicAnalyserHandler,
-                 visualizer_updater: VisualizerUpdater,
                  clock: Clock = SYSTEM_CLOCK):
         self._clock: Clock = clock
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
         self.handler: IMusicAnalyserHandler = handler
-        self.visualizer_updater: VisualizerUpdater = visualizer_updater
         self.yamnet_change_detector: YamnetChangeDetector = YamnetChangeDetector(self.sample_rate, self.buffer_size)
 
         # constants
         self.win_s: int = self.buffer_size * 4  # fft size
         self.win_s_small: int = self.buffer_size * 2  # fft size
-        self.win_s_large: int = self.buffer_size * 8  # fft size
         self.hop_s: int = self.buffer_size  # hop size
-        self.mfcc_filters: int = 40  # must be 40 for mfcc
-        self.mfcc_coeffs: int = 13
+        self.mel_filters: int = 40  # slaney mel filterbank band count
+        self._mel_band_indices: np.ndarray = np.arange(self.mel_filters)
         self.click_sound: float = 0.7 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
 
         self._reset_state()
 
     def _reset_state(self) -> None:
         # audio analysers
-        self.pitch_o: aubio.pitch = aubio.pitch("default", self.win_s_large, self.hop_s, self.sample_rate)
-        self.pitch_o.set_unit("hertz")
         self.tempo_o: aubio.tempo = aubio.tempo("default", self.win_s_small, self.hop_s, self.sample_rate)
         self.onset_o: aubio.onset = aubio.onset("default", self.win_s_small, self.hop_s, self.sample_rate)
         self.notes_o = aubio.notes("default", self.win_s_small, self.hop_s, self.sample_rate)
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
-        self.mfcc_o: aubio.mfcc = aubio.mfcc(self.win_s, self.mfcc_filters, self.mfcc_coeffs, self.sample_rate)
-        self.energy_filter = aubio.filterbank(self.mfcc_filters, self.win_s)
+        self.energy_filter = aubio.filterbank(self.mel_filters, self.win_s)
         self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
-
 
         # tracking state
         self.yamnet_change_detector.reset()
@@ -56,7 +47,6 @@ class MusicAnalyser:
         self.song_start_time: datetime.datetime = self._clock.now()
         self.song_current_time: datetime.datetime = self._clock.now()
         self.silence_period_start: datetime.datetime = self._clock.now()
-        self.last_mfcc_sample_time: datetime.datetime = self._clock.now()
         self.last_bpm: float = 0.0
         self.beat_count: int = 0
         self.time_to_last_beat_sec: float = 0
@@ -80,12 +70,6 @@ class MusicAnalyser:
 
     def start(self):
         self.yamnet_change_detector.start()
-
-    def get_start_of_song(self) -> Optional[datetime.datetime]:
-        if self.is_playing:
-            return self.song_start_time
-        else:
-            return None
 
     def get_song_current_duration(self) -> datetime.timedelta:
         if self.is_playing:
@@ -175,16 +159,6 @@ class MusicAnalyser:
             return 1.0
         return beat_mean / all_mean
 
-    def get_spectral_centroid(self) -> float:
-        """Mean spectral centroid (in mel-band index units, 0–39) over the last ~150 ms.
-
-        Low values indicate bass-heavy content; high values indicate treble-heavy content.
-        Returns 0.0 when no frames have been processed yet.
-        """
-        if not self._centroid_window:
-            return 0.0
-        return sum(self._centroid_window) / len(self._centroid_window)
-
     def get_spectral_centroid_trend(self) -> float:
         """Trend of the spectral centroid across recent beats (ratio of recent vs. past half).
 
@@ -204,16 +178,14 @@ class MusicAnalyser:
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = self._clock.now()
 
-        pitch_hz = self.pitch_o(audio_signal)[0]
-        pitch_confidence = self.pitch_o.get_confidence()
         rms = float(np.sqrt(np.mean(audio_signal ** 2)))
         self._rms_window.append(rms)
-        spec, mfccs, energies = self._compute_mfcc(audio_signal)
+        energies = self._compute_mel_energies(audio_signal)
         self._track_song_duration(energies, now)
 
-        is_onset: bool = await self._track_onset(audio_signal)
-        is_beat: bool = await self._track_beat(audio_signal, now)
-        is_note, note = await self._track_note(audio_signal, now)
+        await self._track_onset(audio_signal)
+        await self._track_beat(audio_signal, now)
+        is_note = await self._track_note(audio_signal, now)
 
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
@@ -221,13 +193,10 @@ class MusicAnalyser:
         if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration()):
             await self.handler.on_section_change()
 
-        if is_beat:
-            #audio_signal += self.click_sound
-            pass
-
         if is_note:
+            # Audible click for debug playback monitoring (returned buffer only —
+            # feature extraction above already ran on the clean signal).
             audio_signal += self.click_sound
-            pass
 
         await self.handler.on_cycle()
         return audio_signal
@@ -257,17 +226,16 @@ class MusicAnalyser:
             self.last_beat_detected = now
         return is_beat
 
-    async def _track_note(self, audio_signal: np.ndarray, now: datetime.datetime) -> tuple[bool, np.ndarray]:
+    async def _track_note(self, audio_signal: np.ndarray, now: datetime.datetime) -> bool:
         note = self.notes_o(audio_signal)
         is_note = note[0] > 0 and now - self.last_note_detected > datetime.timedelta(milliseconds=75)
         if is_note:
             await self.handler.on_note()
             self.last_note_detected = now
-        return is_note, note
+        return is_note
 
-    def _compute_mfcc(self, audio_signal: np.ndarray) -> [np.ndarray, np.ndarray, np.ndarray]:
+    def _compute_mel_energies(self, audio_signal: np.ndarray) -> np.ndarray:
         spec = self.pvoc_o(audio_signal)
-        mfcc_out = self.mfcc_o(spec)
         energies_out = self.energy_filter(spec)
 
         self._mel_energies_window.append(energies_out.copy())
@@ -278,10 +246,10 @@ class MusicAnalyser:
 
         # Spectral centroid in mel-band index units (0–39).
         total_energy = float(np.sum(energies_out))
-        centroid = float(np.dot(np.arange(40), energies_out)) / (total_energy + 1e-8)
+        centroid = float(np.dot(self._mel_band_indices, energies_out)) / (total_energy + 1e-8)
         self._centroid_window.append(centroid)
 
-        return spec, mfcc_out, energies_out
+        return energies_out
 
     @staticmethod
     def _is_silence(energies: np.ndarray) -> bool:
@@ -322,7 +290,3 @@ class MusicAnalyser:
             return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05
         else:
             return False
-
-    def _midi_to_hz(self, notes: np.ndarray):
-        """ taken from librosa, Get the frequency (Hz) of MIDI note(s) """
-        return 440.0 * (2.0 ** ((np.asanyarray(notes) - 69.0) / 12.0))
