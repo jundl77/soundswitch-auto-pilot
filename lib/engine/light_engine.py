@@ -1,5 +1,4 @@
 from __future__ import annotations
-import time
 import logging
 from collections import deque
 from typing import TYPE_CHECKING
@@ -11,6 +10,7 @@ from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
+from lib.clock import Clock, SYSTEM_CLOCK
 
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
@@ -179,7 +179,8 @@ class LightEngine(IMusicAnalyserHandler):
                  effect_controller: EffectController,
                  command_queue: DelayedCommandQueue | None = None,
                  event_buffer: EventBuffer | None = None,
-                 look_ahead_sec: float = 0.0):
+                 look_ahead_sec: float = 0.0,
+                 clock: Clock = SYSTEM_CLOCK):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
@@ -188,6 +189,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
         self._look_ahead_sec: float = look_ahead_sec
+        self._clock: Clock = clock
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
         self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
@@ -245,7 +247,7 @@ class LightEngine(IMusicAnalyserHandler):
         centroid_trend = self.analyser.get_spectral_centroid_trend()
 
         # Always record beat to history so _commit_intent has forward context.
-        now_mono = time.monotonic()
+        now_mono = self._clock.monotonic()
         self._beat_history.append((now_mono, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend))
         # Prune entries older than 2 × look_ahead_sec (or 5 s minimum for the
         # instantaneous path) so the deque stays bounded.
