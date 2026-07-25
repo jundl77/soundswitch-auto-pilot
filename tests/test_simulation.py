@@ -1,16 +1,25 @@
 """
-Integration test: runs the full simulation pipeline without hardware.
+Integration tests: run the full simulation pipeline without hardware on a
+virtual clock — seconds of song time complete in well under a second of wall
+time, and results are fully deterministic.
 
 Marked @pytest.mark.integration so you can skip with:
   pytest -m "not integration"
-
-Or run only integration tests with:
-  pytest -m integration
 """
 
+import random
+
 import pytest
+
+from lib.clock import VirtualClock
+from lib.engine.event_buffer import EventBuffer
 from simulate.fake_audio_client import BeepAudioClient
-from simulate.runner import build_simulation, run_simulation, print_timing_report
+from simulate.runner import (
+    build_simulation,
+    build_visualizer_simulation,
+    run_simulation,
+    print_timing_report,
+)
 
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 256
@@ -18,25 +27,46 @@ BUFFER_SIZE = 256
 
 @pytest.mark.integration
 async def test_simulation_runs_without_error():
-    """Smoke test: the full pipeline runs for 5 seconds without raising."""
-    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0)
-    components, command_queue = build_simulation(audio_client)
-    await run_simulation(components, duration_sec=5.0)
+    """Smoke test: the full pipeline runs for 5 virtual seconds without raising."""
+    clock = VirtualClock()
+    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
+    components, command_queue = build_simulation(audio_client, clock=clock)
+    await run_simulation(components, duration_sec=5.0, clock=clock)
 
 
 @pytest.mark.integration
 async def test_simulation_timing_passes():
     """
-    Timing validation: beat commands enqueued at T must fire within 50 ms of T + delay.
-    If no beats were detected (rare with synthetic audio), the test is skipped.
+    Timing validation: beat commands enqueued at T must fire within 50 ms of
+    T + delay (virtual time — exact to one buffer quantum).
     """
-    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0)
-    components, command_queue = build_simulation(audio_client)
-    await run_simulation(components, duration_sec=8.0)
+    clock = VirtualClock()
+    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
+    components, command_queue = build_simulation(audio_client, clock=clock)
+    await run_simulation(components, duration_sec=8.0, clock=clock)
 
     log = command_queue.get_timing_log()
-    if not log:
-        pytest.skip('no commands dispatched — aubio did not detect beats in this run')
+    assert log, 'expected beat commands on the virtual clock (deterministic input)'
 
     passed = print_timing_report(command_queue, tolerance_sec=0.050)
     assert passed, 'one or more beat commands exceeded 50 ms timing tolerance'
+
+
+async def _run_fast_beep_sim(duration_sec: float) -> dict:
+    """One fast, seeded, virtual-clock run → full report dict."""
+    random.seed(1337)
+    clock = VirtualClock()
+    audio_client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
+    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+    components, command_queue = build_visualizer_simulation(audio_client, event_buffer, clock=clock)
+    event_buffer.start()
+    await run_simulation(components, duration_sec=duration_sec, clock=clock)
+    return event_buffer.to_report(command_queue.get_timing_log())
+
+
+@pytest.mark.integration
+async def test_fast_simulation_is_deterministic():
+    """Two identical fast runs must produce byte-identical reports."""
+    report_a = await _run_fast_beep_sim(20.0)
+    report_b = await _run_fast_beep_sim(20.0)
+    assert report_a == report_b
