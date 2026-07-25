@@ -57,8 +57,6 @@ class MusicAnalyser:
         self.song_current_time: datetime.datetime = self._clock.now()
         self.silence_period_start: datetime.datetime = self._clock.now()
         self.last_mfcc_sample_time: datetime.datetime = self._clock.now()
-        self.mfccs = np.zeros([self.mfcc_coeffs,])
-        self.energies = np.zeros((40,))
         self.last_bpm: float = 0.0
         self.beat_count: int = 0
         self.time_to_last_beat_sec: float = 0
@@ -272,8 +270,6 @@ class MusicAnalyser:
         mfcc_out = self.mfcc_o(spec)
         energies_out = self.energy_filter(spec)
 
-        self.mfccs = np.vstack((self.mfccs, mfcc_out))
-        self.energies = np.vstack([self.energies, energies_out])
         self._mel_energies_window.append(energies_out.copy())
 
         # Kick detection: raw sub-bass energy (not normalised — we want the actual spike magnitude).
@@ -287,8 +283,13 @@ class MusicAnalyser:
 
         return spec, mfcc_out, energies_out
 
+    @staticmethod
+    def _is_silence(energies: np.ndarray) -> bool:
+        """All mel bands within ±1e-4 of zero (strict) — vectorized hot path."""
+        return bool(np.all(np.abs(energies) < 0.0001))
+
     def _track_song_duration(self, energies: np.ndarray, now: datetime.datetime) -> None:
-        is_silence_now: bool = len([n for n in energies if -0.0001 < n < 0.0001]) == len(energies)
+        is_silence_now: bool = self._is_silence(energies)
 
         # if it is silent now, we do not update silence_period_start in order to track the duration of the silence
         if not is_silence_now:

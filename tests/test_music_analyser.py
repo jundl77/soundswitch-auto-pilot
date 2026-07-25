@@ -5,6 +5,7 @@ Tests for MusicAnalyser methods introduced in this PR:
 """
 import datetime
 import pytest
+import numpy as np
 from collections import deque
 from lib.analyser.music_analyser import MusicAnalyser
 
@@ -118,3 +119,31 @@ def test_onset_density_window_prunes_on_virtual_time():
     assert analyser.get_onset_density() == 2 / 1.5
     clock.advance(2.0)
     assert analyser.get_onset_density() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _is_silence — vectorized equivalence with the old list-comp semantics
+# ---------------------------------------------------------------------------
+
+def test_is_silence_all_near_zero(analyser):
+    assert analyser._is_silence(np.zeros(40, dtype=np.float32)) is True
+    assert analyser._is_silence(np.full(40, 0.00009, dtype=np.float64)) is True
+    assert analyser._is_silence(np.full(40, -0.00009, dtype=np.float64)) is True
+
+
+def test_is_silence_boundary_is_exclusive(analyser):
+    # old semantics: -0.0001 < n < 0.0001 (strict) → exactly 0.0001 is NOT silence
+    energies = np.zeros(40)
+    energies[7] = 0.0001
+    assert analyser._is_silence(energies) is False
+
+
+def test_is_silence_single_loud_band(analyser):
+    energies = np.zeros(40)
+    energies[0] = 0.5
+    assert analyser._is_silence(energies) is False
+
+
+def test_dead_accumulation_arrays_removed(analyser):
+    assert not hasattr(analyser, 'mfccs')
+    assert not hasattr(analyser, 'energies')
