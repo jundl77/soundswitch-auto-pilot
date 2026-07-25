@@ -122,19 +122,9 @@ class EventBuffer:
             if all_effects and 'end' not in all_effects[-1]:
                 all_effects[-1] = {**all_effects[-1], 'end': now}
 
-            # Prune effects outside the 2x window if window is finite
-            if self._window_sec != float('inf'):
-                cutoff = now - self._window_sec * 2
-                all_effects = [e for e in all_effects if e['t'] >= cutoff]
-
             all_intents = list(self._intents)
             if all_intents and 'end' not in all_intents[-1]:
                 all_intents[-1] = {**all_intents[-1], 'end': now}
-
-            # Prune intents outside the 2x window if window is finite
-            if self._window_sec != float('inf'):
-                cutoff = now - self._window_sec * 2
-                all_intents = [e for e in all_intents if e['t'] >= cutoff]
 
             tlog = timing_log if timing_log is not None else self._timing_log
             errors_ms = [
