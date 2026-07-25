@@ -32,6 +32,10 @@ async def test_fast_run_flushes_lookahead_commands():
 
     log = command_queue.get_timing_log()
     assert log, 'expected commands to fire'
+    # Commands enqueued near the end can only fire during the flush tail
+    # (fire time past the 10.0s loop end) — prove the tail actually drains.
+    assert any(e['actual_fire_time'] > 10.0 for e in log), \
+        'no command fired during the flush tail'
     for entry in log:
         # In virtual time the delay is exact to one buffer quantum (~5.8 ms)
         assert abs(entry['actual_delta_sec'] - entry['target_delta_sec']) <= 0.010
