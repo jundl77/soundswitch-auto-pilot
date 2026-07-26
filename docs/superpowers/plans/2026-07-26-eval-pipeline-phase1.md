@@ -29,7 +29,7 @@
 - Data out: `<data-dir>/clean_manifest.csv`
 
 **Interfaces:**
-- Produces: `clean_manifest.csv` with header `track_id,youtube_id,mp3_path,ffprobe_duration_sec,annotation_duration_sec,status` where status ∈ {ok, duration_mismatch, corrupt}. Only `ok` rows feed Task 2. Reuses `manifest.csv` + segments.json via `training/raveform_manifest.py` / `raveform_fetch_annotations.py` helpers — no re-parsing from scratch.
+- Produces: `clean_manifest.csv` with header `track_id,youtube_id,mp3_path,ffprobe_duration_sec,decoded_duration_sec,annotation_duration_sec,status,detail` where status ∈ {ok, duration_mismatch, corrupt} (as built: decoded length measured from the ffmpeg pass guards against header-lying truncation; `detail` carries the rejection reason). Only `ok` rows feed Task 2; Task 2 reads `decoded_duration_sec` (equals header duration within tolerance on ok rows). Reuses `manifest.csv` + segments.json via `training/raveform_manifest.py` / `raveform_fetch_annotations.py` helpers — no re-parsing from scratch.
 
 - [ ] For each `manifest.csv` row with an existing `audio/<youtube_id>.mp3` older than 60 s: run `ffmpeg -v error -i <file> -f null -` (empty stderr = decodes) and `ffprobe` duration vs the annotation record's `duration` within max(±10 s, ±3%). Classify ok / duration_mismatch / corrupt. Tracks not on disk are simply absent from the output (the supervisor is still fetching them) — print counts: present-ok / mismatch / corrupt / not-yet-downloaded.
 - [ ] Parallelize the ffmpeg checks with a small process pool (they're I/O+subprocess bound; 8 workers). Deterministic output ordering (sort by track_id).
