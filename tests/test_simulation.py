@@ -7,6 +7,8 @@ Marked @pytest.mark.integration so you can skip with:
   pytest -m "not integration"
 """
 
+from pathlib import Path
+
 import pytest
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
@@ -18,6 +20,8 @@ from simulate.runner import (
     run_simulation,
     print_timing_report,
 )
+
+SAMPLE_SONG = Path(__file__).parent.parent / 'samples' / 'generate_eric_prydz_192k.mp3'
 
 
 @pytest.mark.integration
@@ -84,3 +88,20 @@ async def test_fast_simulation_rejects_endless_source_with_infinite_duration():
         await run_fast_simulation(
             lambda clock: BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
         )
+
+
+@pytest.mark.integration
+async def test_sample_song_fast_sim_passes_evaluation():
+    """The automated version of `auto_pilot simulate file`: run the bundled
+    sample track through the identical fast path and assert the evaluator's
+    PASS verdict — real music, real DSP, real scoring."""
+    from simulate.evaluator import evaluate
+    from simulate.fake_audio_client import FileAudioClient
+
+    audio_client, event_buffer, command_queue = await run_fast_simulation(
+        lambda clock: FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, str(SAMPLE_SONG))
+    )
+    report = event_buffer.to_report(command_queue.get_timing_log())
+    result = evaluate(report)
+    assert result['passed'], f'sample-song evaluation failed: {result["criteria"]}'
+    assert report['duration_sec'] == pytest.approx(audio_client.duration_sec, abs=0.02)
