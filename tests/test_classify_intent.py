@@ -132,6 +132,22 @@ def test_drop_hysteresis_exits_below_exit_threshold():
     assert result != LightIntent.DROP
 
 
+def test_peak_inherits_drop_hysteresis():
+    # PEAK is sustained DROP, so it must keep DROP's exit threshold: a mid-zone
+    # density (below entry, above exit) still classifies as DROP while committed
+    # to PEAK.  Without this, PEAK would be *less* sticky than the DROP it replaces.
+    mid_density = (_DROP_MIN_DENSITY_EXIT + _DROP_MIN_DENSITY_ENTER) / 2
+    assert _classify_intent(128.0, mid_density, current_intent=LightIntent.PEAK) == LightIntent.DROP
+
+
+def test_peak_hysteresis_releases_below_exit_threshold():
+    # Inheriting the exit threshold must not make PEAK unconditional: below the
+    # DROP exit threshold the window classifies as something else, which is what
+    # lets the engine's consensus path leave PEAK.
+    below_exit = _DROP_MIN_DENSITY_EXIT - 0.5
+    assert _classify_intent(128.0, below_exit, current_intent=LightIntent.PEAK) != LightIntent.DROP
+
+
 def test_drop_cold_entry_requires_higher_threshold():
     # Without current_intent=DROP, mid-zone density should NOT enter DROP.
     mid_density = (_DROP_MIN_DENSITY_EXIT + _DROP_MIN_DENSITY_ENTER) / 2

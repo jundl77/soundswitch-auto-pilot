@@ -105,7 +105,8 @@ def _classify_intent(
 
     ATMOSPHERIC is NOT detected here — fired via beat-absence timer in on_100ms_callback.
     """
-    currently_drop      = (current_intent == LightIntent.DROP)
+    # PEAK is sustained DROP — it keeps DROP's exit threshold.
+    currently_drop      = current_intent in (LightIntent.DROP, LightIntent.PEAK)
     currently_breakdown = (current_intent == LightIntent.BREAKDOWN)
 
     drop_threshold      = _DROP_MIN_DENSITY_EXIT       if currently_drop      else _DROP_MIN_DENSITY_ENTER
@@ -388,16 +389,18 @@ class LightEngine(IMusicAnalyserHandler):
         if not all(v == intent for v in self._intent_vote_buffer):
             return  # mixed votes — not confident enough
 
+        # PEAK absorbs DROP votes: easing back to plain DROP is not a show change.
+        # Placed before the surface step so the intent timeline keeps reading
+        # 'peak' — the lights are holding PEAK; the timeline must agree.
+        if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
+            return
+
         # Consensus reached: surface to visualizer regardless of switch outcome.
         if self.event_buffer:
             self.event_buffer.set_intent(intent.value)
 
         if intent == self._current_intent:
             return  # stable — no effect change needed
-
-        # PEAK absorbs DROP votes: easing back to plain DROP is not a show change.
-        if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
-            return
 
         # --- 2. Minimum dwell check ---
         if self._beats_in_current_intent < _MIN_DWELL_BEATS:

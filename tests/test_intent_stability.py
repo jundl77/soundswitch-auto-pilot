@@ -21,17 +21,24 @@ from lib.engine.light_engine import (
     _PEAK_PROMOTION_BEATS,
     _INVALID_TRANSITIONS,
     _DROP_MIN_DENSITY_ENTER,
+    _DROP_MIN_DENSITY_EXIT,
     _CENTROID_BUILDUP_TREND,
 )
 from lib.engine.effect_definitions import LightIntent
+from lib.engine.event_buffer import EventBuffer
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
-    """Build a minimal LightEngine backed by mock clients for unit testing."""
+def _make_engine(look_ahead_sec: float = 1.0,
+                 event_buffer: EventBuffer | None = None) -> LightEngine:
+    """Build a minimal LightEngine backed by mock clients for unit testing.
+
+    Pass a real EventBuffer when the test asserts on what the intent timeline
+    (report / visualizer) records, rather than only on engine state.
+    """
     effect_controller = MagicMock()
     effect_controller.change_effect = AsyncMock()
     engine = LightEngine(
@@ -40,7 +47,7 @@ def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
         overlay_client=MagicMock(),
         effect_controller=effect_controller,
         command_queue=None,
-        event_buffer=None,
+        event_buffer=event_buffer,
         look_ahead_sec=look_ahead_sec,
     )
     analyser = MagicMock()
@@ -315,6 +322,59 @@ async def test_peak_absorbs_drop_votes():
 
     assert engine._current_intent == LightIntent.PEAK
     engine.effect_controller.change_effect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_peak_holds_through_mid_hysteresis_density_dip():
+    """PEAK inherits DROP's exit threshold — a dip below entry does not eject it.
+
+    A windowed density between _DROP_MIN_DENSITY_EXIT and _DROP_MIN_DENSITY_ENTER
+    is exactly the dip DROP's hysteresis exists to ride out.  PEAK is sustained
+    DROP, so it must be at least as sticky: the window still votes DROP, and
+    absorption keeps the show in PEAK.
+    """
+    engine = _make_engine()
+    engine._current_intent = LightIntent.PEAK
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
+
+    mid_density = (_DROP_MIN_DENSITY_EXIT + _DROP_MIN_DENSITY_ENTER) / 2
+    enqueue_time = _seed_beat_history(engine, density=mid_density)
+    for _ in range(_VOTE_BUFFER_SIZE * 2):
+        await engine._commit_intent(enqueue_time, 128.0)
+
+    assert engine._current_intent == LightIntent.PEAK
+    engine.effect_controller.change_effect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
+    """The reported intent timeline must agree with the lights during a PEAK hold.
+
+    Absorbed DROP votes must not be surfaced to the EventBuffer: the report,
+    visualizer, and training table all read that timeline, and while PEAK is
+    committed the show is in PEAK, not DROP.
+    """
+    buffer = EventBuffer()
+    buffer.start()
+    engine = _make_engine(event_buffer=buffer)
+    engine._current_intent = LightIntent.DROP
+    engine._beats_in_current_intent = _PEAK_PROMOTION_BEATS - 1  # one beat from promotion
+
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
+
+    # Promotion surfaces PEAK to the timeline.
+    await engine._commit_intent(enqueue_time, 128.0)
+    assert engine._current_intent == LightIntent.PEAK
+    assert buffer.snapshot()['intent'] == LightIntent.PEAK.value
+
+    # Every subsequent beat reaches DROP consensus and is absorbed — the timeline
+    # must keep reading 'peak' and must not gain a 'drop' block.
+    for _ in range(_VOTE_BUFFER_SIZE * 2):
+        await engine._commit_intent(enqueue_time, 128.0)
+
+    assert engine._current_intent == LightIntent.PEAK
+    assert buffer.snapshot()['intent'] == LightIntent.PEAK.value
+    assert [e['intent'] for e in buffer.snapshot()['intents']] == [LightIntent.PEAK.value]
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,8 @@ ATMOSPHERIC is detected by beat *absence*, not by any feature value. No density 
 
 PEAK means "sustained maximum energy *after* the drop". The "after" is a temporal property, and a feature window has no way to express it: a peak section and the drop that preceded it look identical in density, kick, and centroid. Any threshold that separated them would either be unreachable (never firing) or would steal windows from DROP. So the classifier never returns PEAK — the engine promotes a *committed* DROP to PEAK once the dwell counter shows it has lasted, which is exactly the "sustained" part of the definition. While PEAK is current, DROP votes are absorbed, since easing from peak back to plain drop is not a show change and would otherwise let the two oscillate. Any other consensus exits PEAK through the normal stability pipeline. See `LightEngine._commit_intent`.
 
+Because PEAK *is* the DROP musical state, two things follow. It inherits DROP's hysteresis: a density dip that DROP would ride out must not eject PEAK either, so the classifier applies DROP's exit threshold while PEAK is committed. And absorbed votes are never surfaced to the event buffer, so the reported intent timeline keeps reading PEAK for as long as the lights hold it — the timeline records committed show state, and an absorbed vote is not a change.
+
 ---
 
 ## Evaluation Strategy
