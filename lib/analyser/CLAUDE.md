@@ -107,7 +107,7 @@ Because PEAK *is* the DROP musical state, two things follow. It inherits DROP's 
 ### Running a simulation
 
 ```bash
-python auto_pilot simulate file samples/song.mp3 --report report.json
+python auto_pilot simulate file path/to/song.mp3 --report report.json
 ```
 
 Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay. The report carries that offset in its metrics rather than leaving it implicit in the code, so a consumer can align the two time bases from the file alone — the inspector's bin table uses it to de-shift intents back to song time.
@@ -146,11 +146,17 @@ The workflow above tunes by ear against one track. `training/evaluate_against_la
 - **ATMOSPHERIC is dead code on this material.** It is the only intent not driven by the beat classifier, and mastered EDM intros and outros have beats, so its timer never trips. Across the whole corpus it was committed zero times, which puts every `intro` and `outro` label permanently out of reach.
 - **The engine changes intent several times more often than the music changes section**, and the large majority of those changes are nowhere near a real boundary. The stability pipeline (votes, dwell, invalid-transition guard) stops the timeline from flickering *within* a bar; it does not make the timeline follow structure. Note the evaluator reports that count two ways -- every intent change, and only the changes that alter the *label class* -- because a model predicting label classes cannot express a DROP-to-PEAK move and must be compared against the second.
 
+### The regression gate
+
+Scoring the whole corpus is the measurement; `training/run_eval_set.py` is the *gate*. It runs the ten frozen eval-set tracks (`training/eval_set.json`) through the same fast sim and the same join, and compares both the per-track report checksums and the same v1 metrics against a committed baseline. The consequence for threshold work: **a threshold change is expected to fail it.** That failure is the whole point — it prints which track moved, which metric moved, and in which direction, so a change made to fix one section of one track cannot quietly cost more elsewhere than it gained. Read the table, then re-cut the baseline in the same commit with `--write-baseline`.
+
+The tracks span 117-174 BPM across five genres, which makes the gate the fastest available answer to the two limitations below: whether a threshold fitted to one track survives contact with another, and how much of the corpus sits above the tempo fold ceiling. Three of them run inside `uv run pytest`; the full ten are a manual command. See the root `CLAUDE.md` (The benchmark) for why the set is frozen and how it is kept out of training.
+
 ---
 
 ## Known Limitations
 
-- **One reference track.** Every threshold currently in the engine was placed against the populations measured on a single track. They separate its sections cleanly, but a threshold fitted to one track is a hypothesis, not a calibration. Re-measure the populations before trusting them on a new corpus — the measurement is cheap and deterministic.
+- **One reference track.** Every threshold currently in the engine was placed against the populations measured on a single track, which is no longer even in the repo — it was the Generate anchor, retired when the eval set replaced it. They separated its sections cleanly, but a threshold fitted to one track is a hypothesis, not a calibration. Re-measure the populations before trusting them on a new corpus — the measurement is cheap and deterministic, and the eval set is now the place to do it.
 - **Tempo above the fold ceiling.** Fast genres (drum & bass and up) fold to half tempo and fall under DROP's BPM floor, so their drops cannot be classified as such. Accepted for Stage 1.
 - **Section-boundary latency.** An intent change needs consensus across several beats, so a committed intent trails the audible transition by roughly the vote window — a second or so. That is the price of not flickering, and it is deliberate; the symmetric look-ahead window keeps the response centred on the transition rather than lagging a full window behind it.
 

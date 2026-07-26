@@ -27,14 +27,16 @@ Before opening a PR, all tests must pass:
 # Fast unit tests (run these frequently during development)
 uv run pytest -m "not integration"
 
-# Full suite including unit + integration tests (~8s)
+# Full suite including unit + integration tests
 uv run pytest
 
 # Run a single test file
 uv run pytest tests/test_delayed_command_queue.py -v
 ```
 
-The integration tests in `tests/test_simulation.py` run the bundled sample track through the full pipeline (identical code path to production) and assert the evaluator's verdict, command-timing exactness, flush behaviour, report duration, speed, and byte-identical determinism. If they fail, the pipeline is broken. There is one simulation mode — real audio files — paced either sped-up (default) or real-time (`--ui`).
+The integration tests in `tests/test_simulation.py` run real, expert-labelled music through the full pipeline (identical code path to production). One track pins the *mechanism* — command-timing exactness, flush behaviour, report duration, speed, byte-identical determinism, and the plumbing evaluator's verdict; three more go through `training/run_eval_set.py` in compare mode and pin the *behaviour* — per-track report checksums and label-aligned scores against the committed baseline. If they fail, the pipeline is broken or its output moved. There is one simulation mode — real audio files — paced either sped-up (default) or real-time (`--ui`).
+
+**These tests need the eval-set audio**, which is gitignored (the repo is public). A checkout without the corpus fails them with one line naming `training/raveform_download.py` — a deliberate failure rather than a skip, because a benchmark nobody notices has been skipped is not a benchmark. The corpus does not follow `git worktree add`; a linked worktree finds the main checkout's copy automatically, and `$RAVEFORM_DATA_DIR` overrides.
 
 ### Testing philosophy
 
@@ -89,6 +91,7 @@ PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserH
 | `simulate/runner.py` | Simulation runner â€” stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing for the live UI |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
 | `training/inspect_report.py` | Report inspector â€” per-10s feature/intent bins + intent timeline; the tool for checking a show against a track's structure |
+| `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
 
 ---
 
@@ -161,21 +164,25 @@ python auto_pilot run 0 --ui
 # Full options
 python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 
-# Simulation (no hardware required)
-python auto_pilot simulate file samples/song.mp3          # fast headless: full song in seconds, report + evaluation
-python auto_pilot simulate file samples/song.mp3 --ui     # real-time paced with live Dash timeline
+# Simulation (no hardware required) — any audio file
+python auto_pilot simulate file path/to/song.mp3          # fast headless: full song in seconds, report + evaluation
+python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced with live Dash timeline
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
 # Inspect a report: per-10s feature bins, intent timeline, distribution
-python auto_pilot simulate file samples/song.mp3 --report report.json
+python auto_pilot simulate file path/to/song.mp3 --report report.json
 python training/inspect_report.py report.json
 
-# Score the current classifier against the expert corpus labels (seconds; needs a built table)
+# The benchmark: the frozen eval set, scored against its labels
+python training/run_eval_set.py                     # compare against the committed baseline
+python training/run_eval_set.py --write-baseline    # re-cut it (see below before you do)
+
+# Score the current classifier against the whole expert corpus (seconds; needs a built table)
 python training/evaluate_against_labels.py --data-dir training/data/raveform
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
-uv run pytest                        # unit + integration (~6s)
+uv run pytest                        # unit + integration
 ```
 
 **Flags (`run`):**
@@ -210,6 +217,7 @@ The pipeline is a set of scripts in `training/`, each resumable and safe to re-r
 | `build_training_table.py` | clean manifest + the unmodified fast sim -> `training_table.csv.gz` (one row per labelled beat), a sim report per track, and a pooled log-mel sidecar per track for the neural classifier |
 | `evaluate_against_labels.py` | training table -> `baseline_eval.json` + a printed report: the current classifier scored against expert labels (confusion, per-class F1, boundary-F1, flicker, worst songs) |
 | `select_eval_set.py` | clean manifest + annotations -> the frozen ten-track benchmark at `training/eval_set.json` (committed, tempo-spanning, structurally rich) |
+| `run_eval_set.py` | the frozen eval set -> per-track report checksums and label-aligned scores; cuts and enforces `training/eval_set_baseline.json` |
 | `nn/dataset.py` | clean manifest + mel sidecars + annotations -> `splits.json` and the windowed, loss-masked training set the CRNN reads |
 | `nn/model.py` | `SectionCRNN` -- the two-head acoustic model (label logits at ~10 Hz, boundary logits at frame rate) |
 | `nn/train.py` | windowed dataset -> checkpoints, `training_report.json` and TensorBoard logs under `<data-dir>/models/v1/` |
@@ -254,6 +262,17 @@ Decisions that belong here rather than in the code:
 - **ATMOSPHERIC is never committed on mastered EDM at all** (see Known Issues), putting ~22% of labelled time out of reach. That alone caps macro-F1 well below 1.0 before a single classification is made, and it is the single biggest lever available.
 - The engine changes intent several times more often than the music changes section, and the large majority of those changes are nowhere near a real boundary. Continuity, not accuracy, is the furthest from acceptable.
 
+### The benchmark: the frozen eval set
+
+The simulation used to be judged against one bundled track and a plumbing-only PASS verdict that asked "did anything happen at all". It is now judged against **ten expert-labelled Raveform tracks frozen in `training/eval_set.json`**, with `training/run_eval_set.py` as the gate and `training/eval_set_baseline.json` as the committed answer. The bundled Generate track has been retired; its historical measurements survive in the Stage-1 plan under `docs/superpowers/plans/`.
+
+- **A benchmark that follows the corpus is not a benchmark.** The set is frozen: the selector refuses to overwrite it without `--force`, and the baseline records the eval set's own checksum so a re-freeze fails loudly instead of silently re-scoring a different ten tracks. Re-cutting the set and re-cutting the baseline is one change, never two.
+- **The benchmark is never learned from.** Neither the ten ids nor any track sharing an artist with one of them enters a training or validation split. This is stated twice on purpose — once here as policy, once in the split builder as code.
+- **Two gates, and they mean different things.** The *report checksum* says the pipeline's behaviour moved: a deterministic run over fixed audio can only change if the code did. The *label-aligned scores* say whether the show got better or worse. A deliberate improvement trips both, and that is the workflow — read the table, decide the change is wanted, re-cut the baseline in the same commit. A regression with no checksum change is impossible and would mean the determinism contract is broken.
+- **Scores are the corpus's scores, not the benchmark's own.** The runner reuses the training table's beat/label join (and therefore its look-ahead realignment) and the label-aligned evaluator's metric functions. A benchmark that computed its own numbers would eventually disagree with the corpus evaluation and nobody would know which was right.
+- **The integration suite runs a subset, a human runs the set.** Three tracks fit a test-suite wall-time budget; ten do not. A subset run compares only its own tracks and deliberately does not compare the aggregate — an aggregate over three tracks is a different quantity. The full set is a manual command and takes a couple of minutes, or seconds across worker processes (parallel and serial produce identical bytes, which is checked by running both).
+- **The eval set is exempt from the delete-your-decode-cache rule.** Everything else in the corpus discards the decoded `.npy` beside its mp3 because the corpus is thousands of tracks; the eval set is ten and is re-simulated on every test run, so its caches persist. That is under a gigabyte and removes the decode from every run after the first.
+
 ### Neural section classifier -- dataset and model (`training/nn/`)
 
 The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-design.md`: a CRNN acoustic model over the pipeline's own mel stream, plus a fixed-lag Viterbi decoder that owns stability and latency policy. This package is the offline half. Only code lives in git; every artefact it produces (splits, checkpoints, ONNX graphs, posterior sidecars) lands in the gitignored data directory.
@@ -291,7 +310,9 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
-- **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the single bundled sample. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
+- **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the retired Generate anchor. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
 - **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
 - **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
-- **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.
+- **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode. The ten eval-set tracks keep theirs on purpose (see The benchmark); everything else in the corpus is cleaned up by the batch that created it.
+- **Integration tests need the eval-set audio.** It is gitignored, so a fresh clone must run `training/raveform_download.py` before `uv run pytest` is green. The failure names the downloader in one line; it is not a skip.
+- **The eval-set baseline lags a deliberate pipeline change by one command.** Any change to `lib/` or `simulate/` that moves the reports fails `run_eval_set.py` until the baseline is re-cut. That is the gate working, not a flake — but it does mean a pipeline PR is two steps, and the second one must not be skipped.
