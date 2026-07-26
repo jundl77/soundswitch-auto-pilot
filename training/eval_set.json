@@ -1,0 +1,213 @@
+{
+  "youtube_ids": [
+    "hzIFjGcOKbg",
+    "FO566BKY2Jc",
+    "SBnxzXkc_qw",
+    "MRRgXXq-0rc",
+    "hwdjIgtMFq8",
+    "4o4joooH5tg",
+    "NyEKXA7_6z0",
+    "hSCcLy_OBLM",
+    "73K_ceORpfw",
+    "DnhxAxnCbrY"
+  ],
+  "selected_from": {
+    "clean_rows": 779,
+    "seed": 20260726,
+    "annotated_candidates": 779,
+    "eligible": 214,
+    "criteria": {
+      "duration_sec": [
+        180.0,
+        480.0
+      ],
+      "min_v1_boundaries": 8,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ],
+      "prefer_unique_track_id_block": true,
+      "unique_artist": true
+    },
+    "inputs": {
+      "clean_manifest.csv": "35807473da36a670312b84734a17681f47622212851f2aa7d9bbff0ed01b21ab",
+      "segments.json": "ab7d0b2d0dd74c645794ca9c085f30b5de42202bdc544069b035e05d97237708"
+    }
+  },
+  "rationale": {
+    "hzIFjGcOKbg": "0064.hzIFjGcOKbg Drum & Bass 170.4 BPM, 7.9 min, 8 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 168.9-174.7",
+    "FO566BKY2Jc": "0136.FO566BKY2Jc Techno 128.9 BPM, 7.2 min, 11 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 128.5-134.3",
+    "SBnxzXkc_qw": "0434.SBnxzXkc_qw Drum & Bass 159.9 BPM, 6.8 min, 10 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 157.4-163.1 (block reused)",
+    "MRRgXXq-0rc": "0485.MRRgXXq-0rc Tech House 127.0 BPM, 6.9 min, 13 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 122.8-128.5",
+    "hwdjIgtMFq8": "0501.hwdjIgtMFq8 Trance 138.0 BPM, 7.0 min, 10 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 134.3-140.1",
+    "4o4joooH5tg": "0640.4o4joooH5tg Trance 140.8 BPM, 7.2 min, 9 v1 boundaries, classes intro/breakdown/drop/outro -- BPM band 140.1-145.8",
+    "NyEKXA7_6z0": "0834.NyEKXA7_6z0 Others 117.0 BPM, 6.1 min, 8 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- tempo-gap fill",
+    "hSCcLy_OBLM": "0911.hSCcLy_OBLM Tech House 122.0 BPM, 6.9 min, 11 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 117.0-122.8",
+    "73K_ceORpfw": "1089.73K_ceORpfw Techno 124.0 BPM, 7.6 min, 9 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- tempo-gap fill",
+    "DnhxAxnCbrY": "1110.DnhxAxnCbrY Trance 134.0 BPM, 7.5 min, 9 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- tempo-gap fill"
+  },
+  "tracks": [
+    {
+      "track_id": "0064.hzIFjGcOKbg",
+      "youtube_id": "hzIFjGcOKbg",
+      "title": "+ Konflict - Beckoning [Renegade Hardware]",
+      "genre": "Drum & Bass",
+      "bpm": 170.41,
+      "duration_sec": 473.049,
+      "v1_boundaries": 8,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0136.FO566BKY2Jc",
+      "youtube_id": "FO566BKY2Jc",
+      "title": "[78] Oxia - Domino [Kompakt Extra  - KOM EX 34]",
+      "genre": "Techno",
+      "bpm": 128.87,
+      "duration_sec": 431.171,
+      "v1_boundaries": 11,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0434.SBnxzXkc_qw",
+      "youtube_id": "SBnxzXkc_qw",
+      "title": "Andy C - Roll On [Ram]",
+      "genre": "Drum & Bass",
+      "bpm": 159.87,
+      "duration_sec": 409.89,
+      "v1_boundaries": 10,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0485.MRRgXXq-0rc",
+      "youtube_id": "MRRgXXq-0rc",
+      "title": "Piatto - Work That [1605]",
+      "genre": "Tech House",
+      "bpm": 127.01,
+      "duration_sec": 412.665,
+      "v1_boundaries": 13,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0501.hwdjIgtMFq8",
+      "youtube_id": "hwdjIgtMFq8",
+      "title": "Simon Patterson - Spike [Vii]",
+      "genre": "Trance",
+      "bpm": 137.99,
+      "duration_sec": 420.003,
+      "v1_boundaries": 10,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0640.4o4joooH5tg",
+      "youtube_id": "4o4joooH5tg",
+      "title": "[79:26] DJ Misjah & DJ Tim - Access [X-Trax - X-002]",
+      "genre": "Trance",
+      "bpm": 140.85,
+      "duration_sec": 434.085,
+      "v1_boundaries": 9,
+      "v1_classes": [
+        "intro",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0834.NyEKXA7_6z0",
+      "youtube_id": "NyEKXA7_6z0",
+      "title": "Session Victim - Never Forget [Delusions Of Grandeur]",
+      "genre": "Others",
+      "bpm": 117.0,
+      "duration_sec": 365.087,
+      "v1_boundaries": 8,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "0911.hSCcLy_OBLM",
+      "youtube_id": "hSCcLy_OBLM",
+      "title": "Monte - Radical [Jeudi]",
+      "genre": "Tech House",
+      "bpm": 122.0,
+      "duration_sec": 411.797,
+      "v1_boundaries": 11,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "1089.73K_ceORpfw",
+      "youtube_id": "73K_ceORpfw",
+      "title": "Anna - Addiction To Control [Tronic]",
+      "genre": "Techno",
+      "bpm": 124.02,
+      "duration_sec": 457.038,
+      "v1_boundaries": 9,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    },
+    {
+      "track_id": "1110.DnhxAxnCbrY",
+      "youtube_id": "DnhxAxnCbrY",
+      "title": "Greg Downey Feat. Bo Bruce - Come To Me [Kearnage]",
+      "genre": "Trance",
+      "bpm": 133.99,
+      "duration_sec": 447.019,
+      "v1_boundaries": 9,
+      "v1_classes": [
+        "intro",
+        "buildup",
+        "breakdown",
+        "drop",
+        "outro"
+      ]
+    }
+  ]
+}
