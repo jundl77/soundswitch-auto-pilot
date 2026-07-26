@@ -57,6 +57,10 @@ _VOTE_BUFFER_SIZE = 3
 # Minimum beats spent in current intent before a switch is allowed.
 _MIN_DWELL_BEATS  = 4
 
+# A DROP that survives this many commit-beats is promoted to PEAK
+# ("sustained maximum energy after the drop"). ~15 s at 128 BPM.
+_PEAK_PROMOTION_BEATS = 32
+
 # Musically impossible transitions: block these regardless of classifier output.
 # e.g. you cannot go from dead-silent ATMOSPHERIC straight to a full DROP.
 _INVALID_TRANSITIONS: frozenset = frozenset({
@@ -329,9 +333,14 @@ class LightEngine(IMusicAnalyserHandler):
 
         Stability pipeline (applied in order):
           1. Windowed classification with hysteresis-aware thresholds.
-          2. Vote buffer: _VOTE_BUFFER_SIZE consecutive identical votes required.
-          3. Minimum dwell: _MIN_DWELL_BEATS beats in current intent before switching.
-          4. Invalid-transition guard: musically impossible jumps are blocked.
+          2. PEAK promotion: a DROP held for _PEAK_PROMOTION_BEATS becomes PEAK.
+          3. Vote buffer: _VOTE_BUFFER_SIZE consecutive identical votes required.
+          4. Minimum dwell: _MIN_DWELL_BEATS beats in current intent before switching.
+          5. Invalid-transition guard: musically impossible jumps are blocked.
+
+        PEAK is the one intent the classifier never returns; it exists only as
+        the promotion above, and while it is current, DROP votes are absorbed so
+        the pair cannot oscillate.  Any other consensus exits PEAK normally.
         """
         if self._atmospheric_sent:
             # Beat absence was detected after this beat was enqueued; ATMOSPHERIC
@@ -355,6 +364,24 @@ class LightEngine(IMusicAnalyserHandler):
             f'densities=[{", ".join(f"{e[1]:.1f}" for e in window)}]'
         )
 
+        # PEAK promotion: PEAK is not produced by the classifier — it is a DROP
+        # that has lasted.  Promote once the dwell counter shows sustained DROP.
+        # This path deliberately bypasses the vote and invalid-transition checks:
+        # it is not a classifier-driven switch but a continuation of the DROP the
+        # pipeline already committed, and (DROP, PEAK) is intentionally absent
+        # from _INVALID_TRANSITIONS — promotion is the only transition this
+        # branch can make, so no guard applies to it.
+        if (self._current_intent == LightIntent.DROP
+                and self._beats_in_current_intent >= _PEAK_PROMOTION_BEATS):
+            logging.info('[engine] [windowed] sustained DROP — promoting to PEAK')
+            self._intent_vote_buffer.clear()
+            self._beats_in_current_intent = 0
+            self._current_intent = LightIntent.PEAK
+            if self.event_buffer:
+                self.event_buffer.set_intent(LightIntent.PEAK.value)
+            await self.effect_controller.change_effect(LightIntent.PEAK)
+            return
+
         # --- 1. Vote consensus required ---
         if len(self._intent_vote_buffer) < _VOTE_BUFFER_SIZE:
             return  # buffer not yet full
@@ -367,6 +394,10 @@ class LightEngine(IMusicAnalyserHandler):
 
         if intent == self._current_intent:
             return  # stable — no effect change needed
+
+        # PEAK absorbs DROP votes: easing back to plain DROP is not a show change.
+        if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
+            return
 
         # --- 2. Minimum dwell check ---
         if self._beats_in_current_intent < _MIN_DWELL_BEATS:

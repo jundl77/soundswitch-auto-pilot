@@ -8,7 +8,7 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 ## Features and Why They Were Chosen
 
-**BPM** — the primary tempo discriminator. High BPM with moderate density → PEAK. Low onset activity at any BPM → BREAKDOWN or ATMOSPHERIC.
+**BPM** — the primary tempo discriminator. It gates DROP: maximum-impact classification requires dance tempo. Low onset activity at any BPM → BREAKDOWN or ATMOSPHERIC.
 
 **Onset density** (onsets/sec, rolling window) — measures rhythmic busyness. A sparse arrangement has few onsets per second; a full drop with kick, bass, hi-hat, and percussion fires many per second. This is the primary BREAKDOWN/DROP discriminator.
 
@@ -67,6 +67,10 @@ The look-ahead window half-width (`LOOK_AHEAD_SEC`) must match `playback_delay_s
 
 ATMOSPHERIC is detected by beat *absence*, not by any feature value. No density reading, BPM, or trend is meaningful when there are no beats. The 100 ms callback monitors elapsed time since the last beat and fires ATMOSPHERIC once the silence threshold is crossed. Everything else is purely beat-driven.
 
+### Why is PEAK not in the classifier either?
+
+PEAK means "sustained maximum energy *after* the drop". The "after" is a temporal property, and a feature window has no way to express it: a peak section and the drop that preceded it look identical in density, kick, and centroid. Any threshold that separated them would either be unreachable (never firing) or would steal windows from DROP. So the classifier never returns PEAK — the engine promotes a *committed* DROP to PEAK once the dwell counter shows it has lasted, which is exactly the "sustained" part of the definition. While PEAK is current, DROP votes are absorbed, since easing from peak back to plain drop is not a show change and would otherwise let the two oscillate. Any other consensus exits PEAK through the normal stability pipeline. See `LightEngine._commit_intent`.
+
 ---
 
 ## Evaluation Strategy
@@ -99,6 +103,6 @@ The JSON report contains the full beat list, intent timeline, and timing log. In
 
 - **Kick strength calibration**: measure `get_kick_strength()` values on real tracks across kick-present vs. kick-absent sections to validate `_KICK_PRESENCE_THRESHOLD`. Also tune `_BREAKDOWN_NO_KICK_MAX_DENSITY` against passages where kick drops out mid-groove.
 - **Centroid trend calibration**: measure `get_spectral_centroid_trend()` during genuine buildup sections vs. steady grooves to validate `_CENTROID_BUILDUP_TREND`. The threshold is more reliable than sub-bass ratio but still needs real data.
-- **RMS energy in classification**: use as a PEAK confirmation signal (loud + high BPM = PEAK; quiet + high BPM = probably just tempo, not energy).
+- **RMS energy in classification**: use as a loudness confirmation for DROP (loud + high density = real drop; quiet + high density = busy but small arrangement). It could also gate the DROP → PEAK promotion so a fading drop is not promoted.
 - **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for detecting timbral drops (e.g. a low-pass filter sweep releasing into the drop).
 - **Labelled data**: once enough real-track simulations exist, label the intent timeline manually and use it to validate or calibrate thresholds systematically rather than by ear.

@@ -104,7 +104,7 @@ Six intents map to structural moments in an EDM track:
 | GROOVE | Steady dance-floor mid-energy â€” main verse/groove loop | BANK_2F/G/H |
 | BUILDUP | Rising tension pre-drop â€” onset density climbing | BANK_1A/B/C |
 | DROP | Maximum impact â€” bass, kick, full arrangement | BANK_1D/E + STROBE |
-| PEAK | Sustained maximum energy after the drop | BANK_1F/G/H |
+| PEAK | Sustained maximum energy after the drop (engine promotion, see below) | BANK_1F/G/H |
 
 For the specific thresholds and tuning constants that drive classification, see `lib/engine/light_engine.py` and `lib/analyser/CLAUDE.md`.
 
@@ -116,7 +116,9 @@ Classification uses BPM, onset density (rhythmic busyness), onset density trend 
 
 **Stability pipeline:** classification changes pass through three guards before triggering an effect change â€” a vote buffer (consensus required), a minimum dwell check (can't switch away immediately), and an invalid-transition guard (musically impossible jumps blocked). See `lib/analyser/CLAUDE.md` for rationale and `lib/engine/light_engine.py` for constants.
 
-**ATMOSPHERIC** is the only intent not driven by the beat classifier. It fires from a beat-absence timer in the 100 ms callback. The first beat after silence immediately re-classifies and changes the effect.
+**ATMOSPHERIC and PEAK are the two intents the beat classifier never returns.** ATMOSPHERIC fires from a beat-absence timer in the 100 ms callback; the first beat after silence immediately re-classifies and changes the effect.
+
+**PEAK is an engine-level promotion, not a classification.** "Sustained maximum energy after the drop" is a temporal property that feature thresholds cannot express (a peak window and a drop window look identical), so the engine promotes an already-committed DROP to PEAK once it has survived a fixed number of commit-beats. While PEAK is current, DROP votes are absorbed so the pair cannot oscillate; any other consensus exits PEAK through the normal stability pipeline. Rationale in `lib/analyser/CLAUDE.md`, constant in `lib/engine/light_engine.py`.
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
