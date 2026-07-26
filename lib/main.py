@@ -50,9 +50,9 @@ class SoundSwitchAutoPilot:
         logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
         # construct clients
-        if output_device_index is not None and not debug_mode:
-            logging.warning('[main] -o has no effect without -d: audio passthrough '
-                            'only runs in debug mode, you will hear nothing')
+        # Audio monitoring plays when an output is requested: -o selects the
+        # device, -d additionally mixes in note-click beeps (default output).
+        self._enable_playback: bool = debug_mode or output_device_index is not None
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
@@ -70,7 +70,8 @@ class SoundSwitchAutoPilot:
                                                      look_ahead_sec=LOOK_AHEAD_SEC)
 
         # construct analyser
-        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine)
+        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
+                                                           note_clicks=debug_mode)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
@@ -80,7 +81,7 @@ class SoundSwitchAutoPilot:
 
     async def run(self):
         logging.info("[main] setting up auto pilot..")
-        self.audio_client.start_streams(start_stream_out=self.debug_mode)
+        self.audio_client.start_streams(start_stream_out=self._enable_playback)
         self.midi_client.start()
         self.overlay_client.start()
         self.music_analyser.start()

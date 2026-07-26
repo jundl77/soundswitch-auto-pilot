@@ -15,11 +15,13 @@ class MusicAnalyser:
                  sample_rate: int,
                  buffer_size: int,
                  handler: IMusicAnalyserHandler,
-                 clock: Clock = SYSTEM_CLOCK):
+                 clock: Clock = SYSTEM_CLOCK,
+                 note_clicks: bool = False):
         self._clock: Clock = clock
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
         self.handler: IMusicAnalyserHandler = handler
+        self.note_clicks: bool = note_clicks
         self.yamnet_change_detector: YamnetChangeDetector = YamnetChangeDetector(self.sample_rate, self.buffer_size)
 
         # constants
@@ -193,7 +195,7 @@ class MusicAnalyser:
         if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration()):
             await self.handler.on_section_change()
 
-        if is_note:
+        if is_note and self.note_clicks:
             # Audible click for debug playback monitoring (returned buffer only —
             # feature extraction above already ran on the clean signal).
             audio_signal += self.click_sound

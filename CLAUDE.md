@@ -163,8 +163,8 @@ uv run pytest                        # unit + integration (~6s)
 ```
 
 **Flags (`run`):**
-- `-i / -o` — audio device indices from `list`
-- `-d` — debug: plays audio back with a click on detected notes
+- `-i / -o` — audio device indices from `list`; passing `-o` enables delayed audio monitoring on that device
+- `-d` — debug: adds a click on detected notes to the monitored audio (implies monitoring on the default output if `-o` is not given)
 - `--no-os2l` — disable VirtualDJ connection
 - `--ui` — launch Dash real-time visualizer at http://localhost:8050
 - `--ui-port N` — change visualizer port
