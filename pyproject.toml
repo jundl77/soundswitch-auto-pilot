@@ -41,10 +41,38 @@ visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
+# Offline NN work only (training/nn/): never imported by lib/ or simulate/.
+# Versions validated end-to-end on the RTX 3070 -- see
+# .superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md.
+# torch is pinned to 2.11 because the legacy TorchScript ONNX exporter (the only
+# path that keeps a dynamic time axis for a GRU) is deprecated from 2.9 onward;
+# tensorboard is deliberately loose because TensorFlow pins it to its own version.
+training = [
+    "torch>=2.11,<2.12",
+    "onnx>=1.22,<2",
+    "onnxruntime>=1.28,<2",
+    "tensorboard>=2.16",
+]
+
+# The CUDA wheel index, bound to torch alone.  `explicit = true` is load-bearing:
+# without it uv consults this index for every package and shadows PyPI with an
+# incomplete mirror.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
 
 [tool.uv]
 link-mode = "copy"
 extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
+# Resolve only for the environment this project actually runs in.  uv resolves
+# universally across `requires-python`, and on the py3.13 branch ml-dtypes
+# (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against the
+# numpy<2 pin TensorFlow needs.  Removing this line breaks `uv lock`.
+environments = ["sys_platform == 'win32' and python_full_version < '3.12'"]
 # tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on Windows
 override-dependencies = [
     "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",

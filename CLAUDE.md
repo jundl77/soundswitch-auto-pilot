@@ -142,6 +142,10 @@ When moving away from SoundSwitch to direct DMX:
 # Install dependencies (requires uv: https://github.com/astral-sh/uv)
 uv sync --extra dev --extra visualizer
 
+# Offline neural-classifier work only (torch/CUDA, onnx, onnxruntime, tensorboard).
+# Nothing in lib/ or simulate/ needs it.
+uv sync --extra dev --extra visualizer --extra training
+
 # The app is installed as an editable console script, so `uv run auto_pilot ...`
 # and `python auto_pilot ...` are equivalent.
 
@@ -205,6 +209,8 @@ The pipeline is a set of scripts in `training/`, each resumable and safe to re-r
 | `build_clean_manifest.py` | manifest + downloaded audio -> `clean_manifest.csv`, the trusted subset everything downstream reads |
 | `build_training_table.py` | clean manifest + the unmodified fast sim -> `training_table.csv.gz` (one row per labelled beat), a sim report per track, and a pooled log-mel sidecar per track for the neural classifier |
 | `evaluate_against_labels.py` | training table -> `baseline_eval.json` + a printed report: the current classifier scored against expert labels (confusion, per-class F1, boundary-F1, flicker, worst songs) |
+| `select_eval_set.py` | clean manifest + annotations -> the frozen ten-track benchmark at `training/eval_set.json` (committed, tempo-spanning, structurally rich) |
+| `nn/dataset.py` | clean manifest + mel sidecars + annotations -> `splits.json` and the windowed, loss-masked training set the CRNN reads |
 
 `clean_manifest.csv` is the boundary between "audio we happen to have" and "audio we are willing to learn from". Only its `ok` rows may feed a training table or an evaluation run.
 
@@ -246,7 +252,19 @@ Decisions that belong here rather than in the code:
 - **ATMOSPHERIC is never committed on mastered EDM at all** (see Known Issues), putting ~22% of labelled time out of reach. That alone caps macro-F1 well below 1.0 before a single classification is made, and it is the single biggest lever available.
 - The engine changes intent several times more often than the music changes section, and the large majority of those changes are nowhere near a real boundary. Continuity, not accuracy, is the furthest from acceptable.
 
-**Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, the download state files, and the build outputs (`reports/`, `features/`, `training_table.csv.gz`) -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`; until this branch merges to `master`, the main checkout relies on a local `.git/info/exclude` entry as a bridge.
+### Neural section classifier -- dataset (`training/nn/`)
+
+The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-design.md`: a CRNN acoustic model over the pipeline's own mel stream, plus a fixed-lag Viterbi decoder that owns stability and latency policy. This package is the offline half. Only code lives in git; every artefact it produces (splits, checkpoints, ONNX graphs, posterior sidecars) lands in the gitignored data directory.
+
+- **Splits are a pure function of the track id, so the corpus can keep growing.** The download is still running and the eventual 1,423-track retrain must be comparable with tonight's model, so the 70/15/15 assignment hashes `(seed, youtube_id)` rather than shuffling a list. Adding tracks may only ever *add*; nothing already placed can move. `splits.json` is the frozen record and wins over recomputation -- the hash decides only where new ids land.
+- **The benchmark is excluded twice over.** The ten frozen eval-set ids never enter any split, and neither does any track sharing an *artist* with one of them. The second guard is the one that is easy to miss: producers have a sound, so a net that has heard six other tracks by an eval-set artist has partly memorised the benchmark. Artist matching is collaboration-aware -- a credit is split on `Feat.` / `&` / `vs` and any shared participant excludes, so a solo release by half of a featured pair is caught. It deliberately over-excludes (a band name containing `&` splits into two names); a handful of lost training tracks is cheap, a contaminated benchmark is not.
+- **Unannotated audio is masked, never labelled.** The same rule the training table applies to beats applies here to frames: audio before the first published section, audio past the last section end, and the time of a dropped `end` sentinel carry no loss. A masked frame teaches nothing; a mislabelled one teaches the wrong thing.
+- **The boundary head gets a fourth mask that the label head does not need.** Where two published sections fold to the same `label_v1` class, the join is a statement about section identity, not necessarily an audible event -- so its neighbourhood is *deleted* from the boundary loss rather than taught as a negative. A genuine transition that happens to sit inside a deleted neighbourhood keeps its target: deletion is for ambiguity, not for erasing known events. On the current corpus roughly three quarters of tracks have at least one such join, so this is a live path, not a corner case.
+- **The window geometry is derived from the sidecars, not restated.** Frame rate, band count and pooling factor all come from the constants the sidecars were written with, and every sidecar load re-checks its own recorded frame rate against them -- a change to the mel front-end must break loudly rather than silently train the model on a different grid than the runtime produces.
+- **Augmentation moves the window, not the truth.** Training draws a fresh window offset and a gain shift per item per epoch, seeded from `(seed, epoch, index)` so a run is reproducible and dataloader workers cannot collide; offsets stay aligned to the label-pooling factor so pooled targets are sliced rather than re-derived. Gain is applied as the additive shift in the log domain that it is, and clamped so the model never sees an input the encoder could not have produced.
+- **Torch is an optional extra and stays that way.** `training` is a separate `[project.optional-dependencies]` group (`uv sync --extra training`); `lib/` and `simulate/` gain no new imports, and the dataset's target and mask logic is plain numpy so it stays testable on a checkout that never installs torch. The pinned versions and the uv index/environment configuration are validated end to end on this machine -- see `.superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md` before changing any of them.
+
+**Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, the download state files, and the build outputs (`reports/`, `features/`, `training_table.csv.gz`, `splits.json`, and later `models/` and `posteriors/`) -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`; until this branch merges to `master`, the main checkout relies on a local `.git/info/exclude` entry as a bridge.
 
 ---
 
