@@ -517,13 +517,24 @@ In `_commit_intent`, insert after `self._beats_in_current_intent += 1` (before t
             return
 ```
 
-And in the post-consensus section, after the `if intent == self._current_intent: return` line, add PEAK's absorption rule:
+And in the post-consensus section, immediately after consensus is reached and BEFORE the `if self.event_buffer:` surfacing block, add PEAK's absorption rule. (Amended after review: placed before surfacing so the report/visualizer timeline holds `peak` through absorbed DROP votes — the timeline must reflect committed show state, and an absorbed vote is not a change.)
 
 ```python
         # PEAK absorbs DROP votes: easing back to plain DROP is not a show change.
+        # Placed before the surface step so the intent timeline keeps reading
+        # 'peak' — the lights are holding PEAK; the timeline must agree.
         if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
             return
 ```
+
+PEAK must also inherit DROP's hysteresis in `_classify_intent` (amended after review: without this, a windowed density dip landing between DROP's exit and entry thresholds ejects PEAK where it would have held DROP — PEAK would be less sticky than the DROP it replaces):
+
+```python
+    # PEAK is sustained DROP — it keeps DROP's exit threshold.
+    currently_drop = current_intent in (LightIntent.DROP, LightIntent.PEAK)
+```
+
+Tests must cover both amendments: the timeline stays `peak` during absorbed DROP votes, and a windowed density between exit and entry holds PEAK.
 
 Check `_INVALID_TRANSITIONS`: `(PEAK, BUILDUP)` is already blocked — correct and unchanged.
 
