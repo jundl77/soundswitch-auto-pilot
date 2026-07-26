@@ -8,14 +8,19 @@ tracks, or the benchmark silently moves under the baseline file) and it
 hard at 124-130 BPM that a naive sampler would certify four-to-the-floor techno
 and nothing else.
 """
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from select_eval_set import (  # noqa: E402  (needs the path insert above)
+    EVAL_SET_FILE,
+    GAP_BUCKET_BPM,
     MAX_DURATION_SEC,
     MIN_BOUNDARIES,
     MIN_DURATION_SEC,
@@ -24,11 +29,14 @@ from select_eval_set import (  # noqa: E402  (needs the path insert above)
     beat_grid_bpm,
     equal_width_bins,
     family_of,
+    gap_bucket,
     is_eligible,
+    load_eval_set,
     rationale_line,
     select,
     tiebreak,
     v1_runs,
+    verify_inputs,
 )
 
 
@@ -262,3 +270,117 @@ def test_rationale_line_names_the_track_and_the_reason():
 
     line = rationale_line(Pick(candidate(bpm=128.0, duration=420.0), "BPM band"))
     assert "0001.aaaaaaaaaaa" in line and "128.0 BPM" in line and "BPM band" in line
+
+
+# --------------------------------------------------------------------------- #
+# Fill pass: the block rule must not outrank tempo diversity
+# --------------------------------------------------------------------------- #
+
+
+def test_gap_bucket_treats_near_equal_tempo_gaps_as_tied():
+    assert gap_bucket(2.0) == gap_bucket(2.0 + GAP_BUCKET_BPM / 2)
+    assert gap_bucket(2.0) != gap_bucket(2.0 + GAP_BUCKET_BPM)
+
+
+# Bands over [120, 170] at size=3 are [120, 136.7), [136.7, 153.3), [153.3, 170].
+# Band 1 takes `near` (closest to its centre) and band 3 takes `far`, which
+# occupies block 01.  Band 2 is empty, so exactly one tempo-gap fill runs, and
+# it must choose between `anchor` (gap 4.0, block 01 ALREADY USED) and `mid`
+# (gap 3.0, block 05 free) -- the shape the reviewer used to expose the bug.
+_FILL_POOL = [
+    ("0100.anchoraaaaa", "anchoraaaaa", 120.0, "anchor"),
+    ("0100.faraaaaaaaa", "faraaaaaaaa", 170.0, "far"),
+    ("0900.nearaaaaaaa", "nearaaaaaaa", 124.0, "near"),
+    ("0500.midaaaaaaaa", "midaaaaaaaa", 121.0, "mid"),
+]
+
+
+def fill_pool() -> list:
+    return [candidate(track_id=track_id, youtube=youtube, bpm=bpm, artist=artist)
+            for track_id, youtube, bpm, artist in _FILL_POOL]
+
+
+def test_fill_pass_prefers_the_wider_tempo_gap_over_a_free_corpus_block():
+    # The regression the reviewer caught: applying the block preference to the
+    # whole remaining pool makes it a HARD rule in the fill pass, because the
+    # pool practically always holds some unused-block track.  Criterion 2
+    # outranks criterion 5, so the wider gap must win even though its block is
+    # already occupied.  The buggy version returned `mid` here.
+    picked = {pick.candidate.youtube_id for pick in select(fill_pool(), size=3, seed=1)}
+    assert picked == {"nearaaaaaaa", "faraaaaaaaa", "anchoraaaaa"}
+
+
+def test_a_fill_pass_block_reuse_is_labelled_in_the_reason():
+    reasons = {pick.candidate.youtube_id: pick.reason
+               for pick in select(fill_pool(), size=3, seed=1)}
+    assert "block reused" in reasons["anchoraaaaa"]
+    assert "block reused" not in reasons["nearaaaaaaa"]
+
+
+def test_class_coverage_breaks_a_near_tie_on_tempo_gap():
+    # `poor` and `rich2` sit 0.5 BPM either side of the band-2 pick, so their
+    # tempo gaps are equal to within a bucket and criterion 1 decides.  On the
+    # raw float gap the two are distinguishable, every later key is dead, and a
+    # 2-class track wins on a rounding difference.
+    pool = [
+        candidate(track_id="0100.anchoraaaaa", youtube="anchoraaaaa", bpm=120.0,
+                  artist="anchor"),
+        candidate(track_id="0200.faraaaaaaaa", youtube="faraaaaaaaa", bpm=170.0,
+                  artist="far"),
+        candidate(track_id="0300.pooraaaaaaa", youtube="pooraaaaaaa", bpm=143.8,
+                  artist="poor", classes=("intro", "drop")),
+        candidate(track_id="0400.richaaaaaaa", youtube="richaaaaaaa", bpm=144.3,
+                  artist="rich"),
+        candidate(track_id="0500.rich2aaaaaa", youtube="rich2aaaaaa", bpm=144.8,
+                  artist="rich2"),
+    ]
+    picked = {pick.candidate.youtube_id for pick in select(pool, size=4, seed=1)}
+    assert "rich2aaaaaa" in picked and "pooraaaaaaa" not in picked
+
+
+# --------------------------------------------------------------------------- #
+# The committed artifact
+# --------------------------------------------------------------------------- #
+
+
+def test_the_committed_eval_set_is_a_well_formed_frozen_set():
+    document = load_eval_set(EVAL_SET_FILE)
+    ids = document["youtube_ids"]
+    assert len(ids) == len(set(ids)) == 10
+    assert sorted(document["rationale"]) == sorted(ids)
+    assert [track["youtube_id"] for track in document["tracks"]] == ids
+
+
+def test_load_eval_set_rejects_a_document_that_is_not_an_eval_set(tmp_path):
+    path = tmp_path / "eval_set.json"
+    path.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="youtube_ids"):
+        load_eval_set(path)
+
+
+def test_load_eval_set_names_the_file_it_could_not_find(tmp_path):
+    with pytest.raises(RuntimeError, match="select_eval_set"):
+        load_eval_set(tmp_path / "absent.json")
+
+
+def test_verify_inputs_reports_a_changed_selection_input(tmp_path):
+    (tmp_path / "annotations").mkdir()
+    (tmp_path / "clean_manifest.csv").write_text("x", encoding="utf-8")
+    (tmp_path / "annotations" / "segments.json").write_text("[]", encoding="utf-8")
+    document = {"selected_from": {"inputs": {"clean_manifest.csv": "0" * 64,
+                                             "segments.json": "0" * 64}}}
+    drift = verify_inputs(document, tmp_path)
+    assert len(drift) == 2 and all("changed since the freeze" in entry for entry in drift)
+
+
+def test_verify_inputs_is_silent_when_nothing_moved(tmp_path):
+    from select_eval_set import sha256_of
+
+    (tmp_path / "annotations").mkdir()
+    (tmp_path / "clean_manifest.csv").write_text("x", encoding="utf-8")
+    (tmp_path / "annotations" / "segments.json").write_text("[]", encoding="utf-8")
+    document = {"selected_from": {"inputs": {
+        "clean_manifest.csv": sha256_of(tmp_path / "clean_manifest.csv"),
+        "segments.json": sha256_of(tmp_path / "annotations" / "segments.json"),
+    }}}
+    assert verify_inputs(document, tmp_path) == []

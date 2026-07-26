@@ -4,9 +4,14 @@
 Writes ``training/eval_set.json`` -- the COMMITTED identity of the simulation
 benchmark.  Ten tracks, chosen from the cleanliness-gated corpus, that the fast
 simulation is scored against and that the neural section classifier must never
-see: ``dataset.make_splits`` excludes every id listed here from train, val and
-test alike.  Audio is never committed; this file is ids + the evidence behind
-them, and the mp3s stay in the gitignored corpus.
+see: ``dataset.make_splits`` (not written yet -- NN plan Task 1) will exclude
+every id listed here from train, val and test alike.  Audio is never committed;
+this file is ids + the evidence behind them, and the mp3s stay in the gitignored
+corpus.
+
+Once frozen it STAYS frozen: re-running this script over a grown corpus refuses
+to overwrite the file without ``--force``, because Task B's baseline records
+per-track checksums and scores against exactly these tracks.
 
 Why these criteria, in this order
 ---------------------------------
@@ -37,8 +42,9 @@ Why these criteria, in this order
    label, so a shared block carries no musical meaning -- and enforcing it hard
    was measured to cost the entire 157-163 BPM band, whose only three
    candidates all sat in blocks already taken.  Criteria are ranked, and BPM
-   diversity outranks family spread, so the block rule yields when it would
-   cost a tempo band and holds whenever it is free.
+   diversity outranks family spread, so the block rule yields wherever holding
+   it would narrow the tempo spread -- in the band pass AND in the tempo-gap
+   fill, which is easy to get wrong in opposite directions (see ``select``).
 
 Determinism
 -----------
@@ -281,6 +287,26 @@ def _in_bin(candidate: Candidate, band: tuple, is_last: bool) -> bool:
     return low <= candidate.bpm <= high if is_last else low <= candidate.bpm < high
 
 
+# Two tempos this close are the same tempo for a benchmark's purposes, so the
+# fill pass treats candidates within one bucket of each other as tied on tempo
+# and lets the *stated* secondary criteria decide between them.  Without the
+# bucket the raw float gap is almost always unique, every later key in the sort
+# is dead, and class coverage -- criterion 1 -- never gets a vote.
+GAP_BUCKET_BPM = 0.5
+
+
+def tempo_gap(candidate: Candidate, taken_bpms: list) -> float:
+    """Distance from this candidate's tempo to the nearest already-chosen one."""
+    if not taken_bpms:
+        return 0.0
+    return min(abs(candidate.bpm - bpm) for bpm in taken_bpms)
+
+
+def gap_bucket(gap: float) -> int:
+    """``tempo_gap`` quantised to ``GAP_BUCKET_BPM``, so near-ties compare equal."""
+    return int(gap / GAP_BUCKET_BPM)
+
+
 class Pick(NamedTuple):
     """One selected track and the reason it was selected."""
 
@@ -300,11 +326,27 @@ def select(candidates: list, size: int = DEFAULT_SIZE, seed: int = DEFAULT_SEED)
     keeps the set at exactly ``size`` without collapsing back onto the mass at
     126 BPM.
 
-    The family constraints are enforced during both passes, never repaired
-    afterwards: a rejected candidate simply yields to the next-best one in the
-    same band.  Only the artist rule is absolute; the index-block rule is
-    dropped for a band that has no candidate satisfying it, rather than
-    surrendering the band (see criterion 5 above).
+    The two passes handle the family rules IDENTICALLY, which takes some care to
+    state because they group candidates differently.  The artist rule is
+    absolute everywhere.  The index-block rule is a preference that yields
+    whenever holding it would cost tempo coverage -- and "would cost tempo
+    coverage" has to be evaluated against the group that is competing for the
+    slot, never against the pool at large:
+
+    * **Band pass** -- the group is the band.  Prefer its unused-block members;
+      if the band has none, take any of its members rather than surrender the
+      band.
+    * **Fill pass** -- the group is the set of candidates tied at the widest
+      available tempo gap (bucketed, see ``GAP_BUCKET_BPM``).  Prefer its
+      unused-block members; if that group has none, take any of them rather
+      than fall back to a candidate with a narrower gap.
+
+    Applying the preference to the whole remaining pool in the fill pass -- the
+    obvious-looking simplification -- silently promotes it to a hard rule,
+    because the pool practically always contains *some* unused-block track.
+    That inverts the documented priority (2 outranks 5) and was measured to
+    trade a 3.6 BPM gap for a 2.0 BPM one.  Hence the bucketing: it defines the
+    group the preference is allowed to choose within.
     """
     eligible = [candidate for candidate in candidates if is_eligible(candidate)]
     if not eligible:
@@ -350,25 +392,22 @@ def select(candidates: list, size: int = DEFAULT_SIZE, seed: int = DEFAULT_SEED)
 
     chosen = {pick.candidate.youtube_id for pick in picks}
     while len(picks) < size:
-        remaining, _relaxed = viable([
-            candidate for candidate in eligible if candidate.youtube_id not in chosen
-        ])
-        if not remaining:
+        pool = [
+            candidate for candidate in eligible
+            if candidate.youtube_id not in chosen and allowed(candidate)
+        ]
+        if not pool:
             break
         taken_bpms = [pick.candidate.bpm for pick in picks]
-        # Sorted ascending by the same preferences ``rank_key`` encodes, then
-        # the last one wins: tempo gap first, then class coverage, then
-        # structural richness, then the seeded tiebreak.
-        best = max(
-            remaining,
-            key=lambda c: (
-                min(abs(c.bpm - bpm) for bpm in taken_bpms) if taken_bpms else 0.0,
-                len(c.classes),
-                c.boundaries,
-                tiebreak(seed, c.youtube_id),
-            ),
-        )
-        take(best, "tempo-gap fill")
+        widest = max(gap_bucket(tempo_gap(candidate, taken_bpms)) for candidate in pool)
+        contenders = [
+            candidate for candidate in pool
+            if gap_bucket(tempo_gap(candidate, taken_bpms)) == widest
+        ]
+        members, relaxed = viable(contenders)
+        best = min(members, key=lambda c: rank_key(c, seed))
+        reason = "tempo-gap fill"
+        take(best, reason + " (block reused)" if relaxed else reason)
         chosen.add(best.youtube_id)
 
     picks.sort(key=lambda pick: pick.candidate.track_id)
@@ -399,6 +438,65 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def input_paths(data_dir: Path) -> dict:
+    """The files a selection is a function of, keyed as they are recorded.
+
+    One definition, used both to stamp the provenance and to check it later --
+    otherwise the writer and the verifier drift and the check quietly passes on
+    a file nobody read.
+    """
+    return {
+        CLEAN_MANIFEST_FILE: data_dir / CLEAN_MANIFEST_FILE,
+        SEGMENTS_FILE: annotations_dir(data_dir) / SEGMENTS_FILE,
+    }
+
+
+def load_eval_set(path: Path) -> dict:
+    """Read a frozen eval set, refusing anything that is not one.
+
+    Task B's benchmark runner and the NN split builder both read this file; a
+    truncated or half-written one must announce itself here rather than at the
+    point where a missing id looks like a missing track.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"missing {path} -- run training/select_eval_set.py to freeze the eval set"
+        ) from None
+    except ValueError as exc:
+        raise RuntimeError(f"{path} is not valid JSON: {exc}") from None
+    ids = document.get("youtube_ids") if isinstance(document, dict) else None
+    if not isinstance(ids, list) or not ids:
+        raise RuntimeError(f"{path} has no 'youtube_ids' -- it is not an eval set")
+    if len(set(ids)) != len(ids):
+        raise RuntimeError(f"{path} lists a duplicate youtube_id")
+    return document
+
+
+def verify_inputs(document: dict, data_dir: Path) -> list:
+    """Which recorded selection inputs no longer match the corpus on disk.
+
+    Empty list means the frozen set was selected from exactly the files that
+    are there now.  A non-empty one is NOT an error by itself -- the corpus
+    grows, and the whole point of freezing is that the benchmark does not
+    follow it -- but it is the difference between "frozen deliberately" and
+    "frozen by accident", so every caller gets to see it.
+    """
+    recorded = (document.get("selected_from") or {}).get("inputs") or {}
+    drift = []
+    for name, path in input_paths(data_dir).items():
+        expected = recorded.get(name)
+        if expected is None:
+            drift.append(f"{name}: no checksum recorded in the eval set")
+        elif not path.exists():
+            drift.append(f"{name}: recorded but missing from {path.parent}")
+        elif sha256_of(path) != expected:
+            drift.append(f"{name}: changed since the freeze ({expected[:12]}... on record)")
+    return drift
+
+
 def build_document(picks: list, data_dir: Path, clean_rows: int, candidates: int,
                    eligible: int, seed: int) -> dict:
     """The committed eval-set record: ids, provenance, and the reasoning."""
@@ -417,8 +515,8 @@ def build_document(picks: list, data_dir: Path, clean_rows: int, candidates: int
                 "unique_artist": True,                  # absolute
             },
             "inputs": {
-                CLEAN_MANIFEST_FILE: sha256_of(data_dir / CLEAN_MANIFEST_FILE),
-                SEGMENTS_FILE: sha256_of(annotations_dir(data_dir) / SEGMENTS_FILE),
+                name: sha256_of(path)
+                for name, path in input_paths(data_dir).items()
             },
         },
         "rationale": {
@@ -527,6 +625,58 @@ def default_data_dir() -> Path:
     return REPO_ROOT / "training" / "data" / "raveform"
 
 
+def _describe_frozen(path: Path, data_dir: Path) -> list:
+    """Human-readable lines about the eval set already on disk."""
+    lines = []
+    try:
+        document = load_eval_set(path)
+    except RuntimeError as exc:
+        return [f"  (unreadable: {exc})"]
+    lines.append(f"  {len(document['youtube_ids'])} track(s): "
+                 f"{', '.join(document['youtube_ids'])}")
+    drift = verify_inputs(document, data_dir)
+    if drift:
+        lines.append("  selection inputs have MOVED since the freeze:")
+        lines.extend(f"    - {entry}" for entry in drift)
+        lines.append("  (expected as the corpus grows -- the benchmark does not "
+                     "follow it, by design)")
+    else:
+        lines.append("  selection inputs still match the corpus on disk")
+    return lines
+
+
+def refuse_to_overwrite(path: Path, data_dir: Path) -> int:
+    """Stop rather than silently re-cut the benchmark under a committed baseline."""
+    print()
+    print(f"REFUSING to overwrite the frozen eval set at {path}")
+    for line in _describe_frozen(path, data_dir):
+        print(line)
+    print()
+    print("  The eval set is FROZEN: Task B's baseline file records per-track")
+    print("  checksums and scores against exactly these ten tracks, and the NN")
+    print("  splits will exclude exactly these ids.  Re-cutting it silently after")
+    print("  a download batch would invalidate both without changing a test.")
+    print()
+    print("  --dry-run  to see what a fresh selection would pick, changing nothing")
+    print("  --force    to re-freeze deliberately (then re-cut the baseline too)")
+    return 1
+
+
+def warn_refreeze(path: Path, data_dir: Path) -> None:
+    """Loudly announce a deliberate re-freeze before it happens."""
+    print()
+    print("!" * 78)
+    print("RE-FREEZING the eval set (--force).  The benchmark is being redefined.")
+    print(f"replacing {path}")
+    for line in _describe_frozen(path, data_dir):
+        print(line)
+    print()
+    print("Any committed eval_set_baseline.json is now DESYNCHRONIZED: its per-track")
+    print("checksums and scores describe tracks that may no longer be in the set.")
+    print("Re-cut the baseline in the same change, or the regression gate is lying.")
+    print("!" * 78)
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -543,11 +693,17 @@ def main(argv: list | None = None) -> int:
                         help="tiebreak seed, recorded in the output (default: %(default)s)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the table and summary without writing the file")
+    parser.add_argument("--force", action="store_true",
+                        help="RE-FREEZE: overwrite an existing eval set. Changes the "
+                             "benchmark and desynchronizes any committed baseline")
     args = parser.parse_args(argv)
 
     data_dir = args.data_dir.resolve()
     print("raveform eval-set selection")
     print(f"data dir: {data_dir}")
+
+    if args.out.exists() and not (args.force or args.dry_run):
+        return refuse_to_overwrite(args.out, data_dir)
 
     ok_rows = load_ok_rows(data_dir)
     candidates = build_candidates(data_dir, ok_rows, load_tracks(data_dir))
@@ -572,6 +728,9 @@ def main(argv: list | None = None) -> int:
         print()
         print("--dry-run: nothing written")
         return 0
+
+    if args.out.exists():
+        warn_refreeze(args.out, data_dir)
 
     document = build_document(picks, data_dir, len(ok_rows), len(candidates),
                               len(eligible), args.seed)
