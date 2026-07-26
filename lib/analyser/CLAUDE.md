@@ -139,6 +139,13 @@ Prints per-10-second bins (mean RMS, density, kick strength, beat count, dominan
 4. Adjust thresholds in `lib/engine/light_engine.py` and re-run. The run is deterministic, so a threshold change shows up as a clean diff.
 5. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
 
+### Scoring against expert labels
+
+The workflow above tunes by ear against one track. `training/evaluate_against_labels.py` does the same job against 459 expertly annotated ones: it scores the committed intent timeline against the Raveform section labels and prints a time-weighted confusion matrix, per-class F1, boundary-F1 at three tolerances, and a flicker rate. See the root `CLAUDE.md` for the metric design decisions and the current baseline. Two of its results bear directly on the classifier rather than on the harness:
+
+- **ATMOSPHERIC is dead code on this material.** It is the only intent not driven by the beat classifier, and mastered EDM intros and outros have beats, so its timer never trips. Across the whole corpus it was committed zero times, which puts every `intro` and `outro` label permanently out of reach.
+- **The engine changes intent about four times more often than the music changes section**, and roughly nine in ten of those changes are nowhere near a real boundary. The stability pipeline (votes, dwell, invalid-transition guard) stops the timeline from flickering *within* a bar; it does not make the timeline follow structure.
+
 ---
 
 ## Known Limitations

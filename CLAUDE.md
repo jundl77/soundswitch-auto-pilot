@@ -166,6 +166,9 @@ python auto_pilot simulate realtime                       # microphone input wit
 python auto_pilot simulate file samples/song.mp3 --report report.json
 python training/inspect_report.py report.json
 
+# Score the current classifier against the expert corpus labels (seconds; needs a built table)
+python training/evaluate_against_labels.py --data-dir training/data/raveform
+
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
 uv run pytest                        # unit + integration (~6s)
@@ -201,6 +204,7 @@ The pipeline is a set of scripts in `training/`, each resumable and safe to re-r
 | `raveform_download.py` | manifest -> one mp3 per YouTube ID, sequential and resumable |
 | `build_clean_manifest.py` | manifest + downloaded audio -> `clean_manifest.csv`, the trusted subset everything downstream reads |
 | `build_training_table.py` | clean manifest + the unmodified fast sim -> `training_table.csv.gz` (one row per labelled beat), a sim report per track, and a pooled log-mel sidecar per track for the neural classifier |
+| `evaluate_against_labels.py` | training table -> `baseline_eval.json` + a printed report: the current classifier scored against expert labels (confusion, per-class F1, boundary-F1, flicker, worst songs) |
 
 `clean_manifest.csv` is the boundary between "audio we happen to have" and "audio we are willing to learn from". Only its `ok` rows may feed a training table or an evaluation run.
 
@@ -223,6 +227,19 @@ Decisions that belong here rather than in the code:
 - **Feature parity with the runtime is enforced, not assumed.** The neural classifier trains on the mel stream the live pipeline computes, but the pipeline under evaluation is read-only, so the exporter rebuilds the same aubio objects instead of borrowing them. That duplication is only safe because a unit test feeds both sides the same buffers and demands identical energies: without it, an FFT-size change in the analyser would silently train the model on features the runtime never produces.
 - **Prerequisites.** `yt-dlp` and `ffmpeg` on PATH, plus a JavaScript runtime (Deno) -- without one, yt-dlp warns that YouTube extraction is deprecated and some formats may be missing, which a full-corpus run cannot accept.
 
+### Label-aligned evaluation
+
+`evaluate_against_labels.py` replaces the plumbing-only verdict in `simulate/evaluator.py` (which only asks "did anything happen") with musical ground truth. It reads the training table and nothing else -- the intent timelines were already realigned into song time when the table was built, so the evaluator never re-derives them from reports.
+
+- **The intent alphabet and the label alphabet are different languages, so the confusion matrix is not square.** Rows are the six intents the engine can commit, columns are the annotator's classes, cells are minutes of show. Flattening one alphabet into the other before looking at the matrix hides exactly the failures worth seeing. The mapping from intent to "the labels this intent is correct for" lives in a single dict at the top of the script and is the thing the owner iterates on.
+- **Two spaces, one primary.** Everything is reported in the five-class `label_v1` space (the model's target space, so its numbers are what a model gets compared against) and again in the seven-class canonical space as a diagnostic. They disagree in a specific place: GROOVE's semantic home is `cooldown`, which v1 merges into `breakdown`, so v1 flatters GROOVE relative to canonical.
+- **An intent cannot know where in the track it is.** ATMOSPHERIC describes quiet with no beat, which is `intro` at the start of a track and `outro` at the end -- the same sound, labelled by position. It is therefore scored correct against either, and when it is wrong its false positive is split across the classes it claimed so no single class absorbs the blame for an ambiguous prediction.
+- **Both event streams are quantised the same way.** The table is per beat, so a label boundary is only observable as "the first beat carrying the new label" and an intent change as "the first beat carrying the new intent". Using one estimator on both sides makes the quantisation cancel when a change is correctly timed. The residual uncertainty is one beat period, which is why the strict tolerance tier sits at the resolution floor and means "within a beat", not "sample accurate".
+- **Flicker is the product metric, and it is not boundary precision.** Flicker counts intent changes with no real boundary anywhere near them, per audience-minute; boundary precision additionally punishes a correctly-placed decision made twice. An audience notices the first and not the second, so both are reported and they are not interchangeable.
+- **A beat with no committed intent is not a class.** Those beats are excluded from every cell and counted instead -- scoring them as errors blames the classifier for the engine's start-up, scoring them as correct flatters it. Their position matters more than their count: an *interior* gap would let the change stream close over a silence and read two commits as one change, so leading / interior / trailing are counted separately as a tripwire.
+
+**The baseline (459 tracks, 51 h of labelled show).** Macro-F1 0.20 in the v1 space, time-weighted accuracy 0.38, boundary-F1 0.14 at the two-second tolerance, ~3.9 unmotivated intent changes per audience-minute. The classifier was calibrated on one track and this is its first contact with 459; the numbers are a starting line, not a verdict on the architecture. Two findings are structural rather than a matter of tuning, and are the first things any successor must fix: **ATMOSPHERIC is never committed on mastered EDM at all** (see Known Issues), which puts 22% of labelled time out of reach and caps macro-F1 at 0.60 before a single classification is made; and the engine changes intent roughly four times more often than the music changes section.
+
 **Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, the download state files, and the build outputs (`reports/`, `features/`, `training_table.csv.gz`) -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`; until this branch merges to `master`, the main checkout relies on a local `.git/info/exclude` entry as a bridge.
 
 ---
@@ -235,6 +252,7 @@ Decisions that belong here rather than in the code:
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread; the audio/DSP path is async on the main thread â€” mixing threading models requires care when touching shared state.
 - **Beat dropout false ATMOSPHERIC**: aubio can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts.
+- **ATMOSPHERIC never fires on mastered EDM.** Measured across 459 corpus tracks: not one atmospheric block in any committed timeline, while 22% of labelled time is `intro` or `outro`. ATMOSPHERIC is the only intent driven by a beat-absence timer rather than by classification, and mastered EDM intros and outros have beats -- so the timer never trips, and the two quiet label classes are unreachable no matter how the thresholds move. Whatever replaces the classifier has to be able to *say* "quiet", not merely notice that beats stopped.
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
