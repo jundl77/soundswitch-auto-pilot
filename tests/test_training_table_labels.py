@@ -40,6 +40,8 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
     format_row,
     join_track,
     label_v1,
+    realign_intents,
+    pipeline_sha,
     report_path,
     select_jobs,
     song_time_intents,
@@ -252,8 +254,8 @@ def test_intent_blocks_are_shifted_back_by_the_look_ahead():
 
 def test_intent_at_beat_uses_song_time_not_audience_time():
     sections = [(0.0, 30.0, "drop")]
-    intents = [{"t": 5.0, "intent": "GROOVE", "end": 10.0},
-               {"t": 10.0, "intent": "DROP", "end": 20.0}]
+    # Queue commits: enqueued at the beats at 3 s and 8 s, stamped 2.5 s later.
+    intents = [queue_block(3.0, "GROOVE", 10.5), queue_block(8.0, "DROP", 20.0)]
     rows, stats = join(sections, [beat(t) for t in (1.0, 3.0, 8.0, 18.0)], intents)
 
     assert labels(rows, "intent_at_beat") == [NO_INTENT, "GROOVE", "DROP", NO_INTENT]
@@ -273,6 +275,162 @@ def test_zero_look_ahead_leaves_intent_blocks_where_they_are():
     blocks = [{"t": 5.0, "intent": "GROOVE", "end": 10.0}]
 
     assert song_time_intents(blocks, 0.0) == [(5.0, 10.0, "GROOVE")]
+
+
+# --------------------------------------------------------------------------- #
+# Intent realignment: the engine's two commit paths stamp in different bases
+# --------------------------------------------------------------------------- #
+
+
+def queue_block(beat_t: float, intent: str, end: float, look_ahead=LOOK_AHEAD) -> dict:
+    """A block committed through the delayed queue: stamped one look-ahead late."""
+    return {"t": beat_t + look_ahead, "intent": intent, "end": end}
+
+
+def test_a_queue_stamped_block_is_shifted_back():
+    beats = [10.0, 10.5, 11.0]
+    blocks = [queue_block(10.0, "GROOVE", 20.0)]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert spans[0][0] == pytest.approx(10.0)
+    assert alignment.song_stamped == 0
+
+
+def test_a_song_stamped_block_is_left_where_it_is():
+    """The first beat commits immediately, inside on_beat -- already song time.
+    Shifting it back would start the run's first intent 2.5 s before the music."""
+    beats = [10.0, 10.5, 11.0]
+    blocks = [{"t": 10.0, "intent": "GROOVE", "end": 20.0}]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert spans[0][0] == pytest.approx(10.0)
+    assert alignment.song_stamped == 1
+
+
+def test_a_mid_track_song_stamped_block_does_not_steal_the_previous_intent():
+    """Re-entry after a sound stop commits immediately too.  De-shifting it
+    would hand it the 2.5 s of beats belonging to the intent before it."""
+    beats = [10.0, 11.0, 12.0, 13.0, 20.0, 21.0]
+    blocks = [
+        queue_block(10.0, "GROOVE", 20.0),      # ends where the next begins
+        {"t": 20.0, "intent": "DROP", "end": 30.0},   # song-stamped re-entry
+    ]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+    timeline = Timeline(spans)
+
+    assert alignment.song_stamped == 1
+    assert spans[1][0] == pytest.approx(20.0)
+    # The beats at 12 s and 13 s stay with GROOVE instead of being annexed.
+    assert timeline.at(12.0) == "GROOVE"
+    assert timeline.at(13.0) == "GROOVE"
+    assert timeline.at(20.0) == "DROP"
+
+
+def test_a_block_boundary_is_de_shifted_once_not_twice():
+    """set_intent closes the old block and opens the new one at ONE instant, so
+    a block's end must come from the next block's corrected start."""
+    beats = [10.0, 11.0, 20.0]
+    blocks = [
+        queue_block(10.0, "GROOVE", 20.0),
+        {"t": 20.0, "intent": "DROP", "end": 30.0},
+    ]
+
+    spans, _alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert spans[0][1] == spans[1][0]
+    assert spans[0][1] == pytest.approx(20.0)
+
+
+def test_the_final_block_frozen_by_mark_end_is_still_a_queue_commit():
+    """to_report clamps the last commit to the report duration, so it matches no
+    beat -- but it came off the queue and must still be shifted back."""
+    beats = [10.0, 11.0, 12.0]
+    blocks = [queue_block(10.0, "GROOVE", 30.0),
+              {"t": 30.0, "intent": "PEAK", "end": 30.0}]
+
+    _spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert alignment.song_stamped == 0
+    assert alignment.clamped_tail == 1
+
+
+def test_a_queue_commit_landing_on_a_beat_instant_is_still_a_queue_commit():
+    """Beats and blocks are drawn from the same virtual-clock tick ladder, so
+    ~1% of ordinary commits coincide with a beat.  Keying on that coincidence
+    would mis-shift hundreds of blocks, so the queue reading wins when it
+    explains the stamp."""
+    beats = [10.0, 12.5]                        # 12.5 == 10.0 + look_ahead
+    blocks = [queue_block(10.0, "GROOVE", 20.0)]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert alignment.song_stamped == 0
+    assert spans[0][0] == pytest.approx(10.0)
+
+
+def test_realignment_tolerates_the_one_buffer_queue_latency():
+    """The queue fires on the next main-loop iteration, up to one buffer late."""
+    quantum = 256 / 44100
+    beats = [10.0, 10.5]
+    blocks = [{"t": 10.0 + LOOK_AHEAD + quantum, "intent": "GROOVE", "end": 20.0}]
+
+    _spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert alignment.song_stamped == 0
+
+
+def test_the_first_block_never_starts_before_the_first_beat():
+    beats = [10.0, 11.0]
+    blocks = [{"t": 10.0, "intent": "GROOVE", "end": 20.0}]
+
+    spans, _alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=30.0)
+
+    assert spans[0][0] >= beats[0]
+
+
+def test_realignment_of_nothing_is_nothing():
+    spans, alignment = realign_intents([], LOOK_AHEAD, [1.0], duration_sec=30.0)
+
+    assert spans == []
+    assert alignment == (0, 0, 0)
+
+
+def test_a_report_without_beats_is_left_uniformly_shifted():
+    blocks = [{"t": 10.0, "intent": "GROOVE", "end": 20.0}]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, [], duration_sec=30.0)
+
+    assert spans[0][0] == pytest.approx(7.5)
+    assert alignment.song_stamped == 0
+
+
+def test_join_counts_the_rows_the_realignment_moved():
+    sections = [(0.0, 40.0, "drop")]
+    beats = [beat(t) for t in (10.0, 11.0, 18.0, 19.0, 20.0)]
+    intents = [
+        queue_block(10.0, "GROOVE", 20.0),
+        {"t": 20.0, "intent": "DROP", "end": 30.0},   # song-stamped re-entry
+    ]
+    rows, stats = join(sections, beats, intents, duration_sec=30.0)
+
+    assert stats.intent_blocks_song_stamped == 1
+    # The naive de-shift starts DROP at 17.5 s and annexes the beats at 18 and
+    # 19 s from GROOVE, which really held the lights until 20 s.
+    assert stats.intent_reattributed == 2
+    assert labels(rows, "intent_at_beat") == ["GROOVE"] * 4 + ["DROP"]
+
+
+def test_join_reports_no_reattribution_when_every_block_came_off_the_queue():
+    sections = [(0.0, 40.0, "drop")]
+    beats = [beat(t) for t in (10.0, 11.0, 12.0)]
+    intents = [queue_block(10.0, "GROOVE", 30.0)]
+    _rows, stats = join(sections, beats, intents, duration_sec=30.0)
+
+    assert stats.intent_blocks_song_stamped == 0
+    assert stats.intent_reattributed == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -392,11 +550,14 @@ def test_format_row_emits_the_header_order_as_strings():
 # --------------------------------------------------------------------------- #
 
 
-def write_corpus(tmp_path: Path, tracks: dict) -> tuple:
+def write_corpus(tmp_path: Path, tracks: dict, sidecars: bool = True) -> tuple:
     """``tracks`` = ``{track_id: (youtube_id, sections, report)}`` -> cached reports."""
     rows = []
     sections_by_track = {}
+    (tmp_path / FEATURES_DIR).mkdir(parents=True, exist_ok=True)
     for track_id, (youtube, sections, payload) in sorted(tracks.items()):
+        if sidecars:
+            (tmp_path / FEATURES_DIR / f"{youtube}.npz").write_bytes(b"npz")
         _write_json_gz(report_path(tmp_path, youtube), {
             "cache_version": CACHE_VERSION,
             "track_id": track_id,
@@ -447,7 +608,9 @@ def test_table_is_byte_identical_when_rebuilt_from_the_same_reports(tmp_path):
     assert (tmp_path / TABLE_FILE).read_bytes() == first
 
 
-def test_table_skips_tracks_that_have_not_been_simulated(tmp_path):
+def test_an_unsimulated_track_is_recorded_not_silently_dropped(tmp_path):
+    """meta.json is the audit record: a track that vanishes without a line looks
+    identical to one that passed."""
     rows, sections = write_corpus(tmp_path, {
         "0001.abc": ("abc", [(0.0, 30.0, "drop")], report([beat(1.0)])),
     })
@@ -457,7 +620,27 @@ def test_table_skips_tracks_that_have_not_been_simulated(tmp_path):
     stats = build_table(tmp_path, rows, sections)
 
     assert stats.tracks == 1
+    assert stats.missing_reports == ["0009.zzz"]
+    assert stats.missing_sidecars == []
     assert stats.skipped == []
+
+
+def test_a_track_without_mel_features_contributes_no_rows(tmp_path):
+    """Rows whose track has no sidecar would reach the NN dataset builder with
+    nothing to featurise."""
+    rows, sections = write_corpus(tmp_path, {
+        "0001.abc": ("abc", [(0.0, 30.0, "drop")], report([beat(1.0), beat(2.0)])),
+        "0002.def": ("def", [(0.0, 30.0, "intro")], report([beat(3.0)])),
+    })
+    (tmp_path / FEATURES_DIR / "def.npz").unlink()
+
+    stats = build_table(tmp_path, rows, sections)
+    table = read_table(tmp_path / TABLE_FILE)
+
+    assert stats.missing_sidecars == ["0002.def"]
+    assert stats.tracks == 1
+    assert stats.rows == 2
+    assert {row[0] for row in table[1:]} == {"0001.abc"}
 
 
 def test_table_records_a_track_whose_report_is_unreadable(tmp_path):
@@ -657,6 +840,31 @@ def test_a_too_recent_track_is_not_also_counted_as_a_miss(tmp_path):
     assert jobs == []
     assert counts["too_recent"] == 1
     assert sum(v for k, v in counts.items() if k.startswith("miss_")) == 0
+
+
+def test_pipeline_sha_ignores_documentation_beside_the_code(tmp_path):
+    """A CLAUDE.md living next to the pipeline cannot change what the simulation
+    produces; treating a doc edit as a pipeline change discards the whole corpus
+    cache for nothing."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True,
+                       capture_output=True, stdin=subprocess.DEVNULL)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t"); git("config", "user.name", "t")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "engine.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "lib" / "CLAUDE.md").write_text("docs\n", encoding="utf-8")
+    git("add", "-A"); git("commit", "-qm", "init")
+    baseline = pipeline_sha(tmp_path)
+
+    (tmp_path / "lib" / "CLAUDE.md").write_text("docs, revised\n", encoding="utf-8")
+    assert pipeline_sha(tmp_path) == baseline
+
+    (tmp_path / "lib" / "engine.py").write_text("x = 2\n", encoding="utf-8")
+    assert pipeline_sha(tmp_path) == f"{baseline}+dirty"
 
 
 def test_cached_reports_are_byte_identical_when_rewritten(tmp_path):

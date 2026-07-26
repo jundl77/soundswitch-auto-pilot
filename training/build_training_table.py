@@ -58,10 +58,22 @@ Label semantics (binding, from the validated corpus)
 Time bases
 ----------
 
-Beat timestamps are song-position seconds.  Intent blocks are audience time --
-one look-ahead delay later -- so they are shifted back by the report's own
-``metrics.look_ahead_sec`` before being read at a beat.  Mel frames carry the
-same stamp convention as beats (see ``pooled_log_mel``).
+Beat timestamps are song-position seconds.  Intent blocks are MOSTLY audience
+time -- one look-ahead delay later -- so they are shifted back by the report's
+own ``metrics.look_ahead_sec`` before being read at a beat.  Mel frames carry
+the same stamp convention as beats (see ``pooled_log_mel``).
+
+"Mostly", because the engine has two commit paths and they stamp in different
+bases.  The normal path enqueues on the delayed command queue and fires one
+look-ahead later (AUDIENCE time).  But the first beat of a run, a beat that
+re-enters after a sound stop, and beat-absence ATMOSPHERIC all write to the
+event buffer immediately, inside the callback (SONG time).  De-shifting one of
+those would move it a full look-ahead too early and let it steal beats from the
+intent before it.  ``realign_intents`` detects which base a block is in and
+corrects only the ones that need it; ``lib/`` is read-only, so the asymmetry is
+compensated here rather than removed at the source.  The number of blocks
+realigned and the number of rows whose intent that changed are both recorded in
+``meta.json`` -- if either grows unexpectedly, the engine's commit paths moved.
 
 Decode-cache discipline
 -----------------------
@@ -286,11 +298,11 @@ def label_v1(label: str) -> str:
 
 def song_time_intents(blocks: list, look_ahead_sec: float,
                       default_end: float | None = None) -> list:
-    """Intent blocks (audience time) -> ``[(start, end, intent)]`` in song time.
+    """Intent blocks -> ``[(start, end, intent)]``, shifting EVERY block back.
 
-    The engine runs one look-ahead ahead of what the audience hears, so an
-    intent block stamped at audience time T was caused by the beats at song time
-    T - look_ahead.  Subtracting puts both on the beat's clock.
+    The naive transform: correct only for blocks the engine committed through
+    the delayed command queue.  ``realign_intents`` is what the join actually
+    uses; this stays as the reference the correction is measured against.
     """
     spans = []
     for block in blocks:
@@ -299,6 +311,109 @@ def song_time_intents(blocks: list, look_ahead_sec: float,
         end = float("inf") if raw_end is None else float(raw_end) - look_ahead_sec
         spans.append((start, max(start, end), str(block["intent"])))
     return spans
+
+
+# A queue commit fires on the first main-loop iteration after it comes due, so a
+# queue-stamped block lands within one buffer quantum of (beat + look_ahead).
+# 1.5 quanta gives float-accumulation margin while staying two orders of
+# magnitude below the ~0.5 s beat spacing that separates the two hypotheses.
+_QUEUE_STAMP_TOLERANCE_SEC = 1.5 * BUFFER_SIZE / SAMPLE_RATE
+_STAMP_EPS = 1e-9
+
+
+class IntentAlignment(NamedTuple):
+    """How each intent block's timestamp was interpreted."""
+
+    blocks: int
+    song_stamped: int      # committed immediately -- already in song time
+    clamped_tail: int      # queue commit frozen at the report's end by mark_end
+
+
+def _nearest_gap(sorted_times: list, value: float) -> float:
+    """Distance from ``value`` to the closest entry of a sorted list."""
+    if not sorted_times:
+        return float("inf")
+    index = bisect.bisect_left(sorted_times, value)
+    best = float("inf")
+    for candidate in (index - 1, index):
+        if 0 <= candidate < len(sorted_times):
+            best = min(best, abs(sorted_times[candidate] - value))
+    return best
+
+
+def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
+                    duration_sec: float | None = None,
+                    tolerance: float = _QUEUE_STAMP_TOLERANCE_SEC) -> tuple:
+    """Intent blocks -> song-time spans, respecting BOTH of the engine's clocks.
+
+    The engine commits an intent two different ways, and they land in different
+    time bases (``lib/`` is read-only, so the join compensates rather than the
+    engine being changed):
+
+    * **Queue commits** (the normal path) are enqueued at a beat and fire one
+      look-ahead later, so the block is stamped in AUDIENCE time and must be
+      shifted back.
+    * **Immediate commits** -- the first beat of a run, and any beat that
+      re-enters after a sound stop or a beat-absence ATMOSPHERIC -- write to the
+      event buffer inside ``on_beat``, so the block is already stamped in SONG
+      time.  Shifting one of those back steals up to a look-ahead of beats from
+      the intent that preceded it.
+
+    A block is treated as a queue commit when ``t - look_ahead`` lands within
+    ``tolerance`` of an actual beat, i.e. when the queue hypothesis *explains*
+    it; otherwise it can only have been stamped in song time.  Preferring the
+    queue reading is the conservative direction: beat timestamps and block
+    timestamps are drawn from the same virtual-clock tick ladder, so ~1.2% of
+    ordinary queue commits coincidentally fall on a beat instant, and a rule
+    that keyed on that coincidence would mis-shift hundreds of blocks.  The one
+    exception is the final block, which ``mark_end`` freezes at the report's
+    duration: it is a queue commit whose stamp was clamped, so it is recognised
+    explicitly rather than by matching a beat.
+
+    Block boundaries are single instants -- ``set_intent`` closes the previous
+    block and opens the next one with the same reading -- so a block's end is
+    taken from the following block's corrected start, never de-shifted twice.
+
+    Returns ``(spans, IntentAlignment)``.
+    """
+    if not blocks:
+        return [], IntentAlignment(0, 0, 0)
+
+    starts: list = []
+    song_stamped = clamped_tail = 0
+    for block in blocks:
+        t = float(block["t"])
+        is_clamped = (duration_sec is not None
+                      and abs(t - float(duration_sec)) <= _STAMP_EPS)
+        explained_by_queue = (
+            look_ahead_sec <= 0
+            or not beat_times
+            or is_clamped
+            or _nearest_gap(beat_times, t - look_ahead_sec) <= tolerance
+        )
+        if explained_by_queue:
+            starts.append(t - look_ahead_sec)
+            clamped_tail += 1 if is_clamped else 0
+        else:
+            starts.append(t)
+            song_stamped += 1
+
+    # The first block cannot begin before the first beat: the run's opening
+    # commit happens AT that beat.  A no-op whenever the classification above
+    # was right, and a floor under it when it was not.
+    if beat_times:
+        starts[0] = max(starts[0], beat_times[0])
+
+    spans = []
+    for index, block in enumerate(blocks):
+        if index + 1 < len(blocks):
+            end = starts[index + 1]
+        else:
+            raw_end = block.get("end", duration_sec)
+            end = (float("inf") if raw_end is None
+                   else float(raw_end) - look_ahead_sec)
+        spans.append((starts[index], max(starts[index], end), str(block["intent"])))
+    return spans, IntentAlignment(len(blocks), song_stamped, clamped_tail)
 
 
 def zscores(values: list) -> list:
@@ -336,6 +451,8 @@ class JoinStats(NamedTuple):
     dropped_trailing: int
     dropped_in_dropped_section: int
     beats_without_intent: int
+    intent_blocks_song_stamped: int   # blocks the engine committed immediately
+    intent_reattributed: int          # rows whose intent the realignment moved
 
 
 def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) -> tuple:
@@ -351,12 +468,16 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
     first_start, last_end = labeled_bounds(sections)
 
     look_ahead_sec = float(report.get("metrics", {}).get("look_ahead_sec", 0.0))
-    intents = Timeline(song_time_intents(
-        report.get("intents", []), look_ahead_sec, report.get("duration_sec")
-    ))
+    blocks = report.get("intents", [])
+    duration_sec = report.get("duration_sec")
+    beat_times = [float(record["t"]) for record in beats]
+    spans, alignment = realign_intents(blocks, look_ahead_sec, beat_times, duration_sec)
+    intents = Timeline(spans)
+    # The uniform de-shift, kept only to count what the realignment changed.
+    naive_intents = Timeline(song_time_intents(blocks, look_ahead_sec, duration_sec))
 
     rows: list = []
-    leading = gap = trailing = in_dropped = without_intent = 0
+    leading = gap = trailing = in_dropped = without_intent = reattributed = 0
 
     for record in beats:
         t = float(record["t"])
@@ -373,6 +494,8 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
             continue
 
         intent = intents.at(t)
+        if (naive_intents.at(t) or NO_INTENT) != (intent or NO_INTENT):
+            reattributed += 1
         if intent is None:
             intent = NO_INTENT
             without_intent += 1
@@ -405,6 +528,8 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
         dropped_trailing=trailing,
         dropped_in_dropped_section=in_dropped,
         beats_without_intent=without_intent,
+        intent_blocks_song_stamped=alignment.song_stamped,
+        intent_reattributed=reattributed,
     )
     return rows, stats
 
@@ -848,6 +973,8 @@ class TableStats(NamedTuple):
     dropped: collections.Counter
     look_ahead_sec: set
     skipped: list
+    missing_reports: list     # ok in the manifest, never simulated
+    missing_sidecars: list    # simulated, but no mel features to train on
 
 
 def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableStats:
@@ -865,7 +992,9 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
     intents = collections.Counter()
     dropped = collections.Counter()
     look_ahead = set()
-    skipped = []
+    skipped: list = []
+    missing_reports: list = []
+    missing_sidecars: list = []
 
     try:
         # mtime=0: the table is a build artefact that must diff cleanly against
@@ -881,6 +1010,17 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 track_id = row["track_id"]
                 cached = report_path(data_dir, row["youtube_id"])
                 if not cached.exists():
+                    # Never simulated (a partial batch, or a pool that broke).
+                    # Recorded, because meta.json is the audit record: a track
+                    # that is silently absent looks the same as one that passed.
+                    missing_reports.append(track_id)
+                    continue
+                if not (data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz").exists():
+                    # Skip rather than assert: a half-built corpus must still
+                    # produce a usable table.  But emitting rows whose track has
+                    # no mel features would hand the NN dataset builder inputs
+                    # it cannot featurise, so the track is left out entirely.
+                    missing_sidecars.append(track_id)
                     continue
                 sections = sections_by_track.get(track_id)
                 if sections is None:
@@ -903,6 +1043,8 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 dropped["trailing"] += stats.dropped_trailing
                 dropped["in_dropped_section"] += stats.dropped_in_dropped_section
                 dropped["without_intent"] += stats.beats_without_intent
+                dropped["intent_blocks_song_stamped"] += stats.intent_blocks_song_stamped
+                dropped["intent_reattributed"] += stats.intent_reattributed
                 for joined_row in joined:
                     canonical[joined_row["label_canonical"]] += 1
                     v1[joined_row["label_v1"]] += 1
@@ -915,7 +1057,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
         raise
 
     return TableStats(tracks, row_count, canonical, v1, raw, intents, dropped,
-                      look_ahead, skipped)
+                      look_ahead, skipped, missing_reports, missing_sidecars)
 
 
 def _git(repo_root: Path, *args: str) -> str | None:
@@ -934,22 +1076,30 @@ def git_sha(repo_root: Path = REPO_ROOT) -> str:
     return _git(repo_root, "rev-parse", "HEAD") or "unknown"
 
 
+# The pipeline under evaluation, as a git pathspec: the Python sources of
+# lib/ and simulate/ and nothing else.  Narrower than "those two directories"
+# on purpose -- a CLAUDE.md living beside the code cannot change what the
+# simulation produces, and treating a doc edit as a pipeline change throws away
+# a 10-minute corpus cache for nothing (observed, hence the pathspec).
+_PIPELINE_PATHSPEC = (":(glob)lib/**/*.py", ":(glob)simulate/**/*.py")
+
+
 def pipeline_sha(repo_root: Path = REPO_ROOT) -> str:
     """Identity of the code whose output the cached reports are.
 
     Deliberately NOT repo HEAD: a report is invalidated by a change to the
-    pipeline under evaluation (``lib/``, ``simulate/``), not by a commit to this
-    script or to a document.  Keying on HEAD would throw away the whole corpus
-    cache on every commit, which is exactly what the cache exists to prevent.
+    pipeline under evaluation, not by a commit to this script or to a document.
+    Keying on HEAD would throw away the whole corpus cache on every commit,
+    which is exactly what the cache exists to prevent.
 
-    Uncommitted changes under those paths append ``+dirty``, so an edit that has
+    Uncommitted changes to those sources append ``+dirty``, so an edit that has
     not been committed yet still invalidates the cache instead of silently
     reusing reports the current code would no longer produce.
     """
-    sha = _git(repo_root, "log", "-1", "--format=%H", "--", "lib", "simulate")
+    sha = _git(repo_root, "log", "-1", "--format=%H", "--", *_PIPELINE_PATHSPEC)
     if not sha:
         return "unknown"
-    dirty = _git(repo_root, "status", "--porcelain", "--", "lib", "simulate")
+    dirty = _git(repo_root, "status", "--porcelain", "--", *_PIPELINE_PATHSPEC)
     return f"{sha}+dirty" if dirty else sha
 
 
@@ -995,6 +1145,8 @@ def write_meta(data_dir: Path, stats: TableStats, failures: list,
         },
         "failed_tracks": [{"track_id": t, "detail": d} for t, d in failures],
         "skipped_tracks": [{"track_id": t, "detail": d} for t, d in stats.skipped],
+        "missing_reports": stats.missing_reports,
+        "missing_sidecars": stats.missing_sidecars,
     }
     path = data_dir / META_FILE
     _write_json_pretty(path, meta)
@@ -1057,6 +1209,13 @@ def print_report(stats: TableStats, results: list, table_path: Path,
     print(f"     of which in a dropped 'end' sentinel: {dropped['in_dropped_section']}")
     print(f"  rows without an intent: {dropped['without_intent']}")
     print(f"  look_ahead_sec        : {sorted(stats.look_ahead_sec)}")
+    print(f"  song-stamped intent blocks realigned: "
+          f"{dropped['intent_blocks_song_stamped']}  "
+          f"(rows re-attributed: {dropped['intent_reattributed']})")
+    print(f"  tracks with no cached report : {len(stats.missing_reports)}"
+          + (f"  {stats.missing_reports[:10]}" if stats.missing_reports else ""))
+    print(f"  tracks skipped, no sidecar   : {len(stats.missing_sidecars)}"
+          + (f"  {stats.missing_sidecars[:10]}" if stats.missing_sidecars else ""))
 
     print()
     print("class histogram (canonical)")
