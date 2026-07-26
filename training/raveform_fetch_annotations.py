@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import http.client
 import io
 import json
 import shutil
@@ -64,6 +65,14 @@ EXPECTED_LABELS = frozenset(
 # --------------------------------------------------------------------------- #
 # Remote zip access
 # --------------------------------------------------------------------------- #
+
+
+class _RangeUnsupported(RuntimeError):
+    """The server would not serve a byte range -- selective extraction is off.
+
+    Deliberately a ``RuntimeError`` and not an ``OSError``: it must escape the
+    transient-error retry path rather than be retried three times.
+    """
 
 
 class HttpRangeFile(io.RawIOBase):
@@ -118,14 +127,44 @@ class HttpRangeFile(io.RawIOBase):
 
     # -- HTTP --------------------------------------------------------------- #
 
-    def _request(self, byte_range: str):
-        req = urllib.request.Request(
-            self.url, headers={"User-Agent": _USER_AGENT, "Range": f"bytes={byte_range}"}
-        )
-        last_err: Exception | None = None
+    def _fetch(self, start: int, end: int) -> tuple:
+        """One full request-and-read cycle, retried as a unit.
+
+        The retry must span the body read, not just ``urlopen``: for multi-MB
+        ranges the common failure is a mid-body ``IncompleteRead`` or reset
+        connection, which would otherwise surface as a raw traceback through
+        zipfile. A short read is treated as a failure and retried too.
+
+        Returns ``(payload, content_range_header)``.
+        """
+        byte_range = f"bytes={start}-{end}"
+        expected = end - start + 1
+        last_err = None
+
         for attempt in range(_MAX_ATTEMPTS):
             try:
-                return urllib.request.urlopen(req, timeout=180)
+                req = urllib.request.Request(
+                    self.url, headers={"User-Agent": _USER_AGENT, "Range": byte_range}
+                )
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    # Validate BEFORE touching the body: a 200 here means the
+                    # server ignored Range and is about to hand us the entire
+                    # 479 MB entity, which we must never pull into memory.
+                    if resp.status != 206:
+                        raise _RangeUnsupported(
+                            f"server ignored the Range request (HTTP {resp.status}, "
+                            f"expected 206) -- cannot stream the archive selectively"
+                        )
+                    content_range = resp.headers.get("Content-Range")
+                    if not content_range:
+                        raise _RangeUnsupported(
+                            "server returned 206 without a Content-Range header -- "
+                            "cannot stream the archive selectively"
+                        )
+                    payload = resp.read()
+                if len(payload) != expected:
+                    raise http.client.IncompleteRead(payload, expected - len(payload))
+                return payload, content_range
             except urllib.error.HTTPError as exc:
                 if exc.code in (401, 403, 404):  # gated / moved / renamed: do not retry
                     raise RuntimeError(
@@ -133,30 +172,27 @@ class HttpRangeFile(io.RawIOBase):
                         f"renamed or removed. Server said: {exc.reason}"
                     ) from exc
                 last_err = exc
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            except (OSError, http.client.HTTPException) as exc:
+                # Covers URLError, ConnectionReset/Aborted, socket timeouts and
+                # IncompleteRead -- all transient, all worth another attempt.
                 last_err = exc
             if attempt < _MAX_ATTEMPTS - 1:
                 time.sleep(2 * (attempt + 1))
-        raise RuntimeError(f"range request bytes={byte_range} failed: {last_err}")
+
+        raise RuntimeError(
+            f"range request {byte_range} failed after {_MAX_ATTEMPTS} attempts: "
+            f"{type(last_err).__name__}: {last_err}"
+        )
 
     def _probe_size(self) -> int:
-        with self._request("0-0") as resp:
-            resp.read()
-            content_range = resp.headers.get("Content-Range")
-        if not content_range or "/" not in content_range:
-            raise RuntimeError(
-                "server did not honor a Range request (no Content-Range header); "
-                "cannot stream the archive selectively"
-            )
+        _payload, content_range = self._fetch(0, 0)
+        if "/" not in content_range:
+            raise _RangeUnsupported(f"malformed Content-Range: {content_range!r}")
         return int(content_range.rsplit("/", 1)[1])
 
     def _get_range(self, start: int, end: int) -> bytes:
-        with self._request(f"{start}-{end}") as resp:
-            if resp.status != 206:
-                raise RuntimeError(
-                    f"expected HTTP 206 for a range request, got {resp.status}"
-                )
-            return resp.read()
+        payload, _content_range = self._fetch(start, end)
+        return payload
 
 
 def open_remote_zip(url: str = ARCHIVE_URL) -> zipfile.ZipFile:
@@ -183,6 +219,20 @@ def _destination(ann_dir: Path, member: str) -> Path:
     return dest
 
 
+def sweep_partials(ann_dir: Path) -> int:
+    """Delete leftover ``*.part`` files from a killed or failed earlier run."""
+    removed = 0
+    for stale in ann_dir.rglob("*.part"):
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError:  # locked/vanished -- not worth failing the fetch over
+            pass
+    if removed:
+        print(f"cleanup : removed {removed} stale .part file(s) from a previous run")
+    return removed
+
+
 def fetch_annotations(data_dir: Path, url: str = ARCHIVE_URL) -> dict:
     """Extract the annotation subtree into ``<data-dir>/annotations/``.
 
@@ -193,6 +243,8 @@ def fetch_annotations(data_dir: Path, url: str = ARCHIVE_URL) -> dict:
 
     print(f"archive : {url}")
     print(f"target  : {ann_dir}")
+
+    sweep_partials(ann_dir)
 
     archive = open_remote_zip(url)
     with archive:
@@ -217,9 +269,15 @@ def fetch_annotations(data_dir: Path, url: str = ARCHIVE_URL) -> dict:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_suffix(dest.suffix + ".part")
-            with archive.open(info) as src, open(tmp, "wb") as out:
-                shutil.copyfileobj(src, out)
-            tmp.replace(dest)
+            try:
+                with archive.open(info) as src, open(tmp, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                tmp.replace(dest)
+            except BaseException:
+                # Never leave a half-written .part behind (BaseException so a
+                # Ctrl-C mid-copy cleans up too).
+                tmp.unlink(missing_ok=True)
+                raise
             extracted += 1
             written += info.file_size
 
