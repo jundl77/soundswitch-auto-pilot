@@ -8,15 +8,29 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 ## Features and Why They Were Chosen
 
-**BPM** — the primary tempo discriminator. High BPM with moderate density → PEAK. Low onset activity at any BPM → BREAKDOWN or ATMOSPHERIC.
+**BPM** — the primary tempo discriminator. It gates DROP: maximum-impact classification requires dance tempo. Low onset activity at any BPM → BREAKDOWN or ATMOSPHERIC.
 
-**Onset density** (onsets/sec, rolling window) — measures rhythmic busyness. A sparse arrangement has few onsets per second; a full drop with kick, bass, hi-hat, and percussion fires many per second. This is the primary BREAKDOWN/DROP discriminator.
+Reported BPM is *octave-folded* into a single tempo band before anyone sees it. aubio locks onto double or half tempo on ambiguous material, and reliably does so during its warmup — the first few beats of every track read at double tempo, which used to be enough to fire a false PEAK before the music had started. Folding is the right fix rather than a warmup suppression window, because the ambiguity is real and recurring: a tempo and its octave are the same tempo musically, and the fold does not touch beat phase, only the number attached to it. The cost is that genuinely fast genres (drum & bass above the fold ceiling) report at half tempo and fall below DROP's BPM floor — a known Stage 1 limitation, not a bug.
+
+**Onset density** (onsets/sec, rolling window) — measures rhythmic busyness. A sparse arrangement has few onsets per second; a full drop with kick, bass, hi-hat, and percussion fires many per second.
+
+Density is *quantized*: it is an onset count over a fixed window, so only multiples of one-over-the-window-length are reachable. Picking a density threshold means picking which bucket it falls between; two thresholds inside the same gap are the same threshold. It is also far less discriminating than it looks — on the reference track the windowed median sits in a single bucket across intro, groove, breakdown *and* final drop alike. Density says whether anything rhythmic is happening; it does not say how big the moment is. Kick strength does that.
 
 **Onset density trend** (ratio of recent vs. past beats) — detects whether energy is rising. BUILDUP requires both sufficient density *and* a rising trend. A steady groove at the same density level stays in GROOVE even if the density is high. Needs a few beats to warm up before it carries signal.
 
 **Sub-bass ratio** (mel filterbank bands 0–4 / total energy) — normalised fraction of energy in the bass register. Stored per-beat. A secondary signal; `kick_strength` (below) is more discriminating for DROP detection.
 
-**Kick strength** — ratio of raw sub-bass energy *at beat timestamps* vs. the rolling mean sub-bass energy over all frames. A kick drum creates a concentrated sub-bass spike exactly on beat positions, pushing this ratio well above 1.0. A hi-hat-dominated pattern with no kick keeps the ratio near 1.0 because sub-bass is spread evenly. This is the primary DROP gate and the primary BREAKDOWN signal when density is moderate (stripped arrangement with no kick). See `music_analyser.py` for the implementation.
+**Kick strength** — how far the sub-bass energy on the beat rises above the sub-bass floor around it. This is the feature that actually separates the sections of a track, and it is the primary DROP gate and the primary BREAKDOWN signal when density is moderate (stripped arrangement, no kick). Three measurement decisions make it work, each of which was wrong at some point and each of which flattened the feature to noise when it was:
+
+- **The window straddles the beat, and mostly follows it.** A kick's energy does not appear in the mel filterbank at the instant aubio reports the beat: the filterbank runs over an FFT window several buffers long, so the sub-bass peak lands *after* the beat index by roughly that window's group delay. A backward-looking capture measures the bar before the kick and reports the background twice. The consequence is that a beat's own kick value is not final when the beat fires — it resolves a few buffers later, so the feature lags by one beat. Over a multi-second classification window that is immaterial, and it is worth far more than the lag costs.
+- **The denominator is a median, not a mean.** A mean over recent frames includes the on-beat spikes it is supposed to be compared against, and on a track with a sustained rolling bassline it also includes that. The median reads the floor the kick sits on.
+- **Numerator and denominator cover comparable spans.** Smoothing the beat side over many beats while the background side covers ~1 s makes the two lag each other, and at every section boundary the ratio reports the *transition* — a breakdown entry then reads as the strongest kick in the track. Keeping the smoothing short keeps the ratio a statement about the present.
+
+Measured this way on the reference track, kicking sections and kick-free sections separate cleanly at the decile level — their medians sit far apart and the presence threshold falls between the kick-free ninth decile and the kicking first decile — but the extreme tails do cross it in both directions, a handful of beats each way. The separation is a property of the bulk of each population, not a guarantee about every beat, which is precisely why the classifier gates on a multi-beat window mean rather than on a single beat: averaging over the window pulls the crossing tails back to the correct side. Do not describe this feature as cleanly separable per beat, and do not build anything on a single beat's value.
+
+Near-silence and no-measurement-yet both report a dedicated *unknown* value that is deliberately below any usable threshold: an unmeasured kick reads as an absent kick, so DROP is never entered without positive evidence. The classifier's own default for the parameter is that same sentinel, so a caller with no kick data cannot accidentally assert one. See `music_analyser.py` for the implementation.
+
+Because the sentinel is a number in the same range as a real ratio, it is not self-identifying in the training table: the only rows that can carry it are those below the silence gate or before the first resolved measurement, so a Stage-2 consumer should derive a `kick_known` flag from each row's own RMS against that gate rather than testing the kick value against the sentinel — a genuine measurement can legitimately land on it.
 
 **Spectral centroid** (mel-band index units, 0–39) — centre of mass of the frequency spectrum. Low = bass-heavy; high = treble-heavy. Tracked per-buffer and at beat timestamps. The *trend* of the centroid across recent beats is the key feature: a rising centroid (energy moving toward higher frequencies) is the defining signature of a BUILDUP riser or sweep filter. A falling centroid (energy concentrating downward) signals a DROP approach. The trend is computed the same way as onset density trend: recent beats vs. past beats. See `music_analyser.py` for details.
 
@@ -27,6 +41,19 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 ---
 
 ## Classifier Design Decisions
+
+### Why this priority order?
+
+The classifier tests DROP first, then BUILDUP, then the two BREAKDOWN branches, and falls through to GROOVE. The order encodes which evidence outranks which:
+
+- **DROP first** because it is the only branch that demands positive evidence rather than settling for the absence of it. In principle that evidence is two features, density *and* a beat-locked kick; in practice on the reference track the density gate is nearly a no-op — a clear majority of all beats in the track sit at or above the entry value, breakdown included — so the kick is doing essentially all of the work. Treat DROP as kick-gated with a density sanity check, not as a two-feature conjunction, until a wider corpus says otherwise. Nothing weaker should be able to pre-empt it.
+- **BUILDUP before both BREAKDOWN branches** because a riser strips the kick and thins the arrangement *by design*. That is exactly the signature the kick-absence branch would swallow — it would relabel every build as a breakdown, which is the one moment the show must not go quiet. This ordering is a regression the tests pin explicitly.
+- **BUILDUP's density floor is BREAKDOWN's ceiling.** Below the density at which we would call the arrangement a breakdown, a trend ratio is computed over one or two onsets and is noise. Leaving a gap between the two would open a sparse band where a noise trend fires BUILDUP and bypasses BREAKDOWN's hysteresis entirely.
+- **GROOVE last**, as the default: beats are present, nothing else claimed them.
+
+### Why does kick absence widen BREAKDOWN rather than force it?
+
+With no kick, density is the only evidence left — and density is quantized coarsely enough that a single onset entering or leaving the rolling window can move it a whole bucket. So kick absence widens BREAKDOWN's band by a margin spanning more than one bucket, applied to the entry and exit thresholds alike. Widening both preserves the hysteresis dead zone; widening only one (the earlier design) removed it, and the result was a kick-less section flapping between BREAKDOWN and GROOVE every few seconds on ±1 onset.
 
 ### Why kick strength as a feature rather than sub-bass ratio alone?
 
@@ -67,6 +94,12 @@ The look-ahead window half-width (`LOOK_AHEAD_SEC`) must match `playback_delay_s
 
 ATMOSPHERIC is detected by beat *absence*, not by any feature value. No density reading, BPM, or trend is meaningful when there are no beats. The 100 ms callback monitors elapsed time since the last beat and fires ATMOSPHERIC once the silence threshold is crossed. Everything else is purely beat-driven.
 
+### Why is PEAK not in the classifier either?
+
+PEAK means "sustained maximum energy *after* the drop". The "after" is a temporal property, and a feature window has no way to express it: a peak section and the drop that preceded it look identical in density, kick, and centroid. Any threshold that separated them would either be unreachable (never firing) or would steal windows from DROP. So the classifier never returns PEAK — the engine promotes a *committed* DROP to PEAK once the dwell counter shows it has lasted, which is exactly the "sustained" part of the definition. While PEAK is current, DROP votes are absorbed, since easing from peak back to plain drop is not a show change and would otherwise let the two oscillate. Any other consensus exits PEAK through the normal stability pipeline. See `LightEngine._commit_intent`.
+
+Because PEAK *is* the DROP musical state, two things follow. It inherits DROP's hysteresis: a density dip that DROP would ride out must not eject PEAK either, so the classifier applies DROP's exit threshold while PEAK is committed. And absorbed votes are never surfaced to the event buffer, so the reported intent timeline keeps reading PEAK for as long as the lights hold it — the timeline records committed show state, and an absorbed vote is not a change.
+
 ---
 
 ## Evaluation Strategy
@@ -77,28 +110,45 @@ ATMOSPHERIC is detected by beat *absence*, not by any feature value. No density 
 python auto_pilot simulate file samples/song.mp3 --report report.json
 ```
 
-Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay.
+Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay. The report carries that offset in its metrics rather than leaving it implicit in the code, so a consumer can align the two time bases from the file alone — the inspector's bin table uses it to de-shift intents back to song time.
 
-The JSON report contains the full beat list, intent timeline, and timing log. Inspect:
+The JSON report contains the full beat list, intent timeline, and timing log. Every beat record carries the complete feature row the classifier saw — density, BPM, kick strength, centroid trend, sub-bass ratio, RMS — which makes the report a labelled feature table, not just a debug dump. It is the intended input for the hand-labelled dataset work; keep it that way when adding features.
+
+Inspect:
 
 - **`intent_distribution_sec`** — time spent in each intent. Does it match the track structure?
-- **`intent_changes_count`** — should be in the tens for a 3-minute track. Much higher means flickering; much lower means stuck.
+- **`intent_changes_count`** — should be in the tens for a 3-minute track. Much higher means flickering; much lower means stuck. Note it counts classifier *consensus* changes, which includes changes the dwell guard then blocked; `effect_changes_count` is what the lights actually did.
 - **`dominant_intent`** — should reflect the character of the track.
 - **`timing_error_max_ms`** — command queue accuracy. Should be well under 50 ms.
+
+### Reading a report
+
+```bash
+python training/inspect_report.py report.json
+```
+
+Prints per-10-second bins (mean RMS, density, kick strength, beat count, dominant intent), the intent timeline with block durations, and the intent distribution. This is the tool for eyeballing whether a track's show follows its structure: the bins line up against the track's sections, and a feature column that reads flat across sections that sound nothing alike is a measurement bug, not a threshold that needs nudging. That distinction is the whole lesson of the Stage 1 calibration — every threshold on the branch was unreachable or inverted because a feature was being measured wrong, and no amount of threshold tuning would have fixed it.
 
 ### Tuning workflow
 
 1. Run simulation on a track with a known structure (e.g. the drop starts at T=90 s).
-2. Inspect the intent timeline: does the DROP intent start and end where the drop does?
-3. Adjust thresholds in `lib/engine/light_engine.py` and re-run.
-4. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
+2. Run `training/inspect_report.py` and check the *feature* columns first: do they separate sections that sound different? If not, fix the measurement before touching a threshold.
+3. Inspect the intent timeline: does the DROP intent start and end where the drop does? Remember the constant look-ahead offset between the two.
+4. Adjust thresholds in `lib/engine/light_engine.py` and re-run. The run is deterministic, so a threshold change shows up as a clean diff.
+5. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
 
 ---
 
+## Known Limitations
+
+- **One reference track.** Every threshold currently in the engine was placed against the populations measured on a single track. They separate its sections cleanly, but a threshold fitted to one track is a hypothesis, not a calibration. Re-measure the populations before trusting them on a new corpus — the measurement is cheap and deterministic.
+- **Tempo above the fold ceiling.** Fast genres (drum & bass and up) fold to half tempo and fall under DROP's BPM floor, so their drops cannot be classified as such. Accepted for Stage 1.
+- **Section-boundary latency.** An intent change needs consensus across several beats, so a committed intent trails the audible transition by roughly the vote window — a second or so. That is the price of not flickering, and it is deliberate; the symmetric look-ahead window keeps the response centred on the transition rather than lagging a full window behind it.
+
 ## Future Work
 
-- **Kick strength calibration**: measure `get_kick_strength()` values on real tracks across kick-present vs. kick-absent sections to validate `_KICK_PRESENCE_THRESHOLD`. Also tune `_BREAKDOWN_NO_KICK_MAX_DENSITY` against passages where kick drops out mid-groove.
+- **Kick strength across a corpus**: on the reference track the presence threshold sits between the two populations' deciles, with a few tail beats crossing it. Measure whether that decile gap survives on other material — and how wide it really is — before treating the threshold as calibrated. Tune the kick-absence margin against passages where the kick drops out mid-groove.
 - **Centroid trend calibration**: measure `get_spectral_centroid_trend()` during genuine buildup sections vs. steady grooves to validate `_CENTROID_BUILDUP_TREND`. The threshold is more reliable than sub-bass ratio but still needs real data.
-- **RMS energy in classification**: use as a PEAK confirmation signal (loud + high BPM = PEAK; quiet + high BPM = probably just tempo, not energy).
+- **RMS energy in classification**: use as a loudness confirmation for DROP (loud + high density = real drop; quiet + high density = busy but small arrangement). It could also gate the DROP → PEAK promotion so a fading drop is not promoted.
 - **Spectral flux**: rate of change of the mel spectrum captures timbral shifts that onset density misses — useful for detecting timbral drops (e.g. a low-pass filter sweep releasing into the drop).
 - **Labelled data**: once enough real-track simulations exist, label the intent timeline manually and use it to validate or calibrate thresholds systematically rather than by ear.

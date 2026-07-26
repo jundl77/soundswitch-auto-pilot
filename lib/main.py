@@ -60,7 +60,9 @@ class SoundSwitchAutoPilot:
 
         # construct event buffer (for --ui and/or --report)
         from lib.engine.event_buffer import EventBuffer
-        self.event_buffer: EventBuffer | None = EventBuffer() if (enable_ui or report_path) else None
+        self.event_buffer: EventBuffer | None = (
+            EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC) if (enable_ui or report_path) else None
+        )
 
         # construct engine
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)

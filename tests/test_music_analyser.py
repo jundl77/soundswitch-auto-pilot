@@ -144,3 +144,109 @@ def test_is_silence_single_loud_band(analyser):
 def test_dead_accumulation_arrays_removed(analyser):
     assert not hasattr(analyser, 'mfccs')
     assert not hasattr(analyser, 'energies')
+
+
+# ---------------------------------------------------------------------------
+# _fold_bpm — octave folding into [85, 170)
+# ---------------------------------------------------------------------------
+
+def test_fold_bpm_double_tempo_folds_down():
+    assert MusicAnalyser._fold_bpm(257.8) == pytest.approx(128.9)
+
+
+def test_fold_bpm_half_tempo_folds_up():
+    assert MusicAnalyser._fold_bpm(64.0) == pytest.approx(128.0)
+
+
+def test_fold_bpm_in_range_untouched():
+    assert MusicAnalyser._fold_bpm(128.0) == pytest.approx(128.0)
+
+
+def test_fold_bpm_boundary_170_folds_to_85():
+    assert MusicAnalyser._fold_bpm(170.0) == pytest.approx(85.0)
+
+
+def test_fold_bpm_zero_and_negative_return_zero():
+    assert MusicAnalyser._fold_bpm(0.0) == 0.0
+    assert MusicAnalyser._fold_bpm(-10.0) == 0.0
+
+
+def test_fold_bpm_non_finite_returns_zero():
+    # Halving inf never terminates, and this runs on the live audio thread.
+    assert MusicAnalyser._fold_bpm(float('inf')) == 0.0
+    assert MusicAnalyser._fold_bpm(float('-inf')) == 0.0
+    assert MusicAnalyser._fold_bpm(float('nan')) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_kick_strength — transient capture, ratio cap, silence gate
+# ---------------------------------------------------------------------------
+
+def _feed_sub_bass(analyser, values: list[float], beat_buffers: tuple[int, ...] = ()) -> None:
+    """Drive the per-buffer sub-bass path the way analyse() does.
+
+    `beat_buffers` are indices into `values` at which aubio reports a beat.
+    """
+    for i, v in enumerate(values):
+        analyser._buffer_index += 1
+        analyser._all_sub_bass_samples.append(v)
+        if i in beat_buffers:
+            analyser._pending_kick_beats.append(analyser._buffer_index)
+        analyser._resolve_pending_kicks()
+
+
+def test_kick_captures_transient_after_the_reported_beat(analyser):
+    # The mel FFT delays the sub-bass peak past aubio's beat, so a spike 3 buffers late is a kick.
+    values = [1.0] * 60
+    values[30 + 3] = 8.0
+    _feed_sub_bass(analyser, values, beat_buffers=(30,))
+    analyser._rms_window.append(0.2)
+    assert analyser.get_kick_strength() == pytest.approx(8.0)
+
+
+def test_kick_ignores_transient_outside_the_capture_window(analyser):
+    values = [1.0] * 60
+    values[10] = 8.0
+    _feed_sub_bass(analyser, values, beat_buffers=(30,))
+    analyser._rms_window.append(0.2)
+    assert analyser.get_kick_strength() == pytest.approx(1.0)
+
+
+def test_kick_background_is_a_median_not_a_mean(analyser):
+    # Every beat spikes — a mean denominator would absorb them and flatten the ratio.
+    values = [1.0] * 120
+    for beat in range(10, 110, 10):
+        values[beat + 3] = 6.0
+    _feed_sub_bass(analyser, values, beat_buffers=tuple(range(10, 110, 10)))
+    analyser._rms_window.append(0.2)
+    assert analyser.get_kick_strength() == pytest.approx(6.0)
+
+
+def test_kick_ratio_capped(analyser):
+    values = [0.001] * 60
+    values[30 + 3] = 5.0
+    _feed_sub_bass(analyser, values, beat_buffers=(30,))
+    analyser._rms_window.append(0.2)
+    assert analyser.get_kick_strength() == pytest.approx(10.0)
+
+
+def test_kick_near_silence_returns_unknown(analyser):
+    from lib.analyser.music_analyser import KICK_UNKNOWN
+    values = [1e-6] * 60
+    values[30 + 3] = 1e-3
+    _feed_sub_bass(analyser, values, beat_buffers=(30,))
+    analyser._rms_window.append(0.001)  # below _KICK_MIN_RMS
+    assert analyser.get_kick_strength() == KICK_UNKNOWN
+
+
+def test_kick_unknown_before_any_beat_is_measured(analyser):
+    from lib.analyser.music_analyser import KICK_UNKNOWN
+    _feed_sub_bass(analyser, [1.0] * 30)
+    analyser._rms_window.append(0.2)
+    assert analyser.get_kick_strength() == KICK_UNKNOWN
+
+
+def test_kick_unknown_reads_as_absent(analyser):
+    from lib.analyser.music_analyser import KICK_UNKNOWN
+    from lib.engine.light_engine import _KICK_PRESENCE_THRESHOLD
+    assert KICK_UNKNOWN < _KICK_PRESENCE_THRESHOLD
