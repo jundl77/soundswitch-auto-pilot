@@ -99,6 +99,27 @@ ECE_BINS = 15
 # place to binarise for a precision/recall curve.
 BOUNDARY_POSITIVE_THRESHOLD = 0.5
 
+# The plan specified lr 3e-4 at batch 32; the CUDA pre-flight then moved the
+# batch to 128 and no scaling correction was applied to the learning rate.  That
+# is a deliberate, recorded choice rather than an oversight, and it decides the
+# triage order if the full run underperforms -- so it is written into every run
+# config and report instead of living in someone's memory.
+LR_REFERENCE_BATCH = 32
+
+
+def lr_note(lr: float, batch_size: int) -> str:
+    if batch_size == LR_REFERENCE_BATCH:
+        return (f"lr {lr:g} at the plan's reference batch {LR_REFERENCE_BATCH} -- "
+                f"no scaling question.")
+    return (
+        f"lr {lr:g} was specified in the plan at batch {LR_REFERENCE_BATCH} and is "
+        f"running at batch {batch_size} ({batch_size / LR_REFERENCE_BATCH:g}x); no "
+        f"linear- or sqrt-scaling correction was applied. TRIAGE: if val macro-F1 "
+        f"stalls below the gate while the train loss is still falling, the run is "
+        f"under-stepping -- raise lr FIRST (try {lr * 2:g}, then {lr * 4:g}) before "
+        f"touching the architecture, the TV lambda or the class weights."
+    )
+
 
 # --------------------------------------------------------------------------- #
 # Seeding
@@ -441,20 +462,28 @@ def ensure_tensorboard(logdir: Path, port: int, log_path: Path) -> bool:
 def build_loader(dataset: WindowDataset, *, batch_size: int, shuffle: bool,
                  num_workers: int, pin_memory: bool,
                  generator: torch.Generator | None) -> DataLoader:
-    """A DataLoader wired per the CUDA pre-flight.
+    """A DataLoader wired per the CUDA pre-flight, with one deliberate departure.
 
-    ``persistent_workers`` keeps the ~2.2 s Windows spawn cost from being paid
-    once per epoch.  It has a real cost of its own: persistent workers hold a
-    *copy* of the dataset, so ``set_epoch`` in the parent never reaches them and
-    the training augmentation stops re-rolling per epoch.  ``--num-workers 0``
-    (the default) is both faster for a corpus this size and free of that
-    caveat -- workers exist here to prove the path, not because it is needed.
+    The pre-flight recommends ``persistent_workers=True`` to avoid paying the
+    ~2.2 s Windows spawn cost once per epoch.  **We do not take it.**  Persistent
+    workers hold a *pickled copy* of the dataset, so ``set_epoch`` in the parent
+    never reaches them and the augmentation freezes on whatever epoch was current
+    when the workers spawned -- every epoch after the first would then re-draw
+    the identical window offsets and gains, which looks exactly like a working
+    run and quietly deletes the augmentation.  Respawning per epoch re-pickles
+    the dataset with the new epoch, so correctness costs 2.2 s an epoch.
+
+    The alternative -- a shared epoch counter read by ``worker_init_fn`` -- was
+    rejected as cross-process state on a path this project does not use:
+    ``--num-workers 0`` is the default and is genuinely faster at this corpus
+    size, so the spawn cost is hypothetical.  Workers exist here to keep the
+    path proven, not because the training needs them.
     """
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
         pin_memory=pin_memory, drop_last=False, generator=generator,
         worker_init_fn=worker_init_fn if num_workers else None,
-        persistent_workers=bool(num_workers),
+        persistent_workers=False,
         prefetch_factor=2 if num_workers else None,
     )
 
@@ -562,6 +591,7 @@ def train(config: dict) -> dict:
     config = dict(config)
     config["tracks"] = {name: [[track_ids[i], i] for i in ids]
                         for name, ids in chosen.items()}
+    config["lr_note"] = lr_note(config["lr"], config["batch_size"])
 
     train_set = WindowDataset(data_dir, chosen["train"], augment=True,
                               seed=config["seed"], sections_by_youtube_id=sections)
@@ -599,6 +629,15 @@ def train(config: dict) -> dict:
                 f"{checkpoint_path} was written by a different configuration "
                 f"({state['config_fingerprint'][:12]} vs {fingerprint[:12]}) -- "
                 f"resuming would produce a model no report describes"
+            )
+        # Before load_state_dict, not after: a label_pool mismatch changes no
+        # tensor shape, so the weights would load *cleanly* into a model that
+        # decodes at the wrong frame rate.
+        if state.get("arch") != model.arch():
+            raise RuntimeError(
+                f"{checkpoint_path} was written for architecture "
+                f"{state.get('arch')}, this run builds {model.arch()} -- the "
+                f"weights would load into a differently shaped model"
             )
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
@@ -639,6 +678,7 @@ def train(config: dict) -> dict:
     print(f"class counts {stats.class_counts.tolist()} -> weights "
           f"{np.round(weights, 3).tolist()} | boundary pos_weight {pos_weight:.2f}",
           flush=True)
+    print(f"lr: {config['lr_note']}", flush=True)
 
     generator = torch.Generator()
     loader_workers = config["num_workers"]
@@ -735,13 +775,14 @@ def train(config: dict) -> dict:
             best = {"macro_f1": float(metrics["macro_f1"]), "epoch": epoch,
                     "metrics": {key: value for key, value in metrics.items()
                                 if key != "confusion"}}
-            torch.save({"model": model.state_dict(), "config": config,
-                        "epoch": epoch, "metrics": best},
+            torch.save({"model": model.state_dict(), "arch": model.arch(),
+                        "config": config, "epoch": epoch, "metrics": best},
                        run_dir / BEST_CHECKPOINT)
 
         torch.save({
             "epoch": epoch,
             "model": model.state_dict(),
+            "arch": model.arch(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "history": history,
@@ -772,6 +813,7 @@ def train(config: dict) -> dict:
         "class_counts": stats.class_counts.tolist(),
         "class_weights": weights.tolist(),
         "boundary_pos_weight": pos_weight,
+        "lr_note": config["lr_note"],
         "steps_per_epoch": steps_per_epoch,
         "total_steps": total_steps,
         "history": history,

@@ -88,6 +88,9 @@ class SectionCRNN(nn.Module):
         self.n_mels = int(n_mels)
         self.n_classes = int(n_classes)
         self.label_pool = int(label_pool)
+        self.conv_channels = tuple(int(channels) for channels in conv_channels)
+        self.conv1d_channels = int(conv1d_channels)
+        self.rnn_hidden = int(rnn_hidden)
         self.freq_out = freq
         self.feature_dim = int(conv_channels[-1]) * freq
 
@@ -105,6 +108,25 @@ class SectionCRNN(nn.Module):
         self.dropout = nn.Dropout(float(dropout))
         self.label_head = nn.Linear(2 * rnn_hidden, self.n_classes)
         self.boundary_head = nn.Linear(2 * rnn_hidden, 1)
+
+    def arch(self) -> dict:
+        """The constructor arguments that decide the tensor shapes.
+
+        Stored in every checkpoint so the file describes itself.  A ``state_dict``
+        alone does not: loading v1 weights into a differently-shaped model either
+        raises a shape error a hundred lines from the cause, or -- when only
+        ``label_pool`` differs -- loads *cleanly* and silently decodes at the
+        wrong frame rate.  `models/v1/best.pt` is the artifact Tasks 3-6 are
+        judged on, and it will outlive the argparse defaults that produced it.
+        """
+        return {
+            "n_mels": self.n_mels,
+            "n_classes": self.n_classes,
+            "label_pool": self.label_pool,
+            "rnn_hidden": self.rnn_hidden,
+            "conv_channels": list(self.conv_channels),
+            "conv1d_channels": self.conv1d_channels,
+        }
 
     def forward(self, mel: torch.Tensor) -> tuple:
         if mel.dim() != 3:

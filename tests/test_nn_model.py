@@ -40,16 +40,19 @@ from nn.dataset import (  # noqa: E402
     NUM_CLASSES,
     WINDOW_FRAMES,
     TrackTargets,
+    WindowDataset,
 )
 from nn.model import PARAM_BUDGET, SectionCRNN, count_parameters  # noqa: E402
 from nn.train import (  # noqa: E402
     accumulate_target_stats,
     boundary_bce,
     boundary_pos_weight,
+    build_loader,
     capture_rng,
     class_weights,
     confusion_matrix,
     focal_loss,
+    lr_note,
     macro_f1,
     per_class_ece,
     per_class_f1,
@@ -108,6 +111,40 @@ def test_frequency_is_pooled_away_and_time_is_preserved():
     # 40 mel bands, halved by each of the three conv blocks.
     assert model.freq_out == MEL_BANDS // 8
     assert model.feature_dim == 64 * (MEL_BANDS // 8)
+
+
+def test_arch_names_every_shape_deciding_argument():
+    """`models/v1/best.pt` outlives the argparse defaults that produced it, so
+    the file has to describe its own geometry."""
+    arch = _model().arch()
+
+    assert arch == {"n_mels": 40, "n_classes": 5, "label_pool": 2, "rnn_hidden": 128,
+                    "conv_channels": [32, 64, 64], "conv1d_channels": 128}
+    # Round-trips through the JSON/torch.save that a checkpoint performs.
+    assert json.loads(json.dumps(arch)) == arch
+
+
+@pytest.mark.parametrize("changed", [
+    {"n_classes": 6},
+    {"rnn_hidden": 64},
+    {"conv1d_channels": 96},
+    {"conv_channels": (32, 64, 32)},
+    # The dangerous one: pooling changes no tensor shape in the state_dict, so a
+    # mismatched checkpoint loads *cleanly* and decodes at the wrong frame rate.
+    {"label_pool": 4},
+])
+def test_arch_distinguishes_a_checkpoint_that_must_not_be_loaded(changed):
+    assert SectionCRNN(**changed).arch() != SectionCRNN().arch()
+
+
+def test_label_pool_mismatch_is_invisible_to_state_dict_alone():
+    """Why `arch` exists: torch itself raises nothing here."""
+    donor = SectionCRNN(label_pool=2)
+    receiver = SectionCRNN(label_pool=4)
+
+    receiver.load_state_dict(donor.state_dict())   # no error, wrong frame rate
+
+    assert receiver.arch() != donor.arch()
 
 
 def test_mel_band_count_must_survive_the_frequency_pooling():
@@ -433,6 +470,66 @@ def test_ece_is_zero_for_a_confidently_right_class():
 
 
 # --------------------------------------------------------------------------- #
+# DataLoader
+# --------------------------------------------------------------------------- #
+
+
+def _loader_corpus(tmp_path, tracks=2, frames=3000):
+    from tests.test_nn_dataset import corpus_tracks, fake_corpus
+
+    entries = corpus_tracks(tracks)
+    data_dir, _eval_set = fake_corpus(tmp_path, entries, frames=frames)
+    return data_dir, [youtube for _track, youtube, _title in entries]
+
+
+def _all_mel(loader) -> torch.Tensor:
+    """Every mel in the loader, fully consumed so worker shutdown is clean."""
+    return torch.cat([batch[0] for batch in loader])
+
+
+def test_loader_never_keeps_workers_alive_between_epochs():
+    """A persistent worker holds a *pickled copy* of the dataset, so `set_epoch`
+    in the parent never reaches it.  Guarded directly because the symptom --
+    augmentation silently frozen on epoch 0 -- looks exactly like a working run."""
+    loader = build_loader(_TinyDataset(), batch_size=2, shuffle=False,
+                          num_workers=2, pin_memory=False, generator=None)
+
+    assert loader.persistent_workers is False
+
+
+class _TinyDataset(torch.utils.data.Dataset):
+    """Module level so it stays picklable for spawn; never actually iterated."""
+
+    def __len__(self):
+        return 4
+
+    def __getitem__(self, index):
+        return torch.zeros(1)
+
+
+def test_worker_loader_keeps_re_rolling_augmentation_across_epochs(tmp_path):
+    data_dir, ids = _loader_corpus(tmp_path)
+    data = WindowDataset(data_dir, ids, augment=True)
+    loader = build_loader(data, batch_size=8, shuffle=False, num_workers=2,
+                          pin_memory=False, generator=None)
+
+    data.set_epoch(0)
+    epoch_0 = _all_mel(loader)
+    data.set_epoch(1)
+    epoch_1 = _all_mel(loader)
+
+    assert not torch.equal(epoch_0, epoch_1), "augmentation froze in the workers"
+
+    # Stronger than "they differ": the workers must produce exactly what the
+    # single-process dataset produces at that epoch, or they are re-rolling to
+    # something of their own.
+    reference = WindowDataset(data_dir, ids, augment=True)
+    reference.set_epoch(1)
+    expected = torch.from_numpy(np.stack([reference[i][0] for i in range(len(reference))]))
+    assert torch.equal(epoch_1, expected)
+
+
+# --------------------------------------------------------------------------- #
 # Run plumbing
 # --------------------------------------------------------------------------- #
 
@@ -488,6 +585,18 @@ def test_rng_survives_a_checkpoint_round_trip(tmp_path, map_location):
     assert torch.equal(torch.rand(3), expected[0])
     assert random.random() == expected[1]
     assert np.random.rand() == expected[2]
+
+
+def test_lr_note_records_the_batch_size_the_lr_was_specced_at():
+    """Not cosmetic: it fixes the triage order for whoever reads the full run's
+    report, which is a different person on a different day."""
+    note = lr_note(3e-4, 128)
+
+    assert "batch 32" in note and "batch 128" in note and "4x" in note
+    assert "0.0006" in note                     # the first thing to try
+    assert "TRIAGE" in note
+
+    assert "no scaling question" in lr_note(3e-4, 32)
 
 
 def test_weight_hash_is_stable_and_sensitive():
