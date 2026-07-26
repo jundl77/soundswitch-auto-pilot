@@ -50,6 +50,9 @@ class SoundSwitchAutoPilot:
         logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
         # construct clients
+        if output_device_index is not None and not debug_mode:
+            logging.warning('[main] -o has no effect without -d: audio passthrough '
+                            'only runs in debug mode, you will hear nothing')
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
