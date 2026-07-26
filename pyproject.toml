@@ -52,6 +52,10 @@ training = [
     "onnx>=1.22,<2",
     "onnxruntime>=1.28,<2",
     "tensorboard>=2.16",
+    # tensorboard's image summaries encode through PIL and it is not a hard
+    # dependency of tensorboard itself; without it the per-epoch confusion
+    # matrix raises mid-epoch, an hour into a run.
+    "pillow>=10",
 ]
 
 # The CUDA wheel index, bound to torch alone.  `explicit = true` is load-bearing:
