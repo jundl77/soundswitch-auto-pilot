@@ -11,7 +11,7 @@ Classify EDM sections live (7 Raveform classes → LightIntent) with commits lan
 **The network is the acoustic model. The decoder is the committer. Neither does the other's job.**
 
 - A CRNN integrates evidence *within* its window — including the look-ahead audio the audience hasn't heard. This is what resolves buildup fake-outs: it hears whether the drop actually lands.
-- A 7-state fixed-lag Viterbi decoder (HSMM-style: duration + transition priors) turns posteriors into *monotone, immutable, bar-quantized commits*. It owns stability, latency policy, and show-tunability.
+- A fixed-lag Viterbi decoder (one state per canonical class) (HSMM-style: duration + transition priors) turns posteriors into *monotone, immutable, bar-quantized commits*. It owns stability, latency policy, and show-tunability.
 - The engine's vote buffer, min-dwell, PEAK-promotion counter, and invalid-transition veto are **retired** — they were a hand-rolled degenerate HMM; the decoder subsumes them with parameters fit from data. The invalid-transition graph moves INTO the transition matrix as -inf entries (decoder picks the best *legal* path instead of silently holding).
 
 Why not end-to-end smoothing (the owner's initial pick, reversed on review evidence):
@@ -29,14 +29,14 @@ Why not end-to-end smoothing (the owner's initial pick, reversed on review evide
 ## Model
 
 CRNN ≤ ~1M params (All-In-One reaches SOTA-class results at ~300K): conv front-end over the mel patch (frequency pooling) → biGRU across frames → two heads:
-- **Label head** at ~10 Hz (pooled; SOTA labels at 8.33 Hz): calibrated softmax over the 7 canonical classes. Trained with class weighting/focal loss for the 34:1 imbalance and a boundary-aware total-variation smoothness penalty (SongFormer practice). **Calibration is a first-class metric (ECE per class)** — the net must NOT be trained overconfident/self-smoothing, or the decoder is disrupted.
+- **Label head** at ~10 Hz (pooled; SOTA labels at 8.33 Hz): calibrated softmax over the canonical class set (5 in v1 after the merges below: intro / buildup / breakdown / drop / outro). Trained with class weighting/focal loss for the 34:1 imbalance and a boundary-aware total-variation smoothness penalty (SongFormer practice). **Calibration is a first-class metric (ECE per class)** — the net must NOT be trained overconfident/self-smoothing, or the decoder is disrupted.
 - **Boundary head** at frame rate: Gaussian-smeared boundary targets (σ ≈ 0.5 s — the annotation tolerance; targets deleted at merged-run joins). Feeds the decoder as its boundary/hazard observation. Boundaries decide *where*; segment-aggregated label posteriors decide *what*.
 
 Inference: ONNX Runtime CPU, pinned version, `intra_op_num_threads=1`, one uncached golden-inference CI test with tolerance assertions; sim caches outputs as sidecars keyed by (model hash, track) per the locked determinism contract. Cadence ~100 ms over the sliding window; **per-frame posteriors are averaged across all overlapping windows covering that frame** (pyannote's fix for window flicker) before decoding.
 
 ## Decoder
 
-Fixed-lag Viterbi over the aggregated posteriors, decoding at **bar rate** (duration priors are meaningful in bars, and message passing is a few hundred ops/bar — microseconds):
+Fixed-lag Viterbi (one state per canonical class) over the aggregated posteriors, decoding at **bar rate** (duration priors are meaningful in bars, and message passing is a few hundred ops/bar — microseconds):
 - Transition matrix: fit from Raveform, with the structural facts hard (-inf illegal pairs; intro pure-initial; outros terminal). **Buildup→{breakdown, drop} set near-uniform** — the 608:521 corpus split is ~0.15 nats, uninformative; the look-ahead evidence decides the fork, not the prior.
 - Duration model: per-class, fit from Raveform but **widened with heavy tails and a min-duration floor** — corpus medians are studio-master statistics; a DJ cutting a drop at 16 bars must not fight a peaked prior.
 - Class-prior division (scaled likelihoods) handles residual imbalance at decode time — a runtime scalar sweepable against cached posteriors in seconds, not a retrain.
