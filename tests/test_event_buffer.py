@@ -1,4 +1,6 @@
 """Tests for EventBuffer virtual-clock timestamps and infinite window."""
+import pytest
+
 from lib.clock import VirtualClock
 from lib.engine.event_buffer import EventBuffer
 
@@ -68,3 +70,26 @@ def test_default_window_prunes_old_effects():
     channels = [e['channel'] for e in report['effects']]
     assert 'CH_A' not in channels
     assert 'CH_B' in channels and 'CH_C' in channels
+
+
+def test_add_beat_records_feature_columns():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.add_beat(128.0, 4.2, False, kick_strength=2.61, centroid_trend=1.05,
+                 sub_bass_ratio=0.31, rms=0.42)
+    beat = buf.to_report()['beats'][0]
+    assert beat['kick_strength'] == pytest.approx(2.61)
+    assert beat['centroid_trend'] == pytest.approx(1.05)
+    assert beat['sub_bass_ratio'] == pytest.approx(0.31)
+    assert beat['rms'] == pytest.approx(0.42)
+
+
+def test_add_beat_defaults_are_neutral():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.add_beat(128.0, 4.2, False)
+    beat = buf.to_report()['beats'][0]
+    assert beat['kick_strength'] == 1.0
+    assert beat['rms'] == 0.0

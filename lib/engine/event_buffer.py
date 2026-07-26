@@ -56,13 +56,20 @@ class EventBuffer:
             now = self._end_time
         return now - self._start_time
 
-    def add_beat(self, bpm: float, onset_density: float, change: bool) -> None:
+    def add_beat(self, bpm: float, onset_density: float, change: bool,
+                 kick_strength: float = 1.0, centroid_trend: float = 1.0,
+                 sub_bass_ratio: float = 0.0, rms: float = 0.0) -> None:
         with self._lock:
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                'onset_density': onset_density,   # onsets/sec (aubio rolling 3s window)
+                'onset_density': onset_density,   # onsets/sec (aubio rolling window)
                 'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
                 'change': change,
+                # Full feature row — the sim report doubles as a training table.
+                'kick_strength': round(kick_strength, 4),
+                'centroid_trend': round(centroid_trend, 4),
+                'sub_bass_ratio': round(sub_bass_ratio, 4),
+                'rms': round(rms, 4),
             })
 
     def add_effect(self, channel: str, effect_type: str) -> None:

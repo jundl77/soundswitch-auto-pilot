@@ -259,7 +259,11 @@ class LightEngine(IMusicAnalyserHandler):
             f'bpm={bpm:.1f}  onsets/s={onset_density:.2f}  trend={density_trend:.2f}'
         )
         if self.event_buffer:
-            self.event_buffer.add_beat(bpm, onset_density, bpm_changed)
+            self.event_buffer.add_beat(bpm, onset_density, bpm_changed,
+                                       kick_strength=kick_strength,
+                                       centroid_trend=centroid_trend,
+                                       sub_bass_ratio=sub_bass_ratio,
+                                       rms=rms_energy)
 
         was_atmospheric = self._atmospheric_sent
         self._atmospheric_sent = False
