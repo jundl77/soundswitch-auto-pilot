@@ -44,7 +44,11 @@ Two modes::
 
 A subset run compares only its own tracks and does NOT compare the aggregate: an
 aggregate over three tracks is not the ten-track number, and pretending
-otherwise would either fail every subset run or gate on nothing.
+otherwise would either fail every subset run or gate on nothing.  For the same
+reason a subset run REFUSES to overwrite the committed baseline: a three-track
+baseline at that path passes by construction and the other seven tracks stop
+being gated with nothing to say so.  ``--allow-partial-baseline`` is the
+deliberate override; an explicit ``--baseline PATH`` is the experiment.
 
 **Decode caches are kept.**  Every other consumer of the corpus deletes the
 ``<mp3>.<rate>.npy`` a simulation leaves behind (it is ~7.7x the mp3's size), but
@@ -54,7 +58,8 @@ removes the decode (several seconds a track) from every run after the first.
 This is deliberate, and ``build_training_table`` already honours it: its
 ``keep_cache`` rule leaves behind any cache that existed before its batch.
 
-Exit codes: 0 clean, 1 the gate failed, 2 an input is missing.
+Exit codes: 0 clean, 1 the gate failed, 2 an input is missing or the command was
+refused.
 """
 
 from __future__ import annotations
@@ -224,6 +229,43 @@ def missing_inputs(data_dir: Path, tracks: list) -> list:
         if not mp3.exists():
             problems.append(f"{AUDIO_MISSING_HINT}: {track['track_id']} ({mp3})")
     return problems
+
+
+def same_path(left: Path, right: Path) -> bool:
+    """Do two paths name the same file, spelled differently or not yet existing?"""
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:                                             # pragma: no cover
+        return Path(left).absolute() == Path(right).absolute()
+
+
+def partial_baseline_refusal(selected: list, document: dict, baseline_path: Path,
+                             allowed: bool = False) -> str | None:
+    """Why a subset run must not overwrite the COMMITTED baseline, or ``None``.
+
+    The tripwire must not be allowed to rewrite its own reference to whatever it
+    happened to run.  A three-track baseline at the committed path is green by
+    construction -- the integration test compares the tracks it ran against the
+    tracks in the file, so the other seven simply stop being checked, and
+    nothing fails to say so.  A warning is not enough for that: it scrolls past.
+
+    Writing a subset to an EXPLICIT other path stays allowed.  That is an
+    experiment, and no gate reads it.
+    """
+    total = len(document.get("tracks") or [])
+    if allowed or len(selected) >= total or not same_path(baseline_path, BASELINE_FILE):
+        return None
+    ran = ", ".join(track["track_id"] for track in selected) or "(nothing)"
+    return (
+        f"REFUSING to overwrite the committed baseline with a SUBSET\n"
+        f"  {Path(baseline_path)}\n"
+        f"  this run covered {len(selected)} of {total} eval-set tracks: {ran}\n"
+        f"  The other {total - len(selected)} would stop being gated, silently:\n"
+        f"  the benchmark compares the tracks it ran against the tracks in this\n"
+        f"  file, so a subset baseline passes by construction.\n"
+        f"  --allow-partial-baseline  do it anyway (you are shrinking the benchmark)\n"
+        f"  --baseline PATH           write the subset where no gate reads it"
+    )
 
 
 def load_baseline(path: Path) -> dict:
@@ -417,13 +459,14 @@ class Comparison(NamedTuple):
 
     desync: list        # the baseline is not about this eval set at all
     unbaselined: list   # a track the baseline has never seen
+    ungated: list       # a guarded metric one side does not carry
     checksum_drift: list
     regressions: list
     subset: bool        # fewer tracks than the baseline: aggregate not compared
 
     @property
     def failed(self) -> bool:
-        return bool(self.desync or self.unbaselined
+        return bool(self.desync or self.unbaselined or self.ungated
                     or self.checksum_drift or self.regressions)
 
 
@@ -443,17 +486,43 @@ def _regression(name: str, metric: str, before: float, after: float,
             f"({delta:+.4f}, tolerance {tolerance:.4f})")
 
 
+def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: float,
+                     flicker_tolerance: float) -> tuple:
+    """``(ungated, regressions)`` for one row of the table.
+
+    A guarded metric that either side does not carry is a FAILURE, not a skip.
+    Skipping it is silent un-gating: an old-schema or hand-edited baseline would
+    keep passing while the number it was supposed to protect drifted anywhere it
+    liked, and nothing on the way out would say so.
+    """
+    ungated, regressions = [], []
+    for metric in GUARDED_METRICS:
+        if metric not in before or metric not in after:
+            where = "the baseline" if metric not in before else "this run"
+            ungated.append(f"{name}: {metric} is missing from {where} -- it is "
+                           f"NOT being gated")
+            continue
+        tolerance = (flicker_tolerance if metric == "flicker_per_min"
+                     else score_tolerance)
+        line = _regression(name, metric, float(before[metric]),
+                           float(after[metric]), tolerance)
+        if line:
+            regressions.append(line)
+    return ungated, regressions
+
+
 def compare(baseline: dict, current: dict,
             score_tolerance: float = DEFAULT_SCORE_TOLERANCE,
             flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> Comparison:
     """Judge a run against the committed baseline.
 
-    Three independent failures, kept apart because they mean different things:
-    a DESYNC says the baseline describes a different benchmark (re-cut it), a
-    CHECKSUM DRIFT says the pipeline's behaviour moved (look at the scores, then
-    accept or fix), and a REGRESSION says the show got worse (fix it).
+    Four independent failures, kept apart because they mean different things: a
+    DESYNC says the baseline describes a different benchmark (re-cut it), an
+    UNGATED metric says the baseline cannot judge this run at all, a CHECKSUM
+    DRIFT says the pipeline's behaviour moved (look at the scores, then accept
+    or fix), and a REGRESSION says the show got worse (fix it).
     """
-    desync, unbaselined, drift, regressions = [], [], [], []
+    desync, unbaselined, ungated, drift, regressions = [], [], [], [], []
 
     baseline_sha = (baseline.get("eval_set") or {}).get("sha256")
     current_sha = (current.get("eval_set") or {}).get("sha256")
@@ -483,32 +552,21 @@ def compare(baseline: dict, current: dict,
                 f"(beats {before.get('beats')} -> {after.get('beats')}, "
                 f"intent changes {before.get('changes_intent')} -> "
                 f"{after.get('changes_intent')})")
-        for metric in GUARDED_METRICS:
-            if metric not in before or metric not in after:
-                continue
-            tolerance = (flicker_tolerance if metric == "flicker_per_min"
-                         else score_tolerance)
-            line = _regression(track_id, metric, float(before[metric]),
-                               float(after[metric]), tolerance)
-            if line:
-                regressions.append(line)
+        row_ungated, row_regressions = _compare_metrics(
+            track_id, before, after, score_tolerance, flicker_tolerance)
+        ungated += row_ungated
+        regressions += row_regressions
 
     # A subset run's aggregate is an aggregate of the subset; comparing it to
     # the ten-track number would be comparing two different quantities.
     if not subset:
-        before_all = baseline.get("aggregate") or {}
-        after_all = current.get("aggregate") or {}
-        for metric in GUARDED_METRICS:
-            if metric not in before_all or metric not in after_all:
-                continue
-            tolerance = (flicker_tolerance if metric == "flicker_per_min"
-                         else score_tolerance)
-            line = _regression("(aggregate)", metric, float(before_all[metric]),
-                               float(after_all[metric]), tolerance)
-            if line:
-                regressions.append(line)
+        row_ungated, row_regressions = _compare_metrics(
+            "(aggregate)", baseline.get("aggregate") or {},
+            current.get("aggregate") or {}, score_tolerance, flicker_tolerance)
+        ungated += row_ungated
+        regressions += row_regressions
 
-    return Comparison(desync, unbaselined, drift, regressions, subset)
+    return Comparison(desync, unbaselined, ungated, drift, regressions, subset)
 
 
 # --------------------------------------------------------------------------- #
@@ -565,6 +623,9 @@ def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
     if outcome.unbaselined:
         lines += ["", "  NOT IN THE BASELINE"] + [f"    - {line}"
                                                   for line in outcome.unbaselined]
+    if outcome.ungated:
+        lines += ["", "  NOT GATED (a guarded metric is missing)"]
+        lines += [f"    - {line}" for line in outcome.ungated]
     if outcome.checksum_drift:
         lines += ["", "  BEHAVIOUR CHANGED (report checksums moved)"]
         lines += [f"    - {line}" for line in outcome.checksum_drift]
@@ -575,9 +636,13 @@ def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
         lines += ["", f"  MATCHES BASELINE ({scope}): {baseline_path}"]
         return "\n".join(lines)
     lines += [""]
-    if outcome.checksum_drift and not outcome.regressions and not outcome.desync:
-        lines += ["  Scores held.  If the behaviour change is wanted, re-cut the",
-                  "  baseline in the same commit: run with --write-baseline."]
+    if (outcome.checksum_drift and not outcome.regressions
+            and not outcome.desync and not outcome.ungated):
+        lines += ["  Scores held or improved (no regressions).  A behaviour change",
+                  "  fails this gate whichever way the numbers moved -- it is the",
+                  "  operator, not the tool, who decides an improvement was meant.",
+                  "  If it was, re-cut the baseline in the SAME commit:",
+                  "  uv run python training/run_eval_set.py --write-baseline"]
     return "\n".join(lines)
 
 
@@ -678,6 +743,9 @@ def main(argv: list | None = None) -> int:
                         help="the committed baseline (default: %(default)s)")
     parser.add_argument("--write-baseline", action="store_true",
                         help="cut a new baseline instead of comparing against one")
+    parser.add_argument("--allow-partial-baseline", action="store_true",
+                        help="permit --write-baseline to shrink the COMMITTED "
+                             "baseline to the tracks this run covered")
     parser.add_argument("--only", default=None,
                         help="comma-separated track_ids or youtube_ids to run "
                              "(default: the whole frozen set)")
@@ -696,17 +764,26 @@ def main(argv: list | None = None) -> int:
                         help="only the table and the verdict")
     args = parser.parse_args(argv)
 
-    only = None
-    if args.only:
-        only = [item for item in args.only.split(",") if item.strip()]
-    if args.shortest is not None:
-        try:
-            document = load_eval_set(Path(args.eval_set))
-        except RuntimeError as exc:
-            print(f"{exc}", file=sys.stderr)
-            return 2
-        shortest = shortest_track_ids(document, args.shortest)
-        only = shortest if only is None else [*only, *shortest]
+    try:
+        document = load_eval_set(Path(args.eval_set))
+        only = None
+        if args.only:
+            only = [item for item in args.only.split(",") if item.strip()]
+        if args.shortest is not None:
+            shortest = shortest_track_ids(document, args.shortest)
+            only = shortest if only is None else [*only, *shortest]
+        # Refused BEFORE the simulations run: a two-minute run that ends in a
+        # refusal teaches the same lesson two minutes later.
+        if args.write_baseline:
+            refusal = partial_baseline_refusal(
+                select_tracks(document, only), document, Path(args.baseline),
+                args.allow_partial_baseline)
+            if refusal:
+                print(refusal, file=sys.stderr)
+                return 2
+    except RuntimeError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
 
     try:
         result, runs, total_song, total_wall = run(
@@ -728,8 +805,9 @@ def main(argv: list | None = None) -> int:
               f"({result['eval_set']['tracks']} tracks)")
         print(f"  pipeline        : {result['pipeline_sha'][:12]}...")
         if len(result["tracks"]) != result["eval_set"]["tracks"]:
-            print("  WARNING: this baseline covers a SUBSET of the eval set; the "
-                  "gate will report the rest as unbaselined")
+            print(f"  WARNING: this baseline covers {len(result['tracks'])} of "
+                  f"{result['eval_set']['tracks']} eval-set tracks -- the rest "
+                  f"are NOT gated by it")
         return 0
 
     try:

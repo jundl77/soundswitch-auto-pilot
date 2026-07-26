@@ -29,9 +29,11 @@ if str(TRAINING_DIR) not in sys.path:
 
 from run_eval_set import (  # noqa: E402  (needs the path insert above)
     AUDIO_MISSING_HINT,
+    BASELINE_FILE,
     DATA_DIR_ENV,
     DEFAULT_FLICKER_TOLERANCE,
     DEFAULT_SCORE_TOLERANCE,
+    EVAL_SET_FILE,
     GUARDED_METRICS,
     audio_path,
     build_document,
@@ -39,8 +41,11 @@ from run_eval_set import (  # noqa: E402  (needs the path insert above)
     compare,
     corpus_dir,
     default_data_dir,
+    file_sha256,
     load_baseline,
+    load_eval_set,
     missing_inputs,
+    partial_baseline_refusal,
     score_report,
     select_tracks,
     shortest_track_ids,
@@ -297,6 +302,33 @@ def test_a_baseline_cut_against_a_different_eval_set_is_a_hard_failure():
     assert outcome.desync and "OLD"[:6] in outcome.desync[0]
 
 
+def test_a_drift_with_improved_scores_still_fails():
+    """The gate is not "did it get worse", it is "did it change".  A behaviour
+    change that happens to score better is still a change the operator has to
+    look at and accept -- silently passing it would mean the committed
+    checksums stop describing the pipeline that produced them."""
+    baseline = result_document({"a.1": entry(checksum="cafe", macro_f1=0.20,
+                                             flicker_per_min=4.0)})
+    current = result_document({"a.1": entry(checksum="f00d", macro_f1=0.60,
+                                            flicker_per_min=1.0)})
+    outcome = compare(baseline, current)
+    assert outcome.failed
+    assert outcome.checksum_drift
+    assert outcome.regressions == []
+
+
+def test_a_guarded_metric_missing_from_the_baseline_is_a_failure_not_a_skip():
+    """Skipping it would un-gate that number silently: an old-schema baseline
+    would keep passing while the metric it protects drifted anywhere."""
+    stale = entry()
+    stale.pop("macro_f1")
+    outcome = compare(result_document({"a.1": stale}),
+                      result_document({"a.1": entry()}))
+    assert outcome.failed
+    assert any("macro_f1" in line and "NOT being gated" in line
+               for line in outcome.ungated)
+
+
 def test_load_baseline_explains_itself_when_absent(tmp_path):
     with pytest.raises(RuntimeError, match="--write-baseline"):
         load_baseline(tmp_path / "nope.json")
@@ -307,6 +339,96 @@ def test_load_baseline_rejects_a_document_without_tracks(tmp_path):
     path.write_text(json.dumps({"eval_set": {}}), encoding="utf-8")
     with pytest.raises(RuntimeError, match="not a baseline"):
         load_baseline(path)
+
+
+# --------------------------------------------------------------------------- #
+# The committed baseline itself -- the gate guarding the gate
+# --------------------------------------------------------------------------- #
+#
+# Everything above tests the comparison against a SYNTHETIC baseline.  These
+# read the real committed file, because every one of these properties can be
+# broken without any test noticing: the benchmark would keep printing a table
+# and keep exiting 0 while covering fewer tracks, describing a set that has
+# since been re-frozen, or leaving a metric un-gated.  They need no audio and
+# run in the fast suite.
+
+
+def committed_baseline() -> dict:
+    return load_baseline(BASELINE_FILE)
+
+
+def test_the_committed_baseline_covers_the_whole_frozen_eval_set():
+    """A baseline cut from a subset run passes by construction: the gate
+    compares the tracks it ran against the tracks in the file, so the missing
+    ones simply stop being checked.  This is the tripwire on that."""
+    frozen = {track["track_id"] for track in load_eval_set(EVAL_SET_FILE)["tracks"]}
+    assert set(committed_baseline()["tracks"]) == frozen
+
+
+def test_the_committed_baseline_was_cut_against_the_current_eval_set():
+    """`select_eval_set --force` re-freezes the benchmark and desynchronizes the
+    baseline.  The runner detects it at run time; this detects it in the fast
+    suite, without the corpus."""
+    baseline = committed_baseline()
+    assert baseline["eval_set"]["sha256"] == file_sha256(EVAL_SET_FILE)
+    assert baseline["eval_set"]["tracks"] == len(baseline["tracks"])
+
+
+def test_every_committed_row_carries_every_guarded_metric_and_a_checksum():
+    baseline = committed_baseline()
+    rows = {"(aggregate)": baseline["aggregate"], **baseline["tracks"]}
+    for name, row in rows.items():
+        missing = [metric for metric in GUARDED_METRICS if metric not in row]
+        assert not missing, f"{name} is missing {missing} -- it would not be gated"
+    for track_id, row in baseline["tracks"].items():
+        assert len(row.get("checksum", "")) == 64, track_id
+
+
+def test_the_committed_baseline_records_the_configuration_it_was_cut_under():
+    baseline = committed_baseline()
+    assert baseline["gate"]["metrics"] == dict(GUARDED_METRICS)
+    assert baseline["space"] and baseline["stream"]
+
+
+def test_the_committed_baseline_compares_clean_against_itself():
+    """A whole-file smoke test of the comparison against real data: whatever
+    else changes, the committed file must at least be self-consistent."""
+    baseline = committed_baseline()
+    assert compare(baseline, baseline).failed is False
+
+
+# --------------------------------------------------------------------------- #
+# Refusing to shrink the benchmark
+# --------------------------------------------------------------------------- #
+
+
+def test_a_subset_may_not_overwrite_the_committed_baseline():
+    document = eval_document(("a.1", "1", 400.0), ("b.2", "2", 250.0))
+    refusal = partial_baseline_refusal(
+        select_tracks(document, ["a.1"]), document, BASELINE_FILE)
+    assert refusal and "REFUSING" in refusal
+    assert "--allow-partial-baseline" in refusal
+
+
+def test_a_full_run_may_overwrite_the_committed_baseline():
+    document = eval_document(("a.1", "1", 400.0), ("b.2", "2", 250.0))
+    assert partial_baseline_refusal(
+        select_tracks(document), document, BASELINE_FILE) is None
+
+
+def test_a_subset_may_overwrite_an_explicit_alternative_path(tmp_path):
+    """Experiments are fine -- no gate reads them."""
+    document = eval_document(("a.1", "1", 400.0), ("b.2", "2", 250.0))
+    assert partial_baseline_refusal(
+        select_tracks(document, ["a.1"]), document,
+        tmp_path / "scratch.json") is None
+
+
+def test_the_subset_refusal_can_be_overridden_deliberately():
+    document = eval_document(("a.1", "1", 400.0), ("b.2", "2", 250.0))
+    assert partial_baseline_refusal(
+        select_tracks(document, ["a.1"]), document, BASELINE_FILE,
+        allowed=True) is None
 
 
 # --------------------------------------------------------------------------- #
