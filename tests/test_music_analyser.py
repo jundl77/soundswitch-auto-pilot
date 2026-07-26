@@ -170,3 +170,31 @@ def test_fold_bpm_boundary_170_folds_to_85():
 def test_fold_bpm_zero_and_negative_return_zero():
     assert MusicAnalyser._fold_bpm(0.0) == 0.0
     assert MusicAnalyser._fold_bpm(-10.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_kick_strength — transient capture, ratio cap, silence gate
+# ---------------------------------------------------------------------------
+
+def test_kick_beat_sample_captures_transient_peak(analyser):
+    # Simulate 12 buffers of quiet sub-bass with one kick spike 5 buffers ago
+    for v in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 8.0, 1.0, 1.0, 1.0, 1.0]:
+        analyser._all_sub_bass_samples.append(v)
+    analyser._rms_window.append(0.2)  # clearly audible
+    analyser._capture_beat_sub_bass()
+    # The captured value must be the transient peak (8.0), not the last buffer (1.0)
+    assert analyser._beat_sub_bass_samples[-1] == pytest.approx(8.0)
+
+
+def test_kick_ratio_capped(analyser):
+    analyser._rms_window.append(0.2)
+    analyser._all_sub_bass_samples.extend([0.001] * 50)
+    analyser._beat_sub_bass_samples.extend([5.0] * 5)
+    assert analyser.get_kick_strength() == pytest.approx(10.0)
+
+
+def test_kick_near_silence_returns_unknown(analyser):
+    analyser._rms_window.append(0.001)  # -60 dBFS: fade-out / silence
+    analyser._all_sub_bass_samples.extend([1e-6] * 50)
+    analyser._beat_sub_bass_samples.extend([1e-3] * 5)
+    assert analyser.get_kick_strength() == 1.0

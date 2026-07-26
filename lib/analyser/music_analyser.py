@@ -9,6 +9,14 @@ from lib.clock import Clock, SYSTEM_CLOCK
 
 _ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
+# Kick transient capture: max sub-bass over the last N buffers at beat time
+# (~52 ms at 5.8 ms/buffer). aubio reports the beat a few buffers after the
+# transient; a single trailing-buffer snapshot misses the kick spike entirely.
+_KICK_CAPTURE_BUFFERS = 9
+# Below this mean RMS the track is effectively silent (fade-out): sub-bass
+# ratios become numerically meaningless, so kick presence reads as unknown.
+_KICK_MIN_RMS = 0.005
+
 
 class MusicAnalyser:
     def __init__(self,
@@ -169,15 +177,22 @@ class MusicAnalyser:
         ratio is substantially above 1.0 when a kick pattern is present.  Sparse or
         kick-free sections (breakdowns, atmospheric intros) keep the ratio near 1.0.
 
-        Returns 1.0 when insufficient data (interpreted as kick presence unknown).
+        The ratio is capped at 10.0: beyond that it carries no extra information and
+        an unbounded value would swamp any downstream comparison.
+
+        Returns 1.0 when insufficient data or when the track is near-silent — in both
+        cases kick presence is unknown.  The silence gate matters during fade-outs,
+        where the denominator collapses and the raw ratio explodes into the hundreds.
         """
         if not self._beat_sub_bass_samples or not self._all_sub_bass_samples:
+            return 1.0
+        if self.get_rms_energy() < _KICK_MIN_RMS:
             return 1.0
         beat_mean = sum(self._beat_sub_bass_samples) / len(self._beat_sub_bass_samples)
         all_mean = sum(self._all_sub_bass_samples) / len(self._all_sub_bass_samples)
         if all_mean < 1e-8:
             return 1.0
-        return beat_mean / all_mean
+        return min(beat_mean / all_mean, 10.0)
 
     def get_spectral_centroid_trend(self) -> float:
         """Trend of the spectral centroid across recent beats (ratio of recent vs. past half).
@@ -236,8 +251,7 @@ class MusicAnalyser:
             self.beat_count += 1
             self._density_samples.append(self.get_onset_density())
             # Snapshot sub-bass and centroid at beat time for kick/centroid-trend features.
-            if self._all_sub_bass_samples:
-                self._beat_sub_bass_samples.append(self._all_sub_bass_samples[-1])
+            self._capture_beat_sub_bass()
             if self._centroid_window:
                 self._beat_centroid_samples.append(self._centroid_window[-1])
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
@@ -245,6 +259,14 @@ class MusicAnalyser:
             self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
             self.last_beat_detected = now
         return is_beat
+
+    def _capture_beat_sub_bass(self) -> None:
+        """Record the kick transient for this beat: the max raw sub-bass energy
+        over the last _KICK_CAPTURE_BUFFERS buffers (not just the trailing one)."""
+        if not self._all_sub_bass_samples:
+            return
+        recent = list(self._all_sub_bass_samples)[-_KICK_CAPTURE_BUFFERS:]
+        self._beat_sub_bass_samples.append(max(recent))
 
     async def _track_note(self, audio_signal: np.ndarray, now: datetime.datetime) -> bool:
         note = self.notes_o(audio_signal)
