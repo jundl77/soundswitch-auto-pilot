@@ -41,8 +41,16 @@
 
 - [ ] **TensorBoard (owner request):** add `tensorboard` to the training extra; `train.py` logs per-step train losses (focal/boundary/TV, total), per-epoch val macro-F1, per-class F1, boundary PR-AUC, per-class ECE, learning rate, and a per-epoch val confusion-matrix image, to `<data-dir>/models/v1/tb/<run-name>` (gitignored). When training starts, LAUNCH TensorBoard detached (`Start-Process` pattern, port 6006, logdir pointed at `models/`) and print the URL http://localhost:6006 in the console and your report — the owner watches training live. Verify the server responds before reporting.
 - [ ] Forward-shape and param-count tests on CPU.
-- [ ] Train on the 3070. Sanity gates before calling it done: val frame macro-F1 > 0.55 (label priors alone give ~0.2-0.3; if below, iterate lr/λ/architecture within this task and document attempts), boundary PR-AUC > 0.3, ECE < 0.15 per majority classes. If unreachable after honest iteration, report BLOCKED with curves.
+- [ ] **SMOKE TRAINING FIRST (owner directive — full validation before the big run):** train on a deterministic 10-track subset of the train split (first 10 by track_id; recorded in the run config), ~15 epochs, batch 128. This stage must validate the ENTIRE chain end-to-end: data loading through WindowDataset, all three loss components finite and the total decreasing, val loop + per-class F1 + ECE computed without error, checkpointing + resume, TensorBoard live at localhost:6006 (verify HTTP 200 and scalars flowing). THEN prove determinism: re-run the identical smoke config from scratch (same seed, deterministic algorithms per the pre-flight settings) and compare — final weight hash and loss curve must match bitwise (or document precisely which term diverges and why it's acceptable). Export the smoke model to ONNX (dynamo=False) and verify torch-vs-onnxruntime parity while you're at it — the full export machinery is Task 3's, but a smoke-level parity check here front-loads the risk.
+- [ ] **STOP after the smoke stage.** Report DONE with the smoke evidence; the coordinator runs the full review gate on this stage BEFORE authorizing the full training run. Do NOT start the full run in this task.
+- [ ] ~~Train on the 3070~~ **(moved to Task 2b, post-review)** Sanity gates before calling it done: val frame macro-F1 > 0.55 (label priors alone give ~0.2-0.3; if below, iterate lr/λ/architecture within this task and document attempts), boundary PR-AUC > 0.3, ECE < 0.15 per majority classes. If unreachable after honest iteration, report BLOCKED with curves.
 - [ ] Commit code (not checkpoints): `nn: SectionCRNN + calibrated two-head training`
+
+### Task 2b: Full training run (dispatched ONLY after Task 2's review is clean)
+
+- [ ] Train on the full train split (538 tracks) on the 3070, batch 128, per the Task 2 interface (early stop on val macro-F1, patience 10). TensorBoard stays live; the owner watches at localhost:6006.
+- [ ] Sanity gates: val frame macro-F1 > 0.55, boundary PR-AUC > 0.3, ECE < 0.15 on majority classes. If unreachable after honest iteration, report BLOCKED with curves — do not lower gates.
+- [ ] Save checkpoints + training_report.json under models/v1/; report final val metrics + wall time + GPU peak memory.
 
 ### Task 3: ONNX export + posterior sidecars
 
