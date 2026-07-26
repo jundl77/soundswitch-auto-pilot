@@ -188,6 +188,31 @@ uv run pytest                        # unit + integration (~6s)
 
 ---
 
+## Training Corpus (Raveform)
+
+The direction of travel is to replace hand-tuned classification thresholds with a model trained on real, expert-labelled EDM structure. The corpus for that is **Raveform** (Hugging Face, `taejunkim/raveform`): 1,423 EDM tracks with expert section annotations plus a per-track beat grid. Only the annotations are distributed -- the audio is not, so each track is fetched per YouTube ID for research use.
+
+The pipeline is a set of stdlib-only scripts in `training/`, each resumable and safe to re-run:
+
+| Script | Role |
+|---|---|
+| `raveform_fetch_annotations.py` | pull and schema-validate the annotation archive from Hugging Face |
+| `raveform_manifest.py` | annotations -> `manifest.csv`, plus the label / duration / transition statistics |
+| `raveform_download.py` | manifest -> one mp3 per YouTube ID, sequential and resumable |
+
+A corpus validation pass (every downloaded track decodes, and its length agrees with its annotation) is the next step and does not exist yet.
+
+Decisions that belong here rather than in the code:
+
+- **Canonical label vocabulary.** The published labels are a superset of the documented seven. `end` is a tail sentinel, not a musical section, and is dropped; `altintro` folds into `intro` and `bridge` into `breakdown` (too few examples to learn as a class); `altoutro` is kept. Adjacent same-label sections are merged *after* the drop and the fold, so a canonical "section" means one contiguous stretch of one label. The rationale and the mapping live in `raveform_manifest.py`.
+- **Politeness over throughput.** Downloads are strictly sequential with a pause between videos -- pulling 1,423 tracks in parallel is indistinguishable from abuse. Bot checks are never worked around: no cookies, credentials or IP tricks. A refusal is recorded, reported, and left as an owner decision, and a run of consecutive refusals aborts rather than burning the manifest into failure records.
+- **Resumability is the contract.** The downloader is safe to kill at any point: finished tracks and failures are both persisted, an interrupted track is never recorded as failed, and a track counts as downloaded only when a non-empty mp3 is actually on disk. See the module docstring in `raveform_download.py`.
+- **Prerequisites.** `yt-dlp` and `ffmpeg` on PATH, plus a JavaScript runtime (Deno) -- without one, yt-dlp warns that YouTube extraction is deprecated and some formats may be missing, which a full-corpus run cannot accept.
+
+**Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, and the download state files -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`; until this branch merges to `master`, the main checkout relies on a local `.git/info/exclude` entry as a bridge.
+
+---
+
 ## Known Issues / Gotchas
 
 - **Hardcoded overlay IP** â€” must change per venue in `overlay_client.py`.

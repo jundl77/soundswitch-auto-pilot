@@ -10,3 +10,4 @@ spotify_details.json
 *.pkl
 *.npy
 report.json
+training/data/
