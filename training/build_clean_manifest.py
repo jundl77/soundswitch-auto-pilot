@@ -5,31 +5,41 @@ Reads ``<data-dir>/manifest.csv`` (1,423 annotated tracks) plus whatever audio
 has landed in ``<data-dir>/audio/`` and writes ``<data-dir>/clean_manifest.csv``
 -- one row per track that is actually on disk::
 
-    track_id,youtube_id,mp3_path,ffprobe_duration_sec,annotation_duration_sec,status
+    track_id,youtube_id,mp3_path,ffprobe_duration_sec,decoded_duration_sec,
+    annotation_duration_sec,status,detail
 
 ``status`` is one of:
 
 ``ok``
-    ffmpeg decoded the whole file without a single error line AND the container
-    duration agrees with the annotation record.  Only these rows may feed the
+    ffmpeg decoded the whole file without a single error line, the decoder
+    produced as much audio as the container header advertises, and that decoded
+    length agrees with the annotation record.  Only these rows may feed the
     training-table build.
 ``duration_mismatch``
-    The file decodes, but it is not the track the annotation describes -- a
-    radio edit, an extended mix, a wrong-video match.  Every beat-to-label join
-    on such a track would be wrong by a growing offset, so it is quarantined
-    rather than deleted: the row stays visible for a human to look at.
+    The file decodes completely, but it is not the track the annotation
+    describes -- a radio edit, an extended mix, a wrong-video match.  Every
+    beat-to-label join on such a track would be wrong by a growing offset, so it
+    is quarantined rather than deleted: the row stays visible for a human.
 ``corrupt``
-    ffmpeg could not decode it cleanly (truncated download, HTML error page
-    saved as .mp3, zero-length file).
+    ffmpeg could not decode it cleanly, or it decoded far less audio than the
+    file claims to contain (truncated download, HTML error page saved as .mp3,
+    zero-length file).
 
 Tracks that are not on disk yet are simply ABSENT from the output.  The corpus
 downloader runs for hours; this gate is meant to be re-run as more audio lands
 and each run only ever adds rows.
 
-Why both checks?  A truncated mp3 often still decodes for its first N seconds
-without an error line, so decodability alone does not prove completeness; and a
-duration match alone does not prove the bytes are readable.  The pair is cheap
-and catches both failure modes.
+**Why the decoded length is the number that matters.**  An mp3 truncated on a
+frame boundary -- the normal shape of an interrupted download -- decodes without
+emitting a single error line: the stream simply ends.  Its container duration is
+still the full length, because that is read from the Xing/LAME header written at
+encode time and never revised.  So neither "ffmpeg exited clean" nor "ffprobe
+says 6 minutes" detects it, individually or together (verified: a 60 s mp3 cut
+to 20% of its bytes exits 0 with empty stderr and probes at 60.03 s while
+producing 11.97 s of audio).  The only honest measure is how much audio the
+decoder actually emitted, so the gate reads ffmpeg's own ``-progress`` output
+from the decode pass it already runs and compares THAT against both the header
+and the annotation.  Cost: zero extra processes.
 
 **Live-downloader discipline:** a supervisor process is writing into ``audio/``
 while this runs.  Only ``*.mp3`` files whose mtime is older than
@@ -52,6 +62,7 @@ import collections
 import concurrent.futures
 import csv
 import math
+import shutil
 import subprocess
 import sys
 import time
@@ -72,9 +83,11 @@ CLEAN_MANIFEST_HEADER = (
     "track_id",
     "youtube_id",
     "mp3_path",
-    "ffprobe_duration_sec",
+    "ffprobe_duration_sec",     # container header -- advertised, not verified
+    "decoded_duration_sec",     # what the decoder actually produced: the truth
     "annotation_duration_sec",
     "status",
+    "detail",                   # why a row was rejected; empty when ok
 )
 
 STATUS_OK = "ok"
@@ -116,12 +129,13 @@ class TrackJob(NamedTuple):
 
 
 class CheckResult(NamedTuple):
-    """The verdict for one track.  ``detail`` is for the console, not the CSV."""
+    """The verdict for one track, and the evidence behind it."""
 
     track_id: str
     youtube_id: str
     mp3_path: str
     ffprobe_duration_sec: float | None
+    decoded_duration_sec: float | None
     annotation_duration_sec: float
     status: str
     detail: str
@@ -133,35 +147,63 @@ class CheckResult(NamedTuple):
 
 
 def duration_tolerance(annotation_duration_sec: float) -> float:
-    """Allowed |ffprobe - annotation| for a track of this length."""
+    """Allowed duration disagreement for a track of this length."""
     return max(ABS_TOLERANCE_SEC, REL_TOLERANCE * abs(annotation_duration_sec))
+
+
+def _unusable(duration_sec: float | None) -> bool:
+    return (
+        duration_sec is None
+        or not math.isfinite(duration_sec)
+        or duration_sec <= 0.0
+    )
 
 
 def classify(
     decode_error: str,
-    ffprobe_duration_sec: float | None,
+    decoded_duration_sec: float | None,
+    header_duration_sec: float | None,
     annotation_duration_sec: float,
 ) -> tuple[str, str]:
-    """``(status, detail)`` from a decode attempt and a probed duration.
+    """``(status, detail)`` from one decode pass and the container header.
 
-    Corrupt outranks everything: if the bytes are not readable, agreeing with
-    the annotation is meaningless.  A missing or non-positive probe result also
-    counts as corrupt -- a header-only file can "decode" without error while
-    containing no audio at all.
+    Three questions, in the order that makes the diagnosis most specific:
+
+    1. Did the bytes decode at all?  If not, nothing else means anything.
+    2. Did the decoder produce as much audio as the file claims to hold?  A
+       short answer means the file is truncated -- the header is describing
+       audio that is not there.  This is ``corrupt``, not ``duration_mismatch``:
+       the defect is in the bytes, not in which track was fetched.
+    3. Does the decoded audio match the annotated track's length?  Only now,
+       with a trusted length in hand, is a disagreement evidence that the wrong
+       recording was downloaded -- ``duration_mismatch``.
+
+    One tolerance governs both comparisons, computed from the annotation (the
+    reference length), so there is a single number to reason about.
     """
     if decode_error:
         return STATUS_CORRUPT, decode_error
-    if ffprobe_duration_sec is None:
-        return STATUS_CORRUPT, "ffprobe reported no duration"
-    if not math.isfinite(ffprobe_duration_sec) or ffprobe_duration_sec <= 0.0:
-        return STATUS_CORRUPT, f"non-positive duration {ffprobe_duration_sec!r}"
+    if _unusable(decoded_duration_sec):
+        return STATUS_CORRUPT, f"decoder produced no audio (decoded {decoded_duration_sec!r})"
+    if _unusable(header_duration_sec):
+        return STATUS_CORRUPT, f"ffprobe reported no usable duration ({header_duration_sec!r})"
 
-    delta = ffprobe_duration_sec - annotation_duration_sec
     tolerance = duration_tolerance(annotation_duration_sec)
+
+    shortfall = decoded_duration_sec - header_duration_sec
+    if abs(shortfall) > tolerance:
+        return (
+            STATUS_CORRUPT,
+            f"truncated: header claims {header_duration_sec:.3f} s but the decoder "
+            f"produced {decoded_duration_sec:.3f} s ({shortfall:+.3f} s, "
+            f"tolerance {tolerance:.3f} s)",
+        )
+
+    delta = decoded_duration_sec - annotation_duration_sec
     if abs(delta) > tolerance:
         return (
             STATUS_MISMATCH,
-            f"ffprobe {ffprobe_duration_sec:.3f} s vs annotation "
+            f"decoded {decoded_duration_sec:.3f} s vs annotation "
             f"{annotation_duration_sec:.3f} s (delta {delta:+.3f} s, "
             f"tolerance {tolerance:.3f} s)",
         )
@@ -184,24 +226,47 @@ def _run(command: list) -> subprocess.CompletedProcess:
     )
 
 
-def decode_error(path: str) -> str:
-    """Full-decode the file; return ffmpeg's complaint, or "" if it is clean.
+def decode(path: str) -> tuple[str, float | None]:
+    """Full-decode the file -> ``(complaint, decoded_seconds)``.
 
     ``-f null -`` decodes every frame and discards the output, so this reads the
     whole file without writing anything anywhere.  At ``-v error`` a clean file
     prints nothing at all, so any stderr output is a real defect.
+
+    ``-progress -`` adds machine-readable progress blocks on **stdout** --
+    deliberately not the human ``-stats`` line, which would land on stderr and
+    ruin the "empty stderr means clean" test.  The last block's ``out_time_us``
+    is how much audio the decoder actually emitted.
     """
     try:
-        proc = _run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-f", "null", "-"])
+        proc = _run(
+            [
+                "ffmpeg", "-nostdin", "-v", "error", "-progress", "-",
+                "-i", path, "-f", "null", "-",
+            ]
+        )
     except subprocess.TimeoutExpired:
-        return f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC} s"
+        return f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC} s", None
     except OSError as exc:  # ffmpeg missing, unreadable path, ...
-        return f"ffmpeg could not run: {exc}"
+        return f"ffmpeg could not run: {exc}", None
 
     complaint = proc.stderr.strip()
     if proc.returncode != 0:
-        return complaint or f"ffmpeg exited {proc.returncode}"
-    return complaint
+        return complaint or f"ffmpeg exited {proc.returncode}", None
+    return complaint, _decoded_seconds(proc.stdout)
+
+
+def _decoded_seconds(progress_output: str) -> float | None:
+    """Last ``out_time_us`` from an ffmpeg ``-progress`` stream, in seconds."""
+    microseconds = None
+    for line in progress_output.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "out_time_us":
+            try:
+                microseconds = int(value.strip())
+            except ValueError:  # "N/A" while the first packet is still pending
+                continue
+    return None if microseconds is None else microseconds / 1e6
 
 
 def probe_duration(path: str) -> float | None:
@@ -227,14 +292,15 @@ def probe_duration(path: str) -> float | None:
 
 def check_track(job: TrackJob) -> CheckResult:
     """Decode + probe one track and classify it.  Runs in a pool worker."""
-    error = decode_error(job.mp3_path)
-    duration = probe_duration(job.mp3_path)
-    status, detail = classify(error, duration, job.annotation_duration_sec)
+    error, decoded = decode(job.mp3_path)
+    header = probe_duration(job.mp3_path)
+    status, detail = classify(error, decoded, header, job.annotation_duration_sec)
     return CheckResult(
         job.track_id,
         job.youtube_id,
         job.mp3_path,
-        duration,
+        header,
+        decoded,
         job.annotation_duration_sec,
         status,
         _first_line(detail),
@@ -400,8 +466,10 @@ def write_clean_manifest(data_dir: Path, results: list) -> Path:
                         result.youtube_id,
                         result.mp3_path,
                         _format_duration(result.ffprobe_duration_sec),
+                        _format_duration(result.decoded_duration_sec),
                         _format_duration(result.annotation_duration_sec),
                         result.status,
+                        result.detail,
                     )
                 )
         tmp.replace(path)
@@ -451,6 +519,21 @@ def default_data_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
 
 
+def require_tools(tools: tuple = ("ffmpeg", "ffprobe")) -> None:
+    """Fail loudly up front if the checker's tools are missing.
+
+    Without this, a missing binary is indistinguishable from a corpus of
+    unreadable files: every track fails to decode and the gate cheerfully
+    reports the whole corpus as corrupt.
+    """
+    missing = [tool for tool in tools if shutil.which(tool) is None]
+    if missing:
+        raise RuntimeError(
+            f"{', '.join(missing)} not found on PATH -- the cleanliness gate "
+            f"cannot check anything without it"
+        )
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -486,6 +569,7 @@ def main(argv: list | None = None) -> int:
     print(f"data dir: {data_dir}")
     print(f"audio   : {data_dir / AUDIO_DIR}")
 
+    require_tools()
     rows = load_manifest_rows(data_dir)
     jobs, missing, too_recent = select_candidates(rows, data_dir, min_age_sec=args.min_age_sec)
     if args.limit:
