@@ -8,7 +8,7 @@ from lib.engine.effect_definitions import LightIntent
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
-from lib.analyser.music_analyser import MusicAnalyser
+from lib.analyser.music_analyser import MusicAnalyser, KICK_UNKNOWN
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clock import Clock, SYSTEM_CLOCK
 
@@ -32,21 +32,32 @@ if TYPE_CHECKING:
 
 # Hysteresis thresholds (Schmitt trigger) — separate entry and exit values per intent
 # prevent threshold-boundary oscillation ("flickering") at the edges of each zone.
+#
+# Onset density is quantized: it counts onsets in a 1.5 s window, so the only
+# reachable values are multiples of 1/1.5 (…, 3.33, 4.00, 4.67, …).  Choosing a
+# density threshold is choosing which bucket it sits between, not a fine knob.
 _BREAKDOWN_MAX_DENSITY_ENTER = 3.0   # enter BREAKDOWN when density < this
 _BREAKDOWN_MAX_DENSITY_EXIT  = 3.5   # exit BREAKDOWN when density exceeds this
 _BUILDUP_MIN_TREND           = 1.3   # density trend ratio — rising ≥30% → BUILDUP
-_BUILDUP_MIN_DENSITY         = 2.0   # BUILDUP needs some rhythmic floor (trend on 1→2 onsets is noise)
-_DROP_MIN_DENSITY_ENTER      = 4.7   # enter DROP: sustained density ≥ this (p90 on ref track = 4.67)
-_DROP_MIN_DENSITY_EXIT       = 4.2   # exit DROP when windowed median falls below this
+# BUILDUP's rhythmic floor is BREAKDOWN's ceiling: below the density at which we
+# would call the arrangement a breakdown, a trend is computed over one or two
+# onsets and is noise, not a build.
+_BUILDUP_MIN_DENSITY         = _BREAKDOWN_MAX_DENSITY_ENTER
+_DROP_MIN_DENSITY_ENTER      = 4.0   # enter DROP: sustained density ≥ this (the 6-onset bucket)
+_DROP_MIN_DENSITY_EXIT       = 3.5   # exit DROP one bucket lower (i.e. at 5 onsets/window)
 _DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — kick_strength is the gate)
 
-# Kick detection gate: kick_strength below this means no kick on beats → BREAKDOWN even at
-# moderate onset density.  Midpoint-safe between measured kick-absent (~1.0–1.1) and
-# kick-present (~2.6–2.8) transient ratios.
-_KICK_PRESENCE_THRESHOLD          = 1.5
-# When kick is absent, clamp BREAKDOWN entry to density below this (prevents misclassifying
-# a hi-hat-only pattern with no bass as BREAKDOWN when density is very high).
-_BREAKDOWN_NO_KICK_MAX_DENSITY    = 6.0
+# Kick detection gate: kick_strength below this means no kick on beats → no DROP.
+# Placed between the measured kick-absent and kick-present populations of the
+# reference track (intro/breakdown windows peak at ~2.0; groove and final drop
+# floor at ~2.5), i.e. in the empty band between the two.
+_KICK_PRESENCE_THRESHOLD          = 2.4
+# With no kick to confirm the arrangement, density alone decides, so BREAKDOWN's
+# band widens by this much — entry and exit alike, keeping the hysteresis dead
+# zone intact.  It spans more than one density bucket on purpose: without a kick
+# the only evidence is an onset count, and a single onset appearing or vanishing
+# from the 1.5 s window must not flip the show.
+_BREAKDOWN_NO_KICK_MARGIN         = 1.0
 # Spectral centroid trend threshold: centroid rising ≥10% → BUILDUP signal (riser/sweep).
 _CENTROID_BUILDUP_TREND           = 1.1
 
@@ -77,7 +88,7 @@ def _classify_intent(
     density_trend: float = 1.0,
     current_intent: LightIntent | None = None,
     sub_bass_ratio: float = 0.0,
-    kick_strength: float = 2.0,
+    kick_strength: float = KICK_UNKNOWN,
     centroid_trend: float = 1.0,
 ) -> LightIntent:
     """Map audio features → LightIntent using hysteresis thresholds.
@@ -97,9 +108,12 @@ def _classify_intent(
     Hysteresis (Schmitt trigger): when `current_intent` is provided, the exit
     threshold for the current intent is used instead of the entry threshold.
 
-    kick_strength (default 2.0 = kick assumed present) gates DROP and BREAKDOWN:
+    kick_strength gates DROP and BREAKDOWN:
       - DROP requires kick on beats — prevents hi-hat-only high-density passages from triggering.
       - BREAKDOWN can fire at moderate density when kick is absent (stripped arrangement).
+    It defaults to KICK_UNKNOWN, the same sentinel the analyser reports before it
+    has measured anything: an unmeasured kick is an absent kick, so a caller with
+    no kick data can never talk the classifier into a DROP.
     centroid_trend fires BUILDUP independently of density_trend — catches riser sweeps
       where the spectral centroid climbs before onset density rises.
 
@@ -126,7 +140,7 @@ def _classify_intent(
     # BREAKDOWN: very sparse density, or kick absent at moderate density
     if onset_density < breakdown_threshold:
         return LightIntent.BREAKDOWN
-    if not kick_present and onset_density < _BREAKDOWN_NO_KICK_MAX_DENSITY:
+    if not kick_present and onset_density < breakdown_threshold + _BREAKDOWN_NO_KICK_MARGIN:
         return LightIntent.BREAKDOWN
     return LightIntent.GROOVE
 
@@ -450,7 +464,12 @@ class LightEngine(IMusicAnalyserHandler):
             window = list(self._beat_history)
             intent = _classify_windowed(window, bpm, self._current_intent)
         else:
-            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent)
+            # Pass the full feature row: omitting the kick would leave the
+            # classifier reading KICK_UNKNOWN (= absent) on every section change.
+            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent,
+                                      self.analyser.get_sub_bass_ratio(),
+                                      self.analyser.get_kick_strength(),
+                                      self.analyser.get_spectral_centroid_trend())
 
         _intent = intent
         if self.command_queue:

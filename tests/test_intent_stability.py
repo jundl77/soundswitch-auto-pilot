@@ -23,6 +23,9 @@ from lib.engine.light_engine import (
     _DROP_MIN_DENSITY_ENTER,
     _DROP_MIN_DENSITY_EXIT,
     _CENTROID_BUILDUP_TREND,
+    _BREAKDOWN_MAX_DENSITY_ENTER,
+    _BREAKDOWN_MAX_DENSITY_EXIT,
+    _KICK_PRESENCE_THRESHOLD,
 )
 from lib.engine.effect_definitions import LightIntent
 from lib.engine.event_buffer import EventBuffer
@@ -57,13 +60,20 @@ def _make_engine(look_ahead_sec: float = 1.0,
     return engine
 
 
+# Feature levels derived from the constants, so retuning a threshold cannot
+# silently change what these tests assert.
+KICK_PRESENT = _KICK_PRESENCE_THRESHOLD + 0.5
+# Below DROP's exit threshold but above BREAKDOWN's entry: classifies as GROOVE
+# even while DROP or PEAK is the committed intent.
+GROOVE_DENSITY = (_BREAKDOWN_MAX_DENSITY_ENTER + _DROP_MIN_DENSITY_EXIT) / 2
+
+
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
-                       kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7):
+                       kick: float = KICK_PRESENT, centroid_trend: float = 1.0, n: int = 7):
     """Fill _beat_history with beats spread symmetrically around the engine clock's now.
 
     All beats land within look_ahead_sec of now so they are included in the
     window when _commit_intent(enqueue_time=now, ...) is called immediately after.
-    kick=2.0 means kick assumed present (above any reasonable threshold).
     """
     now = engine._clock.monotonic()  # the engine's own clock, whatever it is
     half = engine._look_ahead_sec * 0.9
@@ -126,7 +136,7 @@ async def test_mixed_votes_do_not_switch():
 
     # Call _commit_intent with a window that classifies as GROOVE.
     # The vote buffer is full but not unanimous → no switch.
-    enqueue_time = _seed_beat_history(engine, density=4.0)
+    enqueue_time = _seed_beat_history(engine, density=GROOVE_DENSITY)
     await engine._commit_intent(enqueue_time, 128.0)
 
     # The new vote (GROOVE) overwrites oldest (GROOVE): [DROP, GROOVE, GROOVE] — still mixed.
@@ -231,8 +241,8 @@ async def test_invalid_transition_atmospheric_to_buildup_blocked():
     engine._current_intent = LightIntent.ATMOSPHERIC
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # Moderate density with a rising spectral centroid → classifies as BUILDUP
-    enqueue_time = _seed_beat_history(engine, density=4.0,
+    # Moderate density (below DROP entry) with a rising spectral centroid → BUILDUP
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER - 0.5,
                                       centroid_trend=_CENTROID_BUILDUP_TREND + 0.1)
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
@@ -386,8 +396,8 @@ async def test_peak_exits_to_groove_on_consensus():
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # Density eased below the DROP threshold, no riser → classifies as GROOVE
-    enqueue_time = _seed_beat_history(engine, density=4.0)
+    # Density eased below DROP's exit threshold, no riser → classifies as GROOVE
+    enqueue_time = _seed_beat_history(engine, density=GROOVE_DENSITY)
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
 
@@ -426,7 +436,7 @@ async def test_beat_history_uses_injected_clock():
         def get_onset_density_trend(self): return 1.0
         def get_sub_bass_ratio(self): return 0.3
         def get_rms_energy(self): return 0.1
-        def get_kick_strength(self): return 2.0
+        def get_kick_strength(self): return KICK_PRESENT
         def get_spectral_centroid_trend(self): return 1.0
         def is_song_playing(self): return True
 

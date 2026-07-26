@@ -11,7 +11,10 @@ Or in Python:
   print_evaluation(result)
 
 The report contains:
-  beats[]         — {t, bpm, onset_density, strength, change}
+  beats[]         — {t, bpm, onset_density, strength, change,
+                     kick_strength, centroid_trend, sub_bass_ratio, rms}
+                    i.e. the full feature row the classifier saw, per beat —
+                    the report doubles as a labelled training table.
   intents[]       — {t, intent, end}  (timestamped intent blocks)
   effects[]       — {t, channel, type, end}
   metrics         — aggregated stats including intent_distribution_sec

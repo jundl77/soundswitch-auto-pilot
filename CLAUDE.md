@@ -88,6 +88,7 @@ PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserH
 | `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics |
 | `simulate/runner.py` | Simulation runner â€” stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing for the live UI |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
+| `training/inspect_report.py` | Report inspector â€” per-10s feature/intent bins + intent timeline; the tool for checking a show against a track's structure |
 
 ---
 
@@ -110,11 +111,13 @@ For the specific thresholds and tuning constants that drive classification, see 
 
 ### How classification works
 
-Classification uses BPM, onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (beat-synchronous sub-bass ratio â€” distinguishes kick drum from hi-hat-only patterns), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
+Classification uses BPM (octave-folded into one tempo band, so aubio's double/half-tempo locks cannot fake a high-energy moment), onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (how far sub-bass rises above its own floor on the beat â€” distinguishes a kick drum from a hi-hat-only or pad-driven passage), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
+
+**Kick strength carries the classification.** On real material onset density barely varies across a track's sections â€” it says whether anything rhythmic is happening, not how big the moment is. The kick is what separates a drop from an intro, so it gates DROP and, by its absence, widens BREAKDOWN. Branches are tested DROP â†’ BUILDUP â†’ BREAKDOWN â†’ GROOVE; BUILDUP sits above BREAKDOWN because a riser strips the kick by design and would otherwise be swallowed by the kick-absence branch. An unmeasured or unmeasurable kick reads as *absent*, never assumed present.
 
 **Windowed look-ahead:** the engine runs 2.5 s ahead of what the audience hears (matching `playback_delay_seconds` in dmx-enttec-node). Each beat is classified using a symmetric window of past *and* future beats, giving more confident classifications than a causal-only approach. This is why a single anomalous beat cannot flip the intent: it is outvoted by its neighbours via median density.
 
-**Stability pipeline:** classification changes pass through three guards before triggering an effect change â€” a vote buffer (consensus required), a minimum dwell check (can't switch away immediately), and an invalid-transition guard (musically impossible jumps blocked). See `lib/analyser/CLAUDE.md` for rationale and `lib/engine/light_engine.py` for constants.
+**Stability pipeline:** each commit runs windowed classification, then the PEAK promotion check, then three guards that can each veto an effect change â€” a vote buffer (consensus required), a minimum dwell check (can't switch away immediately), and an invalid-transition guard (musically impossible jumps blocked). `LightEngine._commit_intent` documents the full ordered sequence; see `lib/analyser/CLAUDE.md` for rationale and `lib/engine/light_engine.py` for constants. A change that reaches consensus is recorded on the intent timeline even when a guard then blocks the effect switch, so `intent_changes_count` reads the classifier's opinion and `effect_changes_count` reads the show.
 
 **ATMOSPHERIC and PEAK are the two intents the beat classifier never returns.** ATMOSPHERIC fires from a beat-absence timer in the 100 ms callback; the first beat after silence immediately re-classifies and changes the effect.
 
@@ -159,6 +162,10 @@ python auto_pilot simulate file samples/song.mp3          # fast headless: full 
 python auto_pilot simulate file samples/song.mp3 --ui     # real-time paced with live Dash timeline
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
+# Inspect a report: per-10s feature bins, intent timeline, distribution
+python auto_pilot simulate file samples/song.mp3 --report report.json
+python training/inspect_report.py report.json
+
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
 uv run pytest                        # unit + integration (~6s)
@@ -192,4 +199,7 @@ uv run pytest                        # unit + integration (~6s)
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
+- **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the single bundled sample. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
+- **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
+- **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
 - **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.
