@@ -1,9 +1,8 @@
 """
 Simulation runner for soundswitch-auto-pilot.
 
-Replaces all hardware-touching clients with stubs and feeds synthetic or
-file-based audio through the full MusicAnalyser → LightEngine →
-DelayedCommandQueue pipeline.
+Replaces all hardware-touching clients with stubs and feeds real audio files
+through the full MusicAnalyser → LightEngine → DelayedCommandQueue pipeline.
 
 Two pacing modes, selected by the caller:
 
@@ -84,14 +83,13 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     }, command_queue
 
 
-async def run_fast_simulation(make_audio_client, duration_sec: float = float('inf'),
+async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
                               seed: int = FAST_SIM_RANDOM_SEED):
     """Deterministic fast run — the single home of the fast-mode contract:
     seeded RNG + fresh VirtualClock + infinite event window + flush tail.
 
-    make_audio_client: callable(clock) -> audio client. Clients that timestamp
-    events (BeepAudioClient's click log) need the run's clock; others may
-    ignore the argument.
+    audio_client: a FileAudioClient (or anything with the same interface that
+    eventually exhausts). Runs to end-of-file unless duration_sec bounds it.
 
     Returns (audio_client, event_buffer, command_queue) for report extraction.
     """
@@ -99,14 +97,6 @@ async def run_fast_simulation(make_audio_client, duration_sec: float = float('in
 
     random.seed(seed)
     clock = VirtualClock()
-    audio_client = make_audio_client(clock)
-    if duration_sec == float('inf') and not hasattr(audio_client, 'duration_sec'):
-        # Endless sources (BeepAudioClient) never set `exhausted`; without a
-        # duration bound the loop would spin forever at CPU speed.
-        raise ValueError(
-            'infinite duration_sec requires a finite audio source '
-            '(one exposing duration_sec) — pass duration_sec explicitly'
-        )
     # Infinite window: reports must never prune, whatever the song length.
     event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)

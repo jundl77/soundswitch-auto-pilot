@@ -77,7 +77,7 @@ async def _run_file_fast(args):
 
     wall_start = time.monotonic()
     audio_client, event_buffer, command_queue = await run_fast_simulation(
-        lambda clock: FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
+        FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     )
     wall_elapsed = time.monotonic() - wall_start
 

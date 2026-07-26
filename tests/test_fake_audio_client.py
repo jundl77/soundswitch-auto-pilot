@@ -1,48 +1,11 @@
-"""Tests for unthrottled fake audio clients, exhaustion, and the decode cache."""
+"""Tests for the unthrottled file audio client, exhaustion, and the decode cache."""
 import time
 
 import numpy as np
 import pytest
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
-from lib.clock import VirtualClock
-from simulate.fake_audio_client import BeepAudioClient, FileAudioClient
-
-
-def test_beep_client_read_does_not_sleep():
-    clock = VirtualClock()
-    client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
-    client.start_streams()
-    start = time.monotonic()
-    for _ in range(2000):  # ~11.6 s of audio — would take 11.6 s if throttled
-        client.read()
-    assert time.monotonic() - start < 2.0
-
-
-def test_beep_client_noise_is_deterministic():
-    def collect():
-        clock = VirtualClock()
-        c = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
-        c.start_streams()
-        return np.concatenate([c.read() for _ in range(50)])
-
-    assert np.array_equal(collect(), collect())
-
-
-def test_beep_client_never_exhausted():
-    client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE)
-    assert client.exhausted is False
-
-
-def test_beep_client_click_log_uses_virtual_clock():
-    clock = VirtualClock()
-    client = BeepAudioClient(SAMPLE_RATE, BUFFER_SIZE, bpm=120.0, clock=clock)
-    client.start_streams()  # virtual start time = 0.0
-    # 120 BPM → first click at 0.5 s. Read past it.
-    for _ in range(200):
-        client.read()
-    assert client.click_log, 'expected at least one click'
-    assert client.click_log[0]['time'] == pytest.approx(0.5, abs=0.01)
+from simulate.fake_audio_client import FileAudioClient
 
 
 @pytest.fixture

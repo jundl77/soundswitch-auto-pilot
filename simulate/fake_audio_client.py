@@ -1,97 +1,19 @@
 """
-Fake audio clients for simulation. Two modes:
+FileAudioClient — the simulation audio source. Decodes a real audio file
+(MP3/WAV/FLAC) with librosa and feeds 256-sample buffers; caches the decoded
+array as <path>.<samplerate>.npy (valid while newer than the source) so repeat
+runs skip the multi-second decode.
 
-  BeepAudioClient  — generates a synthetic metronome (configurable BPM) at known
-                     timestamps. Deterministic (fixed-seed noise floor). Used for
-                     timing validation: clicks occur at predictable positions, so
-                     we can assert that downstream light commands fire at exactly
-                     beep_time + delay_sec.
-
-  FileAudioClient  — decodes an audio file (MP3/WAV/FLAC) with librosa and feeds
-                     256-sample buffers. Caches the decoded array as <path>.npy
-                     (valid while newer than the source) so repeat runs skip the
-                     multi-second decode.
-
-Neither client throttles: read() returns immediately. Pacing (real-time or
-virtual) is the simulation runner's responsibility. Both implement the same
-interface as PyAudioClient.read() / start_streams() / close() plus an
-`exhausted` property.
+It never throttles: read() returns immediately. Pacing (real-time or virtual)
+is the simulation runner's responsibility. Implements the same interface as
+PyAudioClient.read() / start_streams() / close() plus an `exhausted` property.
 """
 
 import os
 import logging
 import numpy as np
 
-from lib.clock import Clock, SYSTEM_CLOCK
-
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Beep audio client
-# ---------------------------------------------------------------------------
-
-class BeepAudioClient:
-    """
-    Generates a click at the start of each beat (configurable BPM) embedded in
-    a near-silent buffer. Records the clock time of each generated click so the
-    simulation can compare against when the corresponding command fired.
-    """
-
-    def __init__(self, sample_rate: int, buffer_size: int, bpm: float = 120.0,
-                 clock: Clock = SYSTEM_CLOCK):
-        self.sample_rate = sample_rate
-        self.buffer_size = buffer_size
-        self.bpm = bpm
-        self._clock = clock
-        self._samples_per_beat = sample_rate * 60.0 / bpm
-        self._total_samples = 0
-        self._start_time: float | None = None
-        self._click = self._make_click()
-        # Fixed seed: the noise floor must not introduce run-to-run variance.
-        self._rng = np.random.default_rng(12345)
-        # (sample_index, clock_time) for each generated click
-        self.click_log: list[dict] = []
-
-    def _make_click(self) -> np.ndarray:
-        """10 ms Hann-windowed 1 kHz sine burst — easily detected by Aubio tempo."""
-        n = int(self.sample_rate * 0.01)
-        t = np.arange(n, dtype=np.float32)
-        tone = np.sin(2 * np.pi * 1000 * t / self.sample_rate)
-        return (tone * np.hanning(n)).astype(np.float32)
-
-    def list_devices(self): pass
-    def support_output(self) -> bool: return False
-
-    def start_streams(self, start_stream_out: bool = False):
-        self._start_time = self._clock.monotonic()
-
-    def play(self, audio_buffer: np.ndarray): pass
-    def close(self): pass
-
-    @property
-    def exhausted(self) -> bool:
-        return False  # endless synthetic source
-
-    def read(self) -> np.ndarray:
-        """Return the next buffer immediately (no throttling)."""
-        buf = self._rng.normal(0, 0.0005, self.buffer_size).astype(np.float32)
-
-        # Embed a click whenever a beat boundary falls inside this buffer
-        buf_start = self._total_samples
-        beat_idx = int(buf_start / self._samples_per_beat)
-        next_beat_sample = int((beat_idx + 1) * self._samples_per_beat)
-        offset = next_beat_sample - buf_start
-        if 0 <= offset < self.buffer_size:
-            end = min(offset + len(self._click), self.buffer_size)
-            length = end - offset
-            buf[offset:end] += self._click[:length] * 0.8
-            click_time = self._start_time + next_beat_sample / self.sample_rate
-            self.click_log.append({'sample': next_beat_sample, 'time': click_time})
-            log.debug(f'[fake_audio] click at sample={next_beat_sample}, t={next_beat_sample / self.sample_rate:.3f}s')
-
-        self._total_samples += self.buffer_size
-        return buf
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +23,8 @@ class BeepAudioClient:
 class FileAudioClient:
     """Decodes an audio file and feeds 256-sample buffers (no throttling).
 
-    Takes no clock: it is a pure sample pump — read() walks a position, nothing
-    here consults time (unlike BeepAudioClient, which timestamps its click log).
+    Takes no clock: it is a pure sample pump — read() walks a position,
+    nothing here consults time.
     """
 
     def __init__(self, sample_rate: int, buffer_size: int, path: str):

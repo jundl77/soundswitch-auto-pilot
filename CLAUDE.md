@@ -34,7 +34,7 @@ uv run pytest
 uv run pytest tests/test_delayed_command_queue.py -v
 ```
 
-The integration tests in `tests/test_simulation.py` run the full pipeline without hardware, including a complete fast-sim run of the bundled sample track through the evaluator. If they fail, the pipeline is broken.
+The integration tests in `tests/test_simulation.py` run the bundled sample track through the full pipeline (identical code path to production) and assert the evaluator's verdict, command-timing exactness, flush behaviour, report duration, speed, and byte-identical determinism. If they fail, the pipeline is broken. There is one simulation mode — real audio files — paced either sped-up (default) or real-time (`--ui`).
 
 ### Testing philosophy
 
