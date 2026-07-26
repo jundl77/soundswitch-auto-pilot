@@ -26,24 +26,24 @@ if TYPE_CHECKING:
 #                 Detected via beat-absence in on_100ms_callback, NOT here.
 #   BREAKDOWN   — beat present but very sparse onsets (melodic, stripped)
 #   GROOVE      — moderate onsets at mid-tempo (main dance-floor loop)
-#   BUILDUP     — onset density rising; moderately high BPM (pre-drop tension)
-#   DROP        — onset density spikes hard (bass, kick, hat all firing)
-#   PEAK        — sustained very high BPM + high density (post-drop peak)
+#   BUILDUP     — onset density or spectral centroid rising (pre-drop tension)
+#   DROP        — sustained high onset density with the kick locked to beats
+#   PEAK        — sustained DROP; promoted by the engine, not classified here.
 
 # Hysteresis thresholds (Schmitt trigger) — separate entry and exit values per intent
 # prevent threshold-boundary oscillation ("flickering") at the edges of each zone.
 _BREAKDOWN_MAX_DENSITY_ENTER = 3.0   # enter BREAKDOWN when density < this
 _BREAKDOWN_MAX_DENSITY_EXIT  = 3.5   # exit BREAKDOWN when density exceeds this
 _BUILDUP_MIN_TREND           = 1.3   # density trend ratio — rising ≥30% → BUILDUP
-_DROP_MIN_DENSITY_ENTER      = 8.5   # enter DROP when density ≥ this (hi-hat tops out ~8)
-_DROP_MIN_DENSITY_EXIT       = 7.0   # exit DROP when density falls below this
-_DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — calibrate later)
-_PEAK_MIN_BPM_ENTER          = 140.0 # enter PEAK when BPM ≥ this
-_PEAK_MIN_BPM_EXIT           = 135.0 # exit PEAK when BPM falls below this
+_BUILDUP_MIN_DENSITY         = 2.0   # BUILDUP needs some rhythmic floor (trend on 1→2 onsets is noise)
+_DROP_MIN_DENSITY_ENTER      = 4.7   # enter DROP: sustained density ≥ this (p90 on ref track = 4.67)
+_DROP_MIN_DENSITY_EXIT       = 4.2   # exit DROP when windowed median falls below this
+_DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — kick_strength is the gate)
 
 # Kick detection gate: kick_strength below this means no kick on beats → BREAKDOWN even at
-# moderate onset density.  1.3 = kick sub-bass is 30% stronger on beat than the rolling mean.
-_KICK_PRESENCE_THRESHOLD          = 1.3
+# moderate onset density.  Midpoint-safe between measured kick-absent (~1.0–1.1) and
+# kick-present (~2.6–2.8) transient ratios.
+_KICK_PRESENCE_THRESHOLD          = 1.5
 # When kick is absent, clamp BREAKDOWN entry to density below this (prevents misclassifying
 # a hi-hat-only pattern with no bass as BREAKDOWN when density is very high).
 _BREAKDOWN_NO_KICK_MAX_DENSITY    = 6.0
@@ -78,7 +78,17 @@ def _classify_intent(
 ) -> LightIntent:
     """Map audio features → LightIntent using hysteresis thresholds.
 
-    Priority order: DROP → PEAK → BREAKDOWN → BUILDUP → GROOVE.
+    Priority order: DROP → BUILDUP → BREAKDOWN(sparse) → BREAKDOWN(no kick) → GROOVE.
+
+    PEAK is never returned here.  "Sustained maximum energy after the drop" is a
+    temporal property, not a feature signature — the engine promotes a long-held
+    DROP to PEAK (see LightEngine._commit_intent).
+
+    BUILDUP is checked *before* both BREAKDOWN branches: a riser strips the kick
+    and thins the arrangement by design, so the no-kick clamp would otherwise
+    swallow exactly the moments BUILDUP exists to catch.  _BUILDUP_MIN_DENSITY
+    keeps that early exit from firing on near-silence, where a trend ratio
+    computed over one or two onsets is noise.
 
     Hysteresis (Schmitt trigger): when `current_intent` is provided, the exit
     threshold for the current intent is used instead of the entry threshold.
@@ -92,29 +102,27 @@ def _classify_intent(
     ATMOSPHERIC is NOT detected here — fired via beat-absence timer in on_100ms_callback.
     """
     currently_drop      = (current_intent == LightIntent.DROP)
-    currently_peak      = (current_intent == LightIntent.PEAK)
     currently_breakdown = (current_intent == LightIntent.BREAKDOWN)
 
     drop_threshold      = _DROP_MIN_DENSITY_EXIT       if currently_drop      else _DROP_MIN_DENSITY_ENTER
-    peak_threshold      = _PEAK_MIN_BPM_EXIT           if currently_peak      else _PEAK_MIN_BPM_ENTER
     breakdown_threshold = _BREAKDOWN_MAX_DENSITY_EXIT  if currently_breakdown else _BREAKDOWN_MAX_DENSITY_ENTER
 
     kick_present = kick_strength >= _KICK_PRESENCE_THRESHOLD
 
-    # DROP: density spike + kick confirmed on beats + (optional) sub-bass gate
+    # DROP: sustained density + kick locked to beats + (optional) sub-bass gate
     if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
         return LightIntent.DROP
-    if bpm >= peak_threshold:
-        return LightIntent.PEAK
-    # BREAKDOWN: either very sparse density, or kick absent at moderate density
-    # (stripped arrangement with hi-hats only should not read as GROOVE)
+    # BUILDUP: rising density trend OR rising spectral centroid (riser sweep).
+    # Checked BEFORE the BREAKDOWN branches: risers strip the kick and thin the
+    # arrangement right before the drop — the no-kick clamp must not swallow them.
+    if onset_density >= _BUILDUP_MIN_DENSITY and (
+            density_trend >= _BUILDUP_MIN_TREND or centroid_trend >= _CENTROID_BUILDUP_TREND):
+        return LightIntent.BUILDUP
+    # BREAKDOWN: very sparse density, or kick absent at moderate density
     if onset_density < breakdown_threshold:
         return LightIntent.BREAKDOWN
     if not kick_present and onset_density < _BREAKDOWN_NO_KICK_MAX_DENSITY:
         return LightIntent.BREAKDOWN
-    # BUILDUP: rising density trend OR rising spectral centroid (riser sweep)
-    if density_trend >= _BUILDUP_MIN_TREND or centroid_trend >= _CENTROID_BUILDUP_TREND:
-        return LightIntent.BUILDUP
     return LightIntent.GROOVE
 
 

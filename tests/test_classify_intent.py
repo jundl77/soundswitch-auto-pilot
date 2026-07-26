@@ -2,10 +2,9 @@ import pytest
 from lib.engine.light_engine import (
     _classify_intent, _classify_windowed,
     _DROP_MIN_DENSITY_ENTER, _DROP_MIN_DENSITY_EXIT,
-    _PEAK_MIN_BPM_ENTER, _PEAK_MIN_BPM_EXIT,
     _BREAKDOWN_MAX_DENSITY_ENTER, _BREAKDOWN_MAX_DENSITY_EXIT,
     _KICK_PRESENCE_THRESHOLD, _CENTROID_BUILDUP_TREND,
-    _BREAKDOWN_NO_KICK_MAX_DENSITY,
+    _BREAKDOWN_NO_KICK_MAX_DENSITY, _BUILDUP_MIN_DENSITY,
 )
 from lib.engine.effect_definitions import LightIntent
 
@@ -30,13 +29,10 @@ def test_drop_requires_bpm_floor():
     assert result != LightIntent.DROP
 
 
-def test_drop_beats_peak_at_high_bpm_high_density():
-    # 140 BPM + 9 density: density spike wins, DROP before PEAK
-    assert _classify_intent(140.0, 9.0) == LightIntent.DROP
-
-
-def test_peak_at_high_bpm_moderate_density():
-    assert _classify_intent(140.0, 4.0) == LightIntent.PEAK
+def test_peak_never_returned_by_pure_classifier():
+    # PEAK is an engine-level promotion (sustained DROP), not a feature classification.
+    for density in [0.5, 3.0, 4.5, 6.0, 9.0]:
+        assert _classify_intent(160.0, density) != LightIntent.PEAK
 
 
 def test_breakdown_on_sparse_density():
@@ -45,13 +41,13 @@ def test_breakdown_on_sparse_density():
 
 
 def test_buildup_on_rising_trend():
-    # density >= 3.0 and trend >= 1.3 → BUILDUP
-    assert _classify_intent(120.0, 5.0, density_trend=1.5) == LightIntent.BUILDUP
+    # density above the BUILDUP floor and trend >= 1.3 → BUILDUP
+    assert _classify_intent(120.0, 4.0, density_trend=1.5) == LightIntent.BUILDUP
 
 
 def test_no_buildup_without_rising_trend():
-    # density >= 3.0 but trend stable → GROOVE, not BUILDUP
-    assert _classify_intent(120.0, 5.0, density_trend=1.0) == LightIntent.GROOVE
+    # same density but trend stable → GROOVE, not BUILDUP
+    assert _classify_intent(120.0, 4.0, density_trend=1.0) == LightIntent.GROOVE
 
 
 def test_groove_is_default_at_moderate_conditions():
@@ -69,9 +65,9 @@ def test_atmospheric_never_returned_by_classifier():
 
 def test_buildup_trend_threshold_boundary():
     # trend exactly at threshold fires BUILDUP
-    assert _classify_intent(120.0, 5.0, density_trend=1.3) == LightIntent.BUILDUP
+    assert _classify_intent(120.0, 4.0, density_trend=1.3) == LightIntent.BUILDUP
     # trend just below threshold falls to GROOVE
-    assert _classify_intent(120.0, 5.0, density_trend=1.29) == LightIntent.GROOVE
+    assert _classify_intent(120.0, 4.0, density_trend=1.29) == LightIntent.GROOVE
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +88,8 @@ def test_windowed_drop_on_sustained_high_density():
 
 def test_windowed_buildup_detected_via_forward_context():
     # Past half: low density; future half: high density → forward trend ≥ 1.3 → BUILDUP
-    densities = [3.0, 3.2, 5.0, 5.5, 6.0]
+    # (kept below the DROP entry median so the rising trend — not density — is what fires)
+    densities = [2.5, 2.7, 3.8, 4.2, 4.4]
     assert _classify_windowed(_window(densities), bpm=120.0) == LightIntent.BUILDUP
 
 
@@ -139,22 +136,6 @@ def test_drop_cold_entry_requires_higher_threshold():
     # Without current_intent=DROP, mid-zone density should NOT enter DROP.
     mid_density = (_DROP_MIN_DENSITY_EXIT + _DROP_MIN_DENSITY_ENTER) / 2
     assert _classify_intent(128.0, mid_density) != LightIntent.DROP
-
-
-def test_peak_entry_threshold():
-    assert _classify_intent(_PEAK_MIN_BPM_ENTER, 4.0) == LightIntent.PEAK
-    assert _classify_intent(_PEAK_MIN_BPM_ENTER - 1.0, 4.0) != LightIntent.PEAK
-
-
-def test_peak_hysteresis_stays_in_peak_above_exit_threshold():
-    mid_bpm = (_PEAK_MIN_BPM_EXIT + _PEAK_MIN_BPM_ENTER) / 2  # e.g. 137.5
-    assert _classify_intent(mid_bpm, 4.0, current_intent=LightIntent.PEAK) == LightIntent.PEAK
-
-
-def test_peak_hysteresis_exits_below_exit_threshold():
-    below_exit_bpm = _PEAK_MIN_BPM_EXIT - 1.0
-    result = _classify_intent(below_exit_bpm, 4.0, current_intent=LightIntent.PEAK)
-    assert result != LightIntent.PEAK
 
 
 def test_breakdown_entry_threshold():
@@ -222,21 +203,40 @@ def test_high_density_no_kick_above_breakdown_no_kick_max_stays_groove():
 def test_buildup_via_centroid_trend_without_density_trend():
     # Rising centroid alone (density trend neutral) → BUILDUP
     rising = _CENTROID_BUILDUP_TREND + 0.05
-    result = _classify_intent(120.0, 5.0, density_trend=1.0, centroid_trend=rising)
+    result = _classify_intent(120.0, 4.0, density_trend=1.0, centroid_trend=rising)
     assert result == LightIntent.BUILDUP
 
 
 def test_groove_when_centroid_trend_is_neutral():
     # Neutral centroid trend + neutral density trend → GROOVE
-    assert _classify_intent(120.0, 5.0, density_trend=1.0, centroid_trend=1.0) == LightIntent.GROOVE
+    assert _classify_intent(120.0, 4.0, density_trend=1.0, centroid_trend=1.0) == LightIntent.GROOVE
 
 
 def test_buildup_via_either_trend_signal():
     # Either rising density OR rising centroid is sufficient for BUILDUP
     below_density_threshold = _CENTROID_BUILDUP_TREND - 0.05  # density trend not rising
     above_centroid_threshold = _CENTROID_BUILDUP_TREND + 0.05
-    assert _classify_intent(120.0, 5.0, density_trend=below_density_threshold,
+    assert _classify_intent(120.0, 4.0, density_trend=below_density_threshold,
                             centroid_trend=above_centroid_threshold) == LightIntent.BUILDUP
+
+
+# ---------------------------------------------------------------------------
+# Branch-order regression: BUILDUP is checked before the BREAKDOWN branches
+# ---------------------------------------------------------------------------
+
+def test_buildup_wins_over_no_kick_breakdown():
+    # Riser: kick stripped, moderate density, centroid rising → BUILDUP not BREAKDOWN
+    no_kick = _KICK_PRESENCE_THRESHOLD - 0.1
+    rising = _CENTROID_BUILDUP_TREND + 0.05
+    assert _classify_intent(128.0, 4.0, kick_strength=no_kick,
+                            centroid_trend=rising) == LightIntent.BUILDUP
+
+
+def test_sparse_riser_below_density_floor_stays_breakdown():
+    # Almost no onsets: trend is noise — BREAKDOWN even with rising centroid
+    rising = _CENTROID_BUILDUP_TREND + 0.05
+    assert _classify_intent(128.0, _BUILDUP_MIN_DENSITY - 0.5,
+                            centroid_trend=rising) == LightIntent.BREAKDOWN
 
 
 # ---------------------------------------------------------------------------

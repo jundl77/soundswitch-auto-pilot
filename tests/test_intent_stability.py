@@ -18,6 +18,7 @@ from lib.engine.light_engine import (
     _MIN_DWELL_BEATS,
     _INVALID_TRANSITIONS,
     _DROP_MIN_DENSITY_ENTER,
+    _CENTROID_BUILDUP_TREND,
 )
 from lib.engine.effect_definitions import LightIntent
 
@@ -206,18 +207,25 @@ async def test_valid_transition_groove_to_drop_allowed():
 
 
 @pytest.mark.asyncio
-async def test_invalid_transition_atmospheric_to_peak_blocked():
-    """ATMOSPHERIC → PEAK is an invalid transition."""
+async def test_invalid_transition_atmospheric_to_buildup_blocked():
+    """ATMOSPHERIC → BUILDUP is an invalid transition.
+
+    (ATMOSPHERIC → PEAK is equally invalid but no longer drivable through the
+    classifier: PEAK is an engine-level promotion, never a pure classification.
+    The membership assertion below still pins the guard's contents.)
+    """
+    assert (LightIntent.ATMOSPHERIC, LightIntent.BUILDUP) in _INVALID_TRANSITIONS
     assert (LightIntent.ATMOSPHERIC, LightIntent.PEAK) in _INVALID_TRANSITIONS
 
     engine = _make_engine()
     engine._current_intent = LightIntent.ATMOSPHERIC
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # High BPM, low density → classifies as PEAK
-    enqueue_time = _seed_beat_history(engine, density=4.0, bpm=145.0)
+    # Moderate density with a rising spectral centroid → classifies as BUILDUP
+    enqueue_time = _seed_beat_history(engine, density=4.0,
+                                      centroid_trend=_CENTROID_BUILDUP_TREND + 0.1)
     for _ in range(_VOTE_BUFFER_SIZE):
-        await engine._commit_intent(enqueue_time, 145.0)
+        await engine._commit_intent(enqueue_time, 128.0)
 
     assert engine._current_intent == LightIntent.ATMOSPHERIC
     engine.effect_controller.change_effect.assert_not_awaited()
