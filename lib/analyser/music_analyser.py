@@ -30,7 +30,8 @@ class MusicAnalyser:
         self.hop_s: int = self.buffer_size  # hop size
         self.mel_filters: int = 40  # slaney mel filterbank band count
         self._mel_band_indices: np.ndarray = np.arange(self.mel_filters)
-        self.click_sound: float = 0.7 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
+        # Debug note-click amplitude: quiet enough to sit under the music.
+        self.click_sound: float = 0.15 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
 
         self._reset_state()
 
