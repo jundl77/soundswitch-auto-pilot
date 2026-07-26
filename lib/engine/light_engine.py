@@ -32,35 +32,17 @@ if TYPE_CHECKING:
 
 # Hysteresis thresholds (Schmitt trigger) — separate entry and exit values per intent
 # prevent threshold-boundary oscillation ("flickering") at the edges of each zone.
-#
-# Onset density is quantized: it counts onsets in a 1.5 s window, so the only
-# reachable values are multiples of 1/1.5 (…, 3.33, 4.00, 4.67, …).  Choosing a
-# density threshold is choosing which bucket it sits between, not a fine knob.
 _BREAKDOWN_MAX_DENSITY_ENTER = 3.0   # enter BREAKDOWN when density < this
 _BREAKDOWN_MAX_DENSITY_EXIT  = 3.5   # exit BREAKDOWN when density exceeds this
 _BUILDUP_MIN_TREND           = 1.3   # density trend ratio — rising ≥30% → BUILDUP
-# BUILDUP's rhythmic floor is BREAKDOWN's ceiling: below the density at which we
-# would call the arrangement a breakdown, a trend is computed over one or two
-# onsets and is noise, not a build.
-_BUILDUP_MIN_DENSITY         = _BREAKDOWN_MAX_DENSITY_ENTER
-_DROP_MIN_DENSITY_ENTER      = 4.0   # enter DROP: sustained density ≥ this (the 6-onset bucket)
-_DROP_MIN_DENSITY_EXIT       = 3.5   # exit DROP one bucket lower (i.e. at 5 onsets/window)
+_BUILDUP_MIN_DENSITY         = _BREAKDOWN_MAX_DENSITY_ENTER  # below this a trend is noise
+_DROP_MIN_DENSITY_ENTER      = 4.0   # enter DROP when density ≥ this
+_DROP_MIN_DENSITY_EXIT       = 3.5   # exit DROP when density falls below this
 _DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — kick_strength is the gate)
 
 # Kick detection gate: kick_strength below this means no kick on beats → no DROP.
-# Placed between the deciles of the two measured populations on the reference
-# track — kick-absent (intro + breakdown) p90 = 2.16, kick-present (groove +
-# final drop) p10 = 2.55 — not between their extremes: per beat those tails
-# cross (kick-absent max 2.57, kick-present min 2.20).  Windowed, which is how
-# the classifier reads it, 130/130 kicking windows clear this and 1/79 kick-free
-# windows does (max 2.61).  So the gate is a strong majority rule, not a clean
-# partition; anything relying on a single beat's value needs more margin.
 _KICK_PRESENCE_THRESHOLD          = 2.4
-# With no kick to confirm the arrangement, density alone decides, so BREAKDOWN's
-# band widens by this much — entry and exit alike, keeping the hysteresis dead
-# zone intact.  It spans more than one density bucket on purpose: without a kick
-# the only evidence is an onset count, and a single onset appearing or vanishing
-# from the 1.5 s window must not flip the show.
+# Kick absent → BREAKDOWN's band widens by this, entry and exit alike (dead zone preserved).
 _BREAKDOWN_NO_KICK_MARGIN         = 1.0
 # Spectral centroid trend threshold: centroid rising ≥10% → BUILDUP signal (riser/sweep).
 _CENTROID_BUILDUP_TREND           = 1.1
@@ -72,8 +54,7 @@ _VOTE_BUFFER_SIZE = 3
 # Minimum beats spent in current intent before a switch is allowed.
 _MIN_DWELL_BEATS  = 4
 
-# A DROP that survives this many commit-beats is promoted to PEAK
-# ("sustained maximum energy after the drop"). ~15 s at 128 BPM.
+# A DROP held for this many commit-beats is promoted to PEAK (~15 s at 128 BPM).
 _PEAK_PROMOTION_BEATS = 32
 
 # Musically impossible transitions: block these regardless of classifier output.
@@ -98,16 +79,7 @@ def _classify_intent(
     """Map audio features → LightIntent using hysteresis thresholds.
 
     Priority order: DROP → BUILDUP → BREAKDOWN(sparse) → BREAKDOWN(no kick) → GROOVE.
-
-    PEAK is never returned here.  "Sustained maximum energy after the drop" is a
-    temporal property, not a feature signature — the engine promotes a long-held
-    DROP to PEAK (see LightEngine._commit_intent).
-
-    BUILDUP is checked *before* both BREAKDOWN branches: a riser strips the kick
-    and thins the arrangement by design, so the no-kick clamp would otherwise
-    swallow exactly the moments BUILDUP exists to catch.  _BUILDUP_MIN_DENSITY
-    keeps that early exit from firing on near-silence, where a trend ratio
-    computed over one or two onsets is noise.
+    PEAK is never returned here — the engine promotes a sustained DROP to it.
 
     Hysteresis (Schmitt trigger): when `current_intent` is provided, the exit
     threshold for the current intent is used instead of the entry threshold.
@@ -115,9 +87,7 @@ def _classify_intent(
     kick_strength gates DROP and BREAKDOWN:
       - DROP requires kick on beats — prevents hi-hat-only high-density passages from triggering.
       - BREAKDOWN can fire at moderate density when kick is absent (stripped arrangement).
-    It defaults to KICK_UNKNOWN, the same sentinel the analyser reports before it
-    has measured anything: an unmeasured kick is an absent kick, so a caller with
-    no kick data can never talk the classifier into a DROP.
+      - Defaults to KICK_UNKNOWN, which reads as absent: no kick data cannot assert a DROP.
     centroid_trend fires BUILDUP independently of density_trend — catches riser sweeps
       where the spectral centroid climbs before onset density rises.
 
@@ -136,8 +106,7 @@ def _classify_intent(
     if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
         return LightIntent.DROP
     # BUILDUP: rising density trend OR rising spectral centroid (riser sweep).
-    # Checked BEFORE the BREAKDOWN branches: risers strip the kick and thin the
-    # arrangement right before the drop — the no-kick clamp must not swallow them.
+    # Before BREAKDOWN: risers strip the kick, so the no-kick branch would swallow them.
     if onset_density >= _BUILDUP_MIN_DENSITY and (
             density_trend >= _BUILDUP_MIN_TREND or centroid_trend >= _CENTROID_BUILDUP_TREND):
         return LightIntent.BUILDUP
@@ -356,10 +325,6 @@ class LightEngine(IMusicAnalyserHandler):
           3. Vote buffer: _VOTE_BUFFER_SIZE consecutive identical votes required.
           4. Minimum dwell: _MIN_DWELL_BEATS beats in current intent before switching.
           5. Invalid-transition guard: musically impossible jumps are blocked.
-
-        PEAK is the one intent the classifier never returns; it exists only as
-        the promotion above, and while it is current, DROP votes are absorbed so
-        the pair cannot oscillate.  Any other consensus exits PEAK normally.
         """
         if self._atmospheric_sent:
             # Beat absence was detected after this beat was enqueued; ATMOSPHERIC
@@ -383,13 +348,8 @@ class LightEngine(IMusicAnalyserHandler):
             f'densities=[{", ".join(f"{e[1]:.1f}" for e in window)}]'
         )
 
-        # PEAK promotion: PEAK is not produced by the classifier — it is a DROP
-        # that has lasted.  Promote once the dwell counter shows sustained DROP.
-        # This path deliberately bypasses the vote and invalid-transition checks:
-        # it is not a classifier-driven switch but a continuation of the DROP the
-        # pipeline already committed, and (DROP, PEAK) is intentionally absent
-        # from _INVALID_TRANSITIONS — promotion is the only transition this
-        # branch can make, so no guard applies to it.
+        # PEAK promotion: a continuation of an already-committed DROP, so it
+        # deliberately bypasses the vote and invalid-transition guards.
         if (self._current_intent == LightIntent.DROP
                 and self._beats_in_current_intent >= _PEAK_PROMOTION_BEATS):
             logging.info('[engine] [windowed] sustained DROP — promoting to PEAK')
@@ -407,9 +367,8 @@ class LightEngine(IMusicAnalyserHandler):
         if not all(v == intent for v in self._intent_vote_buffer):
             return  # mixed votes — not confident enough
 
-        # PEAK absorbs DROP votes: easing back to plain DROP is not a show change.
-        # Placed before the surface step so the intent timeline keeps reading
-        # 'peak' — the lights are holding PEAK; the timeline must agree.
+        # PEAK absorbs DROP votes. Before the surface step, so the timeline reports
+        # the committed show state rather than the absorbed vote.
         if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
             return
 
@@ -468,8 +427,6 @@ class LightEngine(IMusicAnalyserHandler):
             window = list(self._beat_history)
             intent = _classify_windowed(window, bpm, self._current_intent)
         else:
-            # Pass the full feature row: omitting the kick would leave the
-            # classifier reading KICK_UNKNOWN (= absent) on every section change.
             intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent,
                                       self.analyser.get_sub_bass_ratio(),
                                       self.analyser.get_kick_strength(),

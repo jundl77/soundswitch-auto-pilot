@@ -18,9 +18,8 @@ def main() -> None:
     beats = report['beats']
     intents = report['intents']
     duration = report['duration_sec']
-    # Beat rows are song time; intent blocks are audience time (song + look-ahead).
-    # Shift the blocks back so a bin's features and its intent describe the same
-    # moment of music. Older reports predate the metric — assume no offset.
+    # Shift intent blocks from audience time back to song time so a bin's
+    # features and its intent describe the same moment.
     look_ahead = report['metrics'].get('look_ahead_sec', 0.0)
 
     def dominant_intent_at(t0: float, t1: float) -> str:

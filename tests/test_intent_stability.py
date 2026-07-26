@@ -3,8 +3,7 @@ Unit tests for intent-stability mechanisms in LightEngine._commit_intent:
   - Vote buffer: requires _VOTE_BUFFER_SIZE consecutive identical votes
   - Minimum dwell: requires _MIN_DWELL_BEATS beats in current intent before switching
   - Invalid-transition guard: blocks musically impossible jumps
-  - PEAK promotion: a DROP held for _PEAK_PROMOTION_BEATS commit-beats becomes PEAK,
-    and PEAK absorbs further DROP votes
+  - PEAK promotion: a sustained DROP becomes PEAK, which then absorbs DROP votes
 
 These tests drive _commit_intent directly with a synthetic _beat_history,
 bypassing on_beat() and the audio pipeline entirely.
@@ -37,11 +36,7 @@ from lib.engine.event_buffer import EventBuffer
 
 def _make_engine(look_ahead_sec: float = 1.0,
                  event_buffer: EventBuffer | None = None) -> LightEngine:
-    """Build a minimal LightEngine backed by mock clients for unit testing.
-
-    Pass a real EventBuffer when the test asserts on what the intent timeline
-    (report / visualizer) records, rather than only on engine state.
-    """
+    """Build a minimal LightEngine backed by mock clients for unit testing."""
     effect_controller = MagicMock()
     effect_controller.change_effect = AsyncMock()
     engine = LightEngine(
@@ -60,11 +55,8 @@ def _make_engine(look_ahead_sec: float = 1.0,
     return engine
 
 
-# Feature levels derived from the constants, so retuning a threshold cannot
-# silently change what these tests assert.
 KICK_PRESENT = _KICK_PRESENCE_THRESHOLD + 0.5
-# Below DROP's exit threshold but above BREAKDOWN's entry: classifies as GROOVE
-# even while DROP or PEAK is the committed intent.
+# Below DROP's exit threshold but above BREAKDOWN's entry: GROOVE even from DROP or PEAK.
 GROOVE_DENSITY = (_BREAKDOWN_MAX_DENSITY_ENTER + _DROP_MIN_DENSITY_EXIT) / 2
 
 
@@ -228,12 +220,7 @@ async def test_valid_transition_groove_to_drop_allowed():
 
 @pytest.mark.asyncio
 async def test_invalid_transition_atmospheric_to_buildup_blocked():
-    """ATMOSPHERIC → BUILDUP is an invalid transition.
-
-    (ATMOSPHERIC → PEAK is equally invalid but no longer drivable through the
-    classifier: PEAK is an engine-level promotion, never a pure classification.
-    The membership assertion below still pins the guard's contents.)
-    """
+    """ATMOSPHERIC → BUILDUP is an invalid transition."""
     assert (LightIntent.ATMOSPHERIC, LightIntent.BUILDUP) in _INVALID_TRANSITIONS
     assert (LightIntent.ATMOSPHERIC, LightIntent.PEAK) in _INVALID_TRANSITIONS
 
@@ -275,13 +262,7 @@ async def test_vote_buffer_cleared_after_switch():
 
 @pytest.mark.asyncio
 async def test_sustained_drop_promotes_to_peak():
-    """A committed DROP that survives _PEAK_PROMOTION_BEATS commit-beats becomes PEAK.
-
-    The classifier can never return PEAK (see _classify_intent) — "sustained
-    maximum energy after the drop" is temporal, so the engine's dwell counter
-    is what promotes it.  The promotion deliberately bypasses the
-    invalid-transition guard; this test pins that it actually fires.
-    """
+    """A committed DROP that survives _PEAK_PROMOTION_BEATS commit-beats becomes PEAK."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -303,7 +284,6 @@ async def test_sustained_drop_promotes_to_peak():
     await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.PEAK
     engine.effect_controller.change_effect.assert_awaited_with(LightIntent.PEAK)
-    # Promotion resets stability state so PEAK starts with a fresh dwell window.
     assert engine._beats_in_current_intent == 0
     assert len(engine._intent_vote_buffer) == 0
 
@@ -317,11 +297,7 @@ async def test_sustained_drop_promotes_to_peak():
 
 @pytest.mark.asyncio
 async def test_peak_absorbs_drop_votes():
-    """While in PEAK, unanimous DROP consensus must not switch back to DROP.
-
-    Easing from PEAK to plain DROP is not a show change — allowing it would let
-    the pair oscillate (DROP → promote → PEAK → DROP → promote → ...).
-    """
+    """While in PEAK, unanimous DROP consensus must not switch back to DROP."""
     engine = _make_engine()
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -336,13 +312,7 @@ async def test_peak_absorbs_drop_votes():
 
 @pytest.mark.asyncio
 async def test_peak_holds_through_mid_hysteresis_density_dip():
-    """PEAK inherits DROP's exit threshold — a dip below entry does not eject it.
-
-    A windowed density between _DROP_MIN_DENSITY_EXIT and _DROP_MIN_DENSITY_ENTER
-    is exactly the dip DROP's hysteresis exists to ride out.  PEAK is sustained
-    DROP, so it must be at least as sticky: the window still votes DROP, and
-    absorption keeps the show in PEAK.
-    """
+    """PEAK inherits DROP's exit threshold — a dip below entry does not eject it."""
     engine = _make_engine()
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -358,12 +328,7 @@ async def test_peak_holds_through_mid_hysteresis_density_dip():
 
 @pytest.mark.asyncio
 async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
-    """The reported intent timeline must agree with the lights during a PEAK hold.
-
-    Absorbed DROP votes must not be surfaced to the EventBuffer: the report,
-    visualizer, and training table all read that timeline, and while PEAK is
-    committed the show is in PEAK, not DROP.
-    """
+    """The reported intent timeline must agree with the lights during a PEAK hold."""
     buffer = EventBuffer()
     buffer.start()
     engine = _make_engine(event_buffer=buffer)
@@ -372,13 +337,11 @@ async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
-    # Promotion surfaces PEAK to the timeline.
     await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.PEAK
     assert buffer.snapshot()['intent'] == LightIntent.PEAK.value
 
-    # Every subsequent beat reaches DROP consensus and is absorbed — the timeline
-    # must keep reading 'peak' and must not gain a 'drop' block.
+    # Subsequent beats reach DROP consensus and are absorbed — no 'drop' block.
     for _ in range(_VOTE_BUFFER_SIZE * 2):
         await engine._commit_intent(enqueue_time, 128.0)
 
@@ -389,7 +352,7 @@ async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
 
 @pytest.mark.asyncio
 async def test_peak_exits_to_groove_on_consensus():
-    """PEAK is not a trap: any non-DROP consensus exits through the normal pipeline."""
+    """Any non-DROP consensus exits PEAK through the normal pipeline."""
     assert (LightIntent.PEAK, LightIntent.GROOVE) not in _INVALID_TRANSITIONS
 
     engine = _make_engine()

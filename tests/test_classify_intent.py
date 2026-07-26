@@ -14,8 +14,6 @@ from lib.engine.effect_definitions import LightIntent
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Named feature levels, derived from the constants so retuning a threshold never
-# silently changes what a test is asserting.
 KICK_PRESENT = _KICK_PRESENCE_THRESHOLD + 0.5
 KICK_ABSENT  = _KICK_PRESENCE_THRESHOLD - 0.1
 # A density that is neither sparse enough for BREAKDOWN nor dense enough for DROP.
@@ -33,8 +31,6 @@ def test_drop_on_density_spike_at_dance_bpm():
 
 
 def test_unmeasured_kick_reads_as_absent():
-    # The classifier's default is the analyser's "unknown" sentinel: a caller with
-    # no kick data gets the conservative reading, never a DROP.
     assert _classify_intent(128.0, 9.0) != LightIntent.DROP
     assert _classify_intent(128.0, 9.0, kick_strength=KICK_UNKNOWN) != LightIntent.DROP
 
@@ -108,7 +104,6 @@ def test_windowed_drop_on_sustained_high_density():
 
 def test_windowed_buildup_detected_via_forward_context():
     # Past half: low density; future half: high density → forward trend ≥ 1.3 → BUILDUP
-    # (kept below the DROP entry median so the rising trend — not density — is what fires)
     densities = [2.5, 2.7, 3.8, 4.2, 4.4]
     assert _classify_windowed(_window(densities), bpm=120.0) == LightIntent.BUILDUP
 
@@ -157,18 +152,13 @@ def test_drop_hysteresis_exits_below_exit_threshold():
 
 
 def test_peak_inherits_drop_hysteresis():
-    # PEAK is sustained DROP, so it must keep DROP's exit threshold: a mid-zone
-    # density (below entry, above exit) still classifies as DROP while committed
-    # to PEAK.  Without this, PEAK would be *less* sticky than the DROP it replaces.
+    # PEAK is sustained DROP — it must be no less sticky, so it keeps DROP's exit threshold.
     mid_density = (_DROP_MIN_DENSITY_EXIT + _DROP_MIN_DENSITY_ENTER) / 2
     assert _classify_intent(128.0, mid_density, current_intent=LightIntent.PEAK,
                             kick_strength=KICK_PRESENT) == LightIntent.DROP
 
 
 def test_peak_hysteresis_releases_below_exit_threshold():
-    # Inheriting the exit threshold must not make PEAK unconditional: below the
-    # DROP exit threshold the window classifies as something else, which is what
-    # lets the engine's consensus path leave PEAK.
     below_exit = _DROP_MIN_DENSITY_EXIT - 0.5
     assert _classify_intent(128.0, below_exit, current_intent=LightIntent.PEAK,
                             kick_strength=KICK_PRESENT) != LightIntent.DROP
@@ -219,8 +209,7 @@ def test_drop_with_kick_present():
 
 
 def test_breakdown_band_widens_by_the_margin_when_kick_is_absent():
-    # Density inside the kick-absence margin — above BREAKDOWN's own entry
-    # threshold, below entry + margin — reads as BREAKDOWN only without a kick.
+    # Density inside the margin: above BREAKDOWN's entry threshold, below entry + margin.
     mid_density = _BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_NO_KICK_MARGIN / 2
     assert _classify_intent(128.0, mid_density, kick_strength=KICK_ABSENT) == LightIntent.BREAKDOWN
 
@@ -240,15 +229,11 @@ def test_high_density_no_kick_above_the_margin_stays_groove():
 
 
 def test_no_kick_margin_keeps_the_hysteresis_dead_zone():
-    # The margin shifts entry and exit alike, so a single density bucket cannot
-    # flip a kick-less section back and forth between BREAKDOWN and GROOVE.
     entry = _BREAKDOWN_MAX_DENSITY_ENTER + _BREAKDOWN_NO_KICK_MARGIN
     exit_ = _BREAKDOWN_MAX_DENSITY_EXIT + _BREAKDOWN_NO_KICK_MARGIN
     assert exit_ > entry
     dead_zone = (entry + exit_) / 2
-    # Cold: above the widened entry → GROOVE.
     assert _classify_intent(128.0, dead_zone, kick_strength=KICK_ABSENT) == LightIntent.GROOVE
-    # Already in BREAKDOWN: the same density holds.
     assert _classify_intent(128.0, dead_zone, current_intent=LightIntent.BREAKDOWN,
                             kick_strength=KICK_ABSENT) == LightIntent.BREAKDOWN
 
@@ -297,8 +282,7 @@ def test_sparse_riser_below_density_floor_stays_breakdown():
 
 
 def test_buildup_floor_meets_breakdown_ceiling():
-    # No gap between the two: a rising trend below BREAKDOWN's entry threshold
-    # must not be able to fire BUILDUP and bypass BREAKDOWN's hysteresis.
+    # A gap would let a rising trend fire BUILDUP and bypass BREAKDOWN's hysteresis.
     assert _BUILDUP_MIN_DENSITY >= _BREAKDOWN_MAX_DENSITY_ENTER
 
 

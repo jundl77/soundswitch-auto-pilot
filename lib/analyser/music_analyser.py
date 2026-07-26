@@ -11,32 +11,15 @@ from lib.clock import Clock, SYSTEM_CLOCK
 _ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
 # --- Kick strength -----------------------------------------------------------
-# The kick transient is measured as a peak-over-window, straddling the beat that
-# aubio reports.  The mel filterbank runs on a 4-buffer FFT window, so a kick's
-# sub-bass energy does not peak until 2-3 buffers *after* the beat index: a
-# purely backward-looking window measures the bar before the kick, not the kick.
-# Measured on the reference track, the pre/post pair below places the peak of
-# every kicking beat inside the window.
-_KICK_CAPTURE_PRE_BUFFERS  = 2   # ~12 ms before the reported beat
-_KICK_CAPTURE_POST_BUFFERS = 6   # ~35 ms after it (the group delay of the FFT window)
-# Background sub-bass level: the median over this many buffers (~1.2 s ≈ 2.5 beats).
-# A median discounts the on-beat spikes themselves, so the ratio compares the
-# kick against the floor it sits on rather than against an average that already
-# contains it.
-_KICK_BACKGROUND_BUFFERS = 200
-# Beat-to-beat ratios averaged into the reported strength. Short on purpose: the
-# numerator and denominator must cover comparable spans of time, or a section
-# change makes one lag the other and the ratio reports the transition, not a kick.
+# The mel FFT delays the sub-bass peak past aubio's beat, so the window straddles it.
+_KICK_CAPTURE_PRE_BUFFERS  = 2
+_KICK_CAPTURE_POST_BUFFERS = 6
+_KICK_BACKGROUND_BUFFERS = 200   # median over ~1.2 s = the floor the kick sits on
 _KICK_SMOOTHING_BEATS = 4
-# Beyond this the ratio carries no more information and would swamp comparisons.
 _KICK_MAX_RATIO = 10.0
-# Below this mean RMS the track is effectively silent (fade-out): sub-bass
-# ratios become numerically meaningless, so kick presence reads as unknown.
-_KICK_MIN_RMS = 0.005
+_KICK_MIN_RMS = 0.005            # below this the track is silent and ratios are meaningless
 
-# Kick presence unknown: no measurement yet, or the track is near-silent.
-# Deliberately below any usable presence threshold — an unknown kick reads as
-# *absent*, so DROP is never entered without positive evidence of one.
+# Kick presence unknown — below any presence threshold, so it reads as absent.
 KICK_UNKNOWN = 1.0
 
 
@@ -93,9 +76,8 @@ class MusicAnalyser:
         # maxlen≈26 ≈ 150 ms of buffers at 5.8 ms/buffer — long enough for a stable mean.
         self._mel_energies_window: deque = deque(maxlen=26)
         self._rms_window: deque = deque(maxlen=26)
-        # Kick detection: raw per-buffer sub-bass energy, and the resolved
-        # peak-vs-background ratio of each recent beat.  Beats are queued by
-        # buffer index and resolved once their post-beat window has elapsed.
+        # Kick detection: beats are queued by buffer index and resolved once their
+        # capture window has closed.
         self._all_sub_bass_samples: deque = deque(maxlen=_KICK_BACKGROUND_BUFFERS)
         self._kick_ratios: deque = deque(maxlen=_KICK_SMOOTHING_BEATS)
         self._pending_kick_beats: deque = deque()
@@ -129,15 +111,9 @@ class MusicAnalyser:
 
     @staticmethod
     def _fold_bpm(bpm: float) -> float:
-        """Fold BPM into [85, 170) by octave halving/doubling.
+        """Fold BPM into [85, 170) by octave halving/doubling; 0.0 if not finite or ≤ 0.
 
-        aubio locks onto double/half tempo during warmup and on ambiguous
-        material (observed: 257.8 BPM for the first ~6 beats of every track).
-        EDM lives in one tempo octave; folding removes the ambiguity without
-        touching the beat phase.
-
-        Non-finite input is rejected up front: the halving loop never terminates
-        on inf/nan, and this runs on the live audio callback thread.
+        aubio locks onto double/half tempo during warmup and on ambiguous material.
         """
         if not math.isfinite(bpm) or bpm <= 0:
             return 0.0
@@ -201,27 +177,10 @@ class MusicAnalyser:
     def get_kick_strength(self) -> float:
         """How strongly sub-bass energy spikes on the beat, averaged over recent beats.
 
-        Each beat contributes one ratio: the peak raw sub-bass energy in a short
-        window straddling the beat, divided by the median sub-bass energy of the
-        surrounding ~1.2 s.  A kick drum concentrates its energy into that window
-        and rides well above the background floor; a pad, a rolling bassline or a
-        hi-hat-only pattern spreads its sub-bass evenly and stays near 1.0.
-
-        On the reference track the two populations separate at the decile level
-        but their tails cross: kicking sections median 3.67 / p10 2.55 / min 2.20,
-        kick-free sections median 1.41 / p90 2.16 / max 2.57.  Per beat, 2 of 79
-        kick-free and 3 of 130 kicking beats land on the wrong side of the
-        presence threshold.  The classifier gates on a window mean, not on one
-        beat, which is what pulls those tails back (1 of 79 and 0 of 130).
-
-        The value lags by one beat: a beat's own window is not complete when
-        aubio reports it (see `_resolve_pending_kicks`).  Over the multi-second
-        classification window that lag is immaterial.
-
-        Returns `KICK_UNKNOWN` when nothing has been measured yet or the track is
-        near-silent — in both cases presence is unknown and reads as absent.  The
-        silence gate matters during fade-outs, where the background collapses and
-        the raw ratio explodes into the hundreds.
+        Each beat contributes its peak sub-bass in a window straddling it over the
+        median sub-bass of the surrounding ~1.2 s; ~1.0 means no beat-locked bass.
+        Returns KICK_UNKNOWN before the first measurement and below the silence gate.
+        Lags by one beat (see `_resolve_pending_kicks`).
         """
         if not self._kick_ratios:
             return KICK_UNKNOWN
@@ -285,8 +244,6 @@ class MusicAnalyser:
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
             self._density_samples.append(self.get_onset_density())
-            # Queue this beat for kick measurement — its window is not complete yet —
-            # and snapshot the centroid, which needs no forward context.
             self._pending_kick_beats.append(self._buffer_index)
             if self._centroid_window:
                 self._beat_centroid_samples.append(self._centroid_window[-1])
@@ -297,16 +254,11 @@ class MusicAnalyser:
         return is_beat
 
     def _resolve_pending_kicks(self) -> None:
-        """Finish the kick measurement of every beat whose window has now elapsed.
-
-        A beat's transient window closes _KICK_CAPTURE_POST_BUFFERS buffers after
-        aubio reports it, so the ratio is computed here rather than at beat time.
-        """
+        """Compute the kick ratio of every queued beat whose capture window has closed."""
         while (self._pending_kick_beats
                and self._buffer_index - self._pending_kick_beats[0] >= _KICK_CAPTURE_POST_BUFFERS):
             beat_index = self._pending_kick_beats.popleft()
             samples = list(self._all_sub_bass_samples)
-            # Position of the beat inside the rolling buffer window.
             beat_pos = len(samples) - 1 - (self._buffer_index - beat_index)
             start = max(0, beat_pos - _KICK_CAPTURE_PRE_BUFFERS)
             end = min(len(samples), beat_pos + _KICK_CAPTURE_POST_BUFFERS + 1)

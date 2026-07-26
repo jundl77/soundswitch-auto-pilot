@@ -18,10 +18,8 @@ class EventBuffer:
         self._lock = threading.Lock()
         self._window_sec = window_sec
         self._clock = clock
-        # Beats are stamped in song time; intent/effect blocks are stamped when
-        # the audience hears them — one look-ahead delay later. Recording the
-        # offset makes the report self-describing: a consumer can align the two
-        # without knowing which pipeline produced it.
+        # Beats are stamped in song time; intent/effect blocks in audience time,
+        # one look-ahead later. Recorded so a report is self-describing.
         self._look_ahead_sec = look_ahead_sec
         self._start_time: float | None = None
         self._end_time: float | None = None
@@ -188,9 +186,7 @@ class EventBuffer:
                 'intents': all_intents,
                 'timing_log': tlog,
                 'metrics': {
-                    # Offset between beat timestamps (song time) and intent /
-                    # effect timestamps (audience time). Subtract it from an
-                    # intent block's bounds to compare against beat rows.
+                    # Subtract from an intent/effect block's bounds to reach song time.
                     'look_ahead_sec': self._look_ahead_sec,
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,

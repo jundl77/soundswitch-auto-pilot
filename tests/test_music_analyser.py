@@ -151,7 +151,6 @@ def test_dead_accumulation_arrays_removed(analyser):
 # ---------------------------------------------------------------------------
 
 def test_fold_bpm_double_tempo_folds_down():
-    # aubio warmup double-tempo lock: 257.8 must fold to 128.9
     assert MusicAnalyser._fold_bpm(257.8) == pytest.approx(128.9)
 
 
@@ -173,8 +172,7 @@ def test_fold_bpm_zero_and_negative_return_zero():
 
 
 def test_fold_bpm_non_finite_returns_zero():
-    """inf/nan must be rejected before the loops — halving inf never terminates,
-    and this runs on the live audio thread."""
+    # Halving inf never terminates, and this runs on the live audio thread.
     assert MusicAnalyser._fold_bpm(float('inf')) == 0.0
     assert MusicAnalyser._fold_bpm(float('-inf')) == 0.0
     assert MusicAnalyser._fold_bpm(float('nan')) == 0.0
@@ -198,17 +196,15 @@ def _feed_sub_bass(analyser, values: list[float], beat_buffers: tuple[int, ...] 
 
 
 def test_kick_captures_transient_after_the_reported_beat(analyser):
-    # The mel FFT window delays the kick's sub-bass peak past the beat index:
-    # a flat background with a spike 3 buffers *after* the beat is a kick.
+    # The mel FFT delays the sub-bass peak past aubio's beat, so a spike 3 buffers late is a kick.
     values = [1.0] * 60
     values[30 + 3] = 8.0
     _feed_sub_bass(analyser, values, beat_buffers=(30,))
-    analyser._rms_window.append(0.2)  # clearly audible
+    analyser._rms_window.append(0.2)
     assert analyser.get_kick_strength() == pytest.approx(8.0)
 
 
 def test_kick_ignores_transient_outside_the_capture_window(analyser):
-    # A spike far from any beat is not beat-locked — the ratio stays near 1.
     values = [1.0] * 60
     values[10] = 8.0
     _feed_sub_bass(analyser, values, beat_buffers=(30,))
@@ -217,8 +213,7 @@ def test_kick_ignores_transient_outside_the_capture_window(analyser):
 
 
 def test_kick_background_is_a_median_not_a_mean(analyser):
-    # Every beat spikes: a mean denominator would absorb the spikes and flatten
-    # the ratio.  The median reads the floor the kicks sit on.
+    # Every beat spikes — a mean denominator would absorb them and flatten the ratio.
     values = [1.0] * 120
     for beat in range(10, 110, 10):
         values[beat + 3] = 6.0
@@ -240,7 +235,7 @@ def test_kick_near_silence_returns_unknown(analyser):
     values = [1e-6] * 60
     values[30 + 3] = 1e-3
     _feed_sub_bass(analyser, values, beat_buffers=(30,))
-    analyser._rms_window.append(0.001)  # -60 dBFS: fade-out / silence
+    analyser._rms_window.append(0.001)  # below _KICK_MIN_RMS
     assert analyser.get_kick_strength() == KICK_UNKNOWN
 
 
@@ -252,7 +247,6 @@ def test_kick_unknown_before_any_beat_is_measured(analyser):
 
 
 def test_kick_unknown_reads_as_absent(analyser):
-    # The contract the classifier depends on: "unknown" must never look like a kick.
     from lib.analyser.music_analyser import KICK_UNKNOWN
     from lib.engine.light_engine import _KICK_PRESENCE_THRESHOLD
     assert KICK_UNKNOWN < _KICK_PRESENCE_THRESHOLD
