@@ -18,12 +18,26 @@ class PyAudioClient:
         self.stream_out: pyaudio.Stream = None
 
     def list_devices(self):
-        print('=== Pyaudio devices ===')
+        # PortAudio lists every physical device once per host API (MME,
+        # DirectSound, WASAPI, WDM-KS on Windows). Show only the default host
+        # API — the one whose indices open() actually targets — so each device
+        # appears exactly once with a usable id.
+        default_api = self.py_audio.get_default_host_api_info()
+        print(f'=== Audio devices ({default_api["name"]}) ===')
         for i in range(0, self.py_audio.get_device_count()):
-            print(f'index: {i}, device: {self.py_audio.get_device_info_by_index(i)["name"]}')
+            info = self.py_audio.get_device_info_by_index(i)
+            if info['hostApi'] != default_api['index']:
+                continue
+            kinds = '/'.join(k for k, ch in (('in', info['maxInputChannels']),
+                                             ('out', info['maxOutputChannels'])) if ch > 0)
+            print(f'index: {i:3d}  [{kinds:6s}]  {info["name"]}')
 
     def support_output(self) -> bool:
         return self.stream_out is not None
+
+    @property
+    def exhausted(self) -> bool:
+        return False  # live input never ends
 
     def start_streams(self, start_stream_out: bool = False) -> None:
         if self.input_device_index is None:
@@ -34,14 +48,6 @@ class PyAudioClient:
             device_name = self.py_audio.get_device_info_by_index(self.input_device_index)["name"]
             logging.info(f"[pyaudio] using sound input device: {device_name} (index: {self.input_device_index})")
 
-        if self.output_device_index is None:
-            default_output_device_info = self.py_audio.get_default_output_device_info()
-            self.output_device_index = default_output_device_info['index']
-            logging.info(f"[pyaudio] using default sound output device: {default_output_device_info['name']}")
-        else:
-            device_name = self.py_audio.get_device_info_by_index(self.output_device_index)["name"]
-            logging.info(f"[pyaudio] using sound output device: {device_name} (index: {self.output_device_index})")
-
         self.stream_in = self.py_audio.open(format=pyaudio.paFloat32,
                                             channels=1,
                                             rate=self.sample_rate,
@@ -50,6 +56,15 @@ class PyAudioClient:
                                             frames_per_buffer=self.buffer_size)
         self.stream_in.start_stream()
         if start_stream_out:
+            # Resolve and log the output device only when it will actually open —
+            # logging it unconditionally used to suggest playback that never ran.
+            if self.output_device_index is None:
+                default_output_device_info = self.py_audio.get_default_output_device_info()
+                self.output_device_index = default_output_device_info['index']
+                logging.info(f"[pyaudio] using default sound output device: {default_output_device_info['name']}")
+            else:
+                device_name = self.py_audio.get_device_info_by_index(self.output_device_index)["name"]
+                logging.info(f"[pyaudio] using sound output device: {device_name} (index: {self.output_device_index})")
             self.stream_out = self.py_audio.open(format=pyaudio.paFloat32,
                                                  channels=1,
                                                  output_device_index=self.output_device_index,

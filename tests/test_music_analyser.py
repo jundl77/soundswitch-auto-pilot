@@ -1,10 +1,10 @@
 """
-Tests for MusicAnalyser methods introduced in this PR:
-  - get_onset_density_trend()
-  - get_seconds_since_last_beat()
+Unit tests for MusicAnalyser: onset-density trend, beat timing, virtual-clock
+behaviour, and the vectorized silence check.
 """
 import datetime
 import pytest
+import numpy as np
 from collections import deque
 from lib.analyser.music_analyser import MusicAnalyser
 
@@ -26,7 +26,6 @@ def analyser():
         sample_rate=44100,
         buffer_size=256,
         handler=_StubHandler(),
-        visualizer_updater=None,
     )
 
 
@@ -82,3 +81,66 @@ def test_seconds_since_last_beat_approximately_correct(analyser):
 def test_seconds_since_last_beat_small_when_recent(analyser):
     analyser.last_beat_detected = datetime.datetime.now()
     assert analyser.get_seconds_since_last_beat() < 0.1
+
+
+# ---------------------------------------------------------------------------
+# Virtual clock
+# ---------------------------------------------------------------------------
+
+from lib.clock import VirtualClock
+
+
+def _make_analyser(clock):
+    return MusicAnalyser(
+        sample_rate=44100,
+        buffer_size=256,
+        handler=_StubHandler(),
+        clock=clock,
+    )
+
+
+def test_seconds_since_last_beat_on_virtual_clock():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    analyser.last_beat_detected = clock.now()
+    clock.advance(1.5)
+    assert analyser.get_seconds_since_last_beat() == 1.5
+
+
+def test_onset_density_window_prunes_on_virtual_time():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    # Two onsets now, then advance beyond the 1.5 s rolling window.
+    analyser._onset_times.append(clock.now())
+    analyser._onset_times.append(clock.now())
+    assert analyser.get_onset_density() == 2 / 1.5
+    clock.advance(2.0)
+    assert analyser.get_onset_density() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _is_silence — vectorized equivalence with the old list-comp semantics
+# ---------------------------------------------------------------------------
+
+def test_is_silence_all_near_zero(analyser):
+    assert analyser._is_silence(np.zeros(40, dtype=np.float32)) is True
+    assert analyser._is_silence(np.full(40, 0.00009, dtype=np.float64)) is True
+    assert analyser._is_silence(np.full(40, -0.00009, dtype=np.float64)) is True
+
+
+def test_is_silence_boundary_is_exclusive(analyser):
+    # old semantics: -0.0001 < n < 0.0001 (strict) → exactly 0.0001 is NOT silence
+    energies = np.zeros(40)
+    energies[7] = 0.0001
+    assert analyser._is_silence(energies) is False
+
+
+def test_is_silence_single_loud_band(analyser):
+    energies = np.zeros(40)
+    energies[0] = 0.5
+    assert analyser._is_silence(energies) is False
+
+
+def test_dead_accumulation_arrays_removed(analyser):
+    assert not hasattr(analyser, 'mfccs')
+    assert not hasattr(analyser, 'energies')

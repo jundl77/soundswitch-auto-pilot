@@ -1,5 +1,4 @@
 from __future__ import annotations
-import time
 import logging
 from collections import deque
 from typing import TYPE_CHECKING
@@ -11,6 +10,7 @@ from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
+from lib.clock import Clock, SYSTEM_CLOCK
 
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
@@ -145,17 +145,16 @@ def _classify_windowed(
     if not window:
         return LightIntent.GROOVE
 
-    n = len(window[0])
     densities      = [entry[1] for entry in window]
-    sub_bass_vals  = [entry[3] for entry in window] if n >= 5 else [0.0] * len(window)
-    kick_vals      = [entry[5] for entry in window] if n >= 7 else []
-    centroid_vals  = [entry[6] for entry in window] if n >= 7 else []
+    sub_bass_vals  = [entry[3] for entry in window]
+    kick_vals      = [entry[5] for entry in window]
+    centroid_vals  = [entry[6] for entry in window]
 
     sorted_d = sorted(densities)
     median_density    = sorted_d[len(sorted_d) // 2]
     mean_sub_bass     = sum(sub_bass_vals) / len(sub_bass_vals)
-    mean_kick         = sum(kick_vals) / len(kick_vals) if kick_vals else 2.0   # default: kick assumed present
-    mean_centroid_trend = sum(centroid_vals) / len(centroid_vals) if centroid_vals else 1.0
+    mean_kick         = sum(kick_vals) / len(kick_vals)
+    mean_centroid_trend = sum(centroid_vals) / len(centroid_vals)
 
     mid = len(densities) // 2
     past        = densities[:mid] if mid > 0 else densities
@@ -179,7 +178,8 @@ class LightEngine(IMusicAnalyserHandler):
                  effect_controller: EffectController,
                  command_queue: DelayedCommandQueue | None = None,
                  event_buffer: EventBuffer | None = None,
-                 look_ahead_sec: float = 0.0):
+                 look_ahead_sec: float = 0.0,
+                 clock: Clock = SYSTEM_CLOCK):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
         self.overlay_client: OverlayClient = overlay_client
@@ -188,11 +188,12 @@ class LightEngine(IMusicAnalyserHandler):
         self.event_buffer: EventBuffer | None = event_buffer
         self.analyser: MusicAnalyser = None
         self._look_ahead_sec: float = look_ahead_sec
+        self._clock: Clock = clock
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
         self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
         self._current_intent: LightIntent | None = None  # last committed intent (for change detection)
-        # Rolling history of beats for windowed classification: 5-tuple BeatRecord.
+        # Rolling history of BeatRecord entries for windowed classification.
         # Kept for 2 × look_ahead_sec so the symmetric window is always available at commit time.
         self._beat_history: deque[BeatRecord] = deque()
         # Stability: vote buffer (rolling deque of last _VOTE_BUFFER_SIZE classified intents).
@@ -245,7 +246,7 @@ class LightEngine(IMusicAnalyserHandler):
         centroid_trend = self.analyser.get_spectral_centroid_trend()
 
         # Always record beat to history so _commit_intent has forward context.
-        now_mono = time.monotonic()
+        now_mono = self._clock.monotonic()
         self._beat_history.append((now_mono, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend))
         # Prune entries older than 2 × look_ahead_sec (or 5 s minimum for the
         # instantaneous path) so the deque stays bounded.
@@ -439,12 +440,11 @@ class LightEngine(IMusicAnalyserHandler):
             return
         bpm = int(self.analyser.get_bpm())
         onset_density = self.analyser.get_onset_density()
-        density_trend = self.analyser.get_onset_density_trend()
         current_second = int(self.analyser.get_song_current_duration().total_seconds())
-        intent = _classify_intent(float(bpm), onset_density, density_trend, self._current_intent)
+        intent_name = self._current_intent.name if self._current_intent else 'None'
         logging.info(f'[engine] == current state ==')
         logging.info(f'[engine]   realtime_bpm:    {bpm}')
         logging.info(f'[engine]   onset_density:   {onset_density:.2f} /s')
-        logging.info(f'[engine]   intent:          {intent.name}')
+        logging.info(f'[engine]   intent:          {intent_name}')
         logging.info(f'[engine]   current_second:  {current_second}')
         logging.info(f'[engine]   last_effect:     {self.effect_controller.last_effect}')

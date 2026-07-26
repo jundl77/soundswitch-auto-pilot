@@ -8,3 +8,5 @@ spotify_details.json
 *.egg-info/
 .DS_Store
 *.pkl
+*.npy
+report.json

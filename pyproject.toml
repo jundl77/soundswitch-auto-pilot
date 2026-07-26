@@ -2,8 +2,11 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = []   # application, not a library — nothing to install
+[tool.setuptools.packages.find]
+include = ["lib*", "simulate*"]
+
+[project.scripts]
+auto_pilot = "lib.main:run_sync"
 
 [project]
 name = "soundswitch-auto-pilot"
@@ -15,9 +18,8 @@ dependencies = [
     "aubio",
     "numpy>=1.26,<2",
     "pyaudio",
-    "matplotlib",
     "pandas",
-    "tensorflow>=2.16,<2.17",
+    "tensorflow>=2.16,<2.22",
     "tensorflow-hub>=0.16,<0.17",
     "scipy",
     "python-osc",
@@ -41,7 +43,12 @@ visualizer = [
 ]
 
 [tool.uv]
+link-mode = "copy"
 extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
+# tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on Windows
+override-dependencies = [
+    "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

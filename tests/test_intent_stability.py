@@ -8,7 +8,6 @@ These tests drive _commit_intent directly with a synthetic _beat_history,
 bypassing on_beat() and the audio pipeline entirely.
 """
 
-import time
 import pytest
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
@@ -49,13 +48,13 @@ def _make_engine(look_ahead_sec: float = 1.0) -> LightEngine:
 
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
                        kick: float = 2.0, centroid_trend: float = 1.0, n: int = 7):
-    """Fill _beat_history with beats spread symmetrically around time.monotonic().
+    """Fill _beat_history with beats spread symmetrically around the engine clock's now.
 
     All beats land within look_ahead_sec of now so they are included in the
     window when _commit_intent(enqueue_time=now, ...) is called immediately after.
     kick=2.0 means kick assumed present (above any reasonable threshold).
     """
-    now = time.monotonic()
+    now = engine._clock.monotonic()  # the engine's own clock, whatever it is
     half = engine._look_ahead_sec * 0.9
     for i in range(n):
         t = now - half + i * (2 * half / max(n - 1, 1))
@@ -240,3 +239,45 @@ async def test_vote_buffer_cleared_after_switch():
     assert len(engine._intent_vote_buffer) == 0
     # Dwell counter should be reset
     assert engine._beats_in_current_intent == 0
+
+
+# ---------------------------------------------------------------------------
+# Virtual clock — beat history timestamps come from the injected clock
+# ---------------------------------------------------------------------------
+
+from lib.clock import VirtualClock
+
+
+async def test_beat_history_uses_injected_clock():
+    from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
+    from lib.engine.effect_controller import EffectController
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+    from lib.engine.light_engine import LightEngine
+
+    clock = VirtualClock()
+    midi = StubMidiClient(clock=clock)
+    engine = LightEngine(
+        midi, StubOs2lClient(clock=clock), StubOverlayClient(clock=clock),
+        EffectController(midi, clock=clock),
+        DelayedCommandQueue(2.5, clock=clock),
+        look_ahead_sec=2.5,
+        clock=clock,
+    )
+
+    class _FakeAnalyser:
+        def get_song_current_duration(self):
+            import datetime
+            return datetime.timedelta(seconds=clock.monotonic())
+        def get_onset_density(self): return 5.0
+        def get_onset_density_trend(self): return 1.0
+        def get_sub_bass_ratio(self): return 0.3
+        def get_rms_energy(self): return 0.1
+        def get_kick_strength(self): return 2.0
+        def get_spectral_centroid_trend(self): return 1.0
+        def is_song_playing(self): return True
+
+    engine.set_analyser(_FakeAnalyser())
+
+    clock.advance(10.0)
+    await engine.on_beat(beat_number=1, bpm=128.0, bpm_changed=False)
+    assert engine._beat_history[-1][0] == 10.0  # virtual monotonic, not wall time

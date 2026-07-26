@@ -9,8 +9,7 @@ import datetime
 import time
 from collections import deque
 
-BUFFER_SIZE = 256
-SAMPLE_RATE = 44100
+from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 # Look-ahead delay: analysis runs LOOK_AHEAD_SEC ahead of what the audience hears.
 # Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
 # Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
@@ -26,7 +25,6 @@ class SoundSwitchAutoPilot:
                  input_device_index: int = None,
                  output_device_index: int = None,
                  debug_mode: bool = False,
-                 show_visualizer: bool = False,
                  disable_os2l: bool = False,
                  enable_ui: bool = False,
                  ui_port: int = 8050,
@@ -37,13 +35,11 @@ class SoundSwitchAutoPilot:
         from lib.clients.os2l_client import Os2lClient
         from lib.clients.overlay_client import OverlayClient
         from lib.analyser.music_analyser import MusicAnalyser
-        from lib.visualizer.visualizer import Visualizer, VisualizerUpdater
         from lib.engine.light_engine import LightEngine
         from lib.engine.effect_controller import EffectController
         from lib.engine.delayed_command_queue import DelayedCommandQueue
 
         self.debug_mode: bool = debug_mode
-        self.show_visualizer: bool = show_visualizer
         self.disable_os2l: bool = disable_os2l
         self.enable_ui: bool = enable_ui
         self._ui_port: int = ui_port
@@ -54,22 +50,13 @@ class SoundSwitchAutoPilot:
         logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
         # construct clients
+        # Audio monitoring plays when an output is requested: -o selects the
+        # device, -d additionally mixes in note-click beeps (default output).
+        self._enable_playback: bool = debug_mode or output_device_index is not None
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
         self.overlay_client: OverlayClient = OverlayClient()
-
-        # construct visualizer
-        if self.show_visualizer:
-            self.visualizer: Visualizer = Visualizer(show_freq=False,
-                                                     show_freq_gradient=False,
-                                                     show_energy=False,
-                                                     show_freq_curve=True,
-                                                     show_ssm=False)
-            self.visualizer_updater: VisualizerUpdater = VisualizerUpdater()
-        else:
-            self.visualizer: Visualizer = None
-            self.visualizer_updater: VisualizerUpdater = None
 
         # construct event buffer (for --ui and/or --report)
         from lib.engine.event_buffer import EventBuffer
@@ -83,7 +70,8 @@ class SoundSwitchAutoPilot:
                                                      look_ahead_sec=LOOK_AHEAD_SEC)
 
         # construct analyser
-        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine, self.visualizer_updater)
+        self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
+                                                           note_clicks=debug_mode)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
@@ -93,7 +81,7 @@ class SoundSwitchAutoPilot:
 
     async def run(self):
         logging.info("[main] setting up auto pilot..")
-        self.audio_client.start_streams(start_stream_out=self.debug_mode)
+        self.audio_client.start_streams(start_stream_out=self._enable_playback)
         self.midi_client.start()
         self.overlay_client.start()
         self.music_analyser.start()
@@ -101,9 +89,6 @@ class SoundSwitchAutoPilot:
             logging.info("[main] OS2L is disabled")
         else:
             self.os2l_client.start()
-        if self.show_visualizer:
-            self.visualizer.show()
-            self.visualizer_updater.connect()
         if self.event_buffer is not None:
             self.event_buffer.start()
             import threading
@@ -160,17 +145,11 @@ class SoundSwitchAutoPilot:
         self.os2l_client.stop()
         self.midi_client.stop()
         self.overlay_client.stop()
-        if self.show_visualizer:
-            self.visualizer.stop()
-            self.visualizer_updater.stop()
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
         self.is_running = False
         self.os2l_client.stop()
-        if self.show_visualizer:
-            self.visualizer.stop()
-            self.visualizer_updater.stop()
 
     async def _do_100ms_callback(self):
         await self.light_engine.on_100ms_callback()
@@ -198,7 +177,6 @@ async def run_cmd(args: argparse.Namespace):
                                       input_device_index=input_device_index,
                                       output_device_index=output_device_index,
                                       debug_mode=debug_mode,
-                                      show_visualizer=args.visualizer,
                                       disable_os2l=args.no_os2l,
                                       enable_ui=args.ui,
                                       ui_port=args.ui_port,
@@ -231,6 +209,12 @@ signal.signal(signal.SIGINT, death_handler)
 signal.signal(signal.SIGTERM, death_handler)
 
 
+def run_sync():
+    """Console-script entry point (`uv run auto_pilot ...`)."""
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(main())
+
+
 async def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(help='Functionality to start')
@@ -243,7 +227,6 @@ async def main():
     subparser.add_argument('-i', '--input_device', help='Specify the index of the sound INPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to use, uses system-default by default', required=False, default=None)
     subparser.add_argument('-d', '--debug', help='Run in debug mode, this will playback audio on the output device with additional auditory information', required=False, action='store_true')
-    subparser.add_argument('-v', '--visualizer', help='Display the visualizer, which shows auditory information, such as a spectogram', required=False, action='store_true')
     subparser.add_argument('--no-os2l', help='Disable OS2L (connection to SoundSwitch). This can be useful for debugging.', required=False, action='store_true')
     subparser.add_argument('--ui', help='Launch real-time lighting visualizer (requires dash extra)', required=False, action='store_true')
     subparser.add_argument('--ui-port', type=int, default=8050, help='Visualizer Dash server port (default: 8050)', required=False, dest='ui_port')

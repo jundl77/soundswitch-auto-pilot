@@ -101,3 +101,62 @@ async def test_command_fires_only_after_delay_has_elapsed():
     log = q.get_timing_log()
     assert len(log) == 1
     assert log[0]['actual_delta_sec'] >= delay, "command fired before configured delay"
+
+
+# ---------------------------------------------------------------------------
+# Virtual clock
+# ---------------------------------------------------------------------------
+
+from lib.clock import VirtualClock
+
+
+async def test_virtual_clock_command_fires_only_after_virtual_delay():
+    clock = VirtualClock()
+    q = DelayedCommandQueue(2.5, clock=clock)
+    fired = []
+
+    async def cmd():
+        fired.append(True)
+
+    await q.enqueue('x', cmd)
+    await q.drain()
+    assert fired == []  # no virtual time has passed
+
+    clock.advance(2.4)
+    await q.drain()
+    assert fired == []  # still 0.1s short
+
+    clock.advance(0.2)
+    await q.drain()
+    assert fired == [True]
+
+
+async def test_virtual_clock_timing_log_is_exact():
+    clock = VirtualClock()
+    q = DelayedCommandQueue(2.5, clock=clock)
+
+    async def cmd():
+        pass
+
+    await q.enqueue('x', cmd)
+    clock.advance(2.5)
+    await q.drain()
+    log = q.get_timing_log()
+    assert len(log) == 1
+    assert log[0]['actual_delta_sec'] == 2.5
+
+
+async def test_pending_counts_unfired_commands():
+    clock = VirtualClock()
+    q = DelayedCommandQueue(2.5, clock=clock)
+
+    async def cmd():
+        pass
+
+    assert q.pending == 0
+    await q.enqueue('a', cmd)
+    await q.enqueue('b', cmd)
+    assert q.pending == 2
+    clock.advance(2.5)
+    await q.drain()
+    assert q.pending == 0

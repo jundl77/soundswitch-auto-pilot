@@ -6,18 +6,22 @@ Dash server thread via snapshot(). The only shared state between threads.
 """
 
 import threading
-import time
 from collections import deque
+
+from lib.clock import Clock, SYSTEM_CLOCK
 
 
 class EventBuffer:
-    def __init__(self, window_sec: float = 60.0):
+    def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK):
         self._lock = threading.Lock()
         self._window_sec = window_sec
+        self._clock = clock
         self._start_time: float | None = None
+        self._end_time: float | None = None
         self._is_playing: bool = False
-        # Beats: high-frequency, bounded deque to avoid unbounded memory growth
-        self._beats: deque[dict] = deque(maxlen=3000)
+        # Beats: bounded in live/windowed mode to avoid unbounded memory growth.
+        # An infinite window promises complete reports, so the cap comes off.
+        self._beats: deque[dict] = deque(maxlen=None if window_sec == float('inf') else 3000)
         # Effects: list so we can mutate the last entry to set 'end'
         self._effects: list[dict] = []
         # Intent history: same structure as effects, used for the timeline
@@ -29,17 +33,28 @@ class EventBuffer:
 
     def start(self) -> None:
         with self._lock:
-            self._start_time = time.monotonic()
+            self._start_time = self._clock.monotonic()
+
+    def mark_end(self) -> None:
+        """Freeze the timeline at the current instant.
+
+        Called when the audio source ends; anything recorded afterwards (e.g.
+        intent commits fired by the look-ahead flush tail) is clamped to this
+        timestamp so report durations match the audio, not the flushed clock.
+        """
+        with self._lock:
+            self._end_time = self._clock.monotonic()
 
     def elapsed(self) -> float:
-        if self._start_time is None:
-            return 0.0
-        return time.monotonic() - self._start_time
+        return self._now()
 
     def _now(self) -> float:
         if self._start_time is None:
             return 0.0
-        return time.monotonic() - self._start_time
+        now = self._clock.monotonic()
+        if self._end_time is not None and now > self._end_time:
+            now = self._end_time
+        return now - self._start_time
 
     def add_beat(self, bpm: float, onset_density: float, change: bool) -> None:
         with self._lock:
@@ -64,7 +79,12 @@ class EventBuffer:
     def set_playing(self, is_playing: bool) -> None:
         with self._lock:
             self._is_playing = is_playing
-            self._sound_events.append({'t': self._now(), 'playing': is_playing})
+            now = self._now()
+            self._sound_events.append({'t': now, 'playing': is_playing})
+            # Prune like the other event lists — long live sessions with many
+            # start/stop transitions must not grow this without bound.
+            cutoff = now - self._window_sec * 2
+            self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
     def set_intent(self, intent: str) -> None:
         with self._lock:
