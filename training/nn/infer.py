@@ -185,13 +185,25 @@ def _sigmoid(logits: np.ndarray) -> np.ndarray:
 
 
 class TrackPosteriors(NamedTuple):
-    """The arrays one sidecar holds, plus the counts worth reporting."""
+    """The arrays one sidecar holds, the counts worth reporting, and the
+    geometry they were actually produced with.
+
+    The geometry travels with the result rather than being re-read from the
+    module constants at write time.  ``infer_track`` takes window, hop and edge
+    as arguments -- a sweep or a test may pass anything -- and a sidecar that
+    recorded the defaults while holding non-default numbers would be worse than
+    an unlabelled one: ``sidecar_is_current`` would accept it, and a decoder
+    would read a 200 ms hop as a 93 ms one with nothing to notice.
+    """
 
     label_post: np.ndarray      # [n // LABEL_POOL, NUM_CLASSES] float32
     boundary: np.ndarray        # [n] float32, mean of the per-window sigmoids
     coverage: np.ndarray        # [n] uint16, windows that voted on each frame
     n_frames: int
     windows: int
+    window_frames: int
+    hop_frames: int
+    edge_frames: int
 
 
 def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
@@ -200,12 +212,28 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
     """Whole-track posteriors by sliding ``sess``'s graph over ``mel``.
 
     ``mel`` is ``[n, n_mels]`` as written by the batch sim.  Returns the label
-    posteriors on the pooled grid, the mean boundary score at frame rate, and
-    the per-frame window count.
+    posteriors on the pooled grid, the mean boundary score at frame rate, the
+    per-frame window count, and the geometry all three were produced with.
     """
     n_frames = usable_frames(len(mel))
     if n_frames < LABEL_POOL:
         raise RuntimeError(f"track has {len(mel)} mel frames -- too short to pool")
+    # Pool alignment is what lets the pooled label slice be taken straight out
+    # of the window's output instead of resampled, so it is checked rather than
+    # asserted in a comment: an unaligned window or hop silently shifts every
+    # label posterior by half a pooled frame.
+    for name, value in (("window_frames", window_frames), ("hop_frames", hop_frames),
+                        ("edge_frames", edge_frames)):
+        if int(value) % LABEL_POOL:
+            raise ValueError(
+                f"{name}={value} is not a multiple of the label pooling factor "
+                f"{LABEL_POOL} -- the pooled label grid would not line up"
+            )
+    if hop_frames > window_frames - 2 * edge_frames:
+        raise ValueError(
+            f"hop {hop_frames} exceeds the usable window interior "
+            f"{window_frames - 2 * edge_frames} -- frames would go uncovered"
+        )
     mel = np.ascontiguousarray(mel[:n_frames], dtype=np.float32)
 
     padded = mel
@@ -220,6 +248,11 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
 
     offsets = window_offsets(n_frames, window_frames=window_frames,
                              hop_frames=hop_frames)
+    if any(offset % LABEL_POOL for offset in offsets):   # pragma: no cover
+        raise ValueError(
+            f"window offsets {[o for o in offsets if o % LABEL_POOL][:4]} are not "
+            f"pool-aligned despite aligned inputs -- window_offsets has changed"
+        )
     for index, offset in enumerate(offsets):
         label_logits, boundary_logits = run_window(
             sess, padded[offset:offset + window_frames][None])
@@ -234,8 +267,8 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
             continue
         boundary_sum[lo:hi] += boundary[lo - offset:hi - offset]
         coverage[lo:hi] += 1
-        # Frame spans are pool-aligned by construction (offset, edge and window
-        # are all multiples of LABEL_POOL), so the pooled slice is exact.
+        # Frame spans are pool-aligned because offset, edge and window all are
+        # (checked above), so the pooled slice is exact rather than rounded.
         label_sum[lo // LABEL_POOL:hi // LABEL_POOL] += \
             label[(lo - offset) // LABEL_POOL:(hi - offset) // LABEL_POOL]
 
@@ -248,8 +281,9 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
     pooled_coverage = coverage[::LABEL_POOL].astype(np.float64)
     label_post = (label_sum / pooled_coverage[:, None]).astype(np.float32)
     boundary_mean = (boundary_sum / coverage).astype(np.float32)
-    return TrackPosteriors(label_post, boundary_mean,
-                           coverage.astype(np.uint16), n_frames, len(offsets))
+    return TrackPosteriors(label_post, boundary_mean, coverage.astype(np.uint16),
+                           n_frames, len(offsets), int(window_frames),
+                           int(hop_frames), int(edge_frames))
 
 
 # --------------------------------------------------------------------------- #
@@ -265,6 +299,10 @@ def posterior_arrays(track: TrackPosteriors, model_sha: str) -> dict:
     song time of its LAST frame (``label_t0 + j * label_frame_sec``), the
     convention ``WindowDataset`` pooled its targets on.  A decoder that assumed
     both grids share an origin would read every label ~46 ms early.
+
+    The window geometry comes from ``track``, not from this module's constants:
+    the file has to describe the run that produced it, or the cache key built on
+    it is a statement about the defaults rather than about the contents.
     """
     return {
         "label_post": track.label_post,
@@ -277,9 +315,9 @@ def posterior_arrays(track: TrackPosteriors, model_sha: str) -> dict:
         "label_pool": np.int32(LABEL_POOL),
         "n_frames": np.int32(track.n_frames),
         "windows": np.int32(track.windows),
-        "window_frames": np.int32(WINDOW_FRAMES),
-        "hop_frames": np.int32(HOP_FRAMES),
-        "edge_frames": np.int32(EDGE_FRAMES),
+        "window_frames": np.int32(track.window_frames),
+        "hop_frames": np.int32(track.hop_frames),
+        "edge_frames": np.int32(track.edge_frames),
         "model_sha": np.str_(model_sha),
     }
 
@@ -395,8 +433,21 @@ def generate(data_dir, *, model_path=None, out_dir=None, ids=None,
             # failure is recorded and re-reported at the end rather than logged
             # and forgotten: a silently short posterior set would show up in Task
             # 6 as an unexplained corpus size.
-            print(f"  FAILED {youtube_id}: {error!r}", flush=True)
+            #
+            # A sidecar left over from an older model or geometry is deleted on
+            # the way out.  Otherwise the manifest says "failed" while the file
+            # on disk still answers to `np.load`, and the next reader consumes
+            # last week's posteriors believing they are this model's.  A file
+            # that *is* current (only reachable under --force, where the recompute
+            # was discretionary) is left alone -- a transient read error must not
+            # destroy a good artifact.
+            stale = path.exists() and not sidecar_is_current(path, model_sha)
+            if stale:
+                path.unlink(missing_ok=True)
+            print(f"  FAILED {youtube_id}: {error!r}"
+                  f"{' (removed stale sidecar)' if stale else ''}", flush=True)
             return {"youtube_id": youtube_id, "cached": False,
+                    "removed_stale": stale,
                     "error": f"{type(error).__name__}: {error}"}
         return {"youtube_id": youtube_id, "cached": False,
                 "frames": track.n_frames, "windows": track.windows,

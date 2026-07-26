@@ -556,6 +556,63 @@ def test_label_posteriors_are_probabilities_on_the_pooled_grid():
     assert (result.label_post >= 0.0).all()
 
 
+def test_a_sidecar_records_the_geometry_it_was_actually_run_with():
+    """`infer_track` takes the geometry as arguments, so writing the module
+    constants into the file would make a non-default run describe itself as a
+    default one -- and `sidecar_is_current` would then accept it, handing the
+    decoder a hop it is not expecting with nothing to notice."""
+    frames = 3 * WINDOW_FRAMES
+    hop, edge = 4 * HOP_FRAMES, 2 * EDGE_FRAMES
+    stub = _StubSession(lambda index, _p: _pooled(index * 0.0),
+                        lambda index, _p: np.zeros_like(index))
+
+    result = infer_track(stub, _indexed_mel(frames), hop_frames=hop, edge_frames=edge)
+    arrays = posterior_arrays(result, "0" * 64)
+
+    assert (result.hop_frames, result.edge_frames) == (hop, edge)
+    assert int(arrays["hop_frames"]) == hop
+    assert int(arrays["edge_frames"]) == edge
+    assert int(arrays["window_frames"]) == WINDOW_FRAMES
+    assert result.windows == len(window_offsets(frames, hop_frames=hop))
+
+
+def test_a_sidecar_from_a_non_default_geometry_is_not_treated_as_current(tmp_path):
+    path = tmp_path / "a.npz"
+    frames = 3 * WINDOW_FRAMES
+    stub = _StubSession(lambda index, _p: _pooled(index * 0.0),
+                        lambda index, _p: np.zeros_like(index))
+    result = infer_track(stub, _indexed_mel(frames), hop_frames=4 * HOP_FRAMES)
+
+    save_posteriors(path, posterior_arrays(result, "0" * 64))
+
+    assert not sidecar_is_current(path, "0" * 64)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"hop_frames": HOP_FRAMES + 1},
+    {"edge_frames": EDGE_FRAMES + 1},
+    {"window_frames": WINDOW_FRAMES + 1},
+])
+def test_infer_track_refuses_a_geometry_that_breaks_pool_alignment(kwargs):
+    """An unaligned window or hop shifts every label posterior by half a pooled
+    frame, and the slice arithmetic would keep working."""
+    stub = _StubSession(lambda index, _p: _pooled(index * 0.0),
+                        lambda index, _p: np.zeros_like(index))
+
+    with pytest.raises(ValueError, match="multiple of the label pooling factor"):
+        infer_track(stub, _indexed_mel(2 * WINDOW_FRAMES), **kwargs)
+
+
+def test_infer_track_refuses_a_hop_wider_than_the_window_interior():
+    """Frames no window votes on would divide by a zero coverage count."""
+    stub = _StubSession(lambda index, _p: _pooled(index * 0.0),
+                        lambda index, _p: np.zeros_like(index))
+
+    with pytest.raises(ValueError, match="usable window interior"):
+        infer_track(stub, _indexed_mel(2 * WINDOW_FRAMES),
+                    hop_frames=WINDOW_FRAMES - 2 * EDGE_FRAMES + LABEL_POOL)
+
+
 def test_a_track_shorter_than_one_window_is_padded_not_dropped():
     frames = WINDOW_FRAMES // 2
     stub = _StubSession(lambda index, _p: _pooled(index * 0.0),
@@ -584,19 +641,28 @@ def test_an_odd_frame_count_is_truncated_to_the_pooled_grid():
 # --------------------------------------------------------------------------- #
 
 
-def _arrays(seed=0):
+def _arrays(seed=0, **geometry):
     rng = np.random.default_rng(seed)
     label = rng.random((10, NUM_CLASSES)).astype(np.float32)
+    shape = {"window_frames": WINDOW_FRAMES, "hop_frames": HOP_FRAMES,
+             "edge_frames": EDGE_FRAMES, **geometry}
     track = TrackPosteriors(label / label.sum(1, keepdims=True),
                             rng.random(20).astype(np.float32),
-                            np.full(20, 3, dtype=np.uint16), 20, 7)
+                            np.full(20, 3, dtype=np.uint16), 20, 7, **shape)
     return posterior_arrays(track, "0" * 64)
 
 
 def test_sidecar_bytes_are_a_pure_function_of_their_contents(tmp_path):
-    """`np.savez` stamps every member with the wall clock, so two identical
-    runs produce two different files -- which would void the plan's
-    determinism contract without changing a single number."""
+    """Two identical runs must produce the same file, and half of that is the
+    zip container rather than the numbers.
+
+    ``np.savez`` happens to satisfy this on CPython 3.11 -- ``ZipFile.open``
+    builds a ``ZipInfo`` whose ``date_time`` defaults to the 1980 epoch -- but
+    that is an implementation default rather than an API promise, and
+    ``savez_compressed`` additionally folds the zlib build into the bytes.  The
+    writer under test owns the order, the epoch and the compression method
+    itself so the guarantee is about the pipeline and not about this machine.
+    """
     first, second = tmp_path / "a.npz", tmp_path / "b.npz"
 
     save_posteriors(first, _arrays())
@@ -677,9 +743,7 @@ def test_sidecar_is_current_only_for_this_model_and_this_geometry(tmp_path):
 
 def test_sidecar_is_current_rejects_a_changed_hop(tmp_path):
     path = tmp_path / "a.npz"
-    arrays = _arrays()
-    arrays["hop_frames"] = np.int32(HOP_FRAMES + LABEL_POOL)
-    save_posteriors(path, arrays)
+    save_posteriors(path, _arrays(hop_frames=HOP_FRAMES + LABEL_POOL))
 
     assert not sidecar_is_current(path, "0" * 64)
 
@@ -782,6 +846,38 @@ def test_generate_records_a_broken_track_and_finishes_the_rest(tmp_path, graph):
     broken = [r for r in manifest["records"] if r["youtube_id"] == "bbb"]
     assert broken and "error" in broken[0]
     assert not (data_dir / POSTERIORS_DIR / "bbb.npz").exists()
+
+
+def test_a_failed_track_does_not_leave_an_older_models_sidecar_readable(tmp_path, graph):
+    """The manifest says "failed" but `np.load` still succeeds -- so a reader
+    would consume last week's posteriors believing they are this model's."""
+    data_dir, model_path, ids = _mini_corpus(tmp_path, graph)
+    stale = data_dir / POSTERIORS_DIR / "aaa.npz"
+    save_posteriors(stale, _arrays())                  # a different model_sha
+    (data_dir / "features" / "aaa.npz").write_bytes(b"not an npz")
+
+    manifest = generate(data_dir, model_path=model_path, ids=ids,
+                        workers=1, progress_every=0)
+
+    assert manifest["failed"] == 1
+    assert not stale.exists()
+    assert [r for r in manifest["records"] if r["youtube_id"] == "aaa"][0]["removed_stale"]
+
+
+def test_a_forced_recompute_that_fails_keeps_the_current_sidecar(tmp_path, graph):
+    """The mirror image: under --force the file on disk is already this model's
+    answer, so a transient read error must not destroy a good artifact."""
+    data_dir, model_path, ids = _mini_corpus(tmp_path, graph)
+    generate(data_dir, model_path=model_path, ids=ids, workers=1, progress_every=0)
+    good = data_dir / POSTERIORS_DIR / "aaa.npz"
+    before = good.read_bytes()
+    (data_dir / "features" / "aaa.npz").write_bytes(b"not an npz")
+
+    manifest = generate(data_dir, model_path=model_path, ids=ids, workers=1,
+                        force=True, progress_every=0)
+
+    assert manifest["failed"] == 1
+    assert good.read_bytes() == before
 
 
 # --------------------------------------------------------------------------- #
