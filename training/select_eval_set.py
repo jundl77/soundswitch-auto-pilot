@@ -81,7 +81,6 @@ from raveform_fetch_annotations import (  # noqa: E402
     annotations_dir,
     load_tracks,
     parse_sections,
-    youtube_id,
 )
 from raveform_manifest import canonical_runs  # noqa: E402
 
@@ -554,6 +553,14 @@ def main(argv: list | None = None) -> int:
     candidates = build_candidates(data_dir, ok_rows, load_tracks(data_dir))
     eligible = [candidate for candidate in candidates if is_eligible(candidate)]
     picks = select(candidates, size=args.size, seed=args.seed)
+    if not picks:
+        # Loud and specific: an empty selection means the gate or the fetch has
+        # not run, not that the corpus is merely thin.  Crashing in the summary
+        # printer would hide which of the two it was.
+        print(f"ERROR: no track in {len(candidates)} candidate(s) satisfies the "
+              f"criteria (duration {MIN_DURATION_SEC:.0f}-{MAX_DURATION_SEC:.0f} s, "
+              f">= {MIN_BOUNDARIES} v1 boundaries) -- nothing written")
+        return 1
     if len(picks) < args.size:
         print(f"WARNING: only {len(picks)}/{args.size} tracks satisfy the criteria "
               f"-- the corpus is too small or too uniform for this size")
