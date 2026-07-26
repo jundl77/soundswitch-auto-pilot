@@ -90,9 +90,26 @@ class MusicAnalyser:
 
     def get_bpm(self) -> float:
         if self.is_playing:
-            return self.tempo_o.get_bpm()
+            return self._fold_bpm(self.tempo_o.get_bpm())
         else:
             return 0
+
+    @staticmethod
+    def _fold_bpm(bpm: float) -> float:
+        """Fold BPM into [85, 170) by octave halving/doubling.
+
+        aubio locks onto double/half tempo during warmup and on ambiguous
+        material (observed: 257.8 BPM for the first ~6 beats of every track).
+        EDM lives in one tempo octave; folding removes the ambiguity without
+        touching the beat phase.
+        """
+        if bpm <= 0:
+            return 0.0
+        while bpm >= 170.0:
+            bpm /= 2.0
+        while bpm < 85.0:
+            bpm *= 2.0
+        return bpm
 
     def is_song_playing(self) -> bool:
         return self.is_playing

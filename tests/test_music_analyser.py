@@ -144,3 +144,29 @@ def test_is_silence_single_loud_band(analyser):
 def test_dead_accumulation_arrays_removed(analyser):
     assert not hasattr(analyser, 'mfccs')
     assert not hasattr(analyser, 'energies')
+
+
+# ---------------------------------------------------------------------------
+# _fold_bpm — octave folding into [85, 170)
+# ---------------------------------------------------------------------------
+
+def test_fold_bpm_double_tempo_folds_down():
+    # aubio warmup double-tempo lock: 257.8 must fold to 128.9
+    assert MusicAnalyser._fold_bpm(257.8) == pytest.approx(128.9)
+
+
+def test_fold_bpm_half_tempo_folds_up():
+    assert MusicAnalyser._fold_bpm(64.0) == pytest.approx(128.0)
+
+
+def test_fold_bpm_in_range_untouched():
+    assert MusicAnalyser._fold_bpm(128.0) == pytest.approx(128.0)
+
+
+def test_fold_bpm_boundary_170_folds_to_85():
+    assert MusicAnalyser._fold_bpm(170.0) == pytest.approx(85.0)
+
+
+def test_fold_bpm_zero_and_negative_return_zero():
+    assert MusicAnalyser._fold_bpm(0.0) == 0.0
+    assert MusicAnalyser._fold_bpm(-10.0) == 0.0
