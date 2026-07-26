@@ -198,6 +198,52 @@ Do NOT open a PR — the coordinator reviews first.
 
 ---
 
+### Task 6: Full-corpus validation — every track accounted for
+
+**Files:**
+- Create: `training/raveform_validate.py`
+- Data: `<data-dir>/validation_report.json`, `<data-dir>/validation_report.txt`, `<data-dir>/checksums.sha256`
+
+**Interfaces:**
+- Consumes: `manifest.csv`, `<data-dir>/annotations/`, `<data-dir>/audio/`, `downloaded.txt`, `failed.jsonl`.
+- Produces: a validation verdict where **OK + UNAVAILABLE-with-recorded-reason = manifest row count, zero unexplained gaps.**
+
+**Why:** the owner's requirement, verbatim in spirit: do not declare this corpus done until every single song is either present-and-correct or precisely recorded as unobtainable. "Present" is not "a file exists" — files can be truncated, silent, or the wrong recording.
+
+- [ ] **Step 1: Write the validator**
+
+`training/raveform_validate.py` (same `--data-dir` convention). For EVERY manifest row classify exactly one of:
+- **OK** — file exists AND full-file decode passes (`ffmpeg -v error -i <file> -f null -` with empty stderr) AND ffprobe duration within max(±10 s, ±3%) of the annotation's `total_sec`.
+- **DURATION_MISMATCH** — decodes cleanly but duration outside tolerance (likely a different edit/version on YouTube) — listed individually with both durations.
+- **CORRUPT** — exists but decode errors or unreadable.
+- **MISSING** — in manifest, not on disk, not in `failed.jsonl` (never attempted / silently lost).
+- **UNAVAILABLE** — in `failed.jsonl` with its recorded yt-dlp error tail.
+
+Also: (a) orphan check — every file in `audio/` maps back to a manifest row; (b) annotation check — every annotation file parses and its track appears in the manifest; (c) write `checksums.sha256` (sha256 of every OK file) as the local integrity baseline for future re-validation — YouTube has no canonical hashes, so this baseline plus the decode check IS the correctness mechanism; (d) write `validation_report.json` (machine: counts + per-track status + reasons) and `validation_report.txt` (human summary).
+
+- [ ] **Step 2: First validation run**
+
+Run it over the completed download. Expect nonzero MISSING/CORRUPT on a corpus this size.
+
+- [ ] **Step 3: Retry pass**
+
+For every MISSING, CORRUPT, and UNAVAILABLE id: re-run the downloader for exactly those ids (`--retry-failed` plus explicit id list for MISSING/CORRUPT; delete the corrupt files first). Then re-run the validator.
+
+- [ ] **Step 4: Converge**
+
+Repeat Step 3 at most twice more (3 retry passes total). The final state must satisfy: `OK + DURATION_MISMATCH + UNAVAILABLE == manifest count` and `MISSING == CORRUPT == 0`. Every UNAVAILABLE entry carries a concrete recorded reason (video removed / private / geo-blocked / bot-check). DURATION_MISMATCH entries are kept on disk but individually listed for the owner's judgment.
+
+- [ ] **Step 5: Commit the validator + final report**
+
+```bash
+git add training/raveform_validate.py
+git commit -m "raveform: full-corpus validator — every track OK or precisely recorded"
+```
+
+Paste the final validation summary (counts by category + the full UNAVAILABLE/DURATION_MISMATCH lists) into your report.
+
+---
+
 ## Final report (return this to the coordinator)
 
 1. Annotation count, label vocabulary observed, per-label duration stats and transition counts (Task 3 output).
