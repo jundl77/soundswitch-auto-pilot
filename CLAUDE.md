@@ -137,6 +137,9 @@ When moving away from SoundSwitch to direct DMX:
 # Install dependencies (requires uv: https://github.com/astral-sh/uv)
 uv sync --extra dev --extra visualizer
 
+# The app is installed as an editable console script, so `uv run auto_pilot ...`
+# and `python auto_pilot ...` are equivalent.
+
 # List available MIDI and audio devices
 python auto_pilot list
 

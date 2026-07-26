@@ -205,6 +205,12 @@ signal.signal(signal.SIGINT, death_handler)
 signal.signal(signal.SIGTERM, death_handler)
 
 
+def run_sync():
+    """Console-script entry point (`uv run auto_pilot ...`)."""
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(main())
+
+
 async def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(help='Functionality to start')
