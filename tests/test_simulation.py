@@ -89,9 +89,12 @@ async def test_runs_much_faster_than_real_time():
 
 @pytest.mark.integration
 async def test_simulation_is_deterministic():
-    """A second full run produces a byte-identical report."""
+    """A second full run produces a byte-identical report (and checksum)."""
+    from simulate.evaluator import report_checksum
     first = (await _sample_run())['report']
     _, event_buffer, command_queue = await run_fast_simulation(
         FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, SAMPLE_SONG)
     )
-    assert event_buffer.to_report(command_queue.get_timing_log()) == first
+    second = event_buffer.to_report(command_queue.get_timing_log())
+    assert second == first
+    assert report_checksum(second) == report_checksum(first)

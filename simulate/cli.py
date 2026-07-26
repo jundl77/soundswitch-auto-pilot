@@ -42,11 +42,12 @@ def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
 
 
 def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
-    from simulate.evaluator import evaluate, print_evaluation
+    from simulate.evaluator import evaluate, print_evaluation, report_checksum
     report = event_buffer.to_report(command_queue.get_timing_log())
+    report['checksum'] = report_checksum(report)
     with open(report_path, 'w') as f:
         json.dump(report, f, indent=2, default=str)
-    print(f'[simulate] report written → {report_path}')
+    print(f'[simulate] report written → {report_path}  (sha256 {report["checksum"][:16]})')
     result = evaluate(report)
     print_evaluation(result)
     return result['passed']
