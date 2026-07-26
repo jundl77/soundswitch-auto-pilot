@@ -26,13 +26,18 @@ the neural classifier trains on, so its numbers are the ones a model will be
 compared against.  ``canonical`` (7 classes) is diagnostic -- it keeps
 ``cooldown`` and ``altoutro`` separate, which is where GROOVE actually lives.
 
-**(c) Boundary-F1** at three tolerances: intent-change instants against label
+**(c) Boundary-F1** at three tolerances: state-change instants against label
 boundary instants, overall and broken out per boundary type (``-> drop`` is the
 show-critical one).
 
-**(d) Flicker rate** -- intent changes that are NOT near any real boundary, per
+**(d) Flicker rate** -- state changes that are NOT near any real boundary, per
 audience-minute.  Continuity is the product metric: a classifier that is right
 on average but twitches every four seconds is unusable on a dance floor.
+
+(c) and (d) are reported for TWO change streams -- the intent stream (every
+lighting change; the owner's continuity metric) and the class stream (changes
+of label class only; the only fair comparand for a model that predicts label
+classes and therefore cannot express DROP -> PEAK).  See ``STREAM_ORDER``.
 
 **(e) Worst-15 songs** with their confusion rows, so failures can be listened to.
 
@@ -156,6 +161,26 @@ TOLERANCES_SEC = (0.5, 2.0, 4.0)
 # The tolerance the headline flicker number and the worst-song ranking use.
 PRIMARY_TOLERANCE_SEC = 2.0
 
+# Two change streams, because "how often did it change" has two honest answers
+# and they are not interchangeable:
+#
+#   intent  the committed LightIntent stream.  Every change here is a lighting
+#           change -- the engine re-picks an effect on each one -- so this is
+#           the show as an audience experiences it, and it is the owner's
+#           continuity metric.
+#   class   the same stream mapped into the label space FIRST, then
+#           differenced, so a DROP -> PEAK or GROOVE -> BREAKDOWN move (same
+#           label class, different lights) is not counted.  A model predicting
+#           in `label_v1` emits a class stream by construction, so this is the
+#           only stream a model may be compared against.
+#
+# The intent stream is a superset of the class stream: on this corpus 15.5% of
+# intent changes leave the v1 class unchanged.  Quoting an intent-stream flicker
+# rate at a model that can only produce class changes overstates the model's
+# advantage; quoting a class-stream rate at the owner understates what the room
+# sees.  Both are reported everywhere.
+STREAM_ORDER = ("intent", "class")
+
 # A beat may claim at most this multiple of its track's median beat interval.
 # Beyond it the pipeline has lost beats, and extrapolating one classification
 # across the hole would invent show time nobody observed.
@@ -258,6 +283,21 @@ def intent_changes(times, intents) -> list[tuple[float, str]]:
     ]
 
 
+def class_changes(times, intents, space: str) -> list[tuple[float, tuple]]:
+    """``(t, claimed_labels)`` for every change of the CLAIMED LABEL CLASS.
+
+    The intent is mapped into the label space before differencing, so a move
+    between two intents that claim the same class -- DROP to PEAK, or GROOVE to
+    BREAKDOWN in v1 -- is not a change here even though the lights changed.
+    This is the stream a model predicting in the label space can produce, and
+    therefore the only fair comparand for one.
+    """
+    claims = [(t, INTENT_TO_LABELS[intent][space])
+              for t, intent in zip(times, intents) if intent != NO_INTENT]
+    return [claims[i] for i in range(1, len(claims))
+            if claims[i][1] != claims[i - 1][1]]
+
+
 def label_boundaries(times, labels) -> list[tuple[float, str]]:
     """``(t, new_label)`` for every label change, stamped like intent changes.
 
@@ -291,6 +331,39 @@ def match_events(truth, pred, tolerance: float) -> int:
             matched += 1
             index += 1
     return matched
+
+
+def typed_predictions(changes, truth_by_label: dict) -> dict:
+    """Split a change stream into one bucket per claimed class -- a PARTITION.
+
+    A change into an unambiguous class goes to that class.  A change into an
+    ambiguous one (ATMOSPHERIC claims intro AND outro) is still ONE prediction
+    and must be counted once, or its two typed rows each carry a copy of it and
+    both precision denominators inflate.  It is credited to whichever of its
+    claimed classes it is nearest a real boundary of -- the same "correct if
+    either matches" reading the confusion matrix uses -- with the claim order as
+    a deterministic tie-break when neither class has a boundary at all.
+
+    The alternative, splitting the credit 0.5/0.5, makes ``matched`` (a count of
+    pairs) and ``n_pred`` (a sum of fractions) incommensurable: one ambiguous
+    change matching one boundary would score precision 2.0.
+
+    Guarantees ``sum(len(bucket)) == len(changes)``, which is asserted by the
+    tests and visible in the report as the typed rows summing to the overall.
+    """
+    buckets: dict = {label: [] for label in truth_by_label}
+    for instant, claimed in changes:
+        if len(claimed) == 1:
+            buckets[claimed[0]].append(instant)
+            continue
+        best, best_distance = claimed[0], float("inf")
+        for label in claimed:
+            boundaries = truth_by_label.get(label) or []
+            distance = min((abs(t - instant) for t in boundaries), default=float("inf"))
+            if distance < best_distance:
+                best, best_distance = label, distance
+        buckets[best].append(instant)
+    return buckets
 
 
 def flicker_instants(pred, truth, tolerance: float) -> list[float]:
@@ -330,13 +403,21 @@ def prf(tp: float, fp: float, fn: float) -> tuple[float, float, float]:
 
 def _empty_boundary(labels) -> dict:
     return {
-        tolerance: {
-            "overall": {"n_truth": 0, "n_pred": 0, "matched": 0},
-            "by_type": {label: {"n_truth": 0, "n_pred": 0, "matched": 0}
-                        for label in labels},
+        stream: {
+            tolerance: {
+                "overall": {"n_truth": 0, "n_pred": 0, "matched": 0},
+                "by_type": {label: {"n_truth": 0, "n_pred": 0, "matched": 0}
+                            for label in labels},
+            }
+            for tolerance in TOLERANCES_SEC
         }
-        for tolerance in TOLERANCES_SEC
+        for stream in STREAM_ORDER
     }
+
+
+def _empty_flicker() -> dict:
+    return {stream: {tolerance: 0 for tolerance in TOLERANCES_SEC}
+            for stream in STREAM_ORDER}
 
 
 @dataclasses.dataclass
@@ -421,16 +502,25 @@ class Score:
 
     @property
     def flicker_per_minute(self) -> dict:
+        """Loose changes per audience-minute, per stream.
+
+        The denominator is total evaluated show time, NOT the time that carried
+        a prediction: a change is loose relative to the whole show, and using
+        the scored time would make the rate creep up as unpredicted beats grow.
+        """
         minutes = self.exposure_sec / 60.0
         return {
-            tolerance: (count / minutes if minutes > 0 else 0.0)
-            for tolerance, count in self.flicker.items()
+            stream: {
+                tolerance: (count / minutes if minutes > 0 else 0.0)
+                for tolerance, count in per_tolerance.items()
+            }
+            for stream, per_tolerance in self.flicker.items()
         }
 
-    def boundary_prf(self, tolerance: float, kind: str = "overall",
+    def boundary_prf(self, stream: str, tolerance: float, kind: str = "overall",
                      label: str | None = None) -> tuple[float, float, float]:
-        cell = (self.boundary[tolerance]["overall"] if kind == "overall"
-                else self.boundary[tolerance]["by_type"][label])
+        cell = (self.boundary[stream][tolerance]["overall"] if kind == "overall"
+                else self.boundary[stream][tolerance]["by_type"][label])
         return prf(cell["matched"],
                    cell["n_pred"] - cell["matched"],
                    cell["n_truth"] - cell["matched"])
@@ -452,7 +542,7 @@ def score_track(track: TrackBeats, space: str) -> Score:
         no_intent_by_label={label: 0.0 for label in spec.labels},
         clamped_sec=clamped,
         boundary=_empty_boundary(spec.labels),
-        flicker={tolerance: 0 for tolerance in TOLERANCES_SEC},
+        flicker=_empty_flicker(),
     )
 
     for intent, label, weight in zip(track.intents, labels, weights):
@@ -492,29 +582,39 @@ def score_track(track: TrackBeats, space: str) -> Score:
         else:
             score.no_intent_interior += 1
 
-    changes = intent_changes(track.times, track.intents)
     truth = label_boundaries(track.times, labels)
-    change_times = [t for t, _ in changes]
     truth_times = [t for t, _ in truth]
+    truth_by_label = {label: [t for t, new in truth if new == label]
+                      for label in spec.labels}
 
-    for tolerance in TOLERANCES_SEC:
-        cell = score.boundary[tolerance]
-        cell["overall"] = {
-            "n_truth": len(truth_times),
-            "n_pred": len(change_times),
-            "matched": match_events(truth_times, change_times, tolerance),
-        }
-        for label in spec.labels:
-            typed_truth = [t for t, new in truth if new == label]
-            typed_pred = [t for t, intent in changes
-                          if label in INTENT_TO_LABELS[intent][space]]
-            cell["by_type"][label] = {
-                "n_truth": len(typed_truth),
-                "n_pred": len(typed_pred),
-                "matched": match_events(typed_truth, typed_pred, tolerance),
+    # Both streams carry (instant, claimed labels), so the typed split below is
+    # written once.  The intent stream maps AFTER differencing, the class stream
+    # maps BEFORE it -- that difference is the whole point (see STREAM_ORDER).
+    streams = {
+        "intent": [(t, INTENT_TO_LABELS[intent][space])
+                   for t, intent in intent_changes(track.times, track.intents)],
+        "class": class_changes(track.times, track.intents, space),
+    }
+
+    for stream, changes in streams.items():
+        change_times = [t for t, _ in changes]
+        buckets = typed_predictions(changes, truth_by_label)
+        for tolerance in TOLERANCES_SEC:
+            cell = score.boundary[stream][tolerance]
+            cell["overall"] = {
+                "n_truth": len(truth_times),
+                "n_pred": len(change_times),
+                "matched": match_events(truth_times, change_times, tolerance),
             }
-        score.flicker[tolerance] = len(
-            flicker_instants(change_times, truth_times, tolerance))
+            for label in spec.labels:
+                cell["by_type"][label] = {
+                    "n_truth": len(truth_by_label[label]),
+                    "n_pred": len(buckets[label]),
+                    "matched": match_events(truth_by_label[label],
+                                            buckets[label], tolerance),
+                }
+            score.flicker[stream][tolerance] = len(
+                flicker_instants(change_times, truth_times, tolerance))
     return score
 
 
@@ -532,7 +632,7 @@ def aggregate(scores: list[Score]) -> Score:
         counts={label: [0.0, 0.0, 0.0] for label in spec.labels},
         no_intent_by_label={label: 0.0 for label in spec.labels},
         boundary=_empty_boundary(spec.labels),
-        flicker={tolerance: 0 for tolerance in TOLERANCES_SEC},
+        flicker=_empty_flicker(),
     )
     for score in scores:
         if score.space != space:
@@ -555,14 +655,15 @@ def aggregate(scores: list[Score]) -> Score:
                 total.counts[label][index] += count[index]
         for label, seconds in score.no_intent_by_label.items():
             total.no_intent_by_label[label] += seconds
-        for tolerance in TOLERANCES_SEC:
-            for key in ("n_truth", "n_pred", "matched"):
-                total.boundary[tolerance]["overall"][key] += \
-                    score.boundary[tolerance]["overall"][key]
-                for label in spec.labels:
-                    total.boundary[tolerance]["by_type"][label][key] += \
-                        score.boundary[tolerance]["by_type"][label][key]
-            total.flicker[tolerance] += score.flicker[tolerance]
+        for stream in STREAM_ORDER:
+            for tolerance in TOLERANCES_SEC:
+                for key in ("n_truth", "n_pred", "matched"):
+                    total.boundary[stream][tolerance]["overall"][key] += \
+                        score.boundary[stream][tolerance]["overall"][key]
+                    for label in spec.labels:
+                        total.boundary[stream][tolerance]["by_type"][label][key] += \
+                            score.boundary[stream][tolerance]["by_type"][label][key]
+                total.flicker[stream][tolerance] += score.flicker[stream][tolerance]
     return total
 
 
@@ -590,25 +691,81 @@ def _class_table(score: Score) -> dict:
     return table
 
 
-def _boundary_table(score: Score) -> dict:
+def _boundary_table(score: Score, stream: str) -> dict:
     out: dict = {}
     for tolerance in TOLERANCES_SEC:
-        precision, recall, f1 = score.boundary_prf(tolerance)
-        cell = score.boundary[tolerance]["overall"]
+        precision, recall, f1 = score.boundary_prf(stream, tolerance)
+        cell = score.boundary[stream][tolerance]["overall"]
         entry = {
             "overall": {**cell, "precision": _round(precision),
                         "recall": _round(recall), "f1": _round(f1)},
             "by_type": {},
         }
         for label in score.labels:
-            typed = score.boundary[tolerance]["by_type"][label]
-            tprecision, trecall, tf1 = score.boundary_prf(tolerance, "type", label)
+            typed = score.boundary[stream][tolerance]["by_type"][label]
+            tprecision, trecall, tf1 = score.boundary_prf(
+                stream, tolerance, "type", label)
             entry["by_type"][label] = {
                 **typed, "precision": _round(tprecision),
                 "recall": _round(trecall), "f1": _round(tf1),
             }
         out[f"{tolerance}"] = entry
     return out
+
+
+def _stream_block(score: Score, stream: str) -> dict:
+    return {
+        "changes_total":
+            score.boundary[stream][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"],
+        "boundary": _boundary_table(score, stream),
+        "flicker": {f"{tolerance}": count
+                    for tolerance, count in score.flicker[stream].items()},
+        "flicker_per_audience_minute": {
+            f"{tolerance}": _round(rate, 4)
+            for tolerance, rate in score.flicker_per_minute[stream].items()
+        },
+    }
+
+
+def best_achievable_macro_f1(support: dict, unreachable) -> float:
+    """Highest macro-F1 an always-committing system with this vocabulary can reach.
+
+    The naive bound -- reachable classes divided by all classes -- is not
+    attainable, and quoting it as a target is misleading: the truth mass sitting
+    in the unreachable classes does not disappear when the system cannot name
+    them.  Every one of those seconds is still predicted as SOMETHING, so it
+    lands as a false positive on a reachable class and drags that class's
+    precision below 1.0.
+
+    So: assume every reachable class is otherwise perfect (recall 1.0) and
+    allocate the unreachable mass ``U`` across them to do the least damage.
+    A class of support ``S`` carrying extra mass ``x`` scores ``2S / (2S + x)``.
+    That is CONVEX in ``x``, so the mean of them is convex, and a convex
+    function over the simplex ``{x >= 0, sum(x) == U}`` takes its maximum at a
+    VERTEX -- all of the mass on one class -- never spread across them.
+    (Spreading is the *worst* allocation; the interior stationary point of the
+    Lagrangian is the minimum, which is exactly the trap a "water-filling"
+    reading falls into.  The property test pins this.)
+
+    Concentrating the damage on the largest class is therefore optimal, and a
+    reachable class with no ground truth at all absorbs everything for free --
+    its F1 is zero whatever happens to it.
+    """
+    classes = list(support)
+    total = len(classes)
+    if total == 0:
+        return 0.0
+    reachable = [label for label in classes if label not in unreachable]
+    scoring = [label for label in reachable if support[label] > 0.0]
+    extra = sum(max(support[label], 0.0) for label in unreachable)
+    if not scoring:
+        return 0.0
+    if extra <= 0.0 or len(scoring) < len(reachable):
+        # Nothing to absorb, or a zero-support class to dump it all on.
+        return len(scoring) / total
+    biggest = max(support[label] for label in scoring)
+    damaged = 2 * biggest / (2 * biggest + extra)
+    return (len(scoring) - 1 + damaged) / total
 
 
 def _structural(score: Score) -> dict:
@@ -633,9 +790,14 @@ def _structural(score: Score) -> dict:
         "unreachable_label_sec": _round(unreachable_sec, 3),
         "unreachable_label_share": _round(
             unreachable_sec / total_truth if total_truth > 0 else 0.0),
-        "macro_f1_ceiling": _round(
+        # A bound that CANNOT BE EXCEEDED, not a target: it ignores where the
+        # unreachable mass has to go.
+        "macro_f1_upper_bound": _round(
             (len(spec.labels) - len(unreachable)) / len(spec.labels)
             if spec.labels else 0.0),
+        # The number to actually aim a comparison at.
+        "macro_f1_best_achievable": _round(
+            best_achievable_macro_f1(truth_sec, unreachable)),
     }
 
 
@@ -649,15 +811,21 @@ def _song_entry(score: Score) -> dict:
         "accuracy": _round(score.accuracy),
         "f1": {label: _round(score.f1(label)) for label in score.macro_classes},
         "boundary_f1": {
-            f"{tolerance}": _round(score.boundary_prf(tolerance)[2])
-            for tolerance in TOLERANCES_SEC
+            stream: {f"{tolerance}": _round(score.boundary_prf(stream, tolerance)[2])
+                     for tolerance in TOLERANCES_SEC}
+            for stream in STREAM_ORDER
         },
         "flicker_per_audience_minute": {
-            f"{tolerance}": _round(rate, 3)
-            for tolerance, rate in score.flicker_per_minute.items()
+            stream: {f"{tolerance}": _round(rate, 3)
+                     for tolerance, rate in per_tolerance.items()}
+            for stream, per_tolerance in score.flicker_per_minute.items()
         },
-        "intent_changes": score.boundary[PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"],
-        "label_boundaries": score.boundary[PRIMARY_TOLERANCE_SEC]["overall"]["n_truth"],
+        "changes": {
+            stream: score.boundary[stream][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"]
+            for stream in STREAM_ORDER
+        },
+        "label_boundaries":
+            score.boundary["intent"][PRIMARY_TOLERANCE_SEC]["overall"]["n_truth"],
         "confusion_sec": {
             intent: {label: _round(seconds, 3)
                      for label, seconds in row.items() if seconds > 0}
@@ -693,6 +861,7 @@ def evaluate(tracks: list[TrackBeats], worst: int = WORST_SONGS) -> dict:
         ranked = sorted(songs, key=lambda score: (score.macro_f1, score.track_id))
         per_song = [_song_entry(score) for score in songs]
         result["spaces"][space] = {
+            "space": space,
             "caption": SPACES[space].caption,
             "labels": list(SPACES[space].labels),
             "macro_f1": _round(corpus.macro_f1),
@@ -709,17 +878,10 @@ def evaluate(tracks: list[TrackBeats], worst: int = WORST_SONGS) -> dict:
                 label: _round(seconds, 3)
                 for label, seconds in corpus.no_intent_by_label.items()
             },
-            "boundary": _boundary_table(corpus),
-            "flicker": {f"{tolerance}": count
-                        for tolerance, count in corpus.flicker.items()},
-            "flicker_per_audience_minute": {
-                f"{tolerance}": _round(rate, 4)
-                for tolerance, rate in corpus.flicker_per_minute.items()
-            },
-            "intent_changes_total":
-                corpus.boundary[PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"],
+            "streams": {stream: _stream_block(corpus, stream)
+                        for stream in STREAM_ORDER},
             "label_boundaries_total":
-                corpus.boundary[PRIMARY_TOLERANCE_SEC]["overall"]["n_truth"],
+                corpus.boundary["intent"][PRIMARY_TOLERANCE_SEC]["overall"]["n_truth"],
             "structural": _structural(corpus),
             "worst_songs": [_song_entry(score) for score in ranked[:worst]],
             "per_song": per_song,
@@ -847,59 +1009,80 @@ def _per_class_block(space_result: dict) -> list[str]:
     return lines
 
 
+STREAM_CAPTION = {
+    "intent": "intent stream -- every lighting change (the show; owner metric)",
+    "class":  "class  stream -- changes of label class only (model comparand)",
+}
+
+
 def _boundary_block(space_result: dict) -> list[str]:
     lines = [
-        f'  {"boundary set":<22}{"tol":>7}{"truth":>9}{"pred":>9}'
+        "  Two streams, two questions.  Use the INTENT stream to ask how the show",
+        "  behaved: every one of those changes re-picked a lighting effect.  Use the",
+        "  CLASS stream to compare against a model that predicts label classes -- it",
+        "  cannot express a DROP -> PEAK move, so scoring it against intent-stream",
+        "  numbers would credit it for changes it is structurally unable to make.",
+        "",
+        f'  {"stream":<8}{"boundary set":<16}{"tol":>7}{"truth":>9}{"pred":>9}'
         f'{"matched":>9}{"precision":>11}{"recall":>9}{"f1":>8}',
-        "  " + "-" * 82,
+        "  " + "-" * 84,
     ]
-    for tolerance in TOLERANCES_SEC:
-        entry = space_result["boundary"][f"{tolerance}"]
-        cell = entry["overall"]
-        lines.append(
-            f'  {"all boundaries":<22}{f"+/-{tolerance}s":>7}{cell["n_truth"]:>9}'
-            f'{cell["n_pred"]:>9}{cell["matched"]:>9}{cell["precision"]:>11.3f}'
-            f'{cell["recall"]:>9.3f}{cell["f1"]:>8.3f}')
-    lines.append("  " + "-" * 82)
-    for label in space_result["labels"]:
+    for stream in STREAM_ORDER:
         for tolerance in TOLERANCES_SEC:
-            cell = space_result["boundary"][f"{tolerance}"]["by_type"][label]
+            cell = space_result["streams"][stream]["boundary"][f"{tolerance}"]["overall"]
             lines.append(
-                f'  {"-> " + label:<22}{f"+/-{tolerance}s":>7}{cell["n_truth"]:>9}'
-                f'{cell["n_pred"]:>9}{cell["matched"]:>9}{cell["precision"]:>11.3f}'
-                f'{cell["recall"]:>9.3f}{cell["f1"]:>8.3f}')
+                f'  {stream:<8}{"all boundaries":<16}{f"+/-{tolerance}s":>7}'
+                f'{cell["n_truth"]:>9}{cell["n_pred"]:>9}{cell["matched"]:>9}'
+                f'{cell["precision"]:>11.3f}{cell["recall"]:>9.3f}{cell["f1"]:>8.3f}')
+    lines.append("  " + "-" * 84)
+    for label in space_result["labels"]:
+        for stream in STREAM_ORDER:
+            for tolerance in TOLERANCES_SEC:
+                cell = (space_result["streams"][stream]["boundary"]
+                        [f"{tolerance}"]["by_type"][label])
+                lines.append(
+                    f'  {stream:<8}{"-> " + label:<16}{f"+/-{tolerance}s":>7}'
+                    f'{cell["n_truth"]:>9}{cell["n_pred"]:>9}{cell["matched"]:>9}'
+                    f'{cell["precision"]:>11.3f}{cell["recall"]:>9.3f}'
+                    f'{cell["f1"]:>8.3f}')
         lines.append("")
-    lines.append("  typed rows pair boundaries INTO a class with intent changes into an")
-    lines.append("  intent that claims that class; '-> drop' is the show-critical row.")
+    lines.append("  typed rows pair boundaries INTO a class with changes into a state that")
+    lines.append("  claims that class; '-> drop' is the show-critical row.  A change that")
+    lines.append("  claims two classes is credited to one of them (the nearer boundary), so")
+    lines.append("  the typed 'pred' column partitions the stream and sums to the overall.")
     return lines
 
 
 def _flicker_block(space_result: dict) -> list[str]:
-    rates = space_result["flicker_per_audience_minute"]
-    counts = space_result["flicker"]
-    per_song = [song["flicker_per_audience_minute"][f"{PRIMARY_TOLERANCE_SEC}"]
-                for song in space_result["per_song"]]
-    per_song.sort()
     lines = [
-        f'  {"tolerance":<12}{"loose changes":>16}{"of all changes":>17}'
+        f'  {"stream":<8}{"tolerance":<11}{"loose changes":>15}{"of that stream":>17}'
         f'{"per audience-minute":>22}',
-        "  " + "-" * 65,
+        "  " + "-" * 73,
     ]
-    total_changes = space_result["intent_changes_total"] or 1
-    for tolerance in TOLERANCES_SEC:
-        key = f"{tolerance}"
-        lines.append(
-            f'  {f"+/-{tolerance}s":<12}{counts[key]:>16}'
-            f'{100.0 * counts[key] / total_changes:>16.1f}%{rates[key]:>22.2f}')
-    if per_song:
-        def _quantile(fraction: float) -> float:
-            return per_song[min(len(per_song) - 1, int(fraction * len(per_song)))]
-        lines.append("  " + "-" * 65)
-        lines.append(f'  per-song rate at +/-{PRIMARY_TOLERANCE_SEC}s: '
-                     f'median {_quantile(0.5):.2f}, p90 {_quantile(0.9):.2f}, '
-                     f'max {per_song[-1]:.2f} changes/min')
-    lines.append(f'  total intent changes {space_result["intent_changes_total"]}'
-                 f' against {space_result["label_boundaries_total"]} label boundaries')
+    for stream in STREAM_ORDER:
+        block = space_result["streams"][stream]
+        total_changes = block["changes_total"] or 1
+        for tolerance in TOLERANCES_SEC:
+            key = f"{tolerance}"
+            lines.append(
+                f'  {stream:<8}{f"+/-{tolerance}s":<11}{block["flicker"][key]:>15}'
+                f'{100.0 * block["flicker"][key] / total_changes:>16.1f}%'
+                f'{block["flicker_per_audience_minute"][key]:>22.2f}')
+        per_song = sorted(song["flicker_per_audience_minute"][stream]
+                          [f"{PRIMARY_TOLERANCE_SEC}"]
+                          for song in space_result["per_song"])
+        if per_song:
+            def _quantile(fraction: float) -> float:
+                return per_song[min(len(per_song) - 1, int(fraction * len(per_song)))]
+            lines.append(f'           per-song at +/-{PRIMARY_TOLERANCE_SEC}s: '
+                         f'median {_quantile(0.5):.2f}, p90 {_quantile(0.9):.2f}, '
+                         f'max {per_song[-1]:.2f} changes/min '
+                         f'({block["changes_total"]} changes total)')
+        lines.append("")
+    lines.append(f'  against {space_result["label_boundaries_total"]} real label '
+                 f'boundaries.  Flicker asks "was there any musical reason NEAR this')
+    lines.append('  change" (proximity); boundary precision additionally punishes a')
+    lines.append('  correctly-placed decision made twice.  An audience notices the first.')
     return lines
 
 
@@ -916,8 +1099,15 @@ def _structural_block(space_result: dict) -> list[str]:
         f'  ground truth sitting in those classes: '
         f'{structural["unreachable_label_sec"] / 60.0:.1f} min '
         f'({100.0 * structural["unreachable_label_share"]:.1f}% of labelled time)',
-        f'  best macro-F1 reachable without them : '
-        f'{structural["macro_f1_ceiling"]:.3f}',
+        f'  macro-F1 CANNOT EXCEED               : '
+        f'{structural["macro_f1_upper_bound"]:.3f}  (reachable classes / all classes)',
+        f'  best macro-F1 actually achievable    : '
+        f'{structural["macro_f1_best_achievable"]:.3f}  (the unreachable time still '
+        f'has to be',
+        "                                                predicted as something, so it "
+        "lands as",
+        "                                                false positives on the "
+        "reachable classes)",
     ]
     if silent:
         lines += [
@@ -925,7 +1115,8 @@ def _structural_block(space_result: dict) -> list[str]:
             "  This is a STRUCTURAL result, not a tuning error.  Recall on those",
             "  classes is zero because the engine has no state that claims them --",
             "  no threshold change can move it.  Read their rows as 'cannot say',",
-            "  and read the macro-F1 against the ceiling above, not against 1.0.",
+            "  and compare the macro-F1 against the achievable figure above -- the",
+            "  upper bound is a wall, not a target, and nothing can sit on it.",
         ]
     return lines
 
@@ -942,15 +1133,18 @@ def _worst_block(space_result: dict) -> list[str]:
     space = space_result_space(space_result)
     lines = [
         f'  {"track_id":<22}{"macro-F1":>9}{"acc":>7}{"bF1@2s":>8}'
-        f'{"flick/min":>11}{"changes":>9}{"bounds":>8}{"min":>7}',
-        "  " + "-" * 81,
+        f'{"flick/min":>11}{"chg i/c":>10}{"bounds":>8}{"min":>7}   '
+        f'(boundary/flicker: intent stream)',
+        "  " + "-" * 83,
     ]
+    tol = f"{PRIMARY_TOLERANCE_SEC}"
     for song in space_result["worst_songs"]:
+        changes = f'{song["changes"]["intent"]}/{song["changes"]["class"]}'
         lines.append(
             f'  {song["track_id"]:<22}{song["macro_f1"]:>9.3f}{song["accuracy"]:>7.3f}'
-            f'{song["boundary_f1"][f"{PRIMARY_TOLERANCE_SEC}"]:>8.3f}'
-            f'{song["flicker_per_audience_minute"][f"{PRIMARY_TOLERANCE_SEC}"]:>11.2f}'
-            f'{song["intent_changes"]:>9}{song["label_boundaries"]:>8}'
+            f'{song["boundary_f1"]["intent"][tol]:>8.3f}'
+            f'{song["flicker_per_audience_minute"]["intent"][tol]:>11.2f}'
+            f'{changes:>10}{song["label_boundaries"]:>8}'
             f'{song["exposure_sec"] / 60.0:>7.1f}')
         cells = []
         for intent, row in song["confusion_sec"].items():
@@ -1013,9 +1207,9 @@ def render_report(result: dict) -> str:
         lines += _per_class_block(space_result)
         lines += ["", "  ATMOSPHERIC / STRUCTURAL COVERAGE", ""]
         lines += _structural_block(space_result)
-        lines += ["", "  BOUNDARY-F1 -- intent-change instants vs label boundaries", ""]
+        lines += ["", "  BOUNDARY-F1 -- state-change instants vs label boundaries", ""]
         lines += _boundary_block(space_result)
-        lines += ["", "  FLICKER -- intent changes with no boundary nearby", ""]
+        lines += ["", "  FLICKER -- state changes with no boundary nearby", ""]
         lines += _flicker_block(space_result)
         lines += ["", f'  WORST {len(space_result["worst_songs"])} SONGS by macro-F1', ""]
         lines += _worst_block(space_result)

@@ -141,10 +141,10 @@ Prints per-10-second bins (mean RMS, density, kick strength, beat count, dominan
 
 ### Scoring against expert labels
 
-The workflow above tunes by ear against one track. `training/evaluate_against_labels.py` does the same job against 459 expertly annotated ones: it scores the committed intent timeline against the Raveform section labels and prints a time-weighted confusion matrix, per-class F1, boundary-F1 at three tolerances, and a flicker rate. See the root `CLAUDE.md` for the metric design decisions and the current baseline. Two of its results bear directly on the classifier rather than on the harness:
+The workflow above tunes by ear against one track. `training/evaluate_against_labels.py` does the same job against the whole expertly annotated corpus: it scores the committed intent timeline against the Raveform section labels and prints a time-weighted confusion matrix, per-class F1, boundary-F1 at three tolerances, and a flicker rate. Current numbers live in `training/data/raveform/baseline_eval.json` (the corpus is still growing, so they are not copied into documentation); see the root `CLAUDE.md` for the metric design decisions. Two of its results bear directly on the classifier rather than on the harness:
 
 - **ATMOSPHERIC is dead code on this material.** It is the only intent not driven by the beat classifier, and mastered EDM intros and outros have beats, so its timer never trips. Across the whole corpus it was committed zero times, which puts every `intro` and `outro` label permanently out of reach.
-- **The engine changes intent about four times more often than the music changes section**, and roughly nine in ten of those changes are nowhere near a real boundary. The stability pipeline (votes, dwell, invalid-transition guard) stops the timeline from flickering *within* a bar; it does not make the timeline follow structure.
+- **The engine changes intent several times more often than the music changes section**, and the large majority of those changes are nowhere near a real boundary. The stability pipeline (votes, dwell, invalid-transition guard) stops the timeline from flickering *within* a bar; it does not make the timeline follow structure. Note the evaluator reports that count two ways -- every intent change, and only the changes that alter the *label class* -- because a model predicting label classes cannot express a DROP-to-PEAK move and must be compared against the second.
 
 ---
 
