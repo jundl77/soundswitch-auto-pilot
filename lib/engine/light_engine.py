@@ -48,9 +48,13 @@ _DROP_MIN_DENSITY_EXIT       = 3.5   # exit DROP one bucket lower (i.e. at 5 ons
 _DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — kick_strength is the gate)
 
 # Kick detection gate: kick_strength below this means no kick on beats → no DROP.
-# Placed between the measured kick-absent and kick-present populations of the
-# reference track (intro/breakdown windows peak at ~2.0; groove and final drop
-# floor at ~2.5), i.e. in the empty band between the two.
+# Placed between the deciles of the two measured populations on the reference
+# track — kick-absent (intro + breakdown) p90 = 2.16, kick-present (groove +
+# final drop) p10 = 2.55 — not between their extremes: per beat those tails
+# cross (kick-absent max 2.57, kick-present min 2.20).  Windowed, which is how
+# the classifier reads it, 130/130 kicking windows clear this and 1/79 kick-free
+# windows does (max 2.61).  So the gate is a strong majority rule, not a clean
+# partition; anything relying on a single beat's value needs more margin.
 _KICK_PRESENCE_THRESHOLD          = 2.4
 # With no kick to confirm the arrangement, density alone decides, so BREAKDOWN's
 # band widens by this much — entry and exit alike, keeping the hysteresis dead

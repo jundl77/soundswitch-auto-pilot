@@ -203,8 +203,12 @@ class MusicAnalyser:
         and rides well above the background floor; a pad, a rolling bassline or a
         hi-hat-only pattern spreads its sub-bass evenly and stays near 1.0.
 
-        On the reference track this separates the kicking sections (~3.3–4.3)
-        from the intro and breakdown (~1.3–1.7) with no overlap.
+        On the reference track the two populations separate at the decile level
+        but their tails cross: kicking sections median 3.67 / p10 2.55 / min 2.20,
+        kick-free sections median 1.41 / p90 2.16 / max 2.57.  Per beat, 2 of 79
+        kick-free and 3 of 130 kicking beats land on the wrong side of the
+        presence threshold.  The classifier gates on a window mean, not on one
+        beat, which is what pulls those tails back (1 of 79 and 0 of 130).
 
         The value lags by one beat: a beat's own window is not complete when
         aubio reports it (see `_resolve_pending_kicks`).  Over the multi-second
