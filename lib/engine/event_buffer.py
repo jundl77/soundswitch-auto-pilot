@@ -8,14 +8,21 @@ Dash server thread via snapshot(). The only shared state between threads.
 import threading
 from collections import deque
 
+from lib.analyser.music_analyser import KICK_UNKNOWN
 from lib.clock import Clock, SYSTEM_CLOCK
 
 
 class EventBuffer:
-    def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK):
+    def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK,
+                 look_ahead_sec: float = 0.0):
         self._lock = threading.Lock()
         self._window_sec = window_sec
         self._clock = clock
+        # Beats are stamped in song time; intent/effect blocks are stamped when
+        # the audience hears them — one look-ahead delay later. Recording the
+        # offset makes the report self-describing: a consumer can align the two
+        # without knowing which pipeline produced it.
+        self._look_ahead_sec = look_ahead_sec
         self._start_time: float | None = None
         self._end_time: float | None = None
         self._is_playing: bool = False
@@ -57,7 +64,7 @@ class EventBuffer:
         return now - self._start_time
 
     def add_beat(self, bpm: float, onset_density: float, change: bool,
-                 kick_strength: float = 1.0, centroid_trend: float = 1.0,
+                 kick_strength: float = KICK_UNKNOWN, centroid_trend: float = 1.0,
                  sub_bass_ratio: float = 0.0, rms: float = 0.0) -> None:
         with self._lock:
             self._beats.append({
@@ -181,6 +188,10 @@ class EventBuffer:
                 'intents': all_intents,
                 'timing_log': tlog,
                 'metrics': {
+                    # Offset between beat timestamps (song time) and intent /
+                    # effect timestamps (audience time). Subtract it from an
+                    # intent block's bounds to compare against beat rows.
+                    'look_ahead_sec': self._look_ahead_sec,
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
                     'onset_density_mean': (

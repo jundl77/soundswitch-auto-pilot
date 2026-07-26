@@ -30,6 +30,8 @@ Measured this way on the reference track, kicking sections and kick-free section
 
 Near-silence and no-measurement-yet both report a dedicated *unknown* value that is deliberately below any usable threshold: an unmeasured kick reads as an absent kick, so DROP is never entered without positive evidence. The classifier's own default for the parameter is that same sentinel, so a caller with no kick data cannot accidentally assert one. See `music_analyser.py` for the implementation.
 
+Because the sentinel is a number in the same range as a real ratio, it is not self-identifying in the training table: the only rows that can carry it are those below the silence gate or before the first resolved measurement, so a Stage-2 consumer should derive a `kick_known` flag from each row's own RMS against that gate rather than testing the kick value against the sentinel — a genuine measurement can legitimately land on it.
+
 **Spectral centroid** (mel-band index units, 0–39) — centre of mass of the frequency spectrum. Low = bass-heavy; high = treble-heavy. Tracked per-buffer and at beat timestamps. The *trend* of the centroid across recent beats is the key feature: a rising centroid (energy moving toward higher frequencies) is the defining signature of a BUILDUP riser or sweep filter. A falling centroid (energy concentrating downward) signals a DROP approach. The trend is computed the same way as onset density trend: recent beats vs. past beats. See `music_analyser.py` for details.
 
 **RMS energy** — mean amplitude over a short rolling window. Stored in the beat record. Not yet used in classification directly, but available as a loudness proxy. Future use: PEAK confirmation (loud + high BPM).
@@ -108,7 +110,7 @@ Because PEAK *is* the DROP musical state, two things follow. It inherits DROP's 
 python auto_pilot simulate file samples/song.mp3 --report report.json
 ```
 
-Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay.
+Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay. The report carries that offset in its metrics rather than leaving it implicit in the code, so a consumer can align the two time bases from the file alone — the inspector's bin table uses it to de-shift intents back to song time.
 
 The JSON report contains the full beat list, intent timeline, and timing log. Every beat record carries the complete feature row the classifier saw — density, BPM, kick strength, centroid trend, sub-bass ratio, RMS — which makes the report a labelled feature table, not just a debug dump. It is the intended input for the hand-labelled dataset work; keep it that way when adding features.
 

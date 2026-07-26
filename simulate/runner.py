@@ -98,7 +98,8 @@ async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
     random.seed(seed)
     clock = VirtualClock()
     # Infinite window: reports must never prune, whatever the song length.
-    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+    event_buffer = EventBuffer(window_sec=float('inf'), clock=clock,
+                               look_ahead_sec=LOOK_AHEAD_SEC)
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
     event_buffer.start()
     await run_simulation(components, duration_sec, clock=clock)

@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 import aubio
 import numpy as np
 from collections import deque
@@ -134,8 +135,11 @@ class MusicAnalyser:
         material (observed: 257.8 BPM for the first ~6 beats of every track).
         EDM lives in one tempo octave; folding removes the ambiguity without
         touching the beat phase.
+
+        Non-finite input is rejected up front: the halving loop never terminates
+        on inf/nan, and this runs on the live audio callback thread.
         """
-        if bpm <= 0:
+        if not math.isfinite(bpm) or bpm <= 0:
             return 0.0
         while bpm >= 170.0:
             bpm /= 2.0

@@ -18,11 +18,18 @@ def main() -> None:
     beats = report['beats']
     intents = report['intents']
     duration = report['duration_sec']
+    # Beat rows are song time; intent blocks are audience time (song + look-ahead).
+    # Shift the blocks back so a bin's features and its intent describe the same
+    # moment of music. Older reports predate the metric — assume no offset.
+    look_ahead = report['metrics'].get('look_ahead_sec', 0.0)
 
     def dominant_intent_at(t0: float, t1: float) -> str:
+        """Dominant intent over [t0, t1) in *song* time."""
         best, best_overlap = '-', 0.0
         for block in intents:
-            overlap = min(block.get('end', duration), t1) - max(block['t'], t0)
+            start = block['t'] - look_ahead
+            end = block.get('end', duration) - look_ahead
+            overlap = min(end, t1) - max(start, t0)
             if overlap > best_overlap:
                 best, best_overlap = block['intent'], overlap
         return best
@@ -41,7 +48,9 @@ def main() -> None:
             print(f'{t:>5.0f}-{t1:<5.0f}  {"-":>6}  {"-":>7}  {"-":>5}  {0:>5}  {dominant_intent_at(t, t1)}')
         t = t1
 
-    print('\nIntent timeline (audience time = song time + look-ahead):')
+    print(f'\nIntent timeline — raw audience time '
+          f'(= song time + metrics.look_ahead_sec = {look_ahead:.2f}s); '
+          f'the bin table above is de-shifted to song time:')
     for block in intents:
         end = block.get('end', duration)
         print(f"  {block['t']:>7.1f} - {end:<7.1f}  ({end - block['t']:>6.1f}s)  {block['intent']}")

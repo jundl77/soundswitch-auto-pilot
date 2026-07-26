@@ -86,10 +86,31 @@ def test_add_beat_records_feature_columns():
 
 
 def test_add_beat_defaults_are_neutral():
+    """An unrecorded kick must default to the analyser's unknown sentinel, not
+    to a hardcoded twin of it that could drift apart from the real constant."""
+    from lib.analyser.music_analyser import KICK_UNKNOWN
+
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
     buf.add_beat(128.0, 4.2, False)
     beat = buf.to_report()['beats'][0]
-    assert beat['kick_strength'] == 1.0
+    assert beat['kick_strength'] == KICK_UNKNOWN
     assert beat['rms'] == 0.0
+
+
+def test_report_records_look_ahead_offset():
+    """The report must be self-describing: beat rows are song time, intent
+    blocks are audience time, and the offset between them is the look-ahead."""
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=2.5)
+    buf.start()
+    buf.add_beat(128.0, 4.2, False)
+    assert buf.to_report()['metrics']['look_ahead_sec'] == pytest.approx(2.5)
+
+
+def test_report_look_ahead_defaults_to_zero():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    assert buf.to_report()['metrics']['look_ahead_sec'] == 0.0

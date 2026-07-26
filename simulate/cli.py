@@ -94,10 +94,10 @@ def _run_file_realtime_ui(args):
     """Real-time paced run with the live Dash timeline (previous default behavior)."""
     from lib.engine.event_buffer import EventBuffer
     from simulate.fake_audio_client import FileAudioClient
-    from simulate.runner import build_simulation
+    from simulate.runner import build_simulation, LOOK_AHEAD_SEC
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC)
     components, command_queue = build_simulation(audio_client, event_buffer)
 
     try:
@@ -132,7 +132,7 @@ def _run_file_realtime_ui(args):
 def run_realtime(args):
     from lib.engine.event_buffer import EventBuffer
     from lib.clients.pyaudio_client import PyAudioClient
-    from simulate.runner import build_simulation
+    from simulate.runner import build_simulation, LOOK_AHEAD_SEC
     from simulate.visualizer_app import run_app
 
     audio_client = PyAudioClient(
@@ -140,7 +140,7 @@ def run_realtime(args):
         buffer_size=BUFFER_SIZE,
         input_device_index=args.device_index,
     )
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC)
     components, command_queue = build_simulation(audio_client, event_buffer)
     event_buffer.start()
 

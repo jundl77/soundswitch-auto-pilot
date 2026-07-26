@@ -172,6 +172,14 @@ def test_fold_bpm_zero_and_negative_return_zero():
     assert MusicAnalyser._fold_bpm(-10.0) == 0.0
 
 
+def test_fold_bpm_non_finite_returns_zero():
+    """inf/nan must be rejected before the loops — halving inf never terminates,
+    and this runs on the live audio thread."""
+    assert MusicAnalyser._fold_bpm(float('inf')) == 0.0
+    assert MusicAnalyser._fold_bpm(float('-inf')) == 0.0
+    assert MusicAnalyser._fold_bpm(float('nan')) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # get_kick_strength — transient capture, ratio cap, silence gate
 # ---------------------------------------------------------------------------
