@@ -16,6 +16,7 @@ target at the wrong frame teaches the decoder to fire early.  Neither shows up
 as an error -- only as a slightly worse model -- so they are asserted directly
 against hand-built section lists.
 """
+import collections
 import json
 import math
 import sys
@@ -307,6 +308,25 @@ def test_make_splits_extends_when_the_corpus_grows(tmp_path):
         assert set(before[split]) <= set(after[split])
 
 
+def test_make_splits_refuses_a_seed_that_the_frozen_file_disagrees_with(tmp_path):
+    """New ids must not be placed by a different rule than the ones already there."""
+    data_dir, eval_set = fake_corpus(tmp_path, corpus_tracks(20))
+    make_splits(data_dir, eval_set_path=eval_set)
+
+    with pytest.raises(RuntimeError, match="seed"):
+        make_splits(data_dir, seed=99, eval_set_path=eval_set)
+
+
+def test_make_splits_refuses_an_eval_track_it_cannot_name(tmp_path):
+    """The artist guard must fail closed: an unnamed eval track protects nothing."""
+    data_dir, eval_set = fake_corpus(tmp_path, corpus_tracks(10))
+    with open(eval_set, "w", encoding="utf-8") as handle:
+        json.dump({"youtube_ids": ["notinthecorpus"]}, handle)
+
+    with pytest.raises(RuntimeError, match="artist exclusion"):
+        make_splits(data_dir, eval_set_path=eval_set)
+
+
 def test_make_splits_skips_tracks_without_a_sidecar(tmp_path):
     tracks = corpus_tracks(20)
     data_dir, eval_set = fake_corpus(tmp_path, tracks)
@@ -458,6 +478,38 @@ def test_label_pooling_masks_a_group_only_when_every_frame_is_masked():
     assert (targets.label_pooled[masked] == IGNORE_INDEX).all()
 
 
+def test_boundary_targets_and_label_transitions_agree():
+    """The two heads must describe the same track: no phantom, no missed boundary.
+
+    A boundary target with no label change behind it teaches the decoder to fire
+    where nothing happens; a label change with no boundary target teaches it to
+    hold through a real one.  Neither is visible in either head alone.
+    """
+    targets = targets_for([
+        (0.0, 30.0, "intro"), (30.0, 60.0, "buildup"), (60.0, 120.0, "drop"),
+        (120.0, 150.0, "breakdown"), (150.0, 180.0, "cooldown"),   # merged join
+        (180.0, 210.0, "outro"),
+    ], duration=240.0)
+
+    labeled = targets.label_mask[:-1] & targets.label_mask[1:]
+    changes = np.flatnonzero(labeled & (targets.label_frame[:-1] != targets.label_frame[1:]))
+    assert len(changes) == 4                       # 30, 60, 120, 180 -- not 150
+
+    # Every label change carries a boundary peak within a frame of it.
+    for change in changes:
+        assert targets.boundary[change - 1:change + 2].max() > 0.9
+
+    # ...and every frame carrying boundary mass sits close to one of them.
+    for peak in np.flatnonzero(targets.boundary > 0.9):
+        assert float(np.abs(changes - peak).min()) * FRAME_SEC <= 0.35
+
+    # The merged join is the control: no label change AND no boundary target.
+    join = frame_of(150.0)
+    assert targets.label_frame[join] == targets.label_frame[join - 1]
+    assert targets.boundary[join] == 0.0
+    assert not targets.boundary_mask[join]
+
+
 def test_a_track_with_no_labeled_sections_is_entirely_masked():
     targets = targets_for([(0.0, 30.0, "end")])
     assert not targets.label_mask.any()
@@ -488,9 +540,37 @@ def test_window_dataset_yields_the_documented_shapes_and_dtypes(tmp_path):
     assert boundary_mask.shape == (WINDOW_FRAMES,) and boundary_mask.dtype == np.bool_
 
 
-def test_window_dataset_covers_every_track(tmp_path):
-    data = dataset(tmp_path, count=8, frames=3000)
-    assert len(data) == 8 * (3000 // WINDOW_FRAMES)
+@pytest.mark.parametrize("frames", [
+    3000,                    # ragged: 8 whole windows plus a 216-frame remainder
+    WINDOW_FRAMES,           # exactly one window
+    WINDOW_FRAMES + 2,       # one window plus a two-frame tail
+    5 * WINDOW_FRAMES,       # an exact multiple: no extra slot needed
+    WINDOW_FRAMES // 2,      # shorter than a window
+])
+def test_eval_mode_windows_cover_every_usable_frame(tmp_path, frames):
+    """No usable frame is unreachable in eval mode.
+
+    Flooring the slot count leaves up to one window (~16 s) of every track's
+    tail with no window over it, and a track's tail is almost entirely
+    ``outro`` -- so it does not look like a bug in aggregate, it looks like the
+    model being bad at outros.  Asserted through the real object, at the frame
+    counts where floor and ceiling actually differ.
+    """
+    data = dataset(tmp_path, count=2, frames=frames)
+
+    by_track = collections.defaultdict(list)
+    for index in range(len(data)):
+        by_track[data._slots[index][0]].append(data.window_offset(index))
+    assert len(by_track) == 2
+
+    for track_index, offsets in by_track.items():
+        usable = data._tracks[track_index].usable
+        covered = np.zeros(usable, dtype=bool)
+        for offset in offsets:
+            assert offset + WINDOW_FRAMES <= max(usable, WINDOW_FRAMES)
+            covered[offset:offset + WINDOW_FRAMES] = True
+        uncovered = int((~covered).sum())
+        assert not uncovered, f"{uncovered} of {usable} frames unreachable"
 
 
 def test_eval_mode_is_deterministic_and_untouched_by_the_epoch(tmp_path):
@@ -563,4 +643,15 @@ def test_dataset_refuses_a_sidecar_with_a_foreign_frame_rate(tmp_path):
                           np.zeros((1000, 40), dtype=np.float32), 0.01, 0.01)
     data = WindowDataset(data_dir, [tracks[0][1]])
     with pytest.raises(RuntimeError, match="frame_sec"):
+        _ = data[0]
+
+
+def test_dataset_refuses_a_sidecar_stamped_on_a_foreign_frame_origin(tmp_path):
+    """A shifted t0 would offset every target against the audio, silently."""
+    tracks = corpus_tracks(1)
+    data_dir, _eval_set = fake_corpus(tmp_path, tracks, frames=1000)
+    write_feature_sidecar(data_dir / "features" / f"{tracks[0][1]}.npz",
+                          np.zeros((1000, 40), dtype=np.float32), FRAME_SEC, 0.0)
+    data = WindowDataset(data_dir, [tracks[0][1]])
+    with pytest.raises(RuntimeError, match="t0"):
         _ = data[0]

@@ -276,19 +276,55 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
 
     document = load_eval_set(Path(eval_set_path))
     eval_ids = frozenset(str(i) for i in document["youtube_ids"])
-    # Titles from the corpus where possible -- the eval-set record is a copy and
-    # the corpus is the source the artist parser was written against.
-    titles = {ref.youtube_id: ref.title for ref in candidates}
-    eval_tracks = [
-        {"title": titles.get(str(track.get("youtube_id")), str(track.get("title", "")))}
-        for track in document.get("tracks") or []
-    ] or [{"title": titles.get(youtube_id, "")} for youtube_id in sorted(eval_ids)]
-    artist_names = excluded_artist_names(eval_tracks)
+
+    # Titles from the corpus first -- the eval-set record is a copy and the
+    # annotations are the source the artist parser was written against -- then
+    # the record, then FAIL.  An unresolved title parses to no participants and
+    # would drop that eval track's artist out of the exclusion set entirely: the
+    # guard would still "pass" while protecting one track less.  Failing open on
+    # a contamination guard is the one outcome worth refusing outright.
+    titles = {str(track.get("id")): str(track.get("title", ""))
+              for track in load_tracks(data_dir)}
+    recorded = {str(track.get("youtube_id")): str(track.get("title", ""))
+                for track in document.get("tracks") or []}
+    eval_titles = {}
+    unresolved = []
+    for youtube_id in sorted(eval_ids):
+        title = titles.get(youtube_id) or recorded.get(youtube_id) or ""
+        if not title.strip():
+            unresolved.append(youtube_id)
+        eval_titles[youtube_id] = title
+    if unresolved:
+        raise RuntimeError(
+            f"no title for eval-set track(s) {unresolved} in the corpus "
+            f"annotations or in {eval_set_path} -- the artist exclusion would be "
+            f"silently weakened, so the split is refused"
+        )
+    artist_names = excluded_artist_names(
+        [{"title": title} for title in eval_titles.values()])
 
     existing = None
     if path.exists():
         with open(path, "r", encoding="utf-8") as handle:
             existing = json.load(handle)
+        # The frozen file is only meaningful under the parameters it was written
+        # with: a changed seed or ratio would place new ids by a different rule
+        # than the ones already in the file, giving a split that is neither the
+        # old one nor a clean regeneration.
+        recorded_seed = existing.get("seed")
+        if recorded_seed is not None and int(recorded_seed) != int(seed):
+            raise RuntimeError(
+                f"{path} was frozen with seed {recorded_seed}, called with {seed} "
+                f"-- delete the file to regenerate deliberately, or pass the "
+                f"recorded seed; new ids must not be placed by a different rule"
+            )
+        recorded_ratios = existing.get("ratios")
+        if recorded_ratios and dict(recorded_ratios) != dict(zip(SPLIT_NAMES, SPLIT_RATIOS)):
+            raise RuntimeError(
+                f"{path} was frozen with ratios {recorded_ratios}, this build uses "
+                f"{dict(zip(SPLIT_NAMES, SPLIT_RATIOS))} -- same problem as a seed "
+                f"change; delete the file to regenerate deliberately"
+            )
 
     splits = partition(candidates, eval_ids=eval_ids, artist_names=artist_names,
                        seed=seed, existing=existing)
@@ -499,11 +535,20 @@ def load_sidecar(path) -> np.ndarray:
     with np.load(path) as archive:
         mel = np.asarray(archive["mel"], dtype=np.float32)
         frame_sec = float(archive["frame_sec"])
+        t0 = float(archive["t0"])
         pool = int(archive["pool_buffers"]) if "pool_buffers" in archive else POOL_BUFFERS
     if not math.isclose(frame_sec, FRAME_SEC, rel_tol=1e-9):
         raise RuntimeError(
             f"{path}: frame_sec {frame_sec!r} does not match this build's "
             f"{FRAME_SEC!r} -- the sidecar was written on a different mel grid"
+        )
+    # The targets are read at t0 + k*frame_sec with t0 == frame_sec.  A sidecar
+    # stamped on any other origin would shift every label and boundary by a
+    # constant the model would have to unlearn -- and nothing else would notice.
+    if not math.isclose(t0, FRAME_SEC, rel_tol=1e-9):
+        raise RuntimeError(
+            f"{path}: t0 {t0!r} does not match this build's frame origin "
+            f"{FRAME_SEC!r} -- every target would be offset against the audio"
         )
     if pool != POOL_BUFFERS or mel.shape[1] != MEL_BANDS:
         raise RuntimeError(
@@ -537,7 +582,11 @@ class WindowDataset(_TorchDataset):
     ``augment=True`` (training) draws a fresh window offset and a gain shift per
     item per epoch, seeded from ``(seed, epoch, index)`` so a run is reproducible
     and DataLoader workers cannot collide.  ``augment=False`` (val/test) tiles
-    the track from frame 0 and touches nothing -- the same item forever.
+    the track from frame 0 and touches nothing -- the same item forever -- and
+    covers **every** usable frame: the final window is clamped back to the end of
+    the track so it re-overlaps its predecessor, rather than leaving a partial
+    tail unreachable.  That tail is almost entirely outro, so dropping it would
+    silently distort outro recall in any window-iterating evaluation.
 
     Mel arrays are cached in memory on first touch (1-2 MB per track, so a
     ~540-track train split settles around 1 GB once every window has been seen).
@@ -587,7 +636,13 @@ class WindowDataset(_TorchDataset):
                 )
             n_frames = sidecar_shape(path)[0]
             usable = (n_frames // LABEL_POOL) * LABEL_POOL
-            slots = max(1, usable // self.window_frames)
+            # Ceiling, not floor: a floor leaves up to one window (~16 s) of every
+            # track's TAIL unreachable in eval mode, and a track's tail is almost
+            # all outro -- so flooring quietly deletes ~9% of the outro class from
+            # any evaluation that iterates windows.  The `min(slot*W, limit)`
+            # clamp in window_offset turns the extra slot into a legal re-overlap
+            # of the final frames rather than a window running off the end.
+            slots = max(1, -(-usable // self.window_frames))
             index = len(self._tracks)
             self._tracks.append(_Track(youtube_id, path, sections, usable, slots))
             self._slots.extend((index, slot) for slot in range(slots))
