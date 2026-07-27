@@ -511,6 +511,78 @@ def test_aubio_beats_are_read_from_the_cached_sim_report(tmp_path):
     assert aubio_beat_times(tmp_path, "abc").tolist() == [1.5, 2.0]
 
 
+# --------------------------------------------------------------------------- #
+# Split hygiene on the CLI
+# --------------------------------------------------------------------------- #
+
+
+def _val_only_ids(monkeypatch):
+    """Stand in for the corpus's splits so the guard is testable without one."""
+    import nn.downbeat_infer as module
+
+    monkeypatch.setattr(module, "split_ids",
+                        lambda _dir, splits=("val", "test"): sorted(
+                            {"v1", "v2"} if list(splits) == ["val"]
+                            else {"v1", "v2", "t1"}))
+
+
+@pytest.mark.parametrize("argv", [
+    ["--lag-profile", "--splits", "val", "test"],
+    ["--lag-profile", "--ids", "t1"],
+])
+def test_the_lag_profile_refuses_the_test_split(monkeypatch, argv):
+    """It reads annotated bar phase to *choose a decoder parameter*, which makes
+    it a tuning measurement -- and a bare run used to default to val+test.  The
+    guard checks split membership rather than the flag, because an explicit
+    ``--ids`` walks straight past a flag-level check."""
+    from nn.downbeat_infer import main
+
+    _val_only_ids(monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(argv)
+
+    assert exit_info.value.code != 0
+
+
+def test_the_lag_profile_defaults_to_val_alone(monkeypatch, capsys):
+    """The default is the thing that was wrong, so the default is what is pinned."""
+    import nn.downbeat_infer as module
+
+    _val_only_ids(monkeypatch)
+    seen = {}
+
+    def record(_data_dir, ids, **_kwargs):
+        seen["ids"] = list(ids)
+        return {"tracks": 0, "offsets": [0], "downbeat_mean": [0.0],
+                "offbeat_mean": [0.0], "peak_histogram": [0],
+                "argmax_offset": 0, "modal_peak_offset": 0}
+
+    monkeypatch.setattr(module, "measure_lag", record)
+
+    assert module.main(["--lag-profile"]) == 0
+    assert seen["ids"] == ["v1", "v2"]
+
+
+def test_generation_still_covers_val_and_test(monkeypatch):
+    """The quarantine is on the *tuning* read, not on producing inputs -- a
+    guard that also blocked sidecar generation would be the wrong fix."""
+    import nn.downbeat_infer as module
+
+    _val_only_ids(monkeypatch)
+    seen = {}
+
+    def record(_data_dir, **kwargs):
+        seen["ids"] = list(kwargs["ids"])
+        return {"tracks": 0, "computed": 0, "cached": 0, "failed": 0, "frames": 0,
+                "windows": 0, "bytes": 0, "wall_seconds": 0.0, "model_sha": "x" * 64}
+
+    monkeypatch.setattr(module, "generate", record)
+
+    assert module.main([]) == 0
+    assert seen["ids"] == ["t1", "v1", "v2"]
+
+
 def test_a_missing_report_names_the_track(tmp_path):
     (tmp_path / "reports").mkdir()
 

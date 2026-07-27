@@ -698,8 +698,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="export the graph from --checkpoint and stop")
     parser.add_argument("--lag-profile", action="store_true",
                         help="measure where the activation peaks against the "
-                             "annotated downbeats, on existing sidecars, and stop")
-    parser.add_argument("--splits", nargs="*", default=["val", "test"])
+                             "annotated downbeats, on existing sidecars, and stop; "
+                             "val only, because it reads bar phase")
+    parser.add_argument("--splits", nargs="*", default=None,
+                        help="default: val+test for generation, val alone for "
+                             "--lag-profile (which reads a tuning quantity)")
     parser.add_argument("--ids", nargs="*", default=None,
                         help="youtube ids (default: every id in --splits)")
     parser.add_argument("--limit", type=int, default=0, help="stop after N ids")
@@ -711,7 +714,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     out = args.model or model_dir(args.data_dir) / MODEL_FILE
 
     if args.export:
@@ -725,11 +729,28 @@ def main(argv: list | None = None) -> int:
             print(f"  {name:16s} {axes}")
         return 0
 
-    ids = args.ids if args.ids is not None else split_ids(args.data_dir, args.splits)
+    # Generation is inputs-only and covers both splits; the lag profile reads the
+    # annotated bar phase to decide a decoder parameter, which makes it a *tuning*
+    # measurement and therefore val's alone.  Defaulting it to val+test would have
+    # tuned the aggregation window against the test split on a bare invocation --
+    # the exact hazard `sweep.py` refuses outright.
+    splits = args.splits if args.splits is not None else (
+        ["val"] if args.lag_profile else ["val", "test"])
+    ids = args.ids if args.ids is not None else split_ids(args.data_dir, splits)
     if args.limit:
         ids = ids[:args.limit]
 
     if args.lag_profile:
+        # Checked against split *membership*, not against the --splits flag: an
+        # explicit --ids would otherwise walk straight past a flag-level guard,
+        # and a contamination guard that only covers the default path is not one.
+        stray = sorted(set(ids) - set(split_ids(args.data_dir, ["val"])))
+        if stray:
+            parser.error(
+                f"--lag-profile reads annotated bar phase to choose a decoder "
+                f"parameter, so it is val's alone; {len(stray)} of the requested "
+                f"ids are not in val ({stray[:3]}). The test split is the "
+                f"verdict's to read once.")
         profile = measure_lag(args.data_dir, ids, sidecar_dir=args.out_dir)
         print(f"aggregation-window measurement over {profile['tracks']} tracks")
         print(f"  offset {'':>4}" + "".join(f"{o:>9d}" for o in profile["offsets"]))

@@ -55,24 +55,33 @@ manufacture downbeats out of silence, so nothing is emitted and the phase
 re-locks from the far side's evidence.
 
 **Fixed lag, then frozen -- and the frontier is carried, not backtraced.**  A
-light show cannot un-fire a strobe, so a decision ``lag_beats`` behind the
-arrival head is final.  The section decoder gets that by reading a backtrace and
-then setting every disagreeing trellis state to -inf; **that construction is
-wrong for a small cyclic chain and it fails silently.**  Viterbi keeps one best
-path per state, so with a handful of states and a near-permutation transition
-graph the -inf prune leaves exactly *one* live state -- which fixes not just the
-committed beat but every beat between it and the head, i.e. it throws the
-look-ahead away and turns the decoder greedy after its first commit, while still
-producing perfectly plausible output.  (The section decoder is safe from this
-because its 48 ``(class, dwell)`` states share ancestors; nothing about the
-pattern generalises.)
+light show cannot un-fire a strobe, so a decision ``lag_beats`` candidates behind
+the arrival head is final.  The section decoder reaches that by reading a
+backtrace and then setting every disagreeing trellis state to -inf.  This one
+carries state instead: ``delta`` scores the oldest *uncommitted* candidate,
+conditioned on every commit before it, and a commit rolls a ``(frontier position,
+head position)`` table forward over the buffered look-ahead.
 
-So the commit here is exact instead: the trellis carries ``delta`` for the oldest
-*uncommitted* candidate, and a commit rolls a ``(frontier position, head
-position)`` table forward over the buffered look-ahead.  That gives the maximum over all
-paths that agree with everything already emitted -- immutability by construction
-rather than by pruning -- with the full lag of look-ahead on every decision, and
-it hands back the phase posterior the confidence output needs as a by-product.
+Three reasons, none of them "the other construction is broken" -- it was measured
+over this chain on real val tracks and it decodes within ~0.005 F1 of this one:
+
+* **It is exact by construction.**  ``table.max(axis=1)`` is the best score
+  reachable with each position at the frontier *given everything already
+  emitted*, so the decision maximises over exactly the paths that are still
+  legal.  The -inf rule is exact within the surviving set, which is the same
+  thing whenever the backtrace has converged and not quite the same thing when it
+  has not.
+* **It hands back the phase posterior for free**, which is what the confidence
+  output is read off (see below).  Recovering that from a pruned backtrace means
+  a second trellis.
+* **It is cheap here**: ``lag`` operations on a 4x4 or 8x8 array per candidate,
+  with no backtrace to walk and no per-commit pruning pass.
+
+A warning against generalising *either* rule: how many states survive a -inf
+prune is a property of the chain, not of the pattern, and it is not intuitable.
+Measured, the section decoder's own 48 ``(class, dwell)`` states collapse to a
+single live state in 24 % of commits at its frozen config -- far more often than
+this four-state cyclic chain does.  Measure it on the chain in front of you.
 
 **``flip_penalty`` and ``lag_beats`` are coupled, and the coupling is not
 obvious.**  A commit is final, so evidence arriving *after* the look-ahead window
@@ -117,8 +126,14 @@ DEFAULT_FLIP_PENALTY = 14.0
 # docstring for why the choice is second order.
 DEFAULT_DOWNBEAT_REF = 0.5
 
-# One bar at 128 BPM is 1.9 s, inside the runtime's 2.5 s look-ahead, and the bar
-# grid has to be committed *before* the section decoder can quantise to it.
+# **This counts CANDIDATES, not beats, and the two differ once ``subdivision``
+# does.**  At subdivision 1 a lag of 4 is one bar, ~1.9 s at 128 BPM, inside the
+# runtime's 2.5 s look-ahead and committed early enough for the section decoder to
+# quantise to it.  At subdivision 2 the same 4 is *two beats*, ~0.94 s -- half the
+# look-ahead, which measurably costs F1 and confounds any sweep that varies the
+# subdivision without compensating.  **Hold wall-clock look-ahead constant with
+# ``lag_beats = 4 * subdivision``**; the name is kept because the streaming API
+# counts what it is handed, but nothing else about it is a beat.
 DEFAULT_LAG_BEATS = 4
 
 # A gap this many times the running beat period is a dropout rather than tempo
