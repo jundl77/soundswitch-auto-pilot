@@ -53,6 +53,7 @@ from raveform_validate import (  # noqa: E402
     overall_verdict,
     prune_corrupt,
     render_text_report,
+    retryable_remainder,
     sha256_file,
     tally,
     validate,
@@ -406,6 +407,56 @@ def test_an_undercount_blocks_convergence_even_with_nothing_bad():
     counts = tally([_verdict("0001.a", "a", STATUS_OK)])
     converged, _statement = convergence(counts, manifest_tracks=2)
     assert not converged
+
+
+# --------------------------------------------------------------------------- #
+# retryable_remainder -- "accounted for" is not "unobtainable"
+# --------------------------------------------------------------------------- #
+
+
+def test_a_permanently_dead_track_is_not_a_retryable_remainder():
+    verdicts = [_verdict("0001.a", "a", STATUS_UNAVAILABLE, failure_reason="unavailable")]
+    assert retryable_remainder(verdicts) == []
+
+
+def test_a_track_left_behind_by_a_transient_failure_is_flagged():
+    # The corpus converges either way -- UNAVAILABLE counts as accounted for --
+    # so nothing else in the report would ever mention that these are still
+    # obtainable. Moot on today's corpus, which is when the guarantee is cheap.
+    verdicts = [
+        _verdict("0001.a", "a", STATUS_UNAVAILABLE, failure_reason="http_403"),
+        _verdict("0002.b", "b", STATUS_UNAVAILABLE, failure_reason="timeout"),
+        _verdict("0003.c", "c", STATUS_UNAVAILABLE, failure_reason="unavailable"),
+        _verdict("0004.d", "d", STATUS_OK),
+    ]
+    assert retryable_remainder(verdicts) == ["0001.a", "0002.b"]
+
+
+def test_the_remainder_warning_reaches_the_human_report():
+    payload = {
+        "generated_at_utc": "2026-07-27T00:00:00Z", "data_dir": "C:/corpus",
+        "manifest_tracks": 1,
+        "counts": {STATUS_OK: 0, STATUS_DURATION_MISMATCH: 0, STATUS_UNAVAILABLE: 1,
+                   STATUS_MISSING: 0, STATUS_CORRUPT: 0},
+        "unavailable_by_reason": {"http_403": 1},
+        "converged": True, "convergence_statement": "CONVERGED: ...",
+        "all_clear": True, "verdict_statement": "ALL CLEAR: ...",
+        "retryable_remainder": ["0001.a"],
+        "tolerance": {"abs_sec": 10.0, "rel": 0.03},
+        "checksums": {"skipped": True}, "orphans": [], "annotation_issues": [],
+        "tracks": [
+            {"track_id": "0001.a", "youtube_id": "a", "status": STATUS_UNAVAILABLE,
+             "detail": "http_403: ERROR: HTTP Error 403: Forbidden",
+             "decoded_duration_sec": None, "annotation_duration_sec": 300.0,
+             "ffprobe_duration_sec": None, "failure_reason": "http_403", "mp3_path": "",
+             "sha256": ""},
+        ],
+    }
+    text = render_text_report(payload)
+    assert "WARNING" in text
+    assert "retryable remainder" in text
+    assert "0001.a" in text
+    assert "--retry-reasons" in text  # and what to actually do about it
 
 
 # --------------------------------------------------------------------------- #

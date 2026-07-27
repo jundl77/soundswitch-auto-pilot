@@ -32,6 +32,7 @@ from raveform_supervisor import (  # noqa: E402  (needs the path insert above)
     _RETRY_REASONS_FALLBACK,
     _retry_reasons,
     parse_cooldowns,
+    terminal_state,
 )
 from raveform_download import RETRYABLE_REASONS  # noqa: E402
 
@@ -117,6 +118,32 @@ def test_probing_restores_the_interpreters_bytecode_setting(tmp_path):
             assert sys.dont_write_bytecode is setting
         finally:
             sys.dont_write_bytecode = False
+
+
+# --------------------------------------------------------------------------- #
+# terminal_state -- supervisor.state is the channel monitors actually read
+# --------------------------------------------------------------------------- #
+
+
+def test_an_interrupt_is_reported_as_stopped_not_as_giving_up():
+    # A human stopping the run, possibly seconds in with every cycle unspent,
+    # must not be recorded as "the schedule ran out and YouTube still refuses".
+    # supervisor.state is a single overwritten line and often the only thing
+    # read, so the two words have to stay distinguishable.
+    state = terminal_state(interrupted=True, cycles=5, on_disk=1387)
+    assert state.startswith("STOPPED")
+    assert "GAVE_UP" not in state
+    assert "1387" in state  # the useful fact for whoever resumes
+
+
+def test_an_exhausted_schedule_is_reported_as_giving_up():
+    state = terminal_state(interrupted=False, cycles=5, on_disk=1387)
+    assert state.startswith("GAVE_UP")
+    assert "5" in state
+
+
+def test_the_two_terminal_states_are_never_the_same_string():
+    assert terminal_state(True, 5, 10) != terminal_state(False, 5, 10)
 
 
 # --------------------------------------------------------------------------- #

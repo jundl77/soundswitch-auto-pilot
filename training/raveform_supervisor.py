@@ -255,6 +255,22 @@ def run_cycle(command: list, data_dir: Path, cycle: int, log_path: Path, state_p
 # --------------------------------------------------------------------------- #
 
 
+def terminal_state(interrupted: bool, cycles: int, on_disk: int) -> str:
+    """The last line written to ``supervisor.state``.
+
+    ``supervisor.state`` is the at-a-glance channel -- a single overwritten line,
+    often the only thing anyone reads -- so its two failure words must not be
+    interchangeable.  ``GAVE_UP`` means the schedule ran out and YouTube is
+    still refusing: the retry budget was spent and what remains is an owner
+    decision.  ``STOPPED`` means a human interrupted it, possibly seconds in,
+    with every cycle still unspent.  Reporting an interrupt as exhaustion
+    invents a budget that was never actually used.
+    """
+    if interrupted:
+        return f"STOPPED (signal) mp3s={on_disk}"
+    return f"GAVE_UP after {cycles} cycles"
+
+
 def parse_cooldowns(text: str) -> tuple:
     values = []
     for part in text.split(","):
@@ -357,13 +373,13 @@ def main(argv: list | None = None) -> int:
     if _interrupted:
         log(log_path, f"STOPPED  by signal; {on_disk} mp3 on disk. State is resumable -- "
                       "re-run this supervisor to continue.")
-        write_state(state_path, f"GAVE_UP after {len(cooldowns)} cycles")
+        write_state(state_path, terminal_state(True, len(cooldowns), on_disk))
         return 130
 
     log(log_path, f"GAVE_UP  after {len(cooldowns)} cycles; {on_disk} mp3 on disk. "
                   "YouTube is still refusing. No credential workaround was attempted -- "
                   "this is an owner decision.")
-    write_state(state_path, f"GAVE_UP after {len(cooldowns)} cycles")
+    write_state(state_path, terminal_state(False, len(cooldowns), on_disk))
     return 1
 
 

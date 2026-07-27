@@ -271,6 +271,27 @@ def convergence(counts, manifest_tracks: int) -> tuple:
     return converged, statement
 
 
+def retryable_remainder(verdicts: list) -> list:
+    """UNAVAILABLE tracks whose recorded reason is still worth re-attempting.
+
+    Convergence counts an UNAVAILABLE track as accounted for, which is right --
+    but "accounted for" is not "unobtainable".  A track recorded as ``http_403``
+    or ``timeout`` describes a bad afternoon, not a dead video, and a corpus can
+    converge perfectly while leaving a pile of those on the table.  Nothing else
+    in this report would say so: the counts look identical either way.
+
+    Moot on the corpus as it stands (all 36 remaining failures are permanent),
+    which is exactly when a guarantee is worth writing down -- it costs nothing
+    now and refuses to go quiet later.
+    """
+    return sorted(
+        verdict.track_id
+        for verdict in verdicts
+        if verdict.status == STATUS_UNAVAILABLE
+        and verdict.failure_reason in downloader.RETRYABLE_REASONS
+    )
+
+
 def overall_verdict(converged: bool, orphans: list, annotation_issues: list) -> tuple:
     """``(all_clear, statement)`` -- convergence *plus* the corpus-level checks.
 
@@ -595,6 +616,7 @@ def build_payload(data_dir, rows, verdicts, orphans, annotation_issues, checksum
         "convergence_statement": statement,
         "all_clear": all_clear,
         "verdict_statement": verdict_statement,
+        "retryable_remainder": retryable_remainder(verdicts),
         "tolerance": {"abs_sec": gate.ABS_TOLERANCE_SEC, "rel": gate.REL_TOLERANCE},
         "checksums": checksums,
         "orphans": orphans,
@@ -658,6 +680,14 @@ def render_text_report(payload: dict) -> str:
         add(f"  {issue}")
     add("")
     add(payload.get("verdict_statement", ""))
+    remainder = payload.get("retryable_remainder") or []
+    if remainder:
+        add(
+            f"WARNING   : converged with a retryable remainder -- {len(remainder)} "
+            "UNAVAILABLE track(s) failed for a reason worth re-attempting."
+        )
+        add(f"            Re-run the downloader with {downloader.RETRY_HINT}, then re-validate.")
+        add("            " + ", ".join(remainder))
 
     tracks = payload["tracks"]
 
@@ -703,6 +733,11 @@ def print_summary(payload: dict) -> None:
         print(f"  orphans           : {len(payload['orphans'])}")
     if payload["annotation_issues"]:
         print(f"  annotation issues : {len(payload['annotation_issues'])}")
+    if payload["retryable_remainder"]:
+        print(
+            f"  WARNING           : {len(payload['retryable_remainder'])} UNAVAILABLE "
+            "track(s) failed for a retryable reason -- see the report"
+        )
     print(payload["verdict_statement"])
 
 
