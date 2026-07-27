@@ -65,6 +65,7 @@ from .evaluate_v1 import (
     DECODER_CONFIG_FILE,
     DEFAULT_SPACE,
     EVAL_FILE,
+    MODEL_FILE,
     artifact_provenance,
     build_report,
     default_data_dir,
@@ -80,6 +81,7 @@ from .priors import MODEL_VERSION, MODELS_DIR, PRIORS_FILE, Priors
 
 from evaluate_against_labels import (  # noqa: E402  (nn/__init__ sets the path)
     PRIMARY_TOLERANCE_SEC,
+    file_sha256,
     prf,
 )
 
@@ -174,11 +176,13 @@ class InputCache:
     ``npz`` loads.
     """
 
-    def __init__(self, data_dir, ids, table_path=None, posteriors_dir=None) -> None:
+    def __init__(self, data_dir, ids, table_path=None, posteriors_dir=None,
+                 model_sha=None) -> None:
         self.data_dir = Path(data_dir)
         self.ids = list(ids)
         self.table_path = table_path
         self.posteriors_dir = posteriors_dir
+        self.model_sha = model_sha
         self._cache: dict = {}
         self.skipped: list = []
 
@@ -188,7 +192,7 @@ class InputCache:
             inputs, skipped = load_inputs(
                 self.data_dir, self.ids, min_coverage=key[0],
                 boundary_tolerance_sec=key[1], table_path=self.table_path,
-                posteriors_dir=self.posteriors_dir)
+                posteriors_dir=self.posteriors_dir, model_sha=self.model_sha)
             self._cache[key] = inputs
             if not self.skipped:
                 self.skipped = skipped
@@ -477,9 +481,14 @@ def main(argv: list | None = None) -> int:
         parser.error("the sweep never touches the test split")
 
     model_dir = args.data_dir / MODELS_DIR / args.model_version
+    graph = model_dir / MODEL_FILE
+    if not graph.exists():
+        parser.error(f"no exported graph at {graph} -- without it the sidecars "
+                     f"cannot be checked against the generation being swept")
     priors = Priors.load(model_dir / PRIORS_FILE)
     ids = split_ids(args.data_dir, args.split)
-    cache = InputCache(args.data_dir, ids, posteriors_dir=args.posteriors_dir)
+    cache = InputCache(args.data_dir, ids, posteriors_dir=args.posteriors_dir,
+                       model_sha=file_sha256(graph))
     inputs = cache.for_params(DecodeParams())
     if not inputs:
         parser.error(f"no usable tracks in split {args.split!r}")

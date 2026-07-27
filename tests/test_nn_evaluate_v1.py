@@ -67,8 +67,10 @@ from nn.evaluate_v1 import (  # noqa: E402
     decode_beats,
     identity_claims,
     load_inputs,
+    read_ids_file,
     rule_equivalent_claims,
     score_predicted,
+    sidecar_model_sha,
 )
 from nn.sweep import (  # noqa: E402
     enumerate_configs,
@@ -344,6 +346,107 @@ def test_a_missing_track_fails_loud_instead_of_shrinking_the_split(tmp_path):
     kept, skipped = load_inputs(tmp_path, ["nosuchtrack"], table_path=table,
                                 allow_missing=True)
     assert kept == [] and len(skipped) == 1, "the override still records the drop"
+
+
+# --------------------------------------------------------------------------- #
+# Sidecar identity: the reader half of the model-version check
+# --------------------------------------------------------------------------- #
+
+
+def loadable_track(data_dir, youtube_id="abc", model_sha=None):
+    """The three inputs `load_inputs` needs for one track, on disk."""
+    track_id = f"0001.{youtube_id}"
+    table = data_dir / "table.csv.gz"
+    with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
+        handle.write("track_id,youtube_id,t_song,intent_at_beat,"
+                     "label_canonical,label_v1\n")
+        for index in range(8):
+            handle.write(f"{track_id},{youtube_id},{index * 2.0},drop,drop,drop\n")
+
+    beats = data_dir / "annotations" / "beats"
+    beats.mkdir(parents=True, exist_ok=True)
+    write_beat_csv(beats / f"{track_id}.beat.csv", bars=10, bar_sec=2.0, t0=0.0)
+
+    posteriors = data_dir / "posteriors"
+    posteriors.mkdir(parents=True, exist_ok=True)
+    sidecar = posteriors / f"{youtube_id}.npz"
+    synthetic_npz(sidecar, [DROP] * 200, thin_frames=4)
+    if model_sha is not None:
+        with np.load(sidecar) as archive:
+            arrays = {key: archive[key] for key in archive.files}
+        arrays["model_sha"] = np.str_(model_sha)
+        np.savez(sidecar, **arrays)
+    return table, sidecar
+
+
+def test_load_inputs_refuses_sidecars_written_by_a_different_model(tmp_path):
+    # `--model-version` and `--posteriors-dir` are independent flags, so naming
+    # one generation's priors while pointing at another's posteriors is a
+    # reachable mistake that otherwise decodes cleanly and files a provenance
+    # block describing a chain that never ran.  The writer already refuses to
+    # reuse another model's answers; this is the reader saying the same thing.
+    table, _sidecar = loadable_track(tmp_path, model_sha="a" * 64)
+
+    kept, _skipped = load_inputs(tmp_path, ["abc"], table_path=table,
+                                 model_sha="a" * 64)
+    assert len(kept) == 1, "the matching sha must load"
+
+    with pytest.raises(RuntimeError, match="different model"):
+        load_inputs(tmp_path, ["abc"], table_path=table, model_sha="b" * 64)
+
+
+def test_a_wrong_model_sidecar_is_never_downgraded_to_a_skip(tmp_path):
+    # `allow_missing` is the recorded override for a partial split.  A sidecar
+    # from the wrong model is not a partial split -- scoring the rest would
+    # answer "which model is this" with "mostly that one" -- so the override
+    # must not reach it.
+    table, _sidecar = loadable_track(tmp_path, model_sha="a" * 64)
+    with pytest.raises(RuntimeError, match="different model"):
+        load_inputs(tmp_path, ["abc"], table_path=table, model_sha="b" * 64,
+                    allow_missing=True)
+
+
+def test_an_unstamped_sidecar_reads_as_unknown_rather_than_raising(tmp_path):
+    # Sidecars predating the stamp must be *reportable* as unknown; whether
+    # unknown is fatal is the caller's call, and `load_inputs` says yes.
+    table, sidecar = loadable_track(tmp_path)
+    assert sidecar_model_sha(sidecar) is None
+    with pytest.raises(RuntimeError, match="unstamped"):
+        load_inputs(tmp_path, ["abc"], table_path=table, model_sha="a" * 64)
+    kept, _ = load_inputs(tmp_path, ["abc"], table_path=table)
+    assert len(kept) == 1, "no expected sha means no identity claim to check"
+
+
+# --------------------------------------------------------------------------- #
+# Explicit id lists
+# --------------------------------------------------------------------------- #
+
+
+def test_read_ids_file_accepts_both_shapes_and_refuses_ambiguity(tmp_path):
+    array = tmp_path / "a.json"
+    array.write_text('["one", "two"]', encoding="utf-8")
+    assert read_ids_file(array) == ["one", "two"]
+
+    wrapped = tmp_path / "w.json"
+    wrapped.write_text('{"ids": ["one", "two"]}', encoding="utf-8")
+    assert read_ids_file(wrapped) == ["one", "two"]
+
+    lines = tmp_path / "l.txt"
+    lines.write_text("# why this list exists\none\n\ntwo  # trailing note\n",
+                     encoding="utf-8")
+    assert read_ids_file(lines) == ["one", "two"]
+
+    # A repeat would weight one track twice in an aggregate that reports a
+    # track count, which is the same class of lie as a silently short split.
+    dupes = tmp_path / "d.json"
+    dupes.write_text('["one", "two", "one"]', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="repeats"):
+        read_ids_file(dupes)
+
+    empty = tmp_path / "e.json"
+    empty.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="no ids"):
+        read_ids_file(empty)
 
 
 def test_per_track_head_to_head_separates_the_two_readings():
