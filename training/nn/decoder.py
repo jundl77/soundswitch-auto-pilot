@@ -78,9 +78,11 @@ DEFAULT_LAG_BARS = 3
 # prior mass back, which is the direction this net would actually want.
 DEFAULT_PRIOR_STRENGTH = 0.0
 
-# Asymmetric commit cost.  1.0 is neutral -- the knob ships off so that any
-# drop-recall gain in Task 5 is attributable to it rather than baked into the
-# baseline.
+# Asymmetric commit cost: the odds a decoder will accept to avoid missing a
+# drop, charged ONCE per drop run at the entry edge (see ``_commit_bonus`` -- a
+# per-bar charge would compound with run length and make the number meaningless).
+# 1.0 is neutral, so any drop-recall gain in a sweep is attributable to the knob
+# rather than baked into the baseline.
 DEFAULT_DROP_MISS_COST = 1.0
 
 # The boundary hazard's neutral point and gain.  ref 0.5 is the sigmoid's own
@@ -165,11 +167,18 @@ class FixedLagViterbi:
         self.boundary_ref = float(boundary_ref)
         self.floor_scale = float(floor_scale)
 
+        hazard = np.asarray(priors.hazard, dtype=np.float64)
+        if not np.all((hazard > 0.0) & (hazard < 1.0)):
+            raise ValueError(
+                f"every class hazard must lie in (0, 1) -- got {hazard.tolist()}; "
+                f"0 makes a class unleavable and 1 caps every run at its floor")
+
         self._floors = np.maximum(
             1, np.rint(np.asarray(priors.floor_bars, dtype=np.float64)
                        * self.floor_scale).astype(np.int64))
-        self._build_states()
         self._emission_bonus = self._class_bonus()
+        self._entry_bonus = self._commit_bonus()
+        self._build_states()
         self.reset()
 
     # -- construction ------------------------------------------------------- #
@@ -181,6 +190,11 @@ class FixedLagViterbi:
         memoryless, so every longer run is the same state.  The switch entries
         are kept as a mask because the boundary hazard is added to exactly those
         and to nothing else.
+
+        The asymmetric commit costs are folded into the *entry* edges here --
+        every arc that starts a run of class c, plus c's initial probability --
+        so a run pays its cost exactly once no matter how long it turns out to
+        be.  See ``_commit_bonus``.
         """
         floors = self._floors
         # States are laid out contiguously per class in dwell order, which is
@@ -212,35 +226,48 @@ class FixedLagViterbi:
                     if other == c:
                         continue
                     target = int(self._entry_state[other])
-                    transition[state, target] = log_leave[c] + log_transition[c, other]
+                    transition[state, target] = (log_leave[c] + log_transition[c, other]
+                                                 + self._entry_bonus[other])
                     switch[state, target] = True
 
         self._transition = transition
         self._switch = switch
-        with np.errstate(divide="ignore"):
-            self._log_initial = np.full(n_states, -np.inf, dtype=np.float64)
-            self._log_initial[self._entry_state] = self.priors.log_initial
+        self._log_initial = np.full(n_states, -np.inf, dtype=np.float64)
+        self._log_initial[self._entry_state] = (self.priors.log_initial
+                                                + self._entry_bonus)
 
     def _class_bonus(self) -> np.ndarray:
-        """Per-class additive log-score applied to every bar's emission.
+        """Per-class additive log-score applied to every bar's **emission**.
 
-        Class-prior division (scaled likelihoods) and the asymmetric commit cost
-        are both constant per class, so they collapse into one vector computed
-        once.  ``drop_miss_cost`` is the cost of *missing* a drop, so it enters
-        as a bonus on the drop state: a decoder that pays 3x for a miss will
-        take a 3:1 odds bet to avoid one.
-
-        ``prior_strength`` is deliberately signed.  This net was trained with
-        inverse-frequency class weights, so a *positive* strength corrects an
-        imbalance that is already corrected; a negative one hands corpus prior
-        mass back, which is what a doubly-rebalanced head needs.  Clamping it at
-        zero would hide the useful half of the axis from Task 5.
+        Only the scaled-likelihood correction belongs here, because it is a
+        statement about each individual observation.  ``prior_strength`` is
+        deliberately signed: this net was trained with inverse-frequency class
+        weights, so a *positive* strength corrects an imbalance that is already
+        corrected, and a negative one hands corpus prior mass back -- which is
+        the direction a doubly-rebalanced head actually wants.  Clamping it at
+        zero would hide the useful half of the axis from a sweep.
         """
         bonus = np.zeros(len(self.classes), dtype=np.float64)
         if self.class_prior_division and self.prior_strength:
             prior = np.clip(np.asarray(self.priors.class_prior, dtype=np.float64),
                             EPS, None)
             bonus -= self.prior_strength * np.log(prior)
+        return bonus
+
+    def _commit_bonus(self) -> np.ndarray:
+        """Per-class additive log-score applied **once, when a run is entered**.
+
+        The spec puts the asymmetric error costs "at the commit step", and a
+        commit is a *run*, not a bar.  Putting ``log(drop_miss_cost)`` on the
+        emission instead compounds it with run length: at 1.5 the effective bias
+        over drop's 16-bar floor is x657 and at 3.0 it is x4.3e7, so a nominal
+        [1, 3] sweep is really a sweep from "neutral" to "everything is a drop"
+        -- measured as drop occupancy 41 % -> 64 % while accuracy *fell*.  Folded
+        into the entry edges the number means what it says: a decoder that pays
+        3x for a missed drop will take a 3:1 odds bet to avoid one, once per
+        drop, whether that drop lasts 16 bars or 60.
+        """
+        bonus = np.zeros(len(self.classes), dtype=np.float64)
         if "drop" in self.classes and self.drop_miss_cost != 1.0:
             bonus[self.classes.index("drop")] += np.log(self.drop_miss_cost)
         return bonus
@@ -324,6 +351,11 @@ class FixedLagViterbi:
         if row.size != len(self.classes):
             raise ValueError(
                 f"posterior must have {len(self.classes)} entries, got {row.size}")
+        if np.any(row < 0.0):
+            # log() of a negative turns the whole trellis into NaN, and NaN
+            # compares false against every -inf, so the decode would come back
+            # confidently wrong instead of failing.
+            raise ValueError(f"posterior has negative entries: {row.tolist()}")
         total = row.sum()
         if not np.isfinite(total) or total <= 0.0:
             # Thin evidence: a flat emission leaves the duration prior in charge,

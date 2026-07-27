@@ -32,13 +32,15 @@ in this file reads it -- the corpus-fitting entry point is a thin I/O wrapper
 around ``fit_runs``, which is pure and tested directly.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TRAINING_DIR = REPO_ROOT / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
@@ -537,12 +539,69 @@ def test_drop_miss_cost_buys_drop_recall_at_the_price_of_precision():
     at 1.0."""
     priors = toy_priors(floor=2)
     row = np.zeros(5)
-    row[BREAKDOWN], row[DROP], row[BUILDUP] = 0.55, 0.40, 0.05
-    posteriors = np.array([row] * 12)
-    neutral = FixedLagViterbi(priors, lag_bars=2, drop_miss_cost=1.0)
-    eager = FixedLagViterbi(priors, lag_bars=2, drop_miss_cost=3.0)
+    row[BREAKDOWN], row[DROP], row[BUILDUP] = 0.53, 0.42, 0.05
+    posteriors = np.array([row] * 4)
+    neutral = FixedLagViterbi(priors, lag_bars=1, drop_miss_cost=1.0)
+    eager = FixedLagViterbi(priors, lag_bars=1, drop_miss_cost=3.0)
     assert set(labels_of(neutral.decode(posteriors))) == {"breakdown"}
     assert set(labels_of(eager.decode(posteriors))) == {"drop"}
+
+
+def test_drop_miss_cost_is_charged_once_at_the_entry_edge_not_once_per_bar():
+    """The spec puts asymmetric costs at the COMMIT step, and a commit is a run.
+
+    Charging ``log(cost)`` on the emission instead compounds it with run length
+    -- x657 over drop's 16-bar floor at cost 1.5 -- which turns a nominal [1, 3]
+    sweep into "neutral ... everything is a drop".  This pins the arithmetic
+    directly: the per-bar score is untouched, and every arc that *enters* drop is
+    dearer by exactly log(cost).
+    """
+    priors = toy_priors(floor=4)
+    neutral = FixedLagViterbi(priors, lag_bars=2, drop_miss_cost=1.0)
+    eager = FixedLagViterbi(priors, lag_bars=2, drop_miss_cost=3.0)
+
+    np.testing.assert_allclose(eager._emission_bonus, neutral._emission_bonus)
+
+    entry = int(eager._entry_state[DROP])
+    finite = np.isfinite(neutral._transition[:, entry])
+    assert finite.any(), "some edge must enter drop"
+    np.testing.assert_allclose(
+        eager._transition[finite, entry] - neutral._transition[finite, entry],
+        np.log(3.0))
+    np.testing.assert_allclose(eager._log_initial[entry] - neutral._log_initial[entry],
+                               np.log(3.0))
+
+    # Continuing an existing drop is free: the run already paid at its edge.
+    saturated = int(eager._final_state[DROP])
+    assert eager._transition[saturated, saturated] == \
+        neutral._transition[saturated, saturated]
+
+
+@pytest.mark.parametrize("cost", [1.0, 3.0, 20.0, 200.0, 1000.0])
+def test_raising_the_cost_never_lengthens_a_drop_run(cost):
+    """The behavioural half of the same property, and the one that fails loudly
+    under the per-bar implementation.
+
+    A run pays once, so ``drop_miss_cost`` decides *whether* a drop is committed
+    and the evidence alone decides how far it extends.  Charged per bar, every
+    additional drop bar earns another ``log(cost)``, so the run grows without
+    bound as the knob is turned: at 1000 the per-bar version swallows the entire
+    track (``[(0, 36, 'drop')]``) -- the corpus-scale version of the reviewer's
+    41 % -> 64 % drop occupancy while accuracy fell.
+
+    (Far above this range the knob does eventually buy a one-bar drop as the
+    track's truncated final run -- correct behaviour at 1:1,000,000 odds, not the
+    compounding failure this pins.)
+    """
+    priors = toy_priors(floor=4)
+    posteriors = np.array([one_hot(BREAKDOWN)] * 12 + [one_hot(DROP)] * 12
+                          + [one_hot(BREAKDOWN)] * 12)
+    spans = segments(FixedLagViterbi(priors, lag_bars=2, drop_miss_cost=cost)
+                     .decode(posteriors))
+    drops = [span for span in spans if span[2] == "drop"]
+    assert drops == [(12, 24, "drop")], (
+        f"at cost {cost} the drop covered {drops} instead of exactly the bars "
+        f"the evidence supports -- is the bonus per bar?")
 
 
 @pytest.mark.parametrize("spike", [10, 12, 14])
@@ -611,6 +670,42 @@ def test_decoding_is_deterministic_and_free_of_instance_state():
 def test_an_empty_track_decodes_to_nothing():
     decoder = FixedLagViterbi(toy_priors(), lag_bars=3)
     assert decoder.decode(np.zeros((0, 5))) == []
+
+
+def test_a_hazard_outside_zero_to_one_is_refused():
+    """A hazard of 0 makes a class unleavable and 1 caps every run at its floor.
+    The fitter cannot produce either, so a prior that carries one has been
+    hand-edited or is from another version -- refuse rather than decode oddly."""
+    priors = toy_priors()
+    for bad in (0.0, 1.0, 1.5):
+        broken = priors._replace(hazard=np.full(len(priors.classes), bad))
+        with pytest.raises(ValueError, match="hazard"):
+            FixedLagViterbi(broken, lag_bars=2)
+
+
+def test_importing_the_decoder_does_not_drag_torch_onto_the_decode_path():
+    """The decode path must stay numpy-only: this exact object runs live.
+
+    ``priors`` reaches the corpus for its *fitting* half (``nn.dataset`` alone
+    pulls torch -- 1.9 s and 1,127 modules), so those imports live inside the
+    functions that need them.  A module-level import added back would cost a
+    show a two-second torch load and would not fail any other test here, since
+    the dev venv has torch installed -- hence the subprocess.
+    """
+    probe = (
+        "import sys, training.nn.decoder;"
+        "leaked = sorted(m for m in ('torch', 'training.nn.dataset')"
+        "                if m in sys.modules);"
+        "print(leaked, len(sys.modules))"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO_ROOT),
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    leaked, modules = result.stdout.strip().rsplit(" ", 1)
+    assert leaked == "[]", f"decode path imported {leaked}"
+    assert int(modules) < 500, (
+        f"a bare decoder import loaded {modules} modules -- something heavy "
+        f"crept back onto the decode path")
 
 
 # --------------------------------------------------------------------------- #

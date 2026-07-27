@@ -49,20 +49,18 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .dataset import SPLITS_FILE  # noqa: F401  (also puts training/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path for the
+                             # lazy imports below)
 
-from build_training_table import (  # noqa: E402
-    V1_ORDER,
-    canonical_coverage,
-    default_data_dir,
-    label_v1,
-)
-from raveform_fetch_annotations import (  # noqa: E402
-    beat_csv_path,
-    load_tracks,
-    parse_beat_csv,
-    parse_sections,
-)
+# **Nothing heavy at module scope.**  ``decoder`` imports this module, and the
+# decoder is the object that runs live at showtime -- so the import that a show
+# pays for must be numpy and nothing else.  ``nn.dataset`` alone pulls torch
+# (1.9 s, 1,127 modules) and ``build_training_table`` pulls the whole eval
+# pipeline; both are needed only to *fit* priors from the corpus, never to read
+# a fitted one.  They are therefore imported inside the functions that use them.
+# The alternative -- copying ``V1_ORDER`` and the label folds into this file --
+# would put the label vocabulary in two places, which is the one thing
+# ``nn/__init__`` exists to prevent.
 
 PRIORS_FILE = "priors.json"
 MODELS_DIR = "models"
@@ -85,6 +83,18 @@ FLOOR_PERCENTILE = 5.0
 UNIFORM_FORKS = {"buildup": ("breakdown", "drop")}
 
 PRIORS_VERSION = 1
+
+
+def v1_classes() -> tuple:
+    """The 5-class v1 label space -- read from the table builder, never copied.
+
+    A function rather than a module constant so that resolving it stays lazy:
+    used as a default argument it would be evaluated at import time and drag the
+    eval pipeline onto the decode path.  Callers that already hold a ``Priors``
+    should read ``priors.classes`` instead; this is for the fitting side.
+    """
+    from build_training_table import V1_ORDER
+    return tuple(V1_ORDER)
 
 
 # --------------------------------------------------------------------------- #
@@ -110,8 +120,9 @@ def transition_allowed(src: str, dst: str) -> bool:
     return src != dst
 
 
-def legal_mask(classes=V1_ORDER) -> np.ndarray:
+def legal_mask(classes=None) -> np.ndarray:
     """``[C, C]`` boolean: ``True`` where a transition is structurally legal."""
+    classes = v1_classes() if classes is None else tuple(classes)
     return np.array(
         [[transition_allowed(src, dst) for dst in classes] for src in classes],
         dtype=bool,
@@ -233,6 +244,7 @@ def v1_runs(sections: list) -> list:
     but the sentinel's own time is never re-attributed, which is why bar counts
     are summed per member rather than taken from the merged span.
     """
+    from build_training_table import canonical_coverage, label_v1
     spans = sorted(
         ((float(start), float(end), label_v1(label))
          for start, end, label in canonical_coverage(sections)),
@@ -255,6 +267,7 @@ def bar_runs(sections: list, downbeats: np.ndarray) -> list:
     exactly when a dropped ``end`` sentinel sits between two members, and that
     sentinel's bars belong to nobody.
     """
+    from build_training_table import canonical_coverage, label_v1
     downbeats = np.asarray(downbeats, dtype=np.float64)
     runs: list = []
     for start, end, label in sorted(
@@ -276,6 +289,8 @@ def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
     two duration units in one prior would be invisible in the output and wrong
     everywhere.
     """
+    from raveform_fetch_annotations import (
+        beat_csv_path, load_tracks, parse_beat_csv, parse_sections)
     data_dir = Path(data_dir)
     wanted = set(str(i) for i in youtube_ids)
     by_id = {str(track.get("id")): track for track in load_tracks(data_dir)}
@@ -311,7 +326,7 @@ def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
 # --------------------------------------------------------------------------- #
 
 
-def fit_runs(sequences, *, classes=V1_ORDER, smoothing: float = SMOOTHING,
+def fit_runs(sequences, *, classes=None, smoothing: float = SMOOTHING,
              floor_percentile: float = FLOOR_PERCENTILE,
              uniform_forks: dict = UNIFORM_FORKS, strict: bool = True,
              provenance: dict | None = None) -> Priors:
@@ -322,7 +337,7 @@ def fit_runs(sequences, *, classes=V1_ORDER, smoothing: float = SMOOTHING,
     prior be tested against hand-written sequences on a machine that has never
     seen the corpus.
     """
-    classes = tuple(classes)
+    classes = v1_classes() if classes is None else tuple(classes)
     index = {label: i for i, label in enumerate(classes)}
     n = len(classes)
     legal = legal_mask(classes)
@@ -475,6 +490,7 @@ def _duration_model(durations: dict, classes, floor_percentile: float) -> tuple:
 
 def split_ids(data_dir, split: str = "train") -> list:
     """The frozen split's youtube ids.  Never regenerates the split file."""
+    from .dataset import SPLITS_FILE
     path = Path(data_dir) / SPLITS_FILE
     if not path.exists():
         raise RuntimeError(
@@ -569,6 +585,7 @@ def format_report(priors: Priors) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    from build_training_table import default_data_dir
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--split", default="train",
                         help="fit on this split (default: %(default)s -- moving "
