@@ -105,6 +105,19 @@ def test_a_credential_wall_outranks_the_unavailable_text_it_carries():
     assert classify_error(blob) == "bot_check"
 
 
+def test_a_private_video_outranks_the_cookie_advice_it_carries():
+    # The real yt-dlp text, verbatim in shape: a private video error ends with
+    # the standard cookie advice.  Bucketing it as `bot_check` would make every
+    # retry pass re-poll a video we will never be granted access to, and enough
+    # of them in a row would trip the consecutive-block guard on a healthy run.
+    blob = (
+        "ERROR: [youtube] CJL6uHqLyfU: Private video. Sign in if you've been granted "
+        "access to this video. Use --cookies-from-browser or --cookies for the "
+        "authentication."
+    )
+    assert classify_error(blob) == "unavailable"
+
+
 def test_copyright_ranks_below_unavailable():
     # Both phrases appear together on takedowns; `unavailable` is listed first
     # and must win, so the ordering of _REASON_PATTERNS is load-bearing.

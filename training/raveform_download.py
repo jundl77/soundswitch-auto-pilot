@@ -97,6 +97,20 @@ _PROGRESS_EVERY = 10
 _REASON_PATTERNS = (
     # Ordered: the first match wins, so credential walls outrank the generic
     # "video unavailable" text that YouTube often appends to them.
+    #
+    # ...but a *private* video outranks the credential wall in turn.  yt-dlp
+    # appends its standard "Use --cookies-from-browser" advice to the private-
+    # video error, which would otherwise bucket a permanently inaccessible
+    # video as a retryable refusal: every retry pass would re-poll it forever,
+    # and a handful of them in a row would trip the consecutive-block guard and
+    # abort a healthy run.  Access we will never be granted is not a block.
+    (
+        "unavailable",
+        (
+            "private video",
+            "this video is private",
+        ),
+    ),
     (
         "bot_check",
         (
