@@ -684,12 +684,17 @@ def config_fingerprint(params: PhaseParams, condition: str, *,
             "sha256": hashlib.sha256(document.encode("utf-8")).hexdigest()}
 
 
-def split_guard(data_dir, ids, split: str = "val") -> list:
+def split_guard(data_dir, ids, split: str = "val", *, reason: str | None = None) -> list:
     """Refuse ids outside ``split`` -- membership, not the flag that selected it.
 
     Task 3's lesson: a guard that only covers the default path is not a guard,
-    because an explicit id list walks straight past a flag-level check.
+    because an explicit id list walks straight past a flag-level check.  Two
+    modes need it for different reasons, so the reason is a parameter: a tuning
+    mode must not *read* another split's truth, and the verdict must not *label*
+    an artifact with a split it did not score.
     """
+    reason = reason or ("this mode reads annotated truth to choose a value, "
+                        "which is a tuning read")
     path = Path(data_dir) / SPLITS_FILE
     if not path.exists():
         raise RuntimeError(f"no splits at {path} -- it is never regenerated implicitly")
@@ -702,8 +707,7 @@ def split_guard(data_dir, ids, split: str = "val") -> list:
     if outside:
         raise RuntimeError(
             f"{len(outside)} of the {len(ids)} requested ids are not in {split} "
-            f"({outside[:5]}{' ...' if len(outside) > 5 else ''}) -- this mode "
-            f"reads annotated truth to choose a value, which is a tuning read")
+            f"({outside[:5]}{' ...' if len(outside) > 5 else ''}) -- {reason}")
     return ids
 
 
@@ -1250,6 +1254,13 @@ def main(argv: list | None = None) -> int:
     if args.align or args.sweep:
         # Both read annotated truth to choose a value.  Val, by membership.
         ids = split_guard(data_dir, ids, "val")
+    elif args.verdict:
+        # Not a contamination guard -- a labelling one.  The artifact is named
+        # after its split and its header says how many tracks it scored; ids from
+        # somewhere else would make both statements false, quietly.
+        ids = split_guard(data_dir, ids, args.split,
+                          reason=f"a --split {args.split} verdict is labelled "
+                                 f"{args.split} and must score only {args.split}")
     truth = load_truth(data_dir, ids)
     stamp = dt.datetime.now(dt.timezone.utc).isoformat()
 

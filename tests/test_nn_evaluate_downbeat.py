@@ -533,8 +533,13 @@ def test_a_tuning_mode_refuses_test_ids_by_membership_not_by_flag(tmp_path):
     (tmp_path / "splits.json").write_text(json.dumps(
         {"train": ["t1"], "val": ["v1", "v2"], "test": ["x1"]}), encoding="utf-8")
     assert split_guard(tmp_path, ["v1", "v2"], "val") == ["v1", "v2"]
-    with pytest.raises(RuntimeError, match="not in val"):
+    with pytest.raises(RuntimeError, match="tuning read"):
         split_guard(tmp_path, ["v1", "x1"], "val")
+    # The verdict needs the same check for a different reason -- an artifact
+    # labelled with a split it did not score is a quiet lie, not a leak.
+    assert split_guard(tmp_path, ["x1"], "test", reason="labelled test") == ["x1"]
+    with pytest.raises(RuntimeError, match="labelled test"):
+        split_guard(tmp_path, ["x1", "v1"], "test", reason="labelled test")
 
 
 # --------------------------------------------------------------------------- #
@@ -607,6 +612,10 @@ def test_re_lock_after_a_deck_transition_is_bought_with_the_flip_penalty():
     tempo_change, same_tempo, hard_cut = (relock_bars(committed, **cut) for cut in cuts)
     assert tempo_change == 0
     assert same_tempo is None and hard_cut is None
+
+    # The shipped default is stiffer still, and the runtime will meet it first.
+    shipped = PhaseParams()
+    assert [relock_bars(shipped, **cut) for cut in cuts] == [0, None, None]
 
 
 def test_the_phase_re_locks_after_a_deck_transition_to_a_new_tempo_and_offset():

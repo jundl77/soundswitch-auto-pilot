@@ -384,6 +384,8 @@ class BarPhaseHMM:
                 f"{self._last_time}")
 
         coasted, period = self._plan_gap(time)
+        # The single owner of the counter: every path out of ``_plan_gap`` passes
+        # through here, so the re-seed branch does not reset it itself.
         self._coast_streak = self._coast_streak + 1 if coasted else 0
         decisions: list = []
         for moment in coasted:
@@ -452,8 +454,19 @@ class BarPhaseHMM:
             # dropout whose recorded period is short too.  Dropping the estimate
             # re-seeds it from the next observed interval, which is the only
             # unpolluted evidence available.
+            #
+            # **What this rule costs, stated rather than hidden:** a region where
+            # the stream really does deliver only every other beat for longer
+            # than the window re-seeds to the *slower* pulse, and the grid then
+            # runs at half rate until the beats come back.  That is the opposite
+            # error to the one it fixes, and it is the price of breaking the
+            # feedback loop with a local rule.  Measured on val: the branch fires
+            # on 116 of 215 tracks (once each on 92 of them -- the warmup) and
+            # more than once on 24; the tracks that fire most often emit grids at
+            # 0.61-0.91 of the music's bar rate, but they are also tracks where
+            # aubio delivers only 0.58-0.84 of the beats, so the slow grid is
+            # mostly the stream's and only partly this rule's.
             self._periods.clear()
-            self._coast_streak = 0
             return [], gap
         if not self._periods:
             return [], gap                      # the first interval seeds the tempo
