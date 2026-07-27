@@ -36,6 +36,7 @@ from nn.downbeat_dataset import (  # noqa: E402
     GAP_FACTOR,
     DownbeatWindowDataset,
     alignment_profile,
+    grid_anomalies,
     load_beat_grid,
     load_beat_grids,
     parse_beat_grid,
@@ -201,6 +202,50 @@ def test_a_broken_bar_is_recorded_not_fatal():
 
 
 # --------------------------------------------------------------------------- #
+# Grids that parse but cannot be believed
+# --------------------------------------------------------------------------- #
+
+
+def test_a_healthy_grid_has_no_anomalies():
+    assert grid_anomalies(parse_beat_grid(grid_rows(bars=40))) == []
+    # ...including one that starts mid-bar, which is a quarter of the corpus.
+    assert grid_anomalies(parse_beat_grid(grid_rows(bars=40, start_phase=3))) == []
+
+
+def test_a_stuck_phase_column_is_caught_by_both_invariants():
+    """Every row says "downbeat 1": structurally perfect, semantically empty.
+
+    Nothing in the parse rejects it, every beat becomes a downbeat, and the
+    target array looks full -- so the model would train on a beat-rate impulse
+    train called a bar grid and the loss curve would look normal.
+    """
+    rows = [(time, 1, section) for time, _phase, section in grid_rows(bars=40)]
+
+    reasons = grid_anomalies(parse_beat_grid(rows))
+
+    assert len(reasons) == 2
+    assert any("cycle" in reason for reason in reasons)
+    assert any("one per bar" in reason for reason in reasons)
+
+
+def test_a_repeated_phase_pair_is_caught_even_though_downbeats_look_sane():
+    """Bars twice as long as four beats: the cycle survives, the geometry does not."""
+    rows = [(time, (index // 2) % BEATS_PER_BAR + 1, section)
+            for index, (time, _phase, section) in enumerate(grid_rows(bars=40))]
+
+    reasons = grid_anomalies(parse_beat_grid(rows))
+
+    assert any("one per bar" in reason for reason in reasons)
+
+
+def test_one_broken_bar_is_not_an_anomaly():
+    """The tolerance has to leave room for a single 3/4 bar or an edit."""
+    rows = grid_rows(bars=40)
+    rows.pop(5)
+    assert grid_anomalies(parse_beat_grid(rows)) == []
+
+
+# --------------------------------------------------------------------------- #
 # Targets
 # --------------------------------------------------------------------------- #
 
@@ -325,6 +370,27 @@ def test_beats_past_the_end_of_the_mel_are_marked_not_clipped():
     assert (targets.beat_time[~inside] > 10.0 - FRAME_SEC).all()
 
 
+def test_a_beat_before_the_first_frame_stamp_is_frame_zero_not_the_sentinel():
+    """The mirror of the tail case, and it is NOT the same answer.
+
+    72 corpus grids open before the first frame's stamp -- many at 0.0 exactly --
+    and 54 of those opening beats are downbeats.  Frame 0 pools the audio in
+    ``(t0 - frame_sec, t0]``, which is precisely where such a beat lives, so it
+    belongs to frame 0.  Sharing the past-the-end sentinel would invite a
+    consumer to truncate the beat table at the first ``-1`` and silently lose the
+    opening downbeat of 65 tracks in the splits.
+    """
+    rows = grid_rows(bpm=120.0, bars=8, start=0.0)
+    grid, targets = targets_for(rows)
+
+    assert grid.times[0] == 0.0
+    assert grid.phases[0] == 1                     # ...and it is a downbeat
+    assert targets.beat_frame[0] == 0
+    assert (targets.beat_frame >= 0).all()         # nothing off the end here
+    # The supervision itself already landed on frame 0 and is not disturbed.
+    assert targets.mask[0] and targets.downbeat[0] > 0.5
+
+
 def test_a_grid_with_no_downbeats_produces_an_empty_but_valid_target():
     """Two beats, neither a phase 1: nothing to teach, and nothing pretended."""
     grid, targets = targets_for([(1.0, 2, "drop"), (1.5, 3, "drop")])
@@ -444,6 +510,16 @@ def test_dataset_refuses_a_track_whose_grid_has_no_bars(tmp_path):
     write_grid(data_dir / "annotations" / "beats" / "0000.id00000000.beat.csv", rows)
 
     with pytest.raises(RuntimeError, match="downbeat"):
+        DownbeatWindowDataset(data_dir, ids)
+
+
+def test_dataset_refuses_a_grid_whose_phase_column_says_nothing(tmp_path):
+    """The last silent path: valid rows, unusable bars, full-looking targets."""
+    data_dir, ids = with_grids(tmp_path, count=1)
+    rows = [(t, 1, s) for t, _p, s in grid_rows(bars=40)]
+    write_grid(data_dir / "annotations" / "beats" / "0000.id00000000.beat.csv", rows)
+
+    with pytest.raises(RuntimeError, match="not believable"):
         DownbeatWindowDataset(data_dir, ids)
 
 

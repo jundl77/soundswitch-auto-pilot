@@ -92,6 +92,18 @@ BEATS_PER_BAR = 4
 # it, so the cost of the tolerance today is exactly zero.
 GAP_FACTOR = 1.75
 
+# A grid can be structurally perfect and still be nonsense: every column in
+# range, every time increasing, and the phase column carrying no bar information
+# at all (a stuck exporter writing 1s, an off-by-one that repeats a phase).  That
+# grid trains silently -- its "downbeats" are a beat-rate impulse train and the
+# loss curve looks normal.  Two cheap corpus-scale invariants catch it: bars
+# cycle, so a large fraction of broken cycles is not a 3/4 bar, and a bar is four
+# beats long, so the median bar must be about 4x the median inter-beat interval.
+# The real corpus scores 0.0 and 1.00 on the two; the thresholds are loose enough
+# that a genuinely odd track passes and tight enough that a stuck column cannot.
+MAX_PHASE_BREAK_FRACTION = 0.20
+BAR_LENGTH_TOLERANCE = 0.25
+
 
 # --------------------------------------------------------------------------- #
 # The grid
@@ -171,6 +183,40 @@ def parse_beat_grid(rows, source: str = "<memory>") -> BeatGrid:
     return BeatGrid(times, phases.astype(np.int8), breaks, str(source))
 
 
+def grid_anomalies(grid: BeatGrid) -> list:
+    """Reasons this grid's *phase column* cannot be believed, in plain words.
+
+    Separate from ``parse_beat_grid`` on purpose.  Parsing rejects what is
+    malformed; this judges what is merely implausible, and the two want different
+    answers: the corpus report wants to *see* an odd grid, while training on one
+    is the silent failure this whole module exists to refuse.  So the parser
+    stays permissive and the dataset consults this.
+
+    Empty means nothing looked wrong -- not that the annotation is correct.
+    """
+    reasons: list = []
+    beats = len(grid.times)
+    if beats > 1:
+        fraction = len(grid.phase_breaks) / (beats - 1)
+        if fraction > MAX_PHASE_BREAK_FRACTION:
+            reasons.append(
+                f"{fraction:.0%} of beats break the 1..{BEATS_PER_BAR} cycle "
+                f"({len(grid.phase_breaks)} of {beats - 1}) -- the phase column "
+                f"does not describe bars")
+
+    downbeats = grid.downbeat_times
+    beat_sec = grid.median_beat_sec
+    if downbeats.size > 2 and beat_sec > 0.0:
+        bar_sec = float(np.median(np.diff(downbeats)))
+        ratio = bar_sec / (BEATS_PER_BAR * beat_sec)
+        if abs(ratio - 1.0) > BAR_LENGTH_TOLERANCE:
+            reasons.append(
+                f"median bar is {bar_sec:.3f}s against {BEATS_PER_BAR} beats at "
+                f"{beat_sec:.3f}s (ratio {ratio:.2f}) -- the downbeats are not "
+                f"one per bar")
+    return reasons
+
+
 def load_beat_grid(path) -> BeatGrid:
     """Read and validate one ``*.beat.csv``, reusing the corpus's own parser."""
     path = Path(path)
@@ -225,7 +271,7 @@ class DownbeatTargets(NamedTuple):
     mask: np.ndarray         # [n] bool
     beat_time: np.ndarray    # [b] float64, every beat in the grid
     beat_phase: np.ndarray   # [b] int8, 1..4
-    beat_frame: np.ndarray   # [b] int64, mel frame index or -1 if off the grid
+    beat_frame: np.ndarray   # [b] int64, mel frame index, or -1 PAST THE END only
 
 
 def track_downbeat_targets(grid: BeatGrid, n_frames: int,
@@ -255,13 +301,26 @@ def track_downbeat_targets(grid: BeatGrid, n_frames: int,
 
     mask = np.zeros(n_frames, dtype=bool)
     if n_frames:
+        # Closed at BOTH ends, unlike the section dataset's ``< last_end``.  A
+        # section's end is the next section's start -- half-open, or the boundary
+        # frame is claimed twice.  The last beat is not a boundary between two
+        # annotations, it is itself an annotated instant, and excluding it would
+        # delete the supervision it exists to provide.
         mask = (times >= grid.times[0]) & (times <= grid.times[-1])
         for start, end in _grid_holes(grid):
             mask &= ~((times > start) & (times < end))
     target[~mask] = 0.0
 
+    # ``-1`` means ONE thing: this beat is past the end of the mel.  A beat
+    # before the first frame's own stamp is NOT off the grid -- frame 0 pools the
+    # audio in ``(t0 - frame_sec, t0]``, which is exactly where such a beat is,
+    # so it is clamped to frame 0 rather than sharing the sentinel.  72 corpus
+    # grids have a first beat inside that window and 54 of those beats are
+    # downbeats; a consumer that truncated the beat table at the first ``-1``
+    # would drop them, so the two cases must not look alike.
     frames = np.rint((grid.times - t0) / frame_sec).astype(np.int64)
-    frames[(frames < 0) | (frames >= n_frames)] = -1
+    np.maximum(frames, 0, out=frames)
+    frames[frames >= n_frames] = -1
 
     return DownbeatTargets(target, mask, grid.times, grid.phases, frames)
 
@@ -314,11 +373,15 @@ class DownbeatWindowDataset(WindowDataset):
             grid = self._grids.get(youtube_id)
             if grid is None:
                 track = records.get(youtube_id)
+                if track is None and not records:
+                    raise RuntimeError(
+                        f"no beat grid supplied for {youtube_id}: grids were "
+                        f"injected, so the corpus annotations were never read")
                 path = beat_csv_path(data_dir, track) if track is not None else None
                 if path is None:
                     raise RuntimeError(
-                        f"no beat grid for {youtube_id}: it is neither in the "
-                        f"supplied grids nor in {data_dir}'s annotations")
+                        f"no beat grid for {youtube_id}: it has no record in "
+                        f"{data_dir}'s annotations, so its grid cannot be located")
                 if not path.exists():
                     raise RuntimeError(
                         f"missing beat grid for {youtube_id}: {path} -- it would "
@@ -331,6 +394,13 @@ class DownbeatWindowDataset(WindowDataset):
                 raise RuntimeError(
                     f"{youtube_id}: beat grid has {grid.bars} downbeat(s) -- "
                     f"nothing to supervise")
+            # ...and a grid whose phase column carries no bar information trains
+            # just as silently, with a full-looking target array.
+            anomalies = grid_anomalies(grid)
+            if anomalies:
+                raise RuntimeError(
+                    f"{youtube_id}: beat grid is structurally valid but not "
+                    f"believable -- " + "; ".join(anomalies))
 
     # -- the window itself -------------------------------------------------- #
 
@@ -389,6 +459,14 @@ def alignment_profile(mel: np.ndarray, targets: DownbeatTargets, *,
     section head, and it is why the targets stay defined against the frame's own
     stamp: the Gaussian peak then sits on the annotated instant itself, so a
     decoded activation peak is an unbiased estimate of the downbeat time.
+
+    **This says nothing about where a trained model's activation will peak.**
+    The model is fitted to the target, and with ~16 s of bidirectional context it
+    can place its activation on the target frame however late its evidence
+    arrived; the flux shift is a property of the input, not a prediction about
+    the output.  Reading it as one and centring an aggregation window at +1 would
+    bake ~46 ms of systematic bias -- two thirds of the +-70 ms budget -- into the
+    decoder.  Any aggregation window must be MEASURED on validation activations.
     """
     energy = mel[:, :bands].mean(axis=1)
     flux = np.maximum(np.diff(energy, prepend=energy[:1]), 0.0)
@@ -409,8 +487,13 @@ def alignment_profile(mel: np.ndarray, targets: DownbeatTargets, *,
 
 
 def validate_tracks(data_dir, youtube_ids) -> list:
-    """Per-track facts a human can check the grids against, in id order."""
-    from .dataset import load_sidecar, sidecar_shape
+    """Per-track facts a human can check the grids against, in id order.
+
+    Reported on the same frame count the dataset trains on -- truncated to a
+    whole number of pooled label groups -- so the CLI and the loader cannot
+    disagree by the one frame the truncation removes.
+    """
+    from .dataset import LABEL_POOL, load_sidecar, sidecar_shape
     from build_training_table import FEATURES_DIR
 
     data_dir = Path(data_dir)
@@ -425,12 +508,17 @@ def validate_tracks(data_dir, youtube_ids) -> list:
         if not path.exists():
             rows.append({"youtube_id": youtube_id, "error": "no mel sidecar"})
             continue
-        n_frames = sidecar_shape(path)[0]
+        n_frames = (sidecar_shape(path)[0] // LABEL_POOL) * LABEL_POOL
         targets = track_downbeat_targets(grid, n_frames, FRAME_SEC, FRAME_SEC)
         beat_sec = grid.median_beat_sec
-        profile = alignment_profile(load_sidecar(path), targets)
+        profile = alignment_profile(load_sidecar(path)[:n_frames], targets)
         stamps = FRAME_SEC * (targets.beat_frame + 1)
-        on_grid = targets.beat_frame >= 0
+        # A beat clamped to frame 0 is further from its stamp than half a frame
+        # by construction, so it is counted rather than averaged in -- otherwise
+        # the "+-half a frame" claim this column exists to check is diluted by
+        # the one case that deliberately breaks it.
+        clamped = targets.beat_time < FRAME_SEC / 2.0
+        on_grid = (targets.beat_frame >= 0) & ~clamped
         offsets = stamps[on_grid] - targets.beat_time[on_grid]
         rows.append({
             "youtube_id": youtube_id,
@@ -446,7 +534,9 @@ def validate_tracks(data_dir, youtube_ids) -> list:
             "holes": len(_grid_holes(grid)),
             "peak_frames": int(np.count_nonzero(targets.downbeat > 0.85)),
             "target_mean": round(float(targets.downbeat.mean()), 5),
-            "beats_off_grid": int(np.count_nonzero(targets.beat_frame < 0)),
+            "beats_past_end": int(np.count_nonzero(targets.beat_frame < 0)),
+            "beats_clamped_leading": int(np.count_nonzero(clamped)),
+            "anomalies": grid_anomalies(grid),
             "stamp_offset_ms": round(float(offsets.mean()) * 1000.0, 2),
             "stamp_offset_max_ms": round(float(np.abs(offsets).max()) * 1000.0, 2),
             "align_peak_shift": max(profile["downbeat"], key=profile["downbeat"].get),
@@ -471,6 +561,8 @@ def format_report(rows: list) -> str:
             f"{row['masked_pct']:>6} {row['holes']:>6} {row['peak_frames']:>6} "
             f"{row['align_peak_shift']:>+6} {row['align_control_shift']:>+5} "
             f"{row['stamp_offset_ms']:>+9.2f}")
+        for reason in row["anomalies"]:
+            lines.append(f"{'':<12}  ANOMALY: {reason}")
     return "\n".join(lines)
 
 
