@@ -433,6 +433,7 @@ def split_ids(data_dir: Path, split: str) -> list:
 def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
                 boundary_tolerance_sec: float = DecodeParams().boundary_tolerance_sec,
                 table_path: Path | None = None,
+                posteriors_dir: Path | None = None,
                 allow_missing: bool = False) -> tuple:
     """``(inputs, skipped)`` for the given youtube ids, in id order.
 
@@ -450,7 +451,7 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
     # the beat CSV stem; youtube ids are [A-Za-z0-9_-]{11} so the split is exact.
     by_youtube_id = {t.track_id.split(".", 1)[-1]: t for t in load_tracks(table_path)}
     beats_dir = annotations_dir(data_dir) / BEATS_DIR
-    posteriors_dir = data_dir / POSTERIORS_DIR
+    posteriors_dir = Path(posteriors_dir) if posteriors_dir else data_dir / POSTERIORS_DIR
 
     inputs: list = []
     skipped: list = []
@@ -900,7 +901,8 @@ def write_json(path: Path, payload: dict) -> None:
     _write_json(path, payload)
 
 
-def artifact_provenance(data_dir: Path) -> dict:
+def artifact_provenance(data_dir: Path, model_version: str = MODEL_VERSION,
+                        posteriors_dir: Path | None = None) -> dict:
     """Which model, priors, splits and table produced these numbers.
 
     A verdict table without this is unfalsifiable: the whole chain is content
@@ -909,7 +911,7 @@ def artifact_provenance(data_dir: Path) -> dict:
     checkpoint someone re-trained in between.
     """
     data_dir = Path(data_dir)
-    model_dir = data_dir / MODELS_DIR / MODEL_VERSION
+    model_dir = data_dir / MODELS_DIR / model_version
     wanted = {
         "model_onnx": model_dir / "model.onnx",
         "priors": model_dir / PRIORS_FILE,
@@ -921,7 +923,10 @@ def artifact_provenance(data_dir: Path) -> dict:
         files[name] = ({"path": str(path), "sha256": file_sha256(path),
                         "bytes": path.stat().st_size} if path.exists()
                        else {"path": str(path), "sha256": None})
-    return {"git_sha": git_sha(), "files": files}
+    return {"git_sha": git_sha(), "model_version": model_version,
+            "posteriors_dir": str(Path(posteriors_dir) if posteriors_dir
+                                  else data_dir / POSTERIORS_DIR),
+            "files": files}
 
 
 def main(argv: list | None = None) -> int:
@@ -933,9 +938,18 @@ def main(argv: list | None = None) -> int:
                         help="decoder_config.json from the sweep (default: "
                              "models/v1/decoder_config.json if present)")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--model-version", default=MODEL_VERSION,
+                        help="artifact generation to score: reads priors, the "
+                             "decoder config and the graph from "
+                             f"<data-dir>/{MODELS_DIR}/<model-version>/ and writes "
+                             "the verdict beside them (default: %(default)s)")
+    parser.add_argument("--posteriors-dir", type=Path, default=None,
+                        help=f"sidecar directory (default: <data-dir>/{POSTERIORS_DIR}); "
+                             "a retrain writes its own so the sidecars backing a "
+                             "published verdict are never overwritten")
     args = parser.parse_args(argv)
 
-    model_dir = args.data_dir / MODELS_DIR / MODEL_VERSION
+    model_dir = args.data_dir / MODELS_DIR / args.model_version
     config_path = args.config or model_dir / DECODER_CONFIG_FILE
     params = (load_decoder_config(config_path) if Path(config_path).exists()
               else DecodeParams())
@@ -944,7 +958,8 @@ def main(argv: list | None = None) -> int:
     ids = split_ids(args.data_dir, args.split)
     inputs, skipped = load_inputs(
         args.data_dir, ids, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec)
+        boundary_tolerance_sec=params.boundary_tolerance_sec,
+        posteriors_dir=args.posteriors_dir)
     if not inputs:
         print(f"no usable tracks in split {args.split!r}", file=sys.stderr)
         return 1
@@ -954,7 +969,8 @@ def main(argv: list | None = None) -> int:
         provenance={"config_source": str(config_path)
                                      if Path(config_path).exists() else "defaults",
                     "requested_tracks": len(ids),
-                    "artifacts": artifact_provenance(args.data_dir)})
+                    "artifacts": artifact_provenance(
+                        args.data_dir, args.model_version, args.posteriors_dir)})
     out = args.out or model_dir / EVAL_FILE.format(split=args.split)
     write_json(out, report)
     print(render(report))

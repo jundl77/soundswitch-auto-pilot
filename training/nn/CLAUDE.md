@@ -49,13 +49,15 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 |---|---|
 | `splits.json` | the frozen train/val/test assignment |
 | `features/*.npz` | pooled log-mel sidecars (written by the eval pipeline, read here) |
-| `models/v1/<run>/` | training checkpoints and per-run reports |
-| `models/v1/model.onnx` | the exported graph -- the interface every inference goes through |
-| `models/v1/priors.json` | the fitted structural priors |
-| `posteriors/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |
-| `models/v1/decoder_config.json` | the chosen decoder config and the search that chose it |
-| `models/v1/eval_val.json` | the tuned verdict |
-| `models/v1/eval_test.json` | the selection-clean verdict -- the test split is read once |
+| `models/<gen>/<run>/` | training checkpoints and per-run reports |
+| `models/<gen>/model.onnx` | the exported graph -- the interface every inference goes through |
+| `models/<gen>/priors.json` | the fitted structural priors |
+| `posteriors*/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |
+| `models/<gen>/decoder_config.json` | the chosen decoder config and the search that chose it |
+| `models/<gen>/eval_val.json` | the tuned verdict |
+| `models/<gen>/eval_test.json` | the selection-clean verdict -- the test split is read once |
+
+`<gen>` is a **generation**: one corpus, one training run, one test read. A retrain on a grown corpus takes the next generation rather than reusing the current one, and writes its posterior sidecars to a directory of its own, because the artifacts under a generation are the evidence for that generation's published verdict -- overwriting them silently invalidates a number someone has already been shown. Every stage takes the generation and the sidecar directory as arguments (`--model-version`, `--posteriors-dir`, `--out`), and the verdict artifact records both so a reader can tell which chain produced it.
 
 ## Rules that must not be broken
 
