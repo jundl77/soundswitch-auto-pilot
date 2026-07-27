@@ -6,9 +6,22 @@ beat-locked and 52 % of its false positives land on beat 3**.  The head has
 solved *is this a beat* and not *which beat*, and no better activation fixes
 that, because in four-on-the-floor beat 3 is acoustically the same event as beat
 1.  What separates them is the *sequence*: a track cannot alternate 1-3-1-3
-without paying for a phase flip over and over.  So this module is a 4-state
-cyclic HMM at beat rate, and the flip penalty is the knob that turns a ranking
-into a grid.
+without paying for a phase flip over and over.  So this module is a cyclic HMM
+over the bar, at the rate of whatever candidate instants it is given, and the
+flip penalty is the knob that turns a ranking into a grid.
+
+**The cycle is four positions or eight, and the difference is the whole live
+condition.**  Fed aubio's beats it is four (one per beat).  But aubio's dominant
+failure on this corpus is not jitter, it is a steady **half-beat lock**: an aubio
+beat sits within +-70 ms of an expert downbeat only 51.8 % of the time on val,
+and de-shifting each track by its own median offset recovers nothing, because the
+offset is half a beat rather than a latency.  A four-state decoder can only round
+that away.  Admitting the midpoint of every consecutive pair as a candidate makes
+the bar an eight-position cycle, turns "aubio is half a beat off" into a state the
+decoder can occupy and *hold*, and lifts the reachable ceiling from 51.8 % to
+85.2 %.  Midpoints stay causal -- the midpoint of beats n and n+1 exists as soon
+as beat n+1 arrives -- so the live discipline is unchanged.  ``subdivision`` is
+the switch; ``candidate_grid`` builds the instants.
 
 **One real lever, and the reason is structural.**  ``flip_penalty`` is the cost
 of not advancing the phase; ``downbeat_ref`` is the activation level at which a
@@ -45,9 +58,9 @@ re-locks from the far side's evidence.
 light show cannot un-fire a strobe, so a decision ``lag_beats`` behind the
 arrival head is final.  The section decoder gets that by reading a backtrace and
 then setting every disagreeing trellis state to -inf; **that construction is
-wrong for a four-state cyclic chain and it fails silently.**  Viterbi keeps one
-best path per state, so with four states and a near-permutation transition graph
-the -inf prune leaves exactly *one* live state -- which fixes not just the
+wrong for a small cyclic chain and it fails silently.**  Viterbi keeps one best
+path per state, so with a handful of states and a near-permutation transition
+graph the -inf prune leaves exactly *one* live state -- which fixes not just the
 committed beat but every beat between it and the head, i.e. it throws the
 look-ahead away and turns the decoder greedy after its first commit, while still
 producing perfectly plausible output.  (The section decoder is safe from this
@@ -55,8 +68,8 @@ because its 48 ``(class, dwell)`` states share ancestors; nothing about the
 pattern generalises.)
 
 So the commit here is exact instead: the trellis carries ``delta`` for the oldest
-*uncommitted* beat, and a commit rolls a 4x4 ``(frontier phase, head phase)``
-table forward over the buffered look-ahead.  That gives the maximum over all
+*uncommitted* candidate, and a commit rolls a ``(frontier position, head
+position)`` table forward over the buffered look-ahead.  That gives the maximum over all
 paths that agree with everything already emitted -- immutability by construction
 rather than by pruning -- with the full lag of look-ahead on every decision, and
 it hands back the phase posterior the confidence output needs as a by-product.
@@ -120,6 +133,25 @@ MAX_COAST_BEATS = 16
 # mistracked interval cannot move the median, short enough to follow a tempo ride.
 DEFAULT_TEMPO_WINDOW = 8
 
+# Candidate instants per beat.  1 decodes on the beat stream as given; 2 adds the
+# midpoint of every consecutive pair, doubling the cycle to eight half-beat states.
+# The amendment exists because aubio's dominant failure on this corpus is a steady
+# HALF-BEAT lock, not jitter: an aubio beat sits within +-70 ms of an expert
+# downbeat only 51.8 % of the time on val, and admitting the midpoints lifts that
+# ceiling to 85.2 %.  A steady half-beat offset is then a state the decoder can
+# occupy and hold, rather than an error it has to round away.  Midpoints stay
+# causal -- the midpoint of beats n and n+1 exists as soon as beat n+1 arrives, on
+# the same lag discipline as everything else.
+DEFAULT_SUBDIVISION = 1
+
+# Frames either side of a candidate instant that count as evidence for it.
+# Symmetric, which was Task 1's null hypothesis and what the measurement on val
+# activations confirmed; +-1 frame is +-46.4 ms, so with the +-23.2 ms the frame
+# grid already costs, the window's reach is the +-70 ms tolerance itself.  Widening
+# it would let an instant outside the tolerance borrow a downbeat's evidence.
+AGG_LO_FRAMES = -1
+AGG_HI_FRAMES = 1
+
 # Keeps logit() finite on a saturated activation without perturbing a real one.
 EPS = 1e-6
 
@@ -143,6 +175,7 @@ class PhaseParams:
     """
 
     lag_beats: int = DEFAULT_LAG_BEATS
+    subdivision: int = DEFAULT_SUBDIVISION
     flip_penalty: float = DEFAULT_FLIP_PENALTY
     downbeat_ref: float = DEFAULT_DOWNBEAT_REF
     coast_ratio: float = DEFAULT_COAST_RATIO
@@ -153,6 +186,88 @@ class PhaseParams:
 def _logit(value: float) -> float:
     clipped = min(max(float(value), EPS), 1.0 - EPS)
     return float(np.log(clipped / (1.0 - clipped)))
+
+
+# --------------------------------------------------------------------------- #
+# Candidate instants and their evidence
+# --------------------------------------------------------------------------- #
+#
+# These three live here rather than in ``downbeat_infer`` because in the runtime
+# the aggregation *is* decode-path work: the engine receives an activation stream
+# and a beat stream and has to put one on the other itself.  The sidecar's stored
+# per-beat scores are a cache of the ``subdivision = 1`` case; anything denser has
+# to be aggregated at decode time, and doing that must not require torch.
+
+
+def candidate_grid(beat_times, subdivision: int = DEFAULT_SUBDIVISION) -> np.ndarray:
+    """The instants a downbeat may be placed at, from a beat stream.
+
+    ``subdivision = 1`` is the beat stream itself.  ``2`` interleaves the midpoint
+    of every consecutive pair, so ``n`` beats yield ``2n - 1`` candidates and the
+    bar becomes an eight-state cycle.  Higher subdivisions are refused rather than
+    silently approximated: the corpus is 4/4 and the measured failure mode is a
+    half-beat lock, so a third would be a different claim about the music.
+    """
+    times = np.asarray(beat_times, dtype=np.float64).reshape(-1)
+    if int(subdivision) == 1:
+        return times
+    if int(subdivision) != 2:
+        raise ValueError(
+            f"subdivision must be 1 or 2, got {subdivision} -- see the module "
+            f"docstring; anything else is an unmeasured claim about the metre")
+    if times.size < 2:
+        return times
+    dense = np.empty(2 * times.size - 1, dtype=np.float64)
+    dense[0::2] = times
+    dense[1::2] = 0.5 * (times[:-1] + times[1:])
+    return dense
+
+
+def nearest_frames(instants, n_frames: int, frame_sec: float,
+                   t0: float) -> np.ndarray:
+    """Activation frame whose stamp is nearest each instant; ``-1`` past the end.
+
+    Task 1's convention exactly, including its correction: an instant *before* the
+    first frame's stamp is clamped to frame 0 -- frame 0 pools the audio in
+    ``(t0 - frame_sec, t0]``, which is where it lives -- so ``-1`` means past the
+    end and nothing else.  Filter on it; never clip it.
+    """
+    index = np.rint((np.asarray(instants, dtype=np.float64) - t0) / frame_sec)
+    index = np.maximum(index.astype(np.int64), 0)
+    return np.where(index >= int(n_frames), -1, index)
+
+
+def aggregate_at_beats(activation, instants, frame_sec: float, t0: float, *,
+                       lo: int = AGG_LO_FRAMES, hi: int = AGG_HI_FRAMES) -> tuple:
+    """``(scores, counts)`` -- the activation peak in a window around each instant.
+
+    The **maximum**, not the mean: aggregation exists to absorb the beat stream's
+    timing jitter, and a mean over the window dilutes a sharp peak in proportion
+    to how well the head localised it -- penalising exactly the behaviour a
+    70 ms-sigma target was built to produce.
+
+    ``scores`` is NaN wherever the window holds no frame at all (an instant past
+    the end of the activation), which the decoder reads as *no evidence* rather
+    than as evidence of no downbeat.  ``counts`` records how many frames each
+    score was taken over, so an instant scored off a clipped window at a track's
+    edge is visible instead of looking like every other one.
+    """
+    activation = np.asarray(activation, dtype=np.float64)
+    n_frames = len(activation)
+    frames = nearest_frames(instants, n_frames, frame_sec, t0)
+
+    scores = np.full(len(frames), np.nan, dtype=np.float64)
+    counts = np.zeros(len(frames), dtype=np.int32)
+    for index, frame in enumerate(frames):
+        if frame < 0:
+            continue
+        start = max(0, int(frame) + int(lo))
+        end = min(n_frames, int(frame) + int(hi) + 1)
+        if end <= start:                               # pragma: no cover
+            continue
+        counts[index] = end - start
+        scores[index] = activation[start:end].max()
+    return scores, counts
 
 
 # --------------------------------------------------------------------------- #
@@ -173,6 +288,9 @@ class BarPhaseHMM:
         params = params or PhaseParams()
         if int(params.lag_beats) < 0:
             raise ValueError(f"lag_beats must be >= 0, got {params.lag_beats}")
+        if int(params.subdivision) not in (1, 2):
+            raise ValueError(
+                f"subdivision must be 1 or 2, got {params.subdivision}")
         if float(params.flip_penalty) < 0.0:
             raise ValueError(
                 f"flip_penalty must be >= 0, got {params.flip_penalty} -- a "
@@ -187,15 +305,18 @@ class BarPhaseHMM:
 
         self.params = params
         self._ref_logit = _logit(params.downbeat_ref)
+        # Positions in one bar of the candidate grid: four at subdivision 1, eight
+        # at subdivision 2 (each beat plus the half-beat after it).  Position 1 is
+        # the downbeat either way.
+        self.cycle = BEATS_PER_BAR * int(params.subdivision)
 
-        # Row p is "what does it cost to be in phase q at the next beat".
-        # Unnormalised, and legitimately so: every row has the same shape, so the
-        # omitted normaliser is one shared constant per step and Viterbi's argmax
-        # cannot see it.
-        advance = (np.arange(BEATS_PER_BAR) + 1) % BEATS_PER_BAR
-        self._transition = np.full((BEATS_PER_BAR, BEATS_PER_BAR),
+        # Row p is "what does it cost to be at position q next".  Unnormalised,
+        # and legitimately so: every row has the same shape, so the omitted
+        # normaliser is one shared constant per step and Viterbi cannot see it.
+        advance = (np.arange(self.cycle) + 1) % self.cycle
+        self._transition = np.full((self.cycle, self.cycle),
                                    -float(params.flip_penalty), dtype=np.float64)
-        self._transition[np.arange(BEATS_PER_BAR), advance] = 0.0
+        self._transition[np.arange(self.cycle), advance] = 0.0
         self.reset()
 
     # -- streaming ---------------------------------------------------------- #
@@ -208,7 +329,10 @@ class BarPhaseHMM:
         self._frontier: tuple | None = None      # (emission, time, virtual) of it
         self._pending: deque = deque()           # (emission, time, virtual), in order
         self._committed = 0
-        self._tail: tuple | None = None          # (phase, score) of the last commit
+        # Phase of the last commit -- the only thing the next beat inherits.
+        # Its path score is deliberately not carried: every step normalises the
+        # trellis by its own maximum, so an additive constant cancels exactly.
+        self._tail: int | None = None
         self._last_time = None
         self._periods: deque = deque(maxlen=int(self.params.tempo_window))
 
@@ -309,7 +433,7 @@ class BarPhaseHMM:
         -- no evidence is not evidence of no downbeat, and the cyclic prior is
         then what carries the phase through the gap.
         """
-        emission = np.zeros(BEATS_PER_BAR, dtype=np.float64)
+        emission = np.zeros(self.cycle, dtype=np.float64)
         if np.isfinite(score):
             emission[0] = _logit(score) - self._ref_logit
         return emission
@@ -320,8 +444,8 @@ class BarPhaseHMM:
         if self._delta is None:
             # Uniform over the four phases: an aubio stream starts wherever the
             # analysis started, which says nothing at all about the bar.
-            seed = np.zeros(BEATS_PER_BAR) if self._tail is None else (
-                self._tail[1] + self._transition[self._tail[0]])
+            seed = (np.zeros(self.cycle) if self._tail is None
+                    else self._transition[self._tail])
             self._delta = seed + emission
             self._delta -= self._delta.max()
             self._frontier = (emission, float(time), bool(virtual))
@@ -341,7 +465,7 @@ class BarPhaseHMM:
         beat is phase p", which is the quantity both the decision and the
         confidence are read off.  ``lag`` operations on a 4x4 array.
         """
-        table = np.full((BEATS_PER_BAR, BEATS_PER_BAR), -np.inf, dtype=np.float64)
+        table = np.full((self.cycle, self.cycle), -np.inf, dtype=np.float64)
         np.fill_diagonal(table, seed)
         for emission, _time, _virtual in self._pending:
             table = (table[:, :, None] + self._transition).max(axis=1) + emission
@@ -371,13 +495,13 @@ class BarPhaseHMM:
         _emission, time, virtual = self._frontier
         decision = PhaseDecision(self._committed, time, phase + 1, confidence, virtual)
         self._committed += 1
-        self._tail = (phase, float(self._delta[phase]))
+        self._tail = phase
 
         if self._pending:
             emission, time, virtual = self._pending.popleft()
             # The next frontier inherits the constraint: only paths through the
             # phase just committed exist from here on.
-            self._delta = self._tail[1] + self._transition[phase] + emission
+            self._delta = self._transition[phase] + emission
             self._delta -= self._delta.max()
             self._frontier = (emission, time, virtual)
         else:
@@ -401,31 +525,112 @@ def downbeat_times(decisions) -> np.ndarray:
     return np.array([d.time for d in decisions if d.phase == 1], dtype=np.float64)
 
 
-def phase_flips(decisions) -> int:
-    """Beats whose phase did not advance from the previous one -- the stability
-    number the plan's acceptance gate reads."""
+def phase_flips(decisions, subdivision: int = DEFAULT_SUBDIVISION) -> int:
+    """Candidates whose position did not advance -- the plan's stability number.
+
+    ``subdivision`` has to be the one the decode ran at, because it decides how
+    long the cycle is and therefore what "advance" means.  Passing the wrong one
+    reports every candidate as a flip on an eight-state decode, which is loud
+    rather than subtle, but it is still worth stating.
+    """
+    cycle = BEATS_PER_BAR * int(subdivision)
     flips = 0
     for previous, current in zip(decisions, decisions[1:]):
-        if current.phase != previous.phase % BEATS_PER_BAR + 1:
+        if current.phase != previous.phase % cycle + 1:
             flips += 1
     return flips
 
 
-def decode_track(sidecar_npz, condition: str,
-                 params: PhaseParams | None = None) -> list:
+def bar_phase(phase: int, subdivision: int = DEFAULT_SUBDIVISION) -> int:
+    """Cycle position -> bar phase in 1..4, or 0 for an interstitial candidate.
+
+    At ``subdivision = 1`` this is the identity.  At 2 the odd positions are the
+    beats (1, 3, 5, 7 -> bar phases 1, 2, 3, 4) and the even ones are the
+    half-beats between them, which no bar phase names.  Written down once here
+    because "phase accuracy" is a reported metric and everyone deriving the
+    mapping separately is how two reports come to disagree.
+    """
+    step = int(subdivision)
+    return (phase - 1) // step + 1 if (phase - 1) % step == 0 else 0
+
+
+def decode_track(sidecar_npz, condition: str, params: PhaseParams | None = None,
+                 *, refine: bool = False) -> list:
     """One track, one input condition, end to end.
 
-    ``condition`` selects which beat stream in the sidecar drives the decode --
-    ``aubio`` is the live condition the gates bind to, ``expert`` the diagnostic
-    upper bound.  Pure numpy over a cached array, which is what makes a decoder
-    parameter sweep cost seconds.
+    ``condition`` selects which beat stream drives the decode -- ``aubio`` is the
+    live condition the gates bind to, ``expert`` the diagnostic upper bound.  At
+    ``subdivision = 2`` the candidate grid is built here and its evidence is
+    aggregated off the sidecar's stored activation curve, so a half-beat decode
+    needs no second inference pass.  Pure numpy over a cached array, which is what
+    makes a decoder parameter sweep cost seconds.
+
+    ``refine`` is a *separate* effect and is off by default: it moves each emitted
+    instant to the interpolated peak of the activation.  Task 4 has to be able to
+    attribute a gain to the candidate grid, to the phase model, or to
+    de-quantisation, and it cannot do that if the three arrive blended.
     """
-    with np.load(Path(sidecar_npz)) as archive:
+    params = params or PhaseParams()
+    path = Path(sidecar_npz)
+    with np.load(path) as archive:
         time_key = f"{condition}_beat_time"
         if time_key not in archive:
             raise KeyError(
-                f"{Path(sidecar_npz).name} carries no '{condition}' beat stream; "
-                f"it has {sorted(k[:-10] for k in archive if k.endswith('_beat_time'))}")
-        times = np.asarray(archive[time_key], dtype=np.float64)
-        scores = np.asarray(archive[f"{condition}_beat_score"], dtype=np.float64)
-    return BarPhaseHMM(params).decode(times, scores)
+                f"{path.name} carries no '{condition}' beat stream; it has "
+                f"{sorted(k[:-10] for k in archive if k.endswith('_beat_time'))}")
+        beats = np.asarray(archive[time_key], dtype=np.float64)
+        activation = np.asarray(archive["activation"], dtype=np.float64)
+        frame_sec = float(archive["frame_sec"])
+        t0 = float(archive["t0"])
+        cached = np.asarray(archive[f"{condition}_beat_score"], dtype=np.float64)
+
+    if int(params.subdivision) == 1:
+        # The stored scores are this exact aggregation; reuse them rather than
+        # recompute, so the sidecar and the decode cannot drift apart unnoticed.
+        times, scores = beats, cached
+    else:
+        times = candidate_grid(beats, params.subdivision)
+        scores, _counts = aggregate_at_beats(activation, times, frame_sec, t0)
+
+    decisions = BarPhaseHMM(params).decode(times, scores)
+    if refine:
+        decisions = refine_instants(decisions, activation, frame_sec, t0)
+    return decisions
+
+
+def refine_instants(decisions, activation, frame_sec: float, t0: float, *,
+                    lo: int = AGG_LO_FRAMES, hi: int = AGG_HI_FRAMES) -> list:
+    """Move each committed instant to the interpolated peak of the activation.
+
+    Parabolic interpolation through the winning frame and its two neighbours --
+    the standard sub-sample peak estimate -- clamped to the aggregation window so
+    a refinement can never move an instant further than the evidence that chose
+    it.  It exists because the head's peaks are quantised to the 46.44 ms mel grid
+    and a third of the +-70 ms budget is spent there before the decoder acts.
+
+    **Deliberately a post-process, not part of the decode.**  It changes the
+    emitted time and nothing else -- not a phase, not a flip, not a confidence --
+    so its contribution can be measured by running the same decode twice.
+    """
+    activation = np.asarray(activation, dtype=np.float64)
+    n_frames = len(activation)
+    frames = nearest_frames([d.time for d in decisions], n_frames, frame_sec, t0)
+    span = np.arange(int(lo), int(hi) + 1)
+
+    refined: list = []
+    for decision, frame in zip(decisions, frames):
+        if frame < 0:
+            refined.append(decision)
+            continue
+        window = np.clip(int(frame) + span, 0, n_frames - 1)
+        peak = int(window[int(np.argmax(activation[window]))])
+        left = activation[max(peak - 1, 0)]
+        centre = activation[peak]
+        right = activation[min(peak + 1, n_frames - 1)]
+        curvature = left - 2.0 * centre + right
+        shift = 0.5 * (left - right) / curvature if curvature < 0.0 else 0.0
+        moment = t0 + (peak + float(np.clip(shift, -0.5, 0.5))) * frame_sec
+        refined.append(decision._replace(
+            time=float(np.clip(moment, decision.time + lo * frame_sec,
+                               decision.time + hi * frame_sec))))
+    return refined

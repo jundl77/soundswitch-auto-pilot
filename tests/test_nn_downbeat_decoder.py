@@ -39,18 +39,26 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from nn.downbeat_decoder import (  # noqa: E402
+    AGG_HI_FRAMES,
+    AGG_LO_FRAMES,
     BEATS_PER_BAR,
     DEFAULT_FLIP_PENALTY,
     DEFAULT_LAG_BEATS,
     MAX_COAST_BEATS,
     BarPhaseHMM,
     PhaseParams,
+    aggregate_at_beats,
+    bar_phase,
+    candidate_grid,
     decode_track,
     downbeat_times,
+    nearest_frames,
     phase_flips,
+    refine_instants,
 )
 
 TEMPO_SEC = 0.46875           # 128 BPM, the corpus's modal tempo
+FRAME_SEC = 0.05              # a round stand-in; the arithmetic is what is tested
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +90,97 @@ def ambiguous_scores(n_beats: int, offset: int = 0, high: float = 0.90,
 
 def phases_of(decisions) -> list:
     return [d.phase for d in decisions]
+
+
+def match_rate(predicted, reference, tolerance: float = 0.070) -> float:
+    """Share of ``reference`` instants with a prediction inside the tolerance."""
+    predicted = np.asarray(predicted, dtype=np.float64)
+    reference = np.asarray(reference, dtype=np.float64)
+    if not reference.size:
+        return 0.0
+    if not predicted.size:
+        return 0.0
+    distance = np.abs(reference[:, None] - predicted[None, :]).min(axis=1)
+    return float(np.mean(distance <= tolerance))
+
+
+# --------------------------------------------------------------------------- #
+# Candidate instants and their evidence
+# --------------------------------------------------------------------------- #
+
+
+def test_the_candidate_grid_is_the_beat_stream_at_subdivision_one():
+    beats = beat_grid(10)
+
+    assert np.array_equal(candidate_grid(beats, 1), beats)
+
+
+def test_subdivision_two_interleaves_the_midpoints():
+    beats = np.array([1.0, 2.0, 4.0])
+
+    dense = candidate_grid(beats, 2)
+
+    assert dense.tolist() == [1.0, 1.5, 2.0, 3.0, 4.0]
+
+
+def test_an_unmeasured_subdivision_is_refused_not_approximated():
+    with pytest.raises(ValueError, match="subdivision"):
+        candidate_grid(beat_grid(8), 3)
+
+
+def test_a_candidate_maps_to_the_frame_whose_stamp_is_nearest():
+    times = np.array([FRAME_SEC, 2 * FRAME_SEC, 2 * FRAME_SEC + 0.4 * FRAME_SEC])
+
+    assert nearest_frames(times, 100, FRAME_SEC, FRAME_SEC).tolist() == [0, 1, 1]
+
+
+def test_a_beat_before_the_first_frame_stamp_is_frame_zero_not_a_sentinel():
+    """Task 1's contract: frame 0 pools the audio in ``(t0 - frame_sec, t0]``,
+    which is exactly where such a beat lives.  ``-1`` means past the end and
+    nothing else."""
+    assert nearest_frames(np.array([0.0, 1e-9]), 100, FRAME_SEC,
+                          FRAME_SEC).tolist() == [0, 0]
+
+
+def test_a_beat_past_the_end_of_the_activation_gets_the_sentinel():
+    assert nearest_frames(np.array([1000.0]), 100, FRAME_SEC, FRAME_SEC).tolist() == [-1]
+
+
+def test_aggregation_takes_the_peak_of_the_window_not_its_mean():
+    activation = np.zeros(50)
+    activation[10] = 0.8
+
+    scores, counts = aggregate_at_beats(activation, np.array([FRAME_SEC * 11]),
+                                        FRAME_SEC, FRAME_SEC)
+
+    assert scores[0] == pytest.approx(0.8)
+    assert counts[0] == AGG_HI_FRAMES - AGG_LO_FRAMES + 1
+
+
+@pytest.mark.parametrize("jitter_ms", [-50, -25, 0, 25, 50])
+def test_the_aggregation_window_absorbs_beat_timing_jitter(jitter_ms):
+    """Aubio's instants wobble against the annotator's by tens of milliseconds.
+    A window that only finds the peak on an exact instant is a window that only
+    works on the expert grid."""
+    frame_sec = 0.04644                      # the real mel grid, where it matters
+    activation = np.zeros(400)
+    downbeats = np.arange(20, 380, 32)
+    activation[downbeats] = 0.9
+    jittered = frame_sec * (downbeats + 1) + jitter_ms / 1000.0
+
+    scores, _counts = aggregate_at_beats(activation, jittered, frame_sec, frame_sec)
+
+    assert np.all(scores == pytest.approx(0.9))
+
+
+def test_a_candidate_with_no_frames_scores_nan_rather_than_zero():
+    """No evidence is not evidence of no downbeat -- the decoder tells them
+    apart, and NaN is how."""
+    scores, counts = aggregate_at_beats(np.zeros(50), np.array([1000.0]),
+                                        FRAME_SEC, FRAME_SEC)
+
+    assert np.isnan(scores[0])
+    assert counts[0] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -244,7 +343,26 @@ def test_a_committed_decision_survives_an_adversarial_future():
     decoder.flush()
 
     reference = BarPhaseHMM(params).decode(times[:60], honest[:60])
-    assert phases_of(committed) == phases_of(reference)[:len(committed)]
+    # Whole decisions, not just phases: the confidence must not move either, or
+    # a consumer reading it would see a committed beat change its mind.
+    assert committed == reference[:len(committed)]
+
+
+@pytest.mark.parametrize("prefix", [20, 40, 60, 90])
+def test_a_longer_track_never_changes_what_a_shorter_one_already_committed(prefix):
+    """Prefix stability as a property, over an activation with real ambiguity in
+    it -- the case where two decodes could plausibly diverge."""
+    rng = np.random.default_rng(5)
+    times = beat_grid(120)
+    scores = np.clip(clean_scores(120) + rng.normal(0, 0.25, 120), 0.01, 0.99)
+    settled = len(times) - DEFAULT_LAG_BEATS
+
+    short = BarPhaseHMM().decode(times[:prefix], scores[:prefix])
+    long = BarPhaseHMM().decode(times, scores)
+
+    overlap = min(prefix - DEFAULT_LAG_BEATS, settled)
+    assert overlap > 0
+    assert short[:overlap] == long[:overlap]
 
 
 def test_reset_makes_a_used_decoder_indistinguishable_from_a_fresh_one():
@@ -409,6 +527,104 @@ def test_confidence_reads_a_half_bar_ambiguity_as_a_two_way_tie():
 
 
 # --------------------------------------------------------------------------- #
+# The half-beat state space
+# --------------------------------------------------------------------------- #
+
+
+def test_subdivision_two_gives_the_bar_eight_positions():
+    dense = candidate_grid(beat_grid(64), 2)
+    scores = np.full(len(dense), 0.05)
+    scores[::8] = 0.95                      # a downbeat every eight candidates
+
+    decisions = BarPhaseHMM(PhaseParams(subdivision=2)).decode(dense, scores)
+
+    assert phases_of(decisions) == [1 + index % 8 for index in range(len(dense))]
+    assert phase_flips(decisions, subdivision=2) == 0
+
+
+def test_a_half_beat_locked_beat_stream_is_recovered_at_subdivision_two():
+    """Aubio's measured failure: every emitted beat sits half a beat off the
+    music.  On its own grid the downbeat is unreachable; on the half-beat grid it
+    is simply an odd-numbered state the decoder can sit in."""
+    beats = beat_grid(64)
+    truth = beats + TEMPO_SEC / 2.0                     # where the bars really are
+    dense = candidate_grid(beats, 2)
+    # Evidence lands on the true downbeats, i.e. on midpoints of the beat stream.
+    scores = np.where(np.isin(np.round(dense, 9), np.round(truth[::4], 9)), 0.95, 0.05)
+
+    on_beat = BarPhaseHMM(PhaseParams(subdivision=1)).decode(beats, np.full(64, 0.05))
+    half = BarPhaseHMM(PhaseParams(subdivision=2)).decode(dense, scores)
+
+    assert match_rate(downbeat_times(on_beat), truth[::4]) == 0.0
+    assert match_rate(downbeat_times(half), truth[::4]) > 0.9
+
+
+def test_bar_phase_names_the_beats_and_refuses_to_name_the_half_beats():
+    assert [bar_phase(p, 1) for p in range(1, 5)] == [1, 2, 3, 4]
+    assert [bar_phase(p, 2) for p in range(1, 9)] == [1, 0, 2, 0, 3, 0, 4, 0]
+
+
+def test_phase_flips_needs_the_subdivision_it_was_decoded_at():
+    dense = candidate_grid(beat_grid(32), 2)
+    scores = np.full(len(dense), 0.05)
+    scores[::8] = 0.95
+    decisions = BarPhaseHMM(PhaseParams(subdivision=2)).decode(dense, scores)
+
+    assert phase_flips(decisions, subdivision=2) == 0
+    assert phase_flips(decisions, subdivision=1) > 0     # loud, not silent
+
+
+def test_an_unmeasured_subdivision_is_refused_by_the_decoder():
+    with pytest.raises(ValueError, match="subdivision"):
+        BarPhaseHMM(PhaseParams(subdivision=4))
+
+
+# --------------------------------------------------------------------------- #
+# Continuous instant refinement (a separate, togglable effect)
+# --------------------------------------------------------------------------- #
+
+
+def test_refinement_moves_an_instant_onto_the_activation_peak():
+    """The head's peaks are quantised to the mel grid; a third of the +-70 ms
+    budget is spent there before the decoder acts."""
+    activation = np.zeros(200)
+    activation[40] = 0.6
+    activation[41] = 1.0
+    activation[42] = 0.8                      # true peak just past frame 41
+    decisions = [d for d in BarPhaseHMM().decode(
+        np.array([FRAME_SEC * 42.0]), np.array([1.0]))]
+
+    refined = refine_instants(decisions, activation, FRAME_SEC, FRAME_SEC)
+
+    assert refined[0].time > FRAME_SEC * 42.0
+    assert refined[0].time == pytest.approx(FRAME_SEC * 42.0, abs=0.5 * FRAME_SEC)
+
+
+def test_refinement_changes_nothing_but_the_time():
+    times = beat_grid(40)
+    scores = clean_scores(40)
+    activation = np.zeros(500)
+    activation[nearest_frames(times[::4], 500, FRAME_SEC, FRAME_SEC)] = 0.9
+    decisions = BarPhaseHMM().decode(times, scores)
+
+    refined = refine_instants(decisions, activation, FRAME_SEC, FRAME_SEC)
+
+    assert [d._replace(time=0.0) for d in refined] == \
+           [d._replace(time=0.0) for d in decisions]
+
+
+def test_refinement_cannot_move_an_instant_outside_its_own_evidence_window():
+    activation = np.linspace(0.0, 1.0, 500)   # monotone: the peak is always right
+    times = beat_grid(20)
+    decisions = BarPhaseHMM().decode(times, np.full(20, 0.5))
+
+    refined = refine_instants(decisions, activation, FRAME_SEC, FRAME_SEC)
+
+    moved = np.abs(np.array([d.time for d in refined]) - times)
+    assert np.all(moved <= AGG_HI_FRAMES * FRAME_SEC + 1e-9)
+
+
+# --------------------------------------------------------------------------- #
 # Input contract
 # --------------------------------------------------------------------------- #
 
@@ -469,12 +685,41 @@ def test_the_decode_path_imports_without_torch():
 # --------------------------------------------------------------------------- #
 
 
+def test_decode_track_at_subdivision_two_builds_its_own_candidates(tmp_path):
+    """The half-beat grid is aggregated off the stored curve at decode time, so a
+    subdivision-2 decode needs no second inference pass over the corpus."""
+    beats = np.arange(1.0, 20.0, TEMPO_SEC)
+    activation = np.zeros(500, dtype=np.float32)
+    # Put the real downbeats on the MIDPOINTS -- aubio's measured failure mode.
+    downbeats = 0.5 * (beats[:-1] + beats[1:])[::BEATS_PER_BAR]
+    activation[nearest_frames(downbeats, 500, FRAME_SEC, FRAME_SEC)] = 0.95
+    path = tmp_path / "track.npz"
+    np.savez(path, activation=activation, frame_sec=np.float64(FRAME_SEC),
+             t0=np.float64(FRAME_SEC), aubio_beat_time=beats,
+             aubio_beat_score=np.full(len(beats), 0.02))
+
+    on_beat = decode_track(path, "aubio", PhaseParams(subdivision=1))
+    half = decode_track(path, "aubio", PhaseParams(subdivision=2))
+
+    # The on-beat grid cannot reach the downbeats at all; the half-beat one can.
+    assert match_rate(downbeat_times(on_beat), downbeats) == 0.0
+    assert match_rate(downbeat_times(half), downbeats) > 0.9
+
+
+def write_sidecar(path, **arrays):
+    """A stand-in with the geometry every real sidecar carries."""
+    base = {"activation": np.zeros(600, dtype=np.float32),
+            "frame_sec": np.float64(FRAME_SEC), "t0": np.float64(FRAME_SEC)}
+    np.savez(path, **{**base, **arrays})
+    return path
+
+
 def test_decode_track_reads_a_sidecar_and_decodes_the_named_condition(tmp_path):
     times = beat_grid(48)
-    scores = clean_scores(48)
-    path = tmp_path / "track.npz"
-    np.savez(path, aubio_beat_time=times, aubio_beat_score=scores,
-             expert_beat_time=times[::2], expert_beat_score=np.full(24, np.nan))
+    path = write_sidecar(tmp_path / "track.npz", aubio_beat_time=times,
+                         aubio_beat_score=clean_scores(48),
+                         expert_beat_time=times[::2],
+                         expert_beat_score=np.full(24, np.nan))
 
     decisions = decode_track(path, "aubio")
 
@@ -483,8 +728,8 @@ def test_decode_track_reads_a_sidecar_and_decodes_the_named_condition(tmp_path):
 
 
 def test_decode_track_names_an_unknown_condition(tmp_path):
-    path = tmp_path / "track.npz"
-    np.savez(path, aubio_beat_time=np.zeros(1), aubio_beat_score=np.zeros(1))
+    path = write_sidecar(tmp_path / "track.npz", aubio_beat_time=np.zeros(1),
+                         aubio_beat_score=np.zeros(1))
 
     with pytest.raises(KeyError, match="madmom"):
         decode_track(path, "madmom")

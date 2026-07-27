@@ -43,16 +43,14 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from nn.dataset import FRAME_SEC, WINDOW_FRAMES, load_sidecar  # noqa: E402
+from nn.downbeat_decoder import aggregate_at_beats  # noqa: E402
 from nn.downbeat_infer import (  # noqa: E402
-    AGG_HI_FRAMES,
-    AGG_LO_FRAMES,
     EDGE_FRAMES,
     HOP_FRAMES,
     INPUT_NAME,
     MODEL_FILE,
     OUTPUT_NAME,
     TIME_AXIS,
-    aggregate_at_beats,
     aubio_beat_times,
     build_from_checkpoint,
     declared_axes,
@@ -61,7 +59,6 @@ from nn.downbeat_infer import (  # noqa: E402
     infer_track,
     lag_profile,
     load_downbeat_checkpoint,
-    nearest_frames,
     run_window,
     save_sidecar,
     session,
@@ -386,66 +383,8 @@ def test_a_hop_wider_than_the_window_interior_is_refused(graph):
 
 
 # --------------------------------------------------------------------------- #
-# Beats -> frames -> aggregated evidence
+# Where the activation sits against the grid
 # --------------------------------------------------------------------------- #
-
-
-def test_a_beat_maps_to_the_frame_whose_stamp_is_nearest():
-    times = np.array([FRAME_SEC, 2 * FRAME_SEC, 2 * FRAME_SEC + 0.4 * FRAME_SEC])
-
-    frames = nearest_frames(times, n_frames=100)
-
-    assert frames.tolist() == [0, 1, 1]
-
-
-def test_a_beat_before_the_first_frame_stamp_is_frame_zero_not_a_sentinel():
-    """Task 1's contract: frame 0 pools the audio in ``(t0 - frame_sec, t0]``,
-    which is exactly where such a beat lives.  ``-1`` means past the end and
-    nothing else."""
-    frames = nearest_frames(np.array([0.0, 1e-6]), n_frames=100)
-
-    assert frames.tolist() == [0, 0]
-
-
-def test_a_beat_past_the_end_of_the_mel_gets_the_sentinel():
-    frames = nearest_frames(np.array([1000.0]), n_frames=100)
-
-    assert frames.tolist() == [-1]
-
-
-def test_aggregation_takes_the_peak_of_the_window_not_its_mean():
-    activation = np.zeros(50, dtype=np.float64)
-    activation[10] = 0.8
-    beat = np.array([FRAME_SEC * 11])          # one frame late
-
-    scores, counts = aggregate_at_beats(activation, beat)
-
-    assert scores[0] == pytest.approx(0.8)
-    assert counts[0] == AGG_HI_FRAMES - AGG_LO_FRAMES + 1
-
-
-@pytest.mark.parametrize("jitter_ms", [-50, -25, 0, 25, 50])
-def test_the_aggregation_window_absorbs_aubio_timing_jitter(jitter_ms):
-    """Aubio's instants wobble against the annotator's by tens of milliseconds.
-    A window that only finds the peak on an exact instant is a window that only
-    works on the expert grid."""
-    activation = np.zeros(400, dtype=np.float64)
-    downbeats = np.arange(20, 380, 32)
-    activation[downbeats] = 0.9
-    jittered = FRAME_SEC * (downbeats + 1) + jitter_ms / 1000.0
-
-    scores, _counts = aggregate_at_beats(activation, jittered)
-
-    assert np.all(scores == pytest.approx(0.9))
-
-
-def test_a_beat_with_no_frames_scores_nan_rather_than_zero():
-    """No evidence is not evidence of no downbeat -- the decoder needs to be able
-    to tell the two apart."""
-    scores, counts = aggregate_at_beats(np.zeros(50), np.array([1000.0]))
-
-    assert np.isnan(scores[0])
-    assert counts[0] == 0
 
 
 def test_lag_profile_finds_an_injected_shift():
@@ -505,6 +444,27 @@ def test_a_sidecar_round_trips_both_conditions(tmp_path):
         assert archive["expert_beat_score"].tolist() == [0.5]
         assert float(archive["pos_weight"]) == pytest.approx(9.355)
         assert float(archive["frame_sec"]) == pytest.approx(FRAME_SEC)
+
+
+def test_the_stored_beat_scores_are_reproducible_from_the_stored_curve(tmp_path):
+    """The half-beat decode aggregates its own candidates off ``activation``, so
+    the cached per-beat scores and a fresh aggregation have to be the same thing.
+    If they ever diverge, a subdivision-1 and a subdivision-2 decode of one track
+    would be reading two different models."""
+    path = tmp_path / "t.npz"
+    track = make_track(600)
+    beats = np.arange(2.0, 20.0, 0.47)
+    scores, counts = aggregate_at_beats(track.activation, beats, FRAME_SEC, FRAME_SEC)
+    save_sidecar(path, sidecar_arrays(
+        track, {"aubio": (beats, scores, counts), "expert": (beats, scores, counts)},
+        "a" * 64, 9.355))
+
+    with np.load(path) as archive:
+        again, _counts = aggregate_at_beats(archive["activation"],
+                                            archive["aubio_beat_time"],
+                                            float(archive["frame_sec"]),
+                                            float(archive["t0"]))
+        assert np.array_equal(again, archive["aubio_beat_score"])
 
 
 def test_the_sidecar_carries_no_bar_phase():

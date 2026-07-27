@@ -79,6 +79,16 @@ import onnxruntime as ort
 import torch
 
 from .dataset import FEATURES_DIR, FRAME_SEC, WINDOW_FRAMES, load_sidecar, make_splits
+# The aggregation window and its arithmetic live in the decoder: in the runtime
+# putting an activation onto a beat stream is decode-path work, and a half-beat
+# candidate grid has to be aggregated at decode time off the stored curve.  This
+# module owns the *curve*; it borrows the window so the two cannot disagree.
+from .downbeat_decoder import (
+    AGG_HI_FRAMES,
+    AGG_LO_FRAMES,
+    aggregate_at_beats,
+    nearest_frames,
+)
 from .downbeat_model import PARAM_BUDGET, DownbeatCRNN
 from .downbeat_train import MODEL_VERSION
 from .export_onnx import OPSET, declared_axes, session, sha256_file
@@ -87,11 +97,9 @@ from .train import BEST_CHECKPOINT, MODELS_DIR, weight_hash
 # ``_sigmoid`` and ``save_posteriors`` are the section chain's own: the numerically
 # stable sigmoid and the byte-reproducible archive writer are exactly the same
 # problem here, and a second copy of either is a second thing to keep true.
-from .infer import (  # noqa: F401
+from .infer import (
     EDGE_FRAMES,
-    EDGE_SEC,
     HOP_FRAMES,
-    HOP_SEC,
     _sigmoid,
     contribution_span,
     save_posteriors as save_sidecar,
@@ -117,14 +125,6 @@ INPUT_NAME = "mel"
 OUTPUT_NAME = "downbeat_logits"
 BATCH_AXIS = "batch"
 TIME_AXIS = "time"
-
-# Frames either side of a beat's own frame that count as evidence for it.
-# Symmetric, which was Task 1's null hypothesis and is what the measurement on
-# val activations confirmed (see the task report); +-1 frame is +-46.4 ms, so
-# together with the +-23.2 ms the frame grid already costs it absorbs the +-50 ms
-# of aubio jitter the design spec names, and no more.
-AGG_LO_FRAMES = -1
-AGG_HI_FRAMES = 1
 
 # The two input conditions, in the order they are written and reported.
 CONDITIONS = ("aubio", "expert")
@@ -358,53 +358,8 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
 
 
 # --------------------------------------------------------------------------- #
-# Beats -> aggregated evidence
+# Where the activation sits against the grid
 # --------------------------------------------------------------------------- #
-
-
-def nearest_frames(beat_times, n_frames: int, frame_sec: float = FRAME_SEC,
-                   t0: float | None = None) -> np.ndarray:
-    """Mel frame whose stamp is nearest each beat; ``-1`` past the end of the mel.
-
-    Task 1's convention exactly, including its correction: a beat *before* the
-    first frame's stamp is clamped to frame 0 -- frame 0 pools the audio in
-    ``(t0 - frame_sec, t0]``, which is where such a beat lives -- so ``-1`` means
-    past the end and nothing else.  Filter on it; never clip it.
-    """
-    t0 = frame_sec if t0 is None else t0
-    index = np.rint((np.asarray(beat_times, dtype=np.float64) - t0) / frame_sec)
-    index = np.maximum(index.astype(np.int64), 0)
-    return np.where(index >= int(n_frames), -1, index)
-
-
-def aggregate_at_beats(activation: np.ndarray, beat_times, *,
-                       lo: int = AGG_LO_FRAMES, hi: int = AGG_HI_FRAMES,
-                       frame_sec: float = FRAME_SEC,
-                       t0: float | None = None) -> tuple:
-    """``(scores, counts)`` -- the activation peak in a window around each beat.
-
-    ``scores`` is NaN wherever the window contains no frame at all (a beat past
-    the end of the mel), which the decoder reads as *no evidence* rather than as
-    evidence of no downbeat.  ``counts`` records how many frames each score was
-    taken over, so a beat scored off a clipped window at a track's edge is
-    visible instead of looking like every other beat.
-    """
-    activation = np.asarray(activation, dtype=np.float64)
-    n_frames = len(activation)
-    frames = nearest_frames(beat_times, n_frames, frame_sec, t0)
-
-    scores = np.full(len(frames), np.nan, dtype=np.float64)
-    counts = np.zeros(len(frames), dtype=np.int32)
-    for index, frame in enumerate(frames):
-        if frame < 0:
-            continue
-        start = max(0, int(frame) + int(lo))
-        end = min(n_frames, int(frame) + int(hi) + 1)
-        if end <= start:                               # pragma: no cover
-            continue
-        counts[index] = end - start
-        scores[index] = activation[start:end].max()
-    return scores, counts
 
 
 def lag_profile(activation: np.ndarray, frames, radius: int = 4) -> np.ndarray:
@@ -541,7 +496,7 @@ def _beat_streams(data_dir: Path, youtube_id: str, grid,
     streams: dict = {}
     for condition, times in (("aubio", aubio_beat_times(data_dir, youtube_id)),
                              ("expert", expert_beat_times(grid))):
-        scores, counts = aggregate_at_beats(activation, times)
+        scores, counts = aggregate_at_beats(activation, times, FRAME_SEC, FRAME_SEC)
         streams[condition] = (times, scores, counts)
     return streams
 
@@ -690,9 +645,11 @@ def measure_lag(data_dir, ids, *, radius: int = 4, sidecar_dir=None) -> dict:
         with np.load(path) as archive:
             activation = np.asarray(archive["activation"], dtype=np.float64)
         grid = load_beat_grid(beat_csv_path(data_dir, records_by_id[youtube_id]))
-        frames = nearest_frames(grid.downbeat_times, len(activation))
+        frames = nearest_frames(grid.downbeat_times, len(activation),
+                                FRAME_SEC, FRAME_SEC)
         frames = frames[frames >= 0]
-        others = nearest_frames(grid.times[grid.phases != 1], len(activation))
+        others = nearest_frames(grid.times[grid.phases != 1], len(activation),
+                                FRAME_SEC, FRAME_SEC)
         if not frames.size:
             continue
         downbeat += lag_profile(activation, frames, radius)
