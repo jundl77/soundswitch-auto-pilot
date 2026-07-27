@@ -69,8 +69,10 @@ from .downbeat_train import MODEL_VERSION, TOLERANCE_SEC, match_events, prf
 MODELS_DIR = "models"
 CONFIG_FILE = "downbeat_decoder_config.json"
 ALIGNMENT_FILE = "downbeat_alignment_{split}.json"
+# Named after the split it scored, following the section chain's precedent: a
+# `--split test` run without `--out` must not overwrite the val reading, because
+# the two answer different questions and both have to survive on disk.
 EVAL_FILE = "downbeat_eval_{split}.json"
-ABLATION_FILE = "downbeat_ablation_{split}.json"
 SPLITS_FILE = "splits.json"
 
 # Bars of look-ahead the runtime can afford: the section decoder commits three
@@ -325,6 +327,12 @@ def decoder_instants(beat_times, params: PhaseParams | None = None) -> np.ndarra
     than by a second implementation of the coasting rule.  Two different things
     are read off this: which downbeats are reachable at all, and how many
     candidates a bar's worth of music actually produces.
+
+    The result does not depend on ``lag_beats``, ``flip_penalty`` or
+    ``downbeat_ref``: those decide *which position* each instant gets, and this
+    asks only which instants exist.  It does depend on the coasting parameters
+    and on ``subdivision``, which is why it takes the whole ``PhaseParams``
+    rather than a subdivision.
     """
     params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
     dense = candidate_grid(beat_times, params.subdivision)
@@ -805,13 +813,6 @@ def score_decisions(decisions, truth: tuple, subdivision: int) -> dict:
         "n_predicted": int(predicted.size),
         "n_truth": int(downbeats.size),
     }
-
-
-def evaluate_track(sidecar: dict, truth: tuple, condition: str,
-                   params: PhaseParams, *, refine: bool = False) -> dict:
-    """One track, one config, decode and score."""
-    return score_decisions(decode_evidence(sidecar, condition, params, refine=refine),
-                           truth, params.subdivision)
 
 
 def aggregate_rows(rows: dict) -> dict:

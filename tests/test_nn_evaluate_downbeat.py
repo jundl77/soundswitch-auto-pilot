@@ -557,6 +557,58 @@ def synthetic_stream(n_bars: int, *, period: float, start: float,
     return times, scores, times[index == 0]
 
 
+def relock_bars(params, *, gap_beats: float, new_period: float,
+                phase_offset: int) -> int | None:
+    """Bars of deck B before the grid is right and stays right; None if never."""
+    first, first_scores, _ = synthetic_stream(16, period=PERIOD, start=1.0)
+    start = first[-1] + PERIOD * (1.0 + gap_beats)
+    second, second_scores, truth = synthetic_stream(
+        16, period=new_period, start=start, phase_offset=phase_offset)
+    times = np.concatenate([first, second])
+    scores = np.concatenate([first_scores, second_scores])
+    if params.subdivision == 2:
+        from nn.downbeat_decoder import candidate_grid as grid_of
+        dense = grid_of(times, 2)
+        dense_scores = np.full(dense.size, 0.05)
+        dense_scores[0::2] = scores
+        times, scores = dense, dense_scores
+    predicted = downbeat_times(BarPhaseHMM(params).decode(times, scores))
+    hit = [index for index, moment in enumerate(truth)
+           if np.any(np.abs(predicted - moment) <= TOLERANCE_SEC)]
+    locked = [index for index in range(len(truth))
+              if all(later in hit for later in range(index, len(truth)))]
+    return min(locked) if locked else None
+
+
+def test_re_lock_after_a_deck_transition_is_bought_with_the_flip_penalty():
+    """The deck-transition proxy, and it is a *pair* because the answer is a trade.
+
+    The corpus is single tracks, so this is the only evidence the plan can offer
+    about a real set.  Three cuts: a new tempo with a gap, the same tempo with a
+    gap, and a hard cut with no gap at all -- the last two differ from the first
+    only in what evidence the decoder gets for free.
+
+    At the low penalty the grid re-locks immediately in all three.  At the high
+    penalty -- which is what the plan's stability gate forces -- it re-locks only
+    when the tempo changes, because a phase-only cut has to be paid for out of
+    the look-ahead and a 9-nat penalty is more than a two-beat window can raise.
+    **That asymmetry is pinned as a measured limitation, not as a preference:**
+    if a future change makes the high-penalty decoder re-lock, this test goes red
+    and the trade gets re-decided deliberately.
+    """
+    cuts = (dict(gap_beats=1.9, new_period=0.5, phase_offset=2),
+            dict(gap_beats=1.9, new_period=PERIOD, phase_offset=1),
+            dict(gap_beats=0.0, new_period=0.5, phase_offset=3))
+
+    responsive = PhaseParams(lag_beats=4, subdivision=2, flip_penalty=2.0)
+    assert [relock_bars(responsive, **cut) for cut in cuts] == [0, 0, 0]
+
+    committed = PhaseParams(lag_beats=2, subdivision=1, flip_penalty=9.0)
+    tempo_change, same_tempo, hard_cut = (relock_bars(committed, **cut) for cut in cuts)
+    assert tempo_change == 0
+    assert same_tempo is None and hard_cut is None
+
+
 def test_the_phase_re_locks_after_a_deck_transition_to_a_new_tempo_and_offset():
     """A cut from one deck to another: new tempo, new bar phase, small gap.
 
