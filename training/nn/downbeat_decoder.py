@@ -101,13 +101,14 @@ BEATS_PER_BAR = 4
 
 # Nats of evidence a phase flip has to buy: ~2.7 bars of confident activation (a
 # 0.90 downbeat against 0.05 off-beats is 5.1 nats of log-odds contrast per bar).
-# **Provisional.**  Measured on a 20-track val sanity check, where 12-16 is a
-# plateau (expert-driven F1 0.859-0.876 against a 0.605 naive-picking floor on
-# the same activations) with a sharp fall either side -- but on 20 tracks one
-# track's global bar offset moves the micro-averaged F1 by ~5 points, so this is
-# a defensible starting point and not a tuned value.  It is the primary sweep
-# axis and Task 4 owns the tuning, on all 215 val tracks and on the aubio-driven
-# numbers the gates bind to.
+# **Provisional, and it suits ONE configuration.**  A 20-track val sweep put the
+# plateau at 12-16 with a sharp fall either side; the full 215-track sweep
+# confirms the ordering (expert-driven F1 0.7063 at 14 against a 0.5592
+# naive-picking floor on the same activations) but was too coarse to locate the
+# plateau, and the 20-track *levels* were optimistic by ~0.17.  It is also wrong
+# for ``subdivision = 2``, which peaks near 2-3 and has collapsed by 8.  Task 4
+# owns the tuning -- on all 215 val tracks, on the aubio-driven numbers the gates
+# bind to, and jointly with ``lag_beats`` and ``subdivision``.
 DEFAULT_FLIP_PENALTY = 14.0
 
 # The sigmoid's own midpoint, the same neutral reference the section decoder uses
