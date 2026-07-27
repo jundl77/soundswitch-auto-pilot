@@ -147,11 +147,11 @@ def test_a_403_is_retryable_and_aborts_a_sustained_run():
 
 
 def test_the_id_stays_behind_the_separator(tmp_path):
-    # Three ids in the real corpus begin with "-" (e.g. -5MYThh21yY); without the
-    # "--" guard yt-dlp would parse them as options and the tracks would be
-    # unfetchable. Every one of the 1,387 downloads relied on this.
-    argv = build_command(tmp_path, "-5MYThh21yY")
-    assert argv[-2:] == ["--", "-5MYThh21yY"]
+    # 19 ids in the manifest begin with "-" (e.g. -DWkf03g4Gc), and all 19 are on
+    # disk. Without the "--" guard yt-dlp would parse them as options and every
+    # one of those tracks would be unfetchable.
+    argv = build_command(tmp_path, "-DWkf03g4Gc")
+    assert argv[-2:] == ["--", "-DWkf03g4Gc"]
 
 
 def test_the_non_pattern_reasons_are_all_retryable():

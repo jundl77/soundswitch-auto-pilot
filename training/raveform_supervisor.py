@@ -255,6 +255,19 @@ def run_cycle(command: list, data_dir: Path, cycle: int, log_path: Path, state_p
 # --------------------------------------------------------------------------- #
 
 
+def preflight_failed_state(reason: str) -> str:
+    """The ``supervisor.state`` line for a run that never started.
+
+    Distinct from ``GAVE_UP`` for the same reason ``STOPPED`` is: that word
+    means the retry budget was spent and YouTube is still refusing, which points
+    at YouTube and at an owner decision.  A missing downloader or a missing
+    yt-dlp points at this machine, and nothing was attempted at all -- the state
+    file would otherwise report a corpus as unreachable when the only problem is
+    a broken install.
+    """
+    return f"FAILED (preflight: {reason})"
+
+
 def terminal_state(interrupted: bool, cycles: int, on_disk: int) -> str:
     """The last line written to ``supervisor.state``.
 
@@ -325,11 +338,11 @@ def main(argv: list | None = None) -> int:
     # eleven hours is far worse than not starting.
     if not downloader.is_file():
         log(log_path, f"FATAL    downloader not found at {downloader}")
-        write_state(state_path, "GAVE_UP after 0 cycles")
+        write_state(state_path, preflight_failed_state("downloader not found"))
         return 3
     if shutil.which("yt-dlp") is None:
         log(log_path, "FATAL    yt-dlp not on PATH -- every cycle would fail identically")
-        write_state(state_path, "GAVE_UP after 0 cycles")
+        write_state(state_path, preflight_failed_state("yt-dlp not on PATH"))
         return 3
     if shutil.which("deno") is None:
         # Not fatal, but a corpus fetched without a JS runtime may be missing

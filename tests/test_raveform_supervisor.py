@@ -32,6 +32,7 @@ from raveform_supervisor import (  # noqa: E402  (needs the path insert above)
     _RETRY_REASONS_FALLBACK,
     _retry_reasons,
     parse_cooldowns,
+    preflight_failed_state,
     terminal_state,
 )
 from raveform_download import RETRYABLE_REASONS  # noqa: E402
@@ -144,6 +145,29 @@ def test_an_exhausted_schedule_is_reported_as_giving_up():
 
 def test_the_two_terminal_states_are_never_the_same_string():
     assert terminal_state(True, 5, 10) != terminal_state(False, 5, 10)
+
+
+def test_a_preflight_bailout_is_not_reported_as_giving_up():
+    # Nothing was attempted at all, and the problem is this machine, not
+    # YouTube. GAVE_UP would point the reader at an owner decision about a
+    # refusing service when the actual fault is a broken install.
+    state = preflight_failed_state("yt-dlp not on PATH")
+    assert state.startswith("FAILED")
+    assert "GAVE_UP" not in state and "STOPPED" not in state
+    assert "yt-dlp not on PATH" in state  # the reader should not need the log
+
+
+def test_every_terminal_state_word_is_distinct():
+    # supervisor.state is one overwritten line and often the only thing read, so
+    # its four outcomes -- finished, stopped, exhausted, never-started -- must
+    # not be confusable with one another.
+    words = {
+        terminal_state(True, 5, 10).split()[0],
+        terminal_state(False, 5, 10).split()[0],
+        preflight_failed_state("x").split()[0],
+    }
+    assert len(words) == 3
+    assert "DONE" not in words  # the success word, written elsewhere, stays free
 
 
 # --------------------------------------------------------------------------- #
