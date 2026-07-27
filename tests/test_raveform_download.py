@@ -17,7 +17,6 @@ from raveform_download import (  # noqa: E402  (needs the path insert above)
     BLOCK_REASONS,
     INTERRUPT_REASON,
     KNOWN_REASONS,
-    REMOTE_COMPONENTS_RECOMMENDED,
     RETRY_HINT,
     RETRYABLE_REASONS,
     _REASON_PATTERNS,
@@ -26,7 +25,6 @@ from raveform_download import (  # noqa: E402  (needs the path insert above)
     classify_error,
     failed_path,
     forget_download,
-    main,
     read_archive_ids,
     read_failed_reasons,
     read_manifest_ids,
@@ -148,42 +146,12 @@ def test_a_403_is_retryable_and_aborts_a_sustained_run():
     assert "http_403" in BLOCK_REASONS
 
 
-def test_remote_components_is_forwarded_verbatim_when_set(tmp_path):
-    # The 403 advice tells the operator to re-run with this flag; before this
-    # existed, argparse rejected it outright -- advice the tool could not honour.
-    argv = build_command(tmp_path, "abc123", REMOTE_COMPONENTS_RECOMMENDED)
-    assert "--remote-components" in argv
-    assert argv[argv.index("--remote-components") + 1] == REMOTE_COMPONENTS_RECOMMENDED
-
-
-def test_remote_components_is_absent_when_not_set(tmp_path):
-    # Off by default: it makes yt-dlp fetch and run code at download time, which
-    # is the owner's call, not a default this script takes for them.
-    assert "--remote-components" not in build_command(tmp_path, "abc123")
-    assert "--remote-components" not in build_command(tmp_path, "abc123", "")
-
-
-def test_the_id_stays_behind_the_separator_with_remote_components(tmp_path):
-    # A YouTube id may start with "-"; the "--" guard must not be displaced by
-    # the new flag.
-    argv = build_command(tmp_path, "-5MYThh21yY", REMOTE_COMPONENTS_RECOMMENDED)
+def test_the_id_stays_behind_the_separator(tmp_path):
+    # Three ids in the real corpus begin with "-" (e.g. -5MYThh21yY); without the
+    # "--" guard yt-dlp would parse them as options and the tracks would be
+    # unfetchable. Every one of the 1,387 downloads relied on this.
+    argv = build_command(tmp_path, "-5MYThh21yY")
     assert argv[-2:] == ["--", "-5MYThh21yY"]
-    assert argv.index("--remote-components") < argv.index("--")
-
-
-def test_the_cli_really_accepts_the_flag_the_advice_prints(tmp_path):
-    # The whole point of this fix: the 403 summary tells the operator to re-run
-    # with --remote-components, and argparse used to reject it outright. An
-    # empty manifest makes this a pure argument-parsing exercise -- nothing is
-    # fetched, so the assertion is exactly "the command line is valid".
-    (tmp_path / "manifest.csv").write_text(
-        "track_id,youtube_id,n_sections,total_sec\n", encoding="utf-8"
-    )
-    code = main([
-        "--data-dir", str(tmp_path),
-        "--remote-components", REMOTE_COMPONENTS_RECOMMENDED,
-    ])
-    assert code == 0
 
 
 def test_the_non_pattern_reasons_are_all_retryable():

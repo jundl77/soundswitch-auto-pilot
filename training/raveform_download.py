@@ -145,11 +145,10 @@ _TRANSIENT_PATTERNS = (
     ),
     # A 403 on the media URL is YouTube refusing *this client* -- a signature/nsig
     # challenge that could not be solved, which is a property of our toolchain and
-    # not of the video.  Measured on the first full corpus sweep: 43 of the 62
-    # happened while a JS runtime WAS visible to the run, and four of those
-    # records carry yt-dlp's own explanation -- its remote challenge-solver
-    # components are opt-in and were never enabled.  So a visible runtime is
-    # necessary but not sufficient; see the operator note printed in the summary.
+    # not of the video.  Measured on the first full corpus sweep: 68 such events,
+    # and every single one of the 62 tracks behind them came back on a later
+    # attempt.  That is why it sits in a retryable bucket rather than with the
+    # dead videos -- patience is the remedy that was actually needed.
     # It gets its own bucket rather than folding into bot_check because the two
     # demand opposite remedies: bot_check is a credential wall and an owner
     # decision, while a 403 wave means fix the extractor and re-run.  Reporting
@@ -211,12 +210,6 @@ RETRYABLE_REASONS = frozenset(
 )
 
 RETRY_HINT = "--retry-reasons " + ",".join(sorted(RETRYABLE_REASONS))
-
-# yt-dlp's own recommended spec for fetching the JS challenge solver.  Named
-# here so the operator advice, the CLI help and any future default all quote the
-# same string -- advice that cannot be pasted verbatim into this script's own
-# argv is worse than no advice.
-REMOTE_COMPONENTS_RECOMMENDED = "ejs:github"
 
 
 def classify_error(text: str) -> str:
@@ -405,20 +398,14 @@ def append_failure(path: Path, record: dict) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def build_command(data_dir: Path, youtube_id: str, remote_components: str = "") -> list[str]:
+def build_command(data_dir: Path, youtube_id: str) -> list[str]:
     """The yt-dlp argv for one track.
 
     List form, never a shell string, and a ``--`` separator before the id: a
     YouTube id may legitimately start with ``-`` and would otherwise be parsed
     as an option.
-
-    ``remote_components`` is forwarded verbatim to yt-dlp's own
-    ``--remote-components`` when set, and omitted entirely when not.  This is
-    the flag that lets yt-dlp fetch the challenge-solver it needs; it is off by
-    default because it makes yt-dlp download code at runtime, which is the
-    owner's call and not a default this script should take on their behalf.
     """
-    command = [
+    return [
         "yt-dlp",
         "-f", "bestaudio",
         "-x",
@@ -429,11 +416,9 @@ def build_command(data_dir: Path, youtube_id: str, remote_components: str = "") 
         "--socket-timeout", "30",
         "--download-archive", str(archive_path(data_dir)),
         "-o", str(audio_dir(data_dir) / "%(id)s.%(ext)s"),
+        "--",
+        youtube_id,
     ]
-    if remote_components:
-        command += ["--remote-components", remote_components]
-    command += ["--", youtube_id]
-    return command
 
 
 def _tail(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
@@ -441,12 +426,7 @@ def _tail(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
     return text if len(text) <= limit else "..." + text[-limit:]
 
 
-def download_one(
-    data_dir: Path,
-    youtube_id: str,
-    timeout_sec: int,
-    remote_components: str = "",
-) -> tuple[bool, str, str]:
+def download_one(data_dir: Path, youtube_id: str, timeout_sec: int) -> tuple[bool, str, str]:
     """Run yt-dlp for one id.  Returns ``(ok, reason, error_tail)``.
 
     ``reason`` and ``error_tail`` are empty on success.  Every non-success path
@@ -457,7 +437,7 @@ def download_one(
     Success means **a non-empty mp3 on disk**, not merely an exit code: a
     zero-byte or truncated output must never be archived as a finished track.
     """
-    command = build_command(data_dir, youtube_id, remote_components)
+    command = build_command(data_dir, youtube_id)
     try:
         completed = subprocess.run(
             command,
@@ -579,15 +559,6 @@ def main(argv: list | None = None) -> int:
         f"the rest stay skipped. To retry everything that is worth retrying, use "
         f"{','.join(sorted(RETRYABLE_REASONS))} -- the reasons that describe this run "
         f"rather than the video. Known: {','.join(sorted(KNOWN_REASONS))}",
-    )
-    parser.add_argument(
-        "--remote-components",
-        default="",
-        metavar="SPEC",
-        help="forwarded verbatim to yt-dlp's --remote-components; use "
-        f"{REMOTE_COMPONENTS_RECOMMENDED} to let it fetch the JS challenge solver, "
-        "which is what clears HTTP 403 failures. Off by default: it makes yt-dlp "
-        "download and run code at fetch time, which is the owner's call",
     )
     parser.add_argument(
         "--timeout-sec",
@@ -715,9 +686,7 @@ def main(argv: list | None = None) -> int:
                 break
 
         try:
-            ok, reason, error = download_one(
-                data_dir, track_id, args.timeout_sec, args.remote_components
-            )
+            ok, reason, error = download_one(data_dir, track_id, args.timeout_sec)
         except KeyboardInterrupt:
             interrupted = True
             break
@@ -812,26 +781,20 @@ def main(argv: list | None = None) -> int:
         print()
         print(
             f"  HTTP 403    : {forbidden} refusal(s) on the media URL -- a signature/nsig "
-            "challenge yt-dlp could not solve. Two causes,"
+            "challenge yt-dlp could not solve. These are"
         )
         print(
-            "                in the order they are worth checking:"
+            "                NOT dead videos, and on the full corpus sweep every one of "
+            "them came back on a later attempt:"
+        )
+        print(f"                re-run with  {RETRY_HINT}  and let it work through them again.")
+        print(
+            "                If a wave survives repeated patient re-runs, it is a toolchain "
+            "problem (yt-dlp version, or a JS"
         )
         print(
-            "                 1. yt-dlp skips its remote challenge-solver components unless "
-            "asked. Re-run THIS script with:"
-        )
-        print(
-            f"                      --remote-components {REMOTE_COMPONENTS_RECOMMENDED}"
-            "        (forwarded verbatim to yt-dlp; ejs:npm is the alternative)"
-        )
-        print(
-            "                 2. a JS runtime (deno/node) must be visible TO THIS PROCESS. "
-            "Installed is not enough -- a shell"
-        )
-        print(
-            "                    started before the install carries a stale PATH. Check from "
-            "the runner, not a fresh terminal."
+            "                runtime not visible to this process) and an owner decision -- "
+            "not something to keep retrying."
         )
     if aborted:
         print(
