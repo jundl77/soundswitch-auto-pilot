@@ -114,6 +114,56 @@ def test_the_conv_front_end_is_the_section_models_own():
     assert blocks[3].kernel_size == (1, 2)
 
 
+# Frozen on 2026-07-27, when `freq_pool_blocks` was extracted from `SectionCRNN`
+# for this head to share.  Every trained v1/v2 checkpoint on disk was written
+# against exactly this list.
+SECTION_STATE_DICT_KEYS = [
+    "conv.0.weight",
+    "conv.1.weight", "conv.1.bias", "conv.1.running_mean", "conv.1.running_var",
+    "conv.4.weight",
+    "conv.5.weight", "conv.5.bias", "conv.5.running_mean", "conv.5.running_var",
+    "conv.8.weight",
+    "conv.9.weight", "conv.9.bias", "conv.9.running_mean", "conv.9.running_var",
+    "temporal.0.weight",
+    "temporal.1.weight", "temporal.1.bias",
+    "temporal.1.running_mean", "temporal.1.running_var",
+    "rnn.weight_ih_l0", "rnn.weight_hh_l0", "rnn.bias_ih_l0", "rnn.bias_hh_l0",
+    "rnn.weight_ih_l0_reverse", "rnn.weight_hh_l0_reverse",
+    "rnn.bias_ih_l0_reverse", "rnn.bias_hh_l0_reverse",
+    "label_head.weight", "label_head.bias",
+    "boundary_head.weight", "boundary_head.bias",
+]
+
+
+def test_section_state_dict_keys_are_frozen():
+    """`freq_pool_blocks` was lifted out of `SectionCRNN` for this head to share.
+    That refactor must not rename or reorder a single parameter, because every
+    trained checkpoint on disk is a dict keyed by these strings and a rename
+    surfaces as a `load_state_dict` failure in whichever task next tries to
+    export or infer -- not here, where the cause is visible.
+
+    This pin exists because the obvious candidate does not cover it: the ONNX
+    golden test builds a *fresh* seeded `SectionCRNN` and never calls
+    `load_state_dict`, and the one test that does load a real checkpoint
+    (`test_torch_and_onnx_agree_on_three_real_windows`) is `@needs_corpus` and so
+    skips on any machine without the gitignored corpus. This one runs everywhere,
+    in milliseconds, and catches a rename anywhere in the module.
+    """
+    keys = [key for key in SectionCRNN().state_dict()
+            if not key.endswith("num_batches_tracked")]
+
+    assert keys == SECTION_STATE_DICT_KEYS
+
+
+def test_the_two_heads_share_every_key_but_their_own_head():
+    """The concrete statement of 'shared front end': the encoders are key-identical
+    and only the heads differ. A drift here means the two models stopped sharing."""
+    section = [k for k in SectionCRNN().state_dict() if "_head." not in k]
+    downbeat = [k for k in DownbeatCRNN().state_dict() if "_head." not in k]
+
+    assert section == downbeat
+
+
 def test_mel_band_count_must_survive_the_frequency_pooling():
     with pytest.raises(ValueError, match="frequency"):
         DownbeatCRNN(n_mels=12)

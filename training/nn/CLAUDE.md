@@ -35,6 +35,8 @@ A **second chain is under construction beside it**: a downbeat head and a bar-ph
 | `downbeat_dataset.py` | the *second* head's supervision: expert beat grids -> per-frame downbeat targets and per-beat bar-phase labels, on the same windows |
 | `downbeat_model.py` | `DownbeatCRNN` -- one head, a per-frame downbeat logit; the section model's conv front end at half the capacity |
 | `downbeat_train.py` | the downbeat head's training loop; imports the section head's determinism contract, loader policy and calibration metrics rather than restating them, and scores itself on peak F1 at the +-70 ms tolerance instead of on frames |
+| `downbeat_baselines.py` | the numbers a downbeat F1 has to be read against -- above all a *phase-blind* perfect beat detector, because beating noise only proves the head found beats -- plus the calibration metric's own floor and the bar-phase histogram that says which decoder knob matters |
+| `compare_runs.py` | the determinism proof for either head: walks every logged number of two runs, not just the weight hash, because equal endpoints do not mean equal paths |
 | `model.py` | `SectionCRNN` -- two heads, label logits on the pooled grid and boundary logits at frame rate |
 | `train.py` | the training loop, its determinism contract, calibration metrics and TensorBoard |
 | `export_onnx.py` | checkpoint -> ONNX, plus the single pinned single-threaded session every consumer must use |
@@ -70,4 +72,5 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 - **The verdict imports the baseline's metric functions rather than reimplementing them.** Exactly two things differ between the two columns, and both are named in the module docstring. A third divergence is a bug.
 - **Everything after the checkpoint is exact.** Inference is single-threaded through one pinned session, sidecars are written with a fixed archive layout, and the decoder is pure numpy -- so a report is byte-stable given its sidecars. Training itself is seeded and bitwise reproducible in a fresh process.
 - **A checkpoint and a sidecar each describe their own geometry, and consumers re-check it.** A pooling-factor or window change loads cleanly and decodes at the wrong rate, so the mismatch must fail loudly instead.
+- **A metric is reported with the baseline it must be read against.** Every trained checkpoint on disk is keyed by parameter *names*, so a refactor that renames one is a silent break -- pinned by a frozen key list, in a test that needs no corpus. The same principle applies to scores: a downbeat F1 is quoted against a phase-blind beat detector, never against noise, and a calibration error is quoted with its own floor. A number without its null is a decoration.
 - **Torch is an optional extra** (`uv sync --extra training`) and stays one. The default dependency set does not move, the live pipeline gains no imports, and the decode-and-score path needs no torch at all.

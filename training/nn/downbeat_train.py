@@ -346,6 +346,13 @@ def stitch(dataset: DownbeatWindowDataset, rows: np.ndarray, start: int,
     overlap is averaged rather than overwritten: taking the later window would
     silently prefer one of two equally valid estimates on every track's final
     ~16 s, which is where a peak-picking metric is most fragile.
+
+    **Requires ``dataset.augment=False`` and a loader with ``shuffle=False``.**
+    ``rows`` is matched to dataset indices by position from ``start``, and the
+    offsets are read back from ``window_offset``, which under augmentation
+    re-draws a *random* offset per epoch. Stitching an augmented dataset would
+    therefore scatter each window to a position it was not cut from and produce a
+    plausible-looking curve of noise -- no exception, no shape error.
     """
     index = start
     for row in rows:
@@ -675,9 +682,13 @@ def train(config: dict) -> dict:
             best = {"f1": float(metrics["f1"]), "epoch": epoch,
                     "metrics": {key: value for key, value in metrics.items()
                                 if key != "f1_curve"}}
+            # `metrics` is the flat metric block, not `best` -- nesting `best`
+            # here would make the field `best.pt["metrics"]["metrics"]["f1"]`,
+            # and a consumer that guessed the shorter path would read a dict
+            # where it expected a float.
             torch.save({"model": model.state_dict(), "arch": model.arch(),
-                        "config": config, "epoch": epoch, "metrics": best,
-                        "pos_weight": pos_weight},
+                        "config": config, "epoch": epoch, "f1": best["f1"],
+                        "metrics": best["metrics"], "pos_weight": pos_weight},
                        run_dir / BEST_CHECKPOINT)
 
         torch.save({
