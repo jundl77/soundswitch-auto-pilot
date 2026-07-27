@@ -143,9 +143,13 @@ _TRANSIENT_PATTERNS = (
             "too many requests",
         ),
     ),
-    # A 403 on the media URL is YouTube refusing *this client* -- typically a
-    # signature/nsig extraction that could not be solved, which is a property of
-    # our toolchain (a missing or invisible JS runtime) and not of the video.
+    # A 403 on the media URL is YouTube refusing *this client* -- a signature/nsig
+    # challenge that could not be solved, which is a property of our toolchain and
+    # not of the video.  Measured on the first full corpus sweep: 43 of the 62
+    # happened while a JS runtime WAS visible to the run, and four of those
+    # records carry yt-dlp's own explanation -- its remote challenge-solver
+    # components are opt-in and were never enabled.  So a visible runtime is
+    # necessary but not sufficient; see the operator note printed in the summary.
     # It gets its own bucket rather than folding into bot_check because the two
     # demand opposite remedies: bot_check is a credential wall and an owner
     # decision, while a 403 wave means fix the extractor and re-run.  Reporting
@@ -777,16 +781,27 @@ def main(argv: list | None = None) -> int:
         # the owner after a problem they do not have.
         print()
         print(
-            f"  HTTP 403    : {forbidden} refusal(s) on the media URL. This is usually a "
-            "signature/nsig extraction that could not be"
+            f"  HTTP 403    : {forbidden} refusal(s) on the media URL -- a signature/nsig "
+            "challenge yt-dlp could not solve. Two causes,"
         )
         print(
-            "                solved -- check that yt-dlp is current and that a JS runtime "
-            "(deno/node) is visible TO THIS PROCESS"
+            "                in the order they are worth checking:"
         )
         print(
-            "                (an installed runtime is not enough: a shell started before the "
-            "install has a stale PATH). Then re-run."
+            "                 1. yt-dlp skips its remote challenge-solver components unless "
+            "asked. Re-run with:"
+        )
+        print(
+            "                      --remote-components ejs:github        (yt-dlp's own "
+            "recommended form; ejs:npm is the alternative)"
+        )
+        print(
+            "                 2. a JS runtime (deno/node) must be visible TO THIS PROCESS. "
+            "Installed is not enough -- a shell"
+        )
+        print(
+            "                    started before the install carries a stale PATH. Check from "
+            "the runner, not a fresh terminal."
         )
     if aborted:
         print(

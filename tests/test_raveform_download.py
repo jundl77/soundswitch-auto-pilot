@@ -145,6 +145,16 @@ def test_a_403_is_retryable_and_aborts_a_sustained_run():
     assert "http_403" in BLOCK_REASONS
 
 
+def test_the_non_pattern_reasons_are_all_retryable():
+    # These four never come from the pattern table -- they are recorded when the
+    # run itself misbehaves (no output, empty output, a timeout) or when no
+    # pattern matched at all.  `other` in particular is the whole argument of
+    # the 403 fix: an error we have no pattern for is a gap in our knowledge,
+    # not evidence that a video is gone, and dropping it from the retry set is
+    # what stranded 62 recoverable tracks.
+    assert {"other", "empty_output", "missing_output", "timeout"} <= RETRYABLE_REASONS
+
+
 def test_the_retry_hint_names_every_recoverable_reason():
     # The hint used to say "bot_check (add ,timeout if any timed out)", which
     # would have abandoned 62 recoverable tracks.  It is now generated from the
