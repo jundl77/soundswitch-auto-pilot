@@ -397,6 +397,36 @@ def test_an_interstitial_position_is_scored_wrong_not_skipped():
 # --------------------------------------------------------------------------- #
 
 
+def test_confidence_gating_keeps_fewer_downbeats_and_scores_only_those():
+    """The spec's beat-snap fall-back, measured: the filter is on the prediction
+    set and the score comes from the committed matcher, so a confidence sweep is
+    comparable with every other F1 here rather than a second metric."""
+    from nn.evaluate_downbeat import confidence_sweep
+
+    truth = beats(8, period=BAR)
+    decisions = [PhaseDecision(index, time, 1, 0.9 if index % 2 else 0.2, False)
+                 for index, time in enumerate(truth)]
+    # Every prediction is right, so gating can only cost recall, never precision.
+    rows = confidence_sweep(decisions, truth, thresholds=(0.0, 0.5))
+    assert rows[0.0]["tp"] == 8 and rows[0.0]["fp"] == 0
+    assert rows[0.5]["tp"] == 4 and rows[0.5]["fn"] == 4
+    assert rows[0.5]["kept"] == 4 and rows[0.5]["total"] == 8
+
+
+def test_confidence_gating_can_raise_precision_when_confidence_is_informative():
+    from nn.evaluate_downbeat import confidence_sweep
+
+    truth = beats(8, period=BAR)
+    good = [PhaseDecision(i, t, 1, 0.9, False) for i, t in enumerate(truth)]
+    junk = [PhaseDecision(100 + i, t + 0.5 * BAR, 1, 0.2, False)
+            for i, t in enumerate(truth[:-1])]
+    decisions = sorted(good + junk, key=lambda d: d.time)
+    rows = confidence_sweep(decisions, truth, thresholds=(0.0, 0.5))
+    open_gate = rows[0.0]
+    shut_gate = rows[0.5]
+    assert open_gate["fp"] == 7 and shut_gate["fp"] == 0
+
+
 def test_a_perfectly_regular_grid_has_exactly_zero_interval_deviations():
     result = interval_deviation(beats(64, period=BAR))
     assert result["events"] == 0

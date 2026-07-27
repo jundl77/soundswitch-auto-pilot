@@ -100,6 +100,11 @@ LOCK_IQR_BEATS = 0.06
 TEMPO_TOLERANCE = 0.02
 TEMPO_MULTIPLES = (0.5, 1.0, 2.0)
 
+# Phase-confidence cut points for the spec's beat-snap fall-back.  0.25 is chance
+# on a four-position cycle and 0.125 on eight, so the low end is "no information
+# at all" and the high end is where a grid would actually be trusted.
+CONFIDENCE_THRESHOLDS = (0.0, 0.3, 0.5, 0.7, 0.9)
+
 REACH_LABELS = ("beat", "midpoint", "coast", "no_coverage", "dropout",
                 "tempo_mismatch", "fraction_lock", "jitter")
 REACHED = ("beat", "midpoint", "coast")
@@ -501,6 +506,30 @@ def score_downbeats(predicted, truth, tolerance: float = TOLERANCE_SEC) -> dict:
                              np.asarray(truth, dtype=np.float64), tolerance))
 
 
+def confidence_sweep(decisions, truth, thresholds=CONFIDENCE_THRESHOLDS,
+                     tolerance: float = TOLERANCE_SEC) -> dict:
+    """P/R/F1 of the emitted grid when only confident downbeats are kept.
+
+    The spec's fall-back -- "bar-snap when the grid is sure, beat-snap when it is
+    not" -- is exactly this filter, so this is the measurement that says whether
+    the fall-back is worth building: if confidence carries information, precision
+    rises as the threshold does, and the retained share says how much of the show
+    would still get bars.  Scored through the committed matcher on the filtered
+    prediction set rather than by a per-instant correctness flag, so the numbers
+    are comparable with every other F1 in this report.
+    """
+    times = np.asarray([d.time for d in decisions if d.phase == 1], dtype=np.float64)
+    confidence = np.asarray([d.confidence for d in decisions if d.phase == 1],
+                            dtype=np.float64)
+    rows: dict = {}
+    for threshold in thresholds:
+        kept = times[confidence >= threshold]
+        score = score_downbeats(kept, truth, tolerance)
+        rows[float(threshold)] = {**{key: score[key] for key in ("tp", "fp", "fn")},
+                                  "kept": int(kept.size), "total": int(times.size)}
+    return rows
+
+
 def phase_scores(decisions, subdivision: int, expert_times, expert_phases,
                  tolerance: float = TOLERANCE_SEC) -> dict:
     """Bar-phase accuracy against the annotated grid, with its own coverage.
@@ -772,6 +801,7 @@ def score_decisions(decisions, truth: tuple, subdivision: int) -> dict:
         "phase": phase_scores(decisions, subdivision, beat_times, beat_phases),
         "stability": beat_anchored_flips(decisions, subdivision),
         "interval": interval_deviation(predicted),
+        "confidence": confidence_sweep(decisions, downbeats),
         "n_predicted": int(predicted.size),
         "n_truth": int(downbeats.size),
     }
@@ -828,6 +858,17 @@ def aggregate_rows(rows: dict) -> dict:
         "flips_le_1_share": float(np.mean(flips <= 1.0)),
         "interval_dev_per_min_median": float(np.median(deviation)),
         "interval_dev_per_min_micro": events / minutes if minutes else 0.0,
+        "confidence": {
+            str(threshold): {
+                **prf(sum(row["confidence"][threshold]["tp"] for row in values),
+                      sum(row["confidence"][threshold]["fp"] for row in values),
+                      sum(row["confidence"][threshold]["fn"] for row in values)),
+                "kept_share": (sum(row["confidence"][threshold]["kept"] for row in values)
+                               / max(sum(row["confidence"][threshold]["total"]
+                                         for row in values), 1)),
+            }
+            for threshold in values[0]["confidence"]
+        },
     }
 
 
