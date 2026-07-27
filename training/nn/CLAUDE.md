@@ -28,6 +28,15 @@ Each stage reads the previous stage's artifact off disk. That is deliberate: the
 
 A **second chain is under construction beside it**: a downbeat head and a bar-phase decoder, because the section decoder commits at bar rate and live audio arrives with beats but no bar. It shares the sidecars, the splits and the window machinery, and it is the deployment prerequisite the v1 verdict named. Spec: `docs/superpowers/specs/2026-07-27-live-downbeat-tracking-design.md`; the live (aubio-driven) condition is the one its gates bind to.
 
+```
+downbeat_dataset.py (expert beat grids)  ->  downbeat_model.py + downbeat_train.py
+        |  downbeat_infer.py             ->  downbeat.onnx, one activation sidecar per val/test track,
+        v                                    with per-beat evidence for BOTH input conditions
+    downbeat_decoder.py                  ->  an immutable bar grid: downbeat instants, phase, confidence
+```
+
+The decoder's two input conditions are the whole point of the evaluation design: `aubio` is the beat stream the live engine actually produces (lifted from the cached sim reports) and is what the gates bind to; `expert` is the annotator's grid and is the diagnostic upper bound. The gap between them is the aubio-degradation cost, and it is reported, never assumed away.
+
 | Module | Role |
 |---|---|
 | `__init__.py` | puts `training/` on `sys.path` once, so the label vocabulary, mel geometry and artist parser are the corpus's own definitions rather than copies that can drift; also sets the CUDA determinism env var before anything imports torch |
@@ -35,6 +44,8 @@ A **second chain is under construction beside it**: a downbeat head and a bar-ph
 | `downbeat_dataset.py` | the *second* head's supervision: expert beat grids -> per-frame downbeat targets and per-beat bar-phase labels, on the same windows |
 | `downbeat_model.py` | `DownbeatCRNN` -- one head, a per-frame downbeat logit; the section model's conv front end at half the capacity |
 | `downbeat_train.py` | the downbeat head's training loop; imports the section head's determinism contract, loader policy and calibration metrics rather than restating them, and scores itself on peak F1 at the +-70 ms tolerance instead of on frames |
+| `downbeat_infer.py` | the downbeat head's inference artifact: checkpoint -> ONNX, then a sliding-window pass per track into one sidecar carrying the frame-rate activation *and* the evidence aggregated onto each beat instant of both input conditions; also owns the measurement that chose the aggregation window |
+| `downbeat_decoder.py` | the bar-phase HMM: a cyclic phase state at beat rate, committed at a fixed lag and never revised, coasting through aubio's dropouts and reporting how sure it is; pure numpy, because the runtime will import this one |
 | `downbeat_baselines.py` | the numbers a downbeat F1 has to be read against -- above all a *phase-blind* perfect beat detector, because beating noise only proves the head found beats -- plus the calibration metric's own floor and the bar-phase histogram that says which decoder knob matters |
 | `compare_runs.py` | the determinism proof for either head: walks every logged number of two runs, not just the weight hash, because equal endpoints do not mean equal paths |
 | `model.py` | `SectionCRNN` -- two heads, label logits on the pooled grid and boundary logits at frame rate |
@@ -58,6 +69,8 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 | `features/*.npz` | pooled log-mel sidecars (written by the eval pipeline, read here) |
 | `models/v1/<run>/` | training checkpoints and per-run reports |
 | `models/downbeat_v1/<run>/` | the downbeat head's checkpoints and per-run reports; same layout, same TensorBoard logdir |
+| `models/downbeat_v1/downbeat.onnx` | the exported downbeat graph -- the interface every downbeat inference goes through |
+| `downbeat_posteriors/*.npz` | one downbeat sidecar per val/test track: the frame-rate activation and the per-beat evidence for both input conditions, keyed on model *and* geometry |
 | `models/v1/model.onnx` | the exported graph -- the interface every inference goes through |
 | `models/v1/priors.json` | the fitted structural priors |
 | `posteriors/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |
@@ -73,4 +86,6 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 - **Everything after the checkpoint is exact.** Inference is single-threaded through one pinned session, sidecars are written with a fixed archive layout, and the decoder is pure numpy -- so a report is byte-stable given its sidecars. Training itself is seeded and bitwise reproducible in a fresh process.
 - **A checkpoint and a sidecar each describe their own geometry, and consumers re-check it.** A pooling-factor or window change loads cleanly and decodes at the wrong rate, so the mismatch must fail loudly instead.
 - **A metric is reported with the baseline it must be read against.** Every trained checkpoint on disk is keyed by parameter *names*, so a refactor that renames one is a silent break -- pinned by a frozen key list, in a test that needs no corpus. The same principle applies to scores: a downbeat F1 is quoted against a phase-blind beat detector, never against noise, and a calibration error is quoted with its own floor. A number without its null is a decoration.
-- **Torch is an optional extra** (`uv sync --extra training`) and stays one. The default dependency set does not move, the live pipeline gains no imports, and the decode-and-score path needs no torch at all.
+- **A sidecar generated for the test split carries inputs, never truth.** Beat *instants* define an input condition and belong in the file; the bar *phase* is what the verdict scores against and stays in the annotations. Generating test-split sidecars early is safe precisely because of that line.
+- **Torch is an optional extra** (`uv sync --extra training`) and stays one. The default dependency set does not move, the live pipeline gains no imports, and the decode-and-score path needs no torch at all — the bar-phase decoder is the module that will be imported into `lib/`, so its independence from torch is pinned by a test that imports it in a torch-free process rather than left to review.
+- **A commit and its look-ahead are one design.** The bar-phase decoder cannot act on evidence outside its lag window, so its hysteresis knob and its lag are a *pair*: a penalty that reads as sensible hysteresis at one lag reads as "never change your mind" at a shorter one. Sweep them together.
