@@ -1,0 +1,13 @@
+# Frozen benchmark artifacts: their BYTES are the identity.
+#
+# training/eval_set_baseline.json records sha256 over the raw bytes of
+# training/eval_set.json, so the file must materialise identically in every
+# checkout on every OS.  Git's core.autocrlf=true (the Windows installer's
+# system default) otherwise rewrites LF to CRLF on checkout, which changes the
+# hash and makes the desync guard in tests/test_run_eval_set.py fail in a fresh
+# clone while passing in the worktree the file happened to be written in -- a
+# guard whose verdict depends on machine state is not a guard.
+#
+# The writers already emit LF unconditionally (write_json uses newline="\n"),
+# so eol=lf makes the checkout agree with the writer rather than the platform.
+training/*.json text eol=lf

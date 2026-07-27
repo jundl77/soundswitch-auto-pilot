@@ -365,6 +365,25 @@ def test_the_committed_baseline_covers_the_whole_frozen_eval_set():
     assert set(committed_baseline()["tracks"]) == frozen
 
 
+def test_the_frozen_artifacts_are_checked_out_with_canonical_line_endings():
+    """The eval set's identity is its BYTES, and a checkout can rewrite those.
+
+    Git's `core.autocrlf=true` -- what the Windows installer sets system-wide --
+    turns LF into CRLF on checkout, which changes the sha256 the test below
+    compares without changing one thing about the benchmark.  It did exactly
+    that: the desync guard passed in the worktree the file was written in and
+    failed in every fresh clone, i.e. the guard's verdict was a fact about the
+    machine rather than about the eval set.  `.gitattributes` pins these to
+    `eol=lf`; this is the tripwire for when that pin stops covering them, and it
+    fires *before* the sha comparison so the failure names the real cause."""
+    for path in (EVAL_SET_FILE, BASELINE_FILE):
+        assert b"\r" not in Path(path).read_bytes(), (
+            f"{Path(path).name} was checked out with CRLF, but its recorded "
+            f"sha256 is over LF bytes -- check .gitattributes still pins "
+            f"training/*.json to eol=lf, then `git add --renormalize` it"
+        )
+
+
 def test_the_committed_baseline_was_cut_against_the_current_eval_set():
     """`select_eval_set --force` re-freezes the benchmark and desynchronizes the
     baseline.  The runner detects it at run time; this detects it in the fast
