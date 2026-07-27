@@ -26,10 +26,13 @@ clean_manifest.csv + mel sidecars + annotations
 
 Each stage reads the previous stage's artifact off disk. That is deliberate: the expensive stages run once and every cheap stage downstream is re-runnable in seconds.
 
+A **second chain is under construction beside it**: a downbeat head and a bar-phase decoder, because the section decoder commits at bar rate and live audio arrives with beats but no bar. It shares the sidecars, the splits and the window machinery, and it is the deployment prerequisite the v1 verdict named. Spec: `docs/superpowers/specs/2026-07-27-live-downbeat-tracking-design.md`; the live (aubio-driven) condition is the one its gates bind to.
+
 | Module | Role |
 |---|---|
 | `__init__.py` | puts `training/` on `sys.path` once, so the label vocabulary, mel geometry and artist parser are the corpus's own definitions rather than copies that can drift; also sets the CUDA determinism env var before anything imports torch |
 | `dataset.py` | splits + windowed, loss-masked training items; owns the split rule and the benchmark exclusions |
+| `downbeat_dataset.py` | the *second* head's supervision: expert beat grids -> per-frame downbeat targets and per-beat bar-phase labels, on the same windows |
 | `model.py` | `SectionCRNN` -- two heads, label logits on the pooled grid and boundary logits at frame rate |
 | `train.py` | the training loop, its determinism contract, calibration metrics and TensorBoard |
 | `export_onnx.py` | checkpoint -> ONNX, plus the single pinned single-threaded session every consumer must use |
