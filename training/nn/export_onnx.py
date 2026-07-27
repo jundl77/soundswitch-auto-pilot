@@ -123,7 +123,16 @@ def build_from_checkpoint(checkpoint: dict) -> SectionCRNN:
 
 
 def load_checkpoint(path) -> dict:
-    return torch.load(Path(path), map_location="cpu", weights_only=False)
+    """Read a ``best.pt`` without letting it run code.
+
+    ``weights_only=True`` restricts the unpickler to tensors and plain builtins,
+    which is exactly and only what the export path reads: the ``model`` state
+    dict, the ``arch`` block, and JSON-shaped config primitives.  No allowlist
+    is needed -- every shipped ``best.pt`` (v1/v1b/v1c, v2a-d) loads under it
+    unchanged.  ``last.pt`` does not, and is not export input: it carries the
+    resume state (pickled RNG tuples), and ``train.py`` reads that one.
+    """
+    return torch.load(Path(path), map_location="cpu", weights_only=True)
 
 
 # --------------------------------------------------------------------------- #

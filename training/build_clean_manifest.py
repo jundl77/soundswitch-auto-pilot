@@ -216,11 +216,20 @@ def classify(
 
 
 def _run(command: list) -> subprocess.CompletedProcess:
-    """Run a tool with stdin closed so it can never block waiting for input."""
+    """Run a tool with stdin closed so it can never block waiting for input.
+
+    The encoding is pinned rather than left to the locale: ffmpeg reports the
+    offending tag text when it complains about a file, and one non-cp1252 byte
+    in a track title would otherwise raise ``UnicodeDecodeError`` out of
+    ``subprocess.run`` -- inside a pool worker, taking the batch down over a
+    character in a filename.  ``replace`` keeps the complaint readable.
+    """
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=FFMPEG_TIMEOUT_SEC,
     )

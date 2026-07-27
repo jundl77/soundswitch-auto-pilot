@@ -30,6 +30,7 @@ if str(TRAINING_DIR) not in sys.path:
 from run_eval_set import (  # noqa: E402  (needs the path insert above)
     AUDIO_MISSING_HINT,
     BASELINE_FILE,
+    COUNT_FACTS,
     DATA_DIR_ENV,
     DEFAULT_FLICKER_TOLERANCE,
     DEFAULT_SCORE_TOLERANCE,
@@ -50,6 +51,7 @@ from run_eval_set import (  # noqa: E402  (needs the path insert above)
     select_tracks,
     shortest_track_ids,
     track_metrics,
+    verify_ground_truth,
 )
 
 LOOK_AHEAD = 2.5
@@ -95,10 +97,26 @@ def result_document(tracks: dict, aggregate: dict | None = None,
 def entry(checksum="cafe", **overrides) -> dict:
     record = {"youtube_id": "yt", "checksum": checksum, "beats": 100, "rows": 90,
               "song_sec": 300.0, "exposure_sec": 280.0,
-              "changes_intent": 20, "changes_class": 15}
+              "changes_intent": 20, "changes_class": 15, "label_boundaries": 12}
     record.update(metrics())
     record.update(overrides)
     return record
+
+
+def corpus(tmp_path: Path, segments: str = "[]") -> Path:
+    """A data dir holding the two files the eval set records checksums of."""
+    (tmp_path / "annotations").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "annotations" / "segments.json").write_text(segments, encoding="utf-8")
+    (tmp_path / "clean_manifest.csv").write_text("track_id\n", encoding="utf-8")
+    return tmp_path
+
+
+def frozen_against(tmp_path: Path) -> dict:
+    """An eval-set document recording the corpus in ``tmp_path`` as it is now."""
+    from select_eval_set import input_paths, sha256_of
+
+    return {"selected_from": {"inputs": {name: sha256_of(path) for name, path
+                                         in input_paths(tmp_path).items()}}}
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +220,52 @@ def test_missing_inputs_reports_a_missing_annotation_file(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Ground truth
+# --------------------------------------------------------------------------- #
+#
+# The labels are gitignored corpus.  Nothing in the repository pins them, so a
+# re-fetch can move a boundary under a baseline cut before the move and every
+# score in the run silently starts answering a different question.
+
+
+def test_unmoved_labels_pass_the_ground_truth_check(tmp_path):
+    data_dir = corpus(tmp_path, segments='[{"key": "a.1"}]')
+    verify_ground_truth(frozen_against(data_dir), data_dir)
+
+
+def test_moved_labels_are_a_hard_failure_that_names_the_cause(tmp_path):
+    data_dir = corpus(tmp_path, segments='[{"key": "a.1"}]')
+    document = frozen_against(data_dir)
+    (data_dir / "annotations" / "segments.json").write_text(
+        '[{"key": "a.1", "sections": "moved"}]', encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        verify_ground_truth(document, data_dir)
+    message = str(excinfo.value)
+    assert "GROUND TRUTH" in message
+    assert "segments.json" in message
+    assert "baseline" in message
+
+
+def test_a_grown_corpus_does_not_fail_the_ground_truth_check(tmp_path):
+    """`clean_manifest.csv` chose WHICH tracks are frozen and grows with every
+    download batch; it feeds no score, so checking it here would make the
+    benchmark unrunnable for the ordinary reason that the corpus got bigger."""
+    data_dir = corpus(tmp_path, segments='[{"key": "a.1"}]')
+    document = frozen_against(data_dir)
+    (data_dir / "clean_manifest.csv").write_text("track_id\nb.2\n", encoding="utf-8")
+
+    verify_ground_truth(document, data_dir)
+
+
+def test_an_eval_set_with_no_recorded_label_checksum_is_a_failure(tmp_path):
+    """No checksum on record is not 'nothing moved' -- it is 'nobody can tell'."""
+    data_dir = corpus(tmp_path)
+    with pytest.raises(RuntimeError, match="GROUND TRUTH"):
+        verify_ground_truth({"selected_from": {"inputs": {}}}, data_dir)
+
+
+# --------------------------------------------------------------------------- #
 # The gate
 # --------------------------------------------------------------------------- #
 
@@ -255,6 +319,41 @@ def test_the_aggregate_row_is_gated_too():
     current = result_document({"a.1": entry()}, aggregate=metrics(macro_f1=0.2))
     outcome = compare(baseline, current)
     assert any("(aggregate)" in line for line in outcome.regressions)
+
+
+@pytest.mark.parametrize("fact,moved", [
+    ("rows", 89),                 # the join started dropping beats
+    ("label_boundaries", 13),     # the annotation gained a section
+    ("exposure_sec", 279.5),      # a different amount of show was scored
+])
+def test_a_moved_count_fact_fails_even_when_every_score_holds(fact, moved):
+    """The four gated scores can absorb this: 0.02 of macro-F1 is a lot of room,
+    and a run that scored a different number of beats against a different number
+    of boundaries is not a run the baseline is comparable to at all."""
+    baseline = result_document({"a.1": entry()})
+    current = result_document({"a.1": entry(**{fact: moved})})
+
+    outcome = compare(baseline, current)
+
+    assert outcome.failed
+    assert any(fact in line and "a.1" in line for line in outcome.fact_drift)
+    assert outcome.regressions == [] and outcome.checksum_drift == []
+
+
+def test_count_facts_are_exact_with_no_tolerance():
+    """One row of one track is enough -- there is no 'close enough' number of
+    beats, and giving these the score tolerance would gate nothing."""
+    baseline = result_document({"a.1": entry(rows=90)})
+    current = result_document({"a.1": entry(rows=90 + 1)})
+
+    assert compare(baseline, current).failed
+
+
+def test_the_aggregate_row_is_not_faulted_for_facts_it_never_carries():
+    """The aggregate is four scores and nothing else; demanding counts of it
+    would fail every run for a field the writer was never asked to emit."""
+    baseline = result_document({"a.1": entry()}, aggregate=metrics())
+    assert compare(baseline, baseline).fact_drift == []
 
 
 def test_every_guarded_metric_is_actually_checked():
@@ -401,6 +500,14 @@ def test_every_committed_row_carries_every_guarded_metric_and_a_checksum():
         assert not missing, f"{name} is missing {missing} -- it would not be gated"
     for track_id, row in baseline["tracks"].items():
         assert len(row.get("checksum", "")) == 64, track_id
+
+
+def test_every_committed_row_carries_the_count_facts_the_tripwire_reads():
+    """The exact-equality check is only armed on facts that are actually on
+    record: a row missing one is compared on scores alone, quietly."""
+    for track_id, row in committed_baseline()["tracks"].items():
+        missing = [fact for fact in COUNT_FACTS if fact not in row]
+        assert not missing, f"{track_id} is missing {missing} -- not a tripwire"
 
 
 def test_the_committed_baseline_records_the_configuration_it_was_cut_under():

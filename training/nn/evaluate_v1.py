@@ -86,7 +86,6 @@ from evaluate_against_labels import (  # noqa: E402
     INTENT_TO_LABELS,
     PRIMARY_TOLERANCE_SEC,
     SPACES,
-    STREAM_ORDER,
     TOLERANCES_SEC,
     Score,
     TrackBeats,
@@ -1008,6 +1007,21 @@ def artifact_provenance(data_dir: Path, model_version: str = MODEL_VERSION,
             "files": files}
 
 
+def default_output_name(split: str, ids_file=None) -> str:
+    """The filename a run writes to when ``--out`` was not given.
+
+    ``--split`` does not select anything once ``--ids-file`` is present -- it
+    only labels the run -- so both would otherwise land on ``eval_<split>.json``,
+    the published verdict for that whole split.  A subset scored over a handful
+    of hand-picked tracks would silently replace the artifact the generation is
+    judged by, in the model directory, with no flag involved.  The ids file's own
+    name distinguishes them, and distinguishes two subsets from each other.
+    """
+    if ids_file is None:
+        return EVAL_FILE.format(split=split)
+    return EVAL_FILE.format(split=f"{split}_{Path(ids_file).stem}")
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
@@ -1018,8 +1032,9 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--ids-file", type=Path, default=None,
                         help="score exactly the youtube ids in this file (JSON "
                              "array, or one per line) instead of a whole split. "
-                             "--split then supplies the label the report and the "
-                             "default output filename carry")
+                             "--split then only labels the run, and the default "
+                             "output is named after this file so a subset can "
+                             "never overwrite the split's published verdict")
     parser.add_argument("--config", type=Path, default=None,
                         help="decoder_config.json from the sweep (default: the "
                              "named generation's, if present)")
@@ -1070,7 +1085,7 @@ def main(argv: list | None = None) -> int:
                        if args.ids_file else {}),
                     "artifacts": artifact_provenance(
                         args.data_dir, args.model_version, args.posteriors_dir)})
-    out = args.out or model_dir / EVAL_FILE.format(split=args.split)
+    out = args.out or model_dir / default_output_name(args.split, args.ids_file)
     write_json(out, report)
     print(render(report))
     print(f"\nwrote {out}")

@@ -318,16 +318,19 @@ def test_a_fill_pass_block_reuse_is_labelled_in_the_reason():
 
 
 def test_class_coverage_breaks_a_near_tie_on_tempo_gap():
-    # `poor` and `rich2` sit 0.5 BPM either side of the band-2 pick, so their
-    # tempo gaps are equal to within a bucket and criterion 1 decides.  On the
-    # raw float gap the two are distinguishable, every later key is dead, and a
-    # 2-class track wins on a rounding difference.
+    # The band-2 pick is `rich` (144.3).  `poor` then sits 0.6 BPM from it and
+    # `rich2` 0.5 -- WIDER and narrower, but inside one GAP_BUCKET_BPM of each
+    # other, which is the whole point of the bucket: without it the fill pass
+    # ranks on the raw float, `poor` wins outright on 0.1 BPM nobody can hear,
+    # and criterion 1 (class coverage) never gets a vote.  With it the two are
+    # tied on tempo and the 5-class track wins.  The gaps must stay unequal for
+    # this to discriminate -- equal raw gaps pass either way.
     pool = [
         candidate(track_id="0100.anchoraaaaa", youtube="anchoraaaaa", bpm=120.0,
                   artist="anchor"),
         candidate(track_id="0200.faraaaaaaaa", youtube="faraaaaaaaa", bpm=170.0,
                   artist="far"),
-        candidate(track_id="0300.pooraaaaaaa", youtube="pooraaaaaaa", bpm=143.8,
+        candidate(track_id="0300.pooraaaaaaa", youtube="pooraaaaaaa", bpm=144.9,
                   artist="poor", classes=("intro", "drop")),
         candidate(track_id="0400.richaaaaaaa", youtube="richaaaaaaa", bpm=144.3,
                   artist="rich"),

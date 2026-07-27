@@ -17,6 +17,7 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -24,11 +25,15 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from build_training_table import (  # noqa: E402  (needs the path insert above)
+    ANALYSER_RESET_SEC,
     BAR_POSITION_UNKNOWN,
     CACHE_VERSION,
+    CLEAN_MANIFEST_FILE,
     CONTINUOUS_COLUMNS,
     FEATURES_DIR,
     KICK_MIN_RMS,
+    MEL_EXPORTER_KEY,
+    MEL_EXPORTER_VERSION,
     NO_INTENT,
     REPORTS_DIR,
     TABLE_FILE,
@@ -40,11 +45,14 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
     format_row,
     join_track,
     label_v1,
+    load_ok_rows,
     realign_intents,
     pipeline_sha,
     report_path,
     select_jobs,
+    sidecar_generation,
     song_time_intents,
+    write_feature_sidecar,
     zscores,
     _read_json_gz,
     _write_json_gz,
@@ -550,14 +558,13 @@ def test_format_row_emits_the_header_order_as_strings():
 # --------------------------------------------------------------------------- #
 
 
-def write_corpus(tmp_path: Path, tracks: dict, sidecars: bool = True) -> tuple:
+def write_corpus(tmp_path: Path, tracks: dict) -> tuple:
     """``tracks`` = ``{track_id: (youtube_id, sections, report)}`` -> cached reports."""
     rows = []
     sections_by_track = {}
     (tmp_path / FEATURES_DIR).mkdir(parents=True, exist_ok=True)
     for track_id, (youtube, sections, payload) in sorted(tracks.items()):
-        if sidecars:
-            (tmp_path / FEATURES_DIR / f"{youtube}.npz").write_bytes(b"npz")
+        (tmp_path / FEATURES_DIR / f"{youtube}.npz").write_bytes(b"npz")
         _write_json_gz(report_path(tmp_path, youtube), {
             "cache_version": CACHE_VERSION,
             "track_id": track_id,
@@ -813,6 +820,69 @@ def test_the_job_carries_the_stamp_the_cache_will_be_checked_against(tmp_path):
     assert jobs[0].mp3_mtime == stat.st_mtime
 
 
+# --------------------------------------------------------------------------- #
+# Mel-sidecar generation
+# --------------------------------------------------------------------------- #
+#
+# The sidecar's freshness used to be "the file exists".  A change to
+# `pooled_log_mel` that keeps the frame rate and the band count -- a different
+# compression, a different pooling reduction -- writes a sidecar of exactly the
+# right shape and entirely different numbers, and the corpus would then carry
+# two feature generations under one training table with nothing to say so.
+
+
+def stamp_sidecar(path: Path, version=MEL_EXPORTER_VERSION) -> None:
+    """A real npz; ``version=None`` writes one from before the stamp existed."""
+    payload = {"mel": np.zeros((1, 40), dtype=np.float32)}
+    if version is not None:
+        payload[MEL_EXPORTER_KEY] = np.int32(version)
+    np.savez_compressed(path, **payload)
+
+
+def test_a_sidecar_from_another_exporter_generation_is_re_simulated(tmp_path):
+    rows = stage_track(tmp_path)
+    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz", MEL_EXPORTER_VERSION + 1)
+
+    jobs, counts = select(tmp_path, rows)
+
+    assert len(jobs) == 1
+    assert counts["miss_sidecar_generation"] == 1
+
+
+def test_a_sidecar_from_this_exporter_generation_is_a_hit(tmp_path):
+    rows = stage_track(tmp_path)
+    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz")
+
+    jobs, counts = select(tmp_path, rows)
+
+    assert jobs == []
+    assert counts["hit"] == 1
+
+
+def test_an_unstamped_sidecar_is_grandfathered_rather_than_rebuilt(tmp_path):
+    """Every sidecar on disk predates the stamp.  Invalidating them would order
+    a 1,387-track re-simulation to discover what is already known: they were
+    written by generation 1."""
+    rows = stage_track(tmp_path)
+    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz", version=None)
+
+    jobs, counts = select(tmp_path, rows)
+
+    assert jobs == []
+    assert counts["hit"] == 1
+
+
+def test_sidecar_generation_reads_the_stamp_and_defaults_to_one(tmp_path):
+    stamped, bare, junk = (tmp_path / n for n in ("s.npz", "b.npz", "j.npz"))
+    stamp_sidecar(stamped, 7)
+    stamp_sidecar(bare, version=None)
+    junk.write_bytes(b"not an npz")
+
+    assert sidecar_generation(stamped) == 7
+    assert sidecar_generation(bare) == 1
+    assert sidecar_generation(junk) == 1
+
+
 def test_the_cache_counters_partition_the_manifest(tmp_path):
     """Hits + misses + skips must add up to the tracks looked at, and the misses
     must be exactly the jobs dispatched -- otherwise the summary can report a
@@ -842,10 +912,8 @@ def test_a_too_recent_track_is_not_also_counted_as_a_miss(tmp_path):
     assert sum(v for k, v in counts.items() if k.startswith("miss_")) == 0
 
 
-def test_pipeline_sha_ignores_documentation_beside_the_code(tmp_path):
-    """A CLAUDE.md living next to the pipeline cannot change what the simulation
-    produces; treating a doc edit as a pipeline change discards the whole corpus
-    cache for nothing."""
+def staged_repo(tmp_path: Path) -> str:
+    """A one-commit repo with a pipeline source and a doc; returns its clean sha."""
     import subprocess
 
     def git(*args):
@@ -858,13 +926,70 @@ def test_pipeline_sha_ignores_documentation_beside_the_code(tmp_path):
     (tmp_path / "lib" / "engine.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "lib" / "CLAUDE.md").write_text("docs\n", encoding="utf-8")
     git("add", "-A"); git("commit", "-qm", "init")
-    baseline = pipeline_sha(tmp_path)
+    return pipeline_sha(tmp_path)
+
+
+def test_pipeline_sha_ignores_documentation_beside_the_code(tmp_path):
+    """A CLAUDE.md living next to the pipeline cannot change what the simulation
+    produces; treating a doc edit as a pipeline change discards the whole corpus
+    cache for nothing."""
+    baseline = staged_repo(tmp_path)
 
     (tmp_path / "lib" / "CLAUDE.md").write_text("docs, revised\n", encoding="utf-8")
     assert pipeline_sha(tmp_path) == baseline
 
     (tmp_path / "lib" / "engine.py").write_text("x = 2\n", encoding="utf-8")
-    assert pipeline_sha(tmp_path) == f"{baseline}+dirty"
+    assert pipeline_sha(tmp_path).startswith(f"{baseline}+dirty")
+
+
+def test_a_committed_tree_keys_on_the_bare_commit_sha(tmp_path):
+    """The whole corpus cache is keyed on this string.  Decorating a CLEAN tree's
+    key -- with anything, for any reason -- re-simulates 1,387 tracks."""
+    baseline = staged_repo(tmp_path)
+
+    assert pipeline_sha(tmp_path) == baseline
+    assert "+" not in baseline
+
+
+def test_two_different_uncommitted_edits_get_two_different_keys(tmp_path):
+    """A constant `+dirty` gave every working-tree state one cache key, so the
+    second edit of an afternoon read back reports the first one produced."""
+    staged_repo(tmp_path)
+    source = tmp_path / "lib" / "engine.py"
+
+    source.write_text("x = 2\n", encoding="utf-8")
+    first = pipeline_sha(tmp_path)
+    source.write_text("x = 3\n", encoding="utf-8")
+    second = pipeline_sha(tmp_path)
+
+    assert first != second
+    assert "+dirty" in first and "+dirty" in second
+
+
+def test_the_dirty_key_returns_when_the_edit_does(tmp_path):
+    """The key is a function of the working tree's CONTENT, not of how many
+    times it was touched -- undoing an edit must restore the cache, not orphan
+    it."""
+    staged_repo(tmp_path)
+    source = tmp_path / "lib" / "engine.py"
+
+    source.write_text("x = 2\n", encoding="utf-8")
+    edited = pipeline_sha(tmp_path)
+    source.write_text("x = 3\n", encoding="utf-8")
+    source.write_text("x = 2\n", encoding="utf-8")
+
+    assert pipeline_sha(tmp_path) == edited
+
+
+def test_an_untracked_pipeline_source_moves_the_key(tmp_path):
+    """A brand-new lib/ module is invisible to `git diff` and changes what the
+    simulation does; the status output is what carries it into the digest."""
+    baseline = staged_repo(tmp_path)
+
+    (tmp_path / "lib" / "extra.py").write_text("y = 1\n", encoding="utf-8")
+
+    assert pipeline_sha(tmp_path) not in (baseline, "unknown")
+    assert pipeline_sha(tmp_path).startswith(f"{baseline}+dirty")
 
 
 def test_cached_reports_are_byte_identical_when_rewritten(tmp_path):
@@ -877,6 +1002,59 @@ def test_cached_reports_are_byte_identical_when_rewritten(tmp_path):
 
     assert path.read_bytes() == first
     assert _read_json_gz(path) == payload
+
+
+# --------------------------------------------------------------------------- #
+# The analyser self-reset horizon
+# --------------------------------------------------------------------------- #
+
+
+def write_manifest(tmp_path: Path, tracks: list) -> None:
+    """A clean manifest of ``(track_id, decoded_duration_sec)`` ok rows."""
+    lines = ["track_id,youtube_id,mp3_path,decoded_duration_sec,status"]
+    lines += [f"{track_id},{track_id[-3:]},audio/{track_id}.mp3,{seconds:.3f},ok"
+              for track_id, seconds in tracks]
+    (tmp_path / CLEAN_MANIFEST_FILE).write_text("\n".join(lines) + "\n",
+                                                encoding="utf-8")
+
+
+def test_a_track_reaching_the_analyser_reset_is_left_out_of_the_build(tmp_path, capsys):
+    """MusicAnalyser throws its rolling state away every 15 minutes; the mel
+    exporter has no such reset.  Past the horizon the two describe the same
+    audio from different states and the join produces wrong rows in silence."""
+    write_manifest(tmp_path, [("0001.short", 300.0),
+                              ("0002.long", ANALYSER_RESET_SEC)])
+
+    rows = load_ok_rows(tmp_path)
+
+    assert [row["track_id"] for row in rows] == ["0001.short"]
+    printed = capsys.readouterr().out
+    assert "0002.long" in printed and "self-reset" in printed
+
+
+def test_a_track_just_under_the_horizon_still_builds(tmp_path):
+    """The longest track in the corpus clears it by 0.11 s -- the gate has to be
+    on the horizon itself, not near it."""
+    write_manifest(tmp_path, [("0001.edge", ANALYSER_RESET_SEC - 0.111)])
+
+    assert [row["track_id"] for row in load_ok_rows(tmp_path)] == ["0001.edge"]
+
+
+def test_a_manifest_of_nothing_but_over_long_tracks_fails_loudly(tmp_path):
+    write_manifest(tmp_path, [("0001.long", ANALYSER_RESET_SEC + 60.0)])
+
+    with pytest.raises(RuntimeError, match="nothing to build from"):
+        load_ok_rows(tmp_path)
+
+
+def test_a_blank_duration_is_not_this_gates_business(tmp_path):
+    """The cleanliness gate already ruled on these rows; a missing number here
+    is not evidence of a long track."""
+    (tmp_path / CLEAN_MANIFEST_FILE).write_text(
+        "track_id,youtube_id,mp3_path,decoded_duration_sec,status\n"
+        "0001.blank,ank,audio/a.mp3,,ok\n", encoding="utf-8")
+
+    assert [row["track_id"] for row in load_ok_rows(tmp_path)] == ["0001.blank"]
 
 
 # --------------------------------------------------------------------------- #

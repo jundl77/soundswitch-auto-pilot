@@ -624,6 +624,11 @@ def train(config: dict) -> dict:
 
     checkpoint_path = run_dir / LAST_CHECKPOINT
     if config["resume"] and checkpoint_path.exists():
+        # weights_only=False is required here and nowhere else: the resume state
+        # holds pickled RNG tuples.  Trust boundary: this file was written by
+        # this script minutes ago, into the gitignored corpus, and is never
+        # fetched or shared -- unlike a published checkpoint, which the exporter
+        # now reads with weights_only=True.
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
         if state["config_fingerprint"] != fingerprint:
             raise RuntimeError(

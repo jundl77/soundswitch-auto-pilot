@@ -65,6 +65,7 @@ from nn.export_onnx import (  # noqa: E402
     declared_axes,
     default_checkpoint,
     export_model,
+    load_checkpoint,
     model_dir,
     run_window,
     session,
@@ -284,6 +285,41 @@ def test_build_from_checkpoint_refuses_weights_that_do_not_fit():
         build_from_checkpoint(checkpoint)
 
 
+def test_a_published_checkpoint_loads_without_executing_it(tmp_path):
+    """`load_checkpoint` runs the restricted unpickler (`weights_only=True`).
+
+    A checkpoint is a pickle: read the unrestricted way it is arbitrary code,
+    and these are read from a shared data directory rather than produced in the
+    same breath.  Everything the export path touches -- the state dict, the arch
+    block, config primitives -- survives the restriction, so nothing is traded
+    for it.  The published `best.pt` files load under it unchanged.
+    """
+    donor = SectionCRNN(label_pool=4)
+    path = tmp_path / "best.pt"
+    torch.save({"model": donor.state_dict(), "arch": donor.arch(),
+                "config": {"lr": 0.001, "run_name": "v1b", "epochs": 40},
+                "epoch": 7, "metrics": {"macro_f1": 0.5}}, path)
+
+    checkpoint = load_checkpoint(path)
+
+    assert build_from_checkpoint(checkpoint).arch() == donor.arch()
+    assert checkpoint["config"]["run_name"] == "v1b"
+
+
+@needs_corpus
+def test_the_shipped_checkpoint_really_loads_under_the_restriction():
+    """The test above proves the SHAPE is loadable; this proves the file on disk
+    is -- the one the exported graph was actually built from."""
+    path = default_checkpoint(DATA_DIR)
+    if not path.exists():
+        pytest.skip(f"no checkpoint at {path}")
+
+    checkpoint = load_checkpoint(path)
+
+    assert "arch" in checkpoint
+    assert build_from_checkpoint(checkpoint).arch() == checkpoint["arch"]
+
+
 # --------------------------------------------------------------------------- #
 # Golden inference + torch parity
 # --------------------------------------------------------------------------- #
@@ -335,8 +371,7 @@ def test_torch_and_onnx_agree_on_three_real_windows(tmp_path):
     checkpoint = default_checkpoint(DATA_DIR)
     if not checkpoint.exists():
         pytest.skip(f"no checkpoint at {checkpoint}")
-    model = build_from_checkpoint(
-        torch.load(checkpoint, map_location="cpu", weights_only=False))
+    model = build_from_checkpoint(load_checkpoint(checkpoint))
     _path, sess = exported(tmp_path, model)
 
     sidecars = sorted((DATA_DIR / "features").glob("*.npz"))[:2]

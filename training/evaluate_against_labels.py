@@ -1009,12 +1009,6 @@ def _per_class_block(space_result: dict) -> list[str]:
     return lines
 
 
-STREAM_CAPTION = {
-    "intent": "intent stream -- every lighting change (the show; owner metric)",
-    "class":  "class  stream -- changes of label class only (model comparand)",
-}
-
-
 def _boundary_block(space_result: dict) -> list[str]:
     lines = [
         "  Two streams, two questions.  Use the INTENT stream to ask how the show",

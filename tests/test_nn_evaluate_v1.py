@@ -57,6 +57,7 @@ from nn.decoder import (  # noqa: E402
     decode_track,
 )
 from nn.evaluate_v1 import (  # noqa: E402
+    EVAL_FILE,
     UNDECODED,
     TrackInputs,
     _head_to_head,
@@ -65,6 +66,7 @@ from nn.evaluate_v1 import (  # noqa: E402
     build_decoder,
     decode_bars,
     decode_beats,
+    default_output_name,
     identity_claims,
     load_inputs,
     read_ids_file,
@@ -447,6 +449,22 @@ def test_read_ids_file_accepts_both_shapes_and_refuses_ambiguity(tmp_path):
     empty.write_text("[]", encoding="utf-8")
     with pytest.raises(RuntimeError, match="no ids"):
         read_ids_file(empty)
+
+
+def test_a_subset_run_cannot_overwrite_the_splits_published_verdict(tmp_path):
+    """`--split` stops selecting anything once `--ids-file` is given -- it only
+    labels the run -- so without a distinct default both land on
+    `eval_test.json`, the artifact the generation is judged by, in the model
+    directory, with no flag involved."""
+    published = default_output_name("test")
+
+    assert published == EVAL_FILE.format(split="test")
+    assert default_output_name("test", tmp_path / "v1subset101.txt") != published
+
+
+def test_two_different_id_lists_do_not_land_on_each_other(tmp_path):
+    assert (default_output_name("test", tmp_path / "subset_a.txt")
+            != default_output_name("test", tmp_path / "subset_b.txt"))
 
 
 def test_per_track_head_to_head_separates_the_two_readings():
