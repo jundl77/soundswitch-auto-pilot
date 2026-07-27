@@ -6,8 +6,13 @@ posterior sidecars, priors, fixed-lag Viterbi -- exists to produce a decision
 stream; this module asks the only question that matters about one: **is it
 better than what ships today, measured the same way, on the same tracks?**
 
-It answers on the VAL split.  Test is untouched here by construction: nothing
-in this file reads ``splits["test"]``.
+It answers on the VAL split by default, and on the TEST split exactly once --
+the selection-clean verdict.  ``--split`` is how that read happens (``sweep.py``
+refuses ``test`` outright; this module cannot, because the verdict needs it), so
+the discipline lives in the workflow rather than in the code: after a test read,
+a bad result is a NEW versioned model with its own single read, never a re-tune
+scored against the same split.  Both verdicts are written side by side --
+``eval_val.json`` is the tuned reading, ``eval_test.json`` the clean one.
 
 How the comparison is kept honest
 ---------------------------------
@@ -110,7 +115,10 @@ UNDECODED = NO_INTENT
 
 SPLITS_FILE = "splits.json"
 POSTERIORS_DIR = "posteriors"
-EVAL_FILE = "eval_val.json"
+# Named after the split it scored, so a ``--split test`` run without ``--out``
+# cannot silently overwrite the val verdict with test numbers -- the two
+# readings answer different questions and must both survive on disk.
+EVAL_FILE = "eval_{split}.json"
 DECODER_CONFIG_FILE = "decoder_config.json"
 
 # The primary space.  ``canonical`` is not scored here: the network's vocabulary
@@ -947,7 +955,7 @@ def main(argv: list | None = None) -> int:
                                      if Path(config_path).exists() else "defaults",
                     "requested_tracks": len(ids),
                     "artifacts": artifact_provenance(args.data_dir)})
-    out = args.out or model_dir / EVAL_FILE
+    out = args.out or model_dir / EVAL_FILE.format(split=args.split)
     write_json(out, report)
     print(render(report))
     print(f"\nwrote {out}")

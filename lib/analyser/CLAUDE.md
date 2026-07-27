@@ -152,6 +152,15 @@ Scoring the whole corpus is the measurement; `training/run_eval_set.py` is the *
 
 The tracks span 117-174 BPM across five genres, which makes the gate the fastest available answer to the two limitations below: whether a threshold fitted to one track survives contact with another, and how much of the corpus sits above the tempo fold ceiling. Three of them run inside `uv run pytest`; the full ten are a manual command. See the root `CLAUDE.md` (The benchmark) for why the set is frozen and how it is kept out of training.
 
+### The neural replacement exists offline
+
+A trained section classifier (`training/nn/`) now scores better than everything on this page -- on tracks it has never seen, measured by the same functions that produce the baseline above. See `training/nn/CLAUDE.md` for the package map and the root `CLAUDE.md` for the verdict, its artifacts and its caveats. What it changes for this document:
+
+- **The features here are still the runtime's features.** The model trains on the pipeline's own mel stream, so the front-end above is shared rather than superseded. What it replaces is the hand-thresholded branch and the three-stage stability pipeline: it predicts the label class directly, and a decoder owns stability and latency policy in one place instead of votes, dwell and a transition guard in three.
+- **The two limitations recorded above are the model's whole motivation.** ATMOSPHERIC never fires on mastered EDM, which puts `intro` and `outro` permanently out of reach; and the engine changes intent far more often than the music changes section. The model answers both, and the second by a wide margin.
+- **It does not run yet, and the blocker is not integration effort.** The decoder decides per bar and there is no live downbeat tracker; the show's look-ahead also has to grow to the decoder's budget. Until both exist, this classifier is what ships and its thresholds are still worth tuning.
+- **Stability is a trade, not a free win -- do not import the model's preferences here.** The decoder's flicker advantage comes from committing long confident runs, and the same property lets one run swallow several sections on a track that alternates quickly. That is its known failure mode. The tuning workflow above optimises against the *opposite* failure, flapping, so a threshold change justified by "the NN commits harder" is unmeasured.
+
 ---
 
 ## Known Limitations
