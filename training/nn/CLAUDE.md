@@ -55,7 +55,7 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 | `posteriors/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |
 | `models/v1/decoder_config.json` | the chosen decoder config and the search that chose it |
 | `models/v1/eval_val.json` | the tuned verdict |
-| `models/v1/eval_test.json` | the selection-clean verdict -- written once |
+| `models/v1/eval_test.json` | the selection-clean verdict -- the test split is read once |
 
 ## Rules that must not be broken
 

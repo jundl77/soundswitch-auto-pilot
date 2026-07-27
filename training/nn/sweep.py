@@ -64,6 +64,7 @@ from .decoder import DEFAULT_LAG_BARS, DecodeParams
 from .evaluate_v1 import (
     DECODER_CONFIG_FILE,
     DEFAULT_SPACE,
+    EVAL_FILE,
     artifact_provenance,
     build_report,
     default_data_dir,
@@ -532,7 +533,11 @@ def main(argv: list | None = None) -> int:
             provenance={"config_source": str(out), "requested_tracks": len(ids),
                         "configs_evaluated": len(result["rows"]),
                         "artifacts": provenance})
-        eval_out = args.eval_out or model_dir / "eval_val.json"
+        # One definition of the name, shared with ``evaluate_v1``.  ``test`` is
+        # rejected above, but ``--split`` is otherwise free, so following the
+        # split is also what stops a sweep over some other split from filing its
+        # report under the val verdict's name.
+        eval_out = args.eval_out or model_dir / EVAL_FILE.format(split=args.split)
         write_json(eval_out, report)
         print()
         print(render(report))
