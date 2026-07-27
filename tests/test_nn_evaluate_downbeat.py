@@ -255,6 +255,43 @@ def test_an_unsteady_residual_is_jitter_and_a_steady_one_is_a_lock():
     assert noisy.count("jitter") > noisy.count("fraction_lock")
 
 
+def test_a_correctly_paced_beat_stream_has_a_bar_rate_ratio_of_one():
+    from nn.evaluate_downbeat import bar_rate_ratio
+
+    expert = beats(64)
+    downbeats = expert[::BEATS_PER_BAR]
+    for subdivision in (1, 2):
+        params = PhaseParams(subdivision=subdivision,
+                             lag_beats=lag_for(1, subdivision))
+        assert bar_rate_ratio(expert, downbeats, params) == pytest.approx(1.0, abs=0.03)
+
+
+def test_inserted_beats_raise_the_bar_rate_and_that_is_a_precision_ceiling():
+    """The second ceiling: a flip-free decode emits one downbeat per cycle, so a
+    beat stream with surplus beats produces surplus downbeats no phase model can
+    retract.  Half again as many beats is half again as many bars."""
+    from nn.evaluate_downbeat import bar_rate_ratio
+
+    expert = beats(64)
+    downbeats = expert[::BEATS_PER_BAR]
+    padded = np.sort(np.concatenate([expert, expert[:-1] + 0.5 * PERIOD]))
+    params = PhaseParams(subdivision=1, lag_beats=4)
+    assert bar_rate_ratio(padded, downbeats, params) == pytest.approx(2.0, abs=0.05)
+
+
+def test_a_coasted_gap_counts_toward_the_bar_rate_because_the_decoder_emits_it():
+    from nn.evaluate_downbeat import bar_rate_ratio, decoder_instants
+
+    expert = beats(64)
+    holed = np.concatenate([expert[:20], expert[26:]])
+    params = PhaseParams(subdivision=1, lag_beats=4)
+    # The coasted instants are back in the stream, so the rate is ~1 again --
+    # measuring the raw beat count instead would report a grid running slow.
+    assert decoder_instants(holed, params).size > holed.size
+    assert bar_rate_ratio(holed, expert[::BEATS_PER_BAR], params) == pytest.approx(
+        1.0, abs=0.05)
+
+
 def test_the_ceiling_grid_is_the_shipped_candidate_grid_at_subdivision_two():
     # The bound analysis and the decoder must agree about what "the grid" is at
     # the subdivision that actually decodes, or the bound is about a different

@@ -457,6 +457,36 @@ def test_the_phase_re_locks_after_a_discontinuity():
     assert tail == [1 + (index - 1) % BEATS_PER_BAR for index in range(88, 96)]
 
 
+def test_aubios_double_tempo_warmup_does_not_capture_the_tempo_estimate():
+    """The cold-start case, and it is not hypothetical -- it is on 40 % of val.
+
+    Aubio's documented behaviour is that the first seconds of every track read at
+    double or triple tempo.  Those intervals seed the tempo window, every real
+    interval afterwards then looks like a dropout, and the period *coasting*
+    records is the wrong short one -- so the estimate never recovers and the
+    decoder fills the whole track with phantom candidates.  Measured on the val
+    corpus before this was fixed: 2x to 5x as many committed instants as the
+    music has, on 85 of 215 tracks, which is most of the live condition's
+    precision.
+
+    The rule that fixes it: coasting *every* arrival for as long as the longest
+    single coastable gap means the estimate is wrong, not the music.
+    """
+    warmup = 1.0 + 0.5 * TEMPO_SEC * np.arange(12)       # 12 beats at double tempo
+    real = warmup[-1] + TEMPO_SEC * np.arange(1, 81)     # then the actual tempo
+    times = np.concatenate([warmup, real])
+
+    decisions = BarPhaseHMM().decode(times, clean_scores(times.size))
+
+    # A handful of phantoms while the estimate re-seeds is the cost; a track's
+    # worth of them is the defect.
+    virtual = sum(1 for d in decisions if d.virtual)
+    assert virtual <= 2 * MAX_COAST_BEATS
+    # And once re-seeded, the emitted grid runs at the music's bar rate.
+    bars = np.diff(downbeat_times(decisions))
+    assert np.median(bars) == pytest.approx(BEATS_PER_BAR * TEMPO_SEC, rel=0.05)
+
+
 def test_an_ordinary_beat_stream_coasts_nothing():
     decisions = BarPhaseHMM().decode(beat_grid(60), clean_scores(60))
 

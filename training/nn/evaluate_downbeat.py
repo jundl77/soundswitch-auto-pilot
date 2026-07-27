@@ -312,6 +312,43 @@ def _tempo_residual(aubio_period: float, expert_period: float) -> float:
     return float(min(abs(ratio / multiple - 1.0) for multiple in TEMPO_MULTIPLES))
 
 
+def decoder_instants(beat_times, params: PhaseParams | None = None) -> np.ndarray:
+    """Every instant the decoder would place a decision on, coasting included.
+
+    Measured *through the decoder* -- a NaN-scored decode emits exactly the
+    candidates it would have decoded, with the coasted ones in place -- rather
+    than by a second implementation of the coasting rule.  Two different things
+    are read off this: which downbeats are reachable at all, and how many
+    candidates a bar's worth of music actually produces.
+    """
+    params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
+    dense = candidate_grid(beat_times, params.subdivision)
+    if dense.size == 0:
+        return dense
+    decisions = BarPhaseHMM(params).decode(dense, np.full(dense.size, np.nan))
+    return np.asarray([d.time for d in decisions], dtype=np.float64)
+
+
+def bar_rate_ratio(beat_times, downbeats, params: PhaseParams | None = None) -> float:
+    """Candidates per bar, over the cycle length -- 1.0 is a correctly paced grid.
+
+    **The second ceiling, and the one nobody looked for.**  A cyclic decoder that
+    never flips emits exactly one downbeat per cycle, so the *rate* of the
+    emitted bar grid is set by the rate of the candidate stream, not by the
+    music.  If aubio produces more candidates per bar than the cycle is long --
+    by inserting beats, or by the decoder coasting extra ones through a gap --
+    the grid runs fast and the surplus downbeats are false positives no phase
+    model can retract.  Above 1 this bounds precision at ``coverage / ratio`` for
+    a flip-free decode, which is what the plan's stability gate demands.
+    """
+    params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
+    downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
+    if downbeats.size == 0:
+        return float("nan")
+    cycle = BEATS_PER_BAR * int(params.subdivision)
+    return float(decoder_instants(beat_times, params).size / (cycle * downbeats.size))
+
+
 def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
                  params: PhaseParams | None = None) -> list:
     """Why each annotated downbeat is, or is not, reachable from this beat stream.
@@ -343,9 +380,7 @@ def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
         return ["no_coverage"] * downbeats.size
 
     dense = candidate_grid(aubio, params.subdivision)
-    coasted = np.asarray(
-        [d.time for d in BarPhaseHMM(params).decode(dense, np.full(dense.size, np.nan))],
-        dtype=np.float64)
+    coasted = decoder_instants(aubio, params)
 
     to_beat = np.abs(nearest_offset(downbeats, aubio))
     to_dense = np.abs(nearest_offset(downbeats, dense))
@@ -770,6 +805,7 @@ def aggregate_rows(rows: dict) -> dict:
     phase_correct = sum(row["phase"]["correct"] for row in values)
     phase_covered = sum(row["phase"]["covered"] for row in values)
     phase_total = sum(row["phase"]["total"] for row in values)
+    interstitial = sum(row["phase"]["interstitial"] for row in values)
     events = sum(row["interval"]["events"] for row in values)
     minutes = sum(row["interval"]["minutes"] for row in values)
     return {
@@ -779,6 +815,13 @@ def aggregate_rows(rows: dict) -> dict:
         "f1_mean": float(np.mean(per_track_f1)),
         "phase_accuracy": phase_correct / phase_covered if phase_covered else 0.0,
         "phase_coverage": phase_covered / phase_total if phase_total else 0.0,
+        # How often a real beat was committed to a half-beat position, which has
+        # no bar phase at all.  Reported because it is the *mechanism* behind a
+        # low phase accuracy on the half-beat grid, not a second symptom of it.
+        "phase_interstitial_share": interstitial / phase_covered if phase_covered else 0.0,
+        # The emitted-to-annotated downbeat ratio: the direct read on whether a
+        # precision shortfall is wrong placement or simply too many bars.
+        "predicted_per_truth": ((tp + fp) / (tp + fn)) if (tp + fn) else 0.0,
         "flips_median": float(np.median(flips)),
         "flips_mean": float(np.mean(flips)),
         "flips_max": float(np.max(flips)),
@@ -846,6 +889,7 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
     reach: dict = {label: 0 for label in REACH_LABELS}
     per_track_reach: dict = {}
     per_track_ceiling: dict = {}
+    per_track_rate: dict = {}
     residuals: dict = {label: [] for label in REACH_LABELS}
     for youtube_id in ids:
         sidecar = read_sidecar(sidecar_path(data_dir, youtube_id))
@@ -865,6 +909,12 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
             # Bounds only: nothing decodes on these grids today (see subdivided_grid).
             "quarter_bound": grid_ceiling(aubio, downbeats, 4),
             "eighth_bound": grid_ceiling(aubio, downbeats, 8),
+        }
+        per_track_rate[youtube_id] = {
+            "half_beat_grid": bar_rate_ratio(
+                aubio, downbeats, PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))),
+            "beat_grid": bar_rate_ratio(
+                aubio, downbeats, PhaseParams(subdivision=1, lag_beats=lag_for(1, 1))),
         }
         for label, residual in zip(labels, downbeat_residuals(aubio, downbeats, beat_times)):
             if np.isfinite(residual):
@@ -894,6 +944,21 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
         summary[f"ceiling_{key}_deciles"] = [
             float(np.percentile(values, share)) for share in range(0, 101, 10)]
         summary[f"ceiling_{key}_tracks_at_85"] = int(np.count_nonzero(values >= 0.85))
+    downbeat_total = sum(row["n_downbeats"] for row in rows.values())
+    for key in ("half_beat_grid", "beat_grid"):
+        values = np.asarray([row[key] for row in per_track_rate.values()],
+                            dtype=np.float64)
+        weights = np.asarray([row["n_downbeats"] for row in rows.values()],
+                             dtype=np.float64)
+        micro = float(np.sum(values * weights) / downbeat_total) if downbeat_total else float("nan")
+        summary[f"bar_rate_{key}_micro"] = micro
+        summary[f"bar_rate_{key}_median"] = float(np.median(values))
+        # What a flip-free decode can reach given BOTH ceilings: it can only place
+        # a downbeat where a candidate is (coverage) and it emits one per cycle
+        # (rate), so F1 <= 2 * coverage / (1 + rate).
+        coverage = (summary["ceiling_decoder"] if key == "half_beat_grid"
+                    else summary["ceiling_beats"])
+        summary[f"f1_ceiling_{key}"] = 2.0 * coverage / (1.0 + micro)
     summary["residual_histogram"] = {
         label: np.histogram(values, bins=RESIDUAL_BINS)[0].tolist() if values else []
         for label, values in residuals.items()}
@@ -902,7 +967,7 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
         for label, values in residuals.items()}
     summary["residual_bins"] = list(RESIDUAL_BINS)
     return {"summary": summary, "per_track": rows, "per_track_reach": per_track_reach,
-            "per_track_ceiling": per_track_ceiling}
+            "per_track_ceiling": per_track_ceiling, "per_track_rate": per_track_rate}
 
 
 def sweep_rows(data_dir, ids, truth: dict, specs, *, workers: int = 1) -> list:

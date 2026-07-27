@@ -364,6 +364,10 @@ class BarPhaseHMM:
         self._tail: int | None = None
         self._last_time = None
         self._periods: deque = deque(maxlen=int(self.params.tempo_window))
+        # Consecutive arrivals that needed filling.  A tempo estimate feeds its
+        # own input -- what coasting records is a period *derived* from the
+        # estimate -- so a wrong one is self-sustaining unless something notices.
+        self._coast_streak = 0
 
     def push(self, time: float, score: float) -> list:
         """Advance to the next observed beat; return the decisions now final.
@@ -380,6 +384,7 @@ class BarPhaseHMM:
                 f"{self._last_time}")
 
         coasted, period = self._plan_gap(time)
+        self._coast_streak = self._coast_streak + 1 if coasted else 0
         decisions: list = []
         for moment in coasted:
             decisions.extend(self._observe(moment, np.nan, virtual=True))
@@ -438,6 +443,18 @@ class BarPhaseHMM:
         if self._last_time is None:
             return [], None
         gap = time - self._last_time
+        if self._coast_streak >= int(self.params.max_coast_beats):
+            # Every arrival for a whole coastable window has needed filling.  A
+            # dropout is a hole in an otherwise arriving stream, so this is not
+            # one: the *estimate* is wrong.  It happens for a documented reason
+            # -- aubio's first seconds read at double or triple tempo, which
+            # seeds the window short, and then every real interval looks like a
+            # dropout whose recorded period is short too.  Dropping the estimate
+            # re-seeds it from the next observed interval, which is the only
+            # unpolluted evidence available.
+            self._periods.clear()
+            self._coast_streak = 0
+            return [], gap
         if not self._periods:
             return [], gap                      # the first interval seeds the tempo
         period = float(np.median(self._periods))
