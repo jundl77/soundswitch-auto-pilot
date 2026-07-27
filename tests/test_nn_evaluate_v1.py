@@ -30,6 +30,7 @@ never executes, so the equivalence is asserted directly -- including the part
 that makes it fast, reusing one decoder instance across tracks.
 """
 import dataclasses
+import gzip
 import sys
 from pathlib import Path
 
@@ -58,11 +59,14 @@ from nn.decoder import (  # noqa: E402
 from nn.evaluate_v1 import (  # noqa: E402
     UNDECODED,
     TrackInputs,
+    _head_to_head,
+    _per_track_deltas,
     beat_classes,
     build_decoder,
     decode_bars,
     decode_beats,
     identity_claims,
+    load_inputs,
     rule_equivalent_claims,
     score_predicted,
 )
@@ -327,6 +331,40 @@ def test_decode_beats_places_the_bar_decisions_on_the_beat_grid(tmp_path):
     assert set(got[2:]) == {"drop"}
 
 
+def test_a_missing_track_fails_loud_instead_of_shrinking_the_split(tmp_path):
+    # A missing sidecar drops out of BOTH columns at once, so they stay
+    # comparable to each other while quietly ceasing to cover the split the
+    # header names.  That is the failure mode worth a raise.
+    table = tmp_path / "empty.csv.gz"
+    with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
+        handle.write("track_id,youtube_id,t_song,intent_at_beat,"
+                     "label_canonical,label_v1\n")
+    with pytest.raises(RuntimeError, match="missing inputs"):
+        load_inputs(tmp_path, ["nosuchtrack"], table_path=table)
+    kept, skipped = load_inputs(tmp_path, ["nosuchtrack"], table_path=table,
+                                allow_missing=True)
+    assert kept == [] and len(skipped) == 1, "the override still records the drop"
+
+
+def test_per_track_head_to_head_separates_the_two_readings():
+    # The full reading hands the rule a structural zero on classes the
+    # beat-indexed table stops it claiming, so only the restricted reading can
+    # go negative -- the artifact has to carry both or a universality claim
+    # gets read off the wrong one.  This fixture is that exact shape: the NN
+    # wins overall because it can name `intro`, and loses on `drop` itself.
+    labels = ["intro"] * 2 + ["drop"] * 6
+    nn = [score_predicted(track(steady(8), labels, track_id="a"), "v1",
+                          ("intro",) * 2 + ("drop",) * 3 + ("breakdown",) * 3)]
+    rule = [score_predicted(track(steady(8), labels, track_id="a"), "v1",
+                            ("drop",) * 8)]
+    rows = _per_track_deltas(nn, rule, ["drop"])
+    assert rows[0]["delta"] > 0, "over all classes the NN wins -- it names intro"
+    assert rows[0]["restricted_delta"] < 0, \
+        "on `drop` alone the always-drop stream has the better F1"
+    assert _head_to_head(rows, "delta")["nn_better"] == 1
+    assert _head_to_head(rows, "restricted_delta")["rule_better"] == 1
+
+
 # --------------------------------------------------------------------------- #
 # The sweep
 # --------------------------------------------------------------------------- #
@@ -403,14 +441,17 @@ def test_sensitivity_reports_the_best_per_value_curve_and_its_spread():
     assert report["spread"] == pytest.approx(0.10)
 
 
-def test_refinement_reopens_every_axis_around_the_staged_winner():
+def test_refinement_reopens_the_trellis_axes_but_not_the_latency_policy():
     # A staged search can only find a coordinate-wise optimum; the refinement
-    # has to move the axes together to prove the winner is not one.
+    # has to move the axes together to prove the winner is not one.  lag_bars
+    # is excluded on purpose -- it is bounded by the look-ahead budget, not by
+    # macro-F1, so it gets its own stage and curve.
     axes = refinement_axes(DecodeParams(prior_strength=-0.5, drop_miss_cost=1.0,
                                         boundary_weight=1.0, boundary_ref=0.3,
                                         floor_scale=1.0))
     assert set(axes) == {"prior_strength", "drop_miss_cost", "boundary_weight",
                          "boundary_ref", "floor_scale"}
+    assert "lag_bars" not in axes
     assert -0.5 in axes["prior_strength"] and len(axes["prior_strength"]) > 1
     assert 1.0 in axes["drop_miss_cost"], "an endpoint winner keeps its own value"
     grid = enumerate_configs(DecodeParams(), axes)

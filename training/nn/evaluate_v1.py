@@ -27,6 +27,17 @@ charge against ``intro`` and ``outro`` specifically, since those are the classes
 that own the ends of a track, and it would be a charge for the annotation
 grid's origin rather than for anything the network did.
 
+*Two of the five classes are not actually contested, and the report says so.*
+ATMOSPHERIC -- the only intent covering ``intro`` and ``outro`` -- fires from a
+beat-ABSENCE timer, while the training table carries one row per DETECTED BEAT.
+The rows that exist are therefore exactly the rows where that trigger cannot be
+active, so the baseline's zero on those two classes is a property of the
+beat-indexed harness, not a measured limit of its vocabulary.  Those classes
+carry ~64 % of the headline delta, so ``expressible_comparison`` publishes the
+restricted macro-F1 over the contested classes as the model-vs-model number, and
+per-track win counts are reported in BOTH readings -- only the restricted one
+can go negative.
+
 *The claim map is the fairness argument, and it is reported both ways.*  The
 rule classifier's ATMOSPHERIC is credited against ``intro`` OR ``outro`` because
 an intent describes a moment and cannot know its position in the arrangement.
@@ -413,12 +424,17 @@ def split_ids(data_dir: Path, split: str) -> list:
 
 def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
                 boundary_tolerance_sec: float = DecodeParams().boundary_tolerance_sec,
-                table_path: Path | None = None) -> tuple:
+                table_path: Path | None = None,
+                allow_missing: bool = False) -> tuple:
     """``(inputs, skipped)`` for the given youtube ids, in id order.
 
     A track missing any of its three inputs -- table rows, posterior sidecar,
-    beat grid -- is skipped and named, never silently dropped: a val table
-    computed over a different track set than it claims is worse than no table.
+    beat grid -- **raises**.  It would otherwise drop out of *both* columns at
+    once, which keeps them comparable to each other while quietly making them
+    incomparable to the split they claim to cover: the header would still say
+    123 tracks.  A verdict measured over a silently different track set than it
+    names is worse than no verdict, so the default is fail-loud and
+    ``allow_missing`` is the deliberate, recorded override.
     """
     data_dir = Path(data_dir)
     table_path = Path(table_path) if table_path else data_dir / TABLE_FILE
@@ -455,6 +471,14 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
             track_id=track.track_id, youtube_id=youtube_id, edges=edges,
             posteriors=posteriors, boundary=boundary, times=track.times,
             labels=track.labels, intents=track.intents))
+    if skipped and not allow_missing:
+        detail = ", ".join(f"{item['youtube_id']} ({item['reason']})"
+                           for item in skipped[:10])
+        raise RuntimeError(
+            f"{len(skipped)} of {len(list(ids))} requested tracks are missing "
+            f"inputs: {detail}{' ...' if len(skipped) > 10 else ''} -- rebuild "
+            f"the sidecars, or pass allow_missing=True to score a deliberately "
+            f"partial split (the artifact records what was dropped)")
     return inputs, skipped
 
 
@@ -604,23 +628,27 @@ def restricted_macro_f1(score: Score, classes) -> float:
 
 
 def expressible_comparison(nn_score: Score, rule_score: Score) -> dict:
-    """The comparison restricted to classes the rule classifier can actually name.
+    """The comparison restricted to the classes both sides can actually contest.
 
-    This is the caveat the headline needs, stated as a number instead of a
-    footnote.  The shipping engine never commits ATMOSPHERIC on this corpus, so
-    ``intro`` and ``outro`` are not classes it gets wrong -- they are classes its
-    vocabulary cannot express, worth a structural zero each.  A raw macro-F1
-    comparison therefore credits the network twice: once for being better, and
-    once for being able to speak at all.
+    **This is the honest comparable core, not a footnote.**  The rule classifier
+    scores exactly zero on ``intro`` and ``outro``, and the tempting reading --
+    "its vocabulary cannot express them" -- misattributes a property of the
+    HARNESS to the classifier.  ATMOSPHERIC, the intent that covers both, fires
+    from a beat-ABSENCE timer; the training table carries one row per DETECTED
+    BEAT.  So the only rows that exist are rows where a beat was just found,
+    which is precisely where the beat-absence trigger cannot be active.  Zero
+    atmospheric rows in 652,766 is what that construction guarantees, not a
+    measurement of the engine's vocabulary.
 
-    So three numbers are reported, not one.  Full macro-F1 over all five classes
-    is the primary result and the honest measure of the *system* (a lighting
-    engine that cannot name an intro really is worse at intros).
-    ``macro_f1_best_achievable`` is the ceiling the rule vocabulary could reach
-    if it were otherwise perfect -- the number to aim a comparison at, per
-    ``best_achievable_macro_f1``.  And this restricted macro-F1, over the rule's
-    own expressible classes only, is the *model* comparison: it asks whether the
-    network is better where the rule classifier is even allowed to compete.
+    The consequence is quantitative and large: ``intro`` and ``outro`` carry
+    ~0.26 of the network's ~0.60 macro-F1 and ~64 % of the headline delta, and
+    the baseline is structurally unable to score on either. So the full
+    five-class macro-F1 is still reported -- a beat-indexed evaluation is a fair
+    description of what the *deployed system* does at beats, and the network's
+    intro/outro capability is real added value -- but it must never be quoted as
+    though the two sides contested those classes. This restricted number, over
+    the classes the baseline can actually reach, is the model-vs-model
+    comparison, and it is the one a per-track claim has to be read from.
     """
     classes = list(rule_score.expressible_classes)
     return {
@@ -651,26 +679,39 @@ def streams_identical(score: Score) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def _per_track_deltas(nn_scores, rule_scores) -> list:
-    """Per-track ``NN macro-F1 - rule macro-F1``, ascending (worst NN result first)."""
+def _per_track_deltas(nn_scores, rule_scores, restricted_classes) -> list:
+    """Per-track NN-minus-rule macro-F1, in BOTH readings, ascending by the full one.
+
+    The restricted delta is the one that can actually go negative.  The full
+    reading gives the rule classifier a zero on every class the beat-indexed
+    table structurally prevents it from claiming, so "the NN wins on every
+    track" in that reading is close to a tautology and must not be quoted as
+    evidence that the win is universal.  Carrying both per track is what lets
+    the report say which claim is which.
+    """
     by_id = {score.track_id: score for score in rule_scores}
     rows = []
     for score in nn_scores:
         other = by_id.get(score.track_id)
         if other is None:
             continue
+        nn_restricted = restricted_macro_f1(score, restricted_classes)
+        rule_restricted = restricted_macro_f1(other, restricted_classes)
         rows.append({
             "track_id": score.track_id,
             "nn_macro_f1": _round(score.macro_f1),
             "rule_macro_f1": _round(other.macro_f1),
             "delta": _round(score.macro_f1 - other.macro_f1),
+            "nn_restricted_macro_f1": _round(nn_restricted),
+            "rule_restricted_macro_f1": _round(rule_restricted),
+            "restricted_delta": _round(nn_restricted - rule_restricted),
             "exposure_sec": _round(score.exposure_sec, 3),
         })
     rows.sort(key=lambda row: (row["delta"], row["track_id"]))
     return rows
 
 
-def _head_to_head(rows) -> dict:
+def _head_to_head(rows, key: str = "delta") -> dict:
     """How the win is distributed across tracks, not just its average.
 
     A corpus mean can be carried by a minority of tracks while the rest regress,
@@ -678,7 +719,7 @@ def _head_to_head(rows) -> dict:
     tracks is this actually better" is a different and more useful question than
     "is the mean higher".
     """
-    deltas = [row["delta"] for row in rows]
+    deltas = [row[key] for row in rows]
     return {
         "tracks": len(rows),
         "nn_better": sum(1 for value in deltas if value > 0),
@@ -699,7 +740,11 @@ def build_report(inputs, priors: Priors, params: DecodeParams, *,
     lenient = evaluate_config(inputs, priors, params, space=space,
                               claims=rule_equivalent_claims(space))
     rule = rule_baseline(inputs, space)
-    deltas = _per_track_deltas(strict["per_track"], rule["per_track"])
+    restricted_classes = list(rule["score"].expressible_classes)
+    deltas = _per_track_deltas(strict["per_track"], rule["per_track"],
+                               restricted_classes)
+    by_restricted = sorted(deltas, key=lambda row: (row["restricted_delta"],
+                                                    row["track_id"]))
     return {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "split": split,
@@ -728,8 +773,17 @@ def build_report(inputs, priors: Priors, params: DecodeParams, *,
             for predicted, row in strict["confusion"].items()
             if any(seconds > 0 for seconds in row.values())
         },
-        "head_to_head": _head_to_head(deltas),
+        "head_to_head": {
+            "full": _head_to_head(deltas, "delta"),
+            "restricted": _head_to_head(deltas, "restricted_delta"),
+            "restricted_classes": restricted_classes,
+            "note": "the full reading hands the rule classifier a structural "
+                    "zero on the classes the beat-indexed table prevents it "
+                    "from claiming, so only the restricted reading can go "
+                    "negative -- quote that one for 'is this better per track'",
+        },
         "worst_tracks": deltas[:10],
+        "worst_tracks_restricted": by_restricted[:10],
     }
 
 
@@ -775,12 +829,14 @@ def render(report: dict) -> str:
     lines.append("-" * 78)
     row("undecoded share of show", nn["undecoded_share"], rule["undecoded_share"])
     lines.append(f"changes committed: NN {nn['changes']}, rule {rule['changes']}")
-    head = report["head_to_head"]
-    lines.append(
-        f"per-track macro-F1: NN better on {head['nn_better']}/{head['tracks']}, "
-        f"rule better on {head['rule_better']}, tied {head['tied']} "
-        f"(delta min {head['min_delta']:+.4f}, median {head['median_delta']:+.4f}, "
-        f"max {head['max_delta']:+.4f})")
+    for name, head in (("all 5 classes", report["head_to_head"]["full"]),
+                       ("restricted", report["head_to_head"]["restricted"])):
+        lines.append(
+            f"per-track macro-F1 ({name}): NN better on "
+            f"{head['nn_better']}/{head['tracks']}, rule better on "
+            f"{head['rule_better']}, tied {head['tied']} (delta min "
+            f"{head['min_delta']:+.4f}, median {head['median_delta']:+.4f}, "
+            f"max {head['max_delta']:+.4f})")
     lines.append("")
 
     restricted = report["expressible_comparison"]
@@ -788,18 +844,21 @@ def render(report: dict) -> str:
     lines.append("Caveats, as numbers rather than footnotes")
     lines.append("-" * 78)
     lines.append(
-        f"the rule vocabulary cannot express {restricted['unreachable_for_rule']} "
-        f"(never commits ATMOSPHERIC), so its macro-F1 carries "
-        f"{len(restricted['unreachable_for_rule'])} structural zeros.")
+        f"{restricted['unreachable_for_rule']} are NOT CONTESTED: ATMOSPHERIC "
+        f"fires on beat ABSENCE and this table has one row per detected BEAT, so "
+        f"the baseline's zero there is a property of the harness, not of its "
+        f"vocabulary. Those classes carry "
+        f"{sum(nn['per_class_f1'][c] for c in restricted['unreachable_for_rule']) / len(nn['per_class_f1']):.4f} "
+        f"of the NN's {nn['macro_f1']:.4f}.")
     lines.append(
-        f"  rule macro-F1 best achievable with that vocabulary: "
+        f"  rule macro-F1 best achievable given that: "
         f"{structural['macro_f1_best_achievable']:.4f} "
         f"(hard upper bound {structural['macro_f1_upper_bound']:.4f})")
     lines.append(
-        f"  restricted to {restricted['classes']} -- where the rule can compete: "
+        f"  CONTESTED CORE {restricted['classes']}: "
         f"NN {restricted['nn_macro_f1']:.4f} vs rule "
         f"{restricted['rule_macro_f1']:.4f} "
-        f"({restricted['delta']:+.4f})")
+        f"({restricted['delta']:+.4f}) <- the model-vs-model number")
     lenient = report["rule_equivalent_claims"]["nn"]
     lines.append(
         f"  NN handed the rule's own intro/outro ambiguity: macro-F1 "

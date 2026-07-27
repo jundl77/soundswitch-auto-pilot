@@ -21,8 +21,11 @@ axis would pick and calls it optimal.  Same for ``boundary_weight`` and
 ``boundary_ref``: the gain is meaningless without the neutral point it is
 measured from, since the bonus is ``weight * (score - ref)``.  Those pairs are
 full grids.  The remaining axes are swept in stages around the running winner
-and then a joint refinement grid re-opens all of them together, which is what
-catches an interaction a staged search would have walked past.
+and then a joint refinement grid re-opens the five trellis axes together, which
+is what catches an interaction a staged search would have walked past.
+``lag_bars`` stays out of that product on purpose -- it is a latency policy
+bounded by the show's look-ahead budget rather than a scoring knob, so it gets
+its own stage and its own curve.
 
 **Why the sensitivity numbers come last and separately.**  A best-per-value
 curve read off a staged search conflates the axis with whatever the rest of the
@@ -347,11 +350,18 @@ def sensitivity(rows, axis: str) -> dict:
 
 
 def refinement_axes(best: DecodeParams) -> dict:
-    """A joint grid around the staged winner, re-opening every axis at once.
+    """A joint grid around the staged winner over the five trellis axes.
 
     Staged searches can only find a coordinate-wise optimum.  This is the check
     that the winner is not one: each axis is re-offered its winning value plus
     its neighbours, and all of them move together.
+
+    ``lag_bars`` is deliberately NOT re-opened here.  It is a latency policy
+    rather than a scoring knob -- its value is bounded by the show's look-ahead
+    budget, not by macro-F1 -- so multiplying the grid by it would spend most of
+    the sweep on configs the selection rule cannot pick anyway.  It gets its own
+    stage and its own ablation curve instead, which is where the latency
+    question is actually answered.
     """
     def around(values, chosen):
         values = list(values)
