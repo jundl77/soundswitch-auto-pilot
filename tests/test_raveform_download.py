@@ -105,6 +105,21 @@ def test_a_credential_wall_outranks_the_unavailable_text_it_carries():
     assert classify_error(blob) == "bot_check"
 
 
+def test_a_bare_not_available_message_is_unavailable():
+    # YouTube does not always put "unavailable" next to "video"; this wording
+    # would otherwise fall through to `other` and be re-polled by every retry
+    # pass, which is the opposite of what the reason buckets are for.
+    blob = "ERROR: [youtube] A6O2p64sucM: This video is not available"
+    assert classify_error(blob) == "unavailable"
+
+
+def test_a_geo_block_is_not_swallowed_by_the_not_available_pattern():
+    # "This video is not available in your country" contains the bare phrase
+    # too; geo_blocked is matched first and must keep winning.
+    blob = "ERROR: This video is not available in your country"
+    assert classify_error(blob) == "geo_blocked"
+
+
 def test_a_private_video_outranks_the_cookie_advice_it_carries():
     # The real yt-dlp text, verbatim in shape: a private video error ends with
     # the standard cookie advice.  Bucketing it as `bot_check` would make every

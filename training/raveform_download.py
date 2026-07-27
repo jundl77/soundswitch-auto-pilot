@@ -131,6 +131,12 @@ _REASON_PATTERNS = (
         "unavailable",
         (
             "video unavailable",
+            # YouTube says this without the word "unavailable" attached to the
+            # word "video", so the pattern above misses it and the failure lands
+            # in `other` -- which retry passes re-poll.  Geo blocks say "not
+            # available in your country" and are matched earlier, so this cannot
+            # swallow them.
+            "this video is not available",
             "private video",
             "this video is private",
             "has been removed",
