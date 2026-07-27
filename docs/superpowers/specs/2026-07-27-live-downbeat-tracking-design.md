@@ -15,12 +15,18 @@ The decoder commits at bar rate and the 200 ms transition-sync contract is deliv
 - **Decoder:** beats arrive from aubio (production) or the expert grid (parity tests). Each beat gets the downbeat activation aggregated near its instant; a 4-state bar-phase HMM (phase 1..4 at beat rate, cyclic transitions, small phase-flip penalty = hysteresis) decoded with exact fixed-lag Viterbi — same deterministic machinery as the section decoder, microseconds per beat. Output: a live bar grid (downbeat instants + current phase), immutable at the configured lag. 3/4 or broken bars are out of scope for v1 (corpus is 4/4; a phase-confidence output lets the engine fall back to beat-snapping when the grid is unsure).
 - **Runtime path (future integration):** aubio beats → phase labeler → bar grid → decoder commit quantization + ANTICIPATION scheduling. CPU ONNX, sidecar-cached in the sim per the determinism contract. This plan builds and validates the component OFFLINE; wiring into lib/ is the runtime-integration plan's job.
 
-## Evaluation (held-out, expert grids as truth)
+## Evaluation — LIVE CONDITION IS THE HEADLINE (owner directive: no offline assumptions)
 
-- Downbeat F1 at ±70 ms (the field's standard tolerance) on the test split — target: ≥0.85 in-genre (the Raveform paper's offline baseline hits 0.965; we accept an online discount but need enough for bar-snapping to beat beat-snapping).
-- Phase accuracy (fraction of beats assigned the correct 1..4) and phase-flip rate per track (the stability metric — flips are what would make the lights re-anchor mid-song).
-- Ablation that matters for the show: section-boundary snap error using predicted grid vs expert grid — does the predicted grid preserve the decoder's boundary-F1?
-- Robustness probe: aubio-beat-driven evaluation (not just expert-beat-driven) on tracks where aubio's grid drifts from the expert grid — the honest live condition.
+Truth is always the expert grid. The INPUT condition is what distinguishes honest from flattering:
+
+- **PRIMARY (deployment condition): aubio-beat-driven, corpus-wide.** Every clean track's sim report (`reports/*.npz.gz` cache) carries the production pipeline's own aubio beat instants — the exact stream the live engine produces, bit-for-bit. The evaluated system is: aubio beats + model activations → phase HMM → predicted downbeats, scored against expert downbeats at ±70 ms. This is the number the acceptance gates bind to.
+- **Diagnostic upper bound: expert-beat-driven** — same pipeline fed expert beat instants. The gap between the two IS the aubio-degradation cost; report it per-track and in aggregate.
+- **Aubio-vs-expert grid analysis first:** per-track beat alignment distribution (offset, jitter, missed/extra beats — aubio's documented sidechain dropouts). Tracks where aubio drifts hardest are the honest live condition and must be over-weighted in the qualitative review, not excluded.
+- Phase accuracy + phase-flip rate per track (stability) — on the aubio-driven condition.
+- The show ablation: section decoding on test tracks using the aubio-driven predicted grid vs the expert grid — boundary-F1/flicker delta. This is the go/no-go number for live bar-snapping.
+- Degradation handling is a design requirement, not a hope: the phase HMM must COAST through missed beats (advance phase by tempo/time when aubio drops beats under sidechain compression) and tolerate aubio's timing jitter in the activation-aggregation window. Both behaviors get property tests.
+
+**Known honest limitation (documented, not hidden):** the corpus is single tracks; live DJ sets have deck transitions and tempo rides the corpus cannot represent. Phase re-lock behavior after a simulated grid discontinuity gets a synthetic test; real-set validation is a runtime-phase task on the actual rig.
 
 ## Constraints inherited
 
