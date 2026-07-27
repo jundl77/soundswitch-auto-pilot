@@ -33,6 +33,8 @@ A **second chain is under construction beside it**: a downbeat head and a bar-ph
 | `__init__.py` | puts `training/` on `sys.path` once, so the label vocabulary, mel geometry and artist parser are the corpus's own definitions rather than copies that can drift; also sets the CUDA determinism env var before anything imports torch |
 | `dataset.py` | splits + windowed, loss-masked training items; owns the split rule and the benchmark exclusions |
 | `downbeat_dataset.py` | the *second* head's supervision: expert beat grids -> per-frame downbeat targets and per-beat bar-phase labels, on the same windows |
+| `downbeat_model.py` | `DownbeatCRNN` -- one head, a per-frame downbeat logit; the section model's conv front end at half the capacity |
+| `downbeat_train.py` | the downbeat head's training loop; imports the section head's determinism contract, loader policy and calibration metrics rather than restating them, and scores itself on peak F1 at the +-70 ms tolerance instead of on frames |
 | `model.py` | `SectionCRNN` -- two heads, label logits on the pooled grid and boundary logits at frame rate |
 | `train.py` | the training loop, its determinism contract, calibration metrics and TensorBoard |
 | `export_onnx.py` | checkpoint -> ONNX, plus the single pinned single-threaded session every consumer must use |
@@ -53,6 +55,7 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 | `splits.json` | the frozen train/val/test assignment |
 | `features/*.npz` | pooled log-mel sidecars (written by the eval pipeline, read here) |
 | `models/v1/<run>/` | training checkpoints and per-run reports |
+| `models/downbeat_v1/<run>/` | the downbeat head's checkpoints and per-run reports; same layout, same TensorBoard logdir |
 | `models/v1/model.onnx` | the exported graph -- the interface every inference goes through |
 | `models/v1/priors.json` | the fitted structural priors |
 | `posteriors/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |

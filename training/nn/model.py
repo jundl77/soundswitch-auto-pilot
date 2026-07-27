@@ -48,6 +48,39 @@ PARAM_BUDGET = 1_000_000
 FREQ_POOL = 2
 
 
+def freq_pool_blocks(n_mels: int, conv_channels, freq_pool: int = FREQ_POOL) -> tuple:
+    """``([layers], surviving_bands)`` -- the frequency-pooling conv front end.
+
+    Shared verbatim by both heads rather than copied into the second one: the
+    "pool frequency, never time" rule is the property the whole design rests on,
+    and two implementations of it would drift a pooling factor at a time.  The
+    caller keeps ``nn.Sequential(*blocks)`` on an attribute named ``conv``, so
+    the parameter names in a ``state_dict`` are unchanged by this factoring --
+    checkpoints written before it still load.
+    """
+    blocks: list = []
+    in_channels = 1
+    freq = int(n_mels)
+    for out_channels in conv_channels:
+        if freq % freq_pool:
+            raise ValueError(
+                f"{n_mels} mel bands do not survive {len(conv_channels)} rounds "
+                f"of frequency pooling by {freq_pool} (stuck at {freq})"
+            )
+        blocks += [
+            # bias=False: the BatchNorm that follows has its own shift, so a
+            # conv bias would be a redundant parameter the optimiser has to
+            # fight the normalisation for.
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=(1, freq_pool)),   # (time, freq)
+        ]
+        in_channels = out_channels
+        freq //= freq_pool
+    return blocks, freq
+
+
 class SectionCRNN(nn.Module):
     """Mel window -> (label logits at ~10 Hz, boundary logits at frame rate).
 
@@ -64,26 +97,7 @@ class SectionCRNN(nn.Module):
         if label_pool < 1:
             raise ValueError(f"label_pool must be >= 1, got {label_pool}")
 
-        blocks: list = []
-        in_channels = 1
-        freq = int(n_mels)
-        for out_channels in conv_channels:
-            if freq % FREQ_POOL:
-                raise ValueError(
-                    f"{n_mels} mel bands do not survive {len(conv_channels)} rounds "
-                    f"of frequency pooling by {FREQ_POOL} (stuck at {freq})"
-                )
-            blocks += [
-                # bias=False: the BatchNorm that follows has its own shift, so a
-                # conv bias would be a redundant parameter the optimiser has to
-                # fight the normalisation for.
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.GELU(),
-                nn.MaxPool2d(kernel_size=(1, FREQ_POOL)),   # (time, freq)
-            ]
-            in_channels = out_channels
-            freq //= FREQ_POOL
+        blocks, freq = freq_pool_blocks(n_mels, conv_channels)
 
         self.n_mels = int(n_mels)
         self.n_classes = int(n_classes)
