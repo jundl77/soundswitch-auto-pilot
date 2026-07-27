@@ -586,7 +586,7 @@ def relock_bars(params, *, gap_beats: float, new_period: float,
 
 
 def test_re_lock_after_a_deck_transition_is_bought_with_the_flip_penalty():
-    """The deck-transition proxy, and it is a *pair* because the answer is a trade.
+    """The deck-transition proxy, over three configs, because the answer is a trade.
 
     The corpus is single tracks, so this is the only evidence the plan can offer
     about a real set.  Three cuts: a new tempo with a gap, the same tempo with a

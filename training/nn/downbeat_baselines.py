@@ -170,8 +170,14 @@ def peak_phase_histogram(dataset, activations: dict, threshold: float,
 def model_activations(checkpoint, dataset, device, batch_size: int = 128) -> dict:
     """Stitched whole-track activations from a trained checkpoint.
 
-    Imported lazily -- everything above is numpy, and the nulls are worth being
-    able to compute on a machine with no torch and no GPU.
+    Torch is imported here rather than at module scope, but **that buys deferral,
+    not independence**: this module already pulls torch through
+    ``downbeat_train`` at import, and the dataset it is handed comes from
+    ``DownbeatWindowDataset``.  So the local import only delays the *model* and
+    CUDA initialisation until a checkpoint is actually being scored -- the nulls
+    above cannot be computed on a machine without torch, and an earlier version
+    of this docstring claimed they could.  The module that genuinely runs
+    torch-free is ``downbeat_decoder``, and a test pins it.
     """
     import torch
 
@@ -205,10 +211,36 @@ def model_activations(checkpoint, dataset, device, batch_size: int = 128) -> dic
     return out, float(state.get("pos_weight", 1.0))
 
 
+def tunable_split_ids(splits: dict, split: str) -> list:
+    """The split's ids -- and never the test split's.
+
+    The phase histogram this module exists to produce is a *tuning instrument*
+    (its own docstring says so: it names which decoder knob is worth turning), so
+    reading it on test would be a tuning read of the split the verdict spends
+    once.  Guarded on split **membership** rather than on the flag that usually
+    selects it, which is the rule `training/nn/CLAUDE.md` states -- and refused
+    before the corpus is touched, so the refusal costs nothing and needs nothing.
+
+    Deliberately an inline check rather than a call to
+    ``evaluate_downbeat.split_guard``: that module imports the inference chain,
+    and the nulls path should not grow an ONNX dependency to ask one question
+    about a dict.
+    """
+    if str(split) == "test":
+        raise RuntimeError(
+            "downbeat_baselines reads annotated bar phase to say which decoder "
+            "knob is worth tuning, which makes it a tuning instrument -- and the "
+            "test split is read once, by the verdict.  Use --split val.")
+    if split not in splits:
+        listed = sorted(k for k in splits if isinstance(splits[k], list))
+        raise RuntimeError(f"no {split!r} split (has {listed})")
+    return [str(i) for i in splits[split]]
+
+
 def build_dataset(data_dir: Path, split: str, tracks: int, seed: int):
     splits = make_splits(data_dir, write=False)
     track_ids = {ref.youtube_id: ref.track_id for ref in candidate_tracks(data_dir)[0]}
-    ids = sorted(splits[split], key=lambda i: track_ids[i])
+    ids = sorted(tunable_split_ids(splits, split), key=lambda i: track_ids[i])
     if tracks > 0:
         ids = ids[:tracks]
     sections = {str(t.get("id")): parse_sections(t) for t in load_tracks(data_dir)}
@@ -224,7 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--split", default="val",
-                        help="never 'test' before the one-shot verdict")
+                        help="'test' is refused: this mode reads truth to choose "
+                             "a value, which is a tuning read")
     parser.add_argument("--tracks", type=int, default=0, help="0 = the whole split")
     parser.add_argument("--checkpoint", type=Path, default=None,
                         help="a best.pt; without it only the nulls are computed")
