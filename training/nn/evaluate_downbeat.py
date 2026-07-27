@@ -1035,14 +1035,30 @@ def sweep_rows(data_dir, ids, truth: dict, specs, *, workers: int = 1) -> list:
     return rows
 
 
+def naive_grids(data_dir, ids) -> dict:
+    """Bars from every fourth aubio beat -- the show's null hypothesis.
+
+    The engine could do this today with no model at all: take the beat stream,
+    call every fourth one a bar line.  It is wrong about *phase* by construction
+    (it starts wherever aubio started) but it is right about *rate* whenever
+    aubio is, so it is the baseline any claim about the downbeat model's value to
+    a show has to clear.  A number without its null is a decoration.
+    """
+    data_dir = Path(data_dir)
+    return {youtube_id: read_sidecar(sidecar_path(data_dir, youtube_id))
+                        ["aubio_beat_time"][::BEATS_PER_BAR]
+            for youtube_id in ids}
+
+
 def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
-                  models_subdir: str) -> dict:
+                  models_subdir: str, naive: dict | None = None) -> dict:
     """Section decoding on the predicted bar grid vs the expert one.
 
     Everything except the grid is held fixed: the same posterior sidecars, the
     same priors, the same frozen decoder config, the same tracks, the same
     scoring functions.  The delta is therefore attributable to the grid, which is
-    the only claim the plan asks this to support.
+    the only claim the plan asks this to support.  ``naive`` adds the third
+    column that says whether the model earned its place at all.
     """
     from .decoder import DecodeParams, bar_grid
     from .evaluate_v1 import (
@@ -1070,6 +1086,7 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
 
     expert_inputs: list = []
     predicted_inputs: list = []
+    naive_inputs: list = []
     skipped: list = []
     for youtube_id in ids:
         track = by_youtube_id.get(youtube_id)
@@ -1084,13 +1101,14 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
             skipped.append({"youtube_id": youtube_id, "reason": "no beat grid"})
             continue
         try:
-            expert_edges = bar_grid(beat_csv)
-            grid_edges = edges_from_downbeats(predicted[youtube_id])
+            columns = [(bar_grid(beat_csv), expert_inputs),
+                       (edges_from_downbeats(predicted[youtube_id]), predicted_inputs)]
+            if naive is not None:
+                columns.append((edges_from_downbeats(naive[youtube_id]), naive_inputs))
         except RuntimeError as error:
             skipped.append({"youtube_id": youtube_id, "reason": str(error)})
             continue
-        for edges, bucket in ((expert_edges, expert_inputs),
-                              (grid_edges, predicted_inputs)):
+        for edges, bucket in columns:
             posteriors, boundary = bar_observations(
                 sidecar, edges, min_coverage=params.min_coverage,
                 boundary_tolerance_sec=params.boundary_tolerance_sec)
@@ -1127,6 +1145,7 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
     predicted_column = column(predicted_inputs)
     return {
         "section_chain": models_subdir,
+        **({"naive_grid": column(naive_inputs)} if naive is not None else {}),
         "posteriors_dir": str(posteriors_dir.name),
         "decoder_config_sha256": file_sha256(models / "decoder_config.json"),
         "priors_sha256": file_sha256(models / "priors.json"),
@@ -1205,6 +1224,8 @@ def build_parser() -> argparse.ArgumentParser:
                         default=[0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 9.0, 14.0])
     parser.add_argument("--look-aheads", type=int, nargs="*", default=[2, 4, 8])
     parser.add_argument("--subdivisions", type=int, nargs="*", default=[1, 2])
+    parser.add_argument("--role", default="headline",
+                        help="what this frozen config is FOR, recorded in the file")
     parser.add_argument("--config", default=None,
                         help="where the frozen config lives (--freeze writes it, "
                              "--verdict reads it)")
@@ -1265,6 +1286,10 @@ def main(argv: list | None = None) -> int:
                              subdivision=args.subdivision,
                              flip_penalty=float(args.flip_penalty))
         payload = {"frozen_at": stamp,
+                   # The role is written into the file, not decided afterwards:
+                   # a pre-registration that does not say which config is the
+                   # headline is not a pre-registration.
+                   "role": args.role,
                    "chosen_on": "val", "condition": "aubio",
                    "refine": bool(args.refine),
                    "look_ahead_beats": args.look_ahead,
@@ -1307,10 +1332,11 @@ def main(argv: list | None = None) -> int:
                 decode_evidence(sidecar, "aubio", params, refine=refine))
         chains = list(zip(args.section_dir.split(","),
                           args.section_models.split(",")))
+        naive = naive_grids(data_dir, ids)
         payload["ablation"] = {
             models_subdir: ablation_rows(data_dir, ids, predicted,
                                          section_dir=section_dir,
-                                         models_subdir=models_subdir)
+                                         models_subdir=models_subdir, naive=naive)
             for section_dir, models_subdir in chains}
     out = Path(args.out) if args.out else model_dir(data_dir) / EVAL_FILE.format(split=args.split)
     out.parent.mkdir(parents=True, exist_ok=True)
