@@ -33,6 +33,8 @@ downbeat_dataset.py (expert beat grids)  ->  downbeat_model.py + downbeat_train.
         |  downbeat_infer.py             ->  downbeat.onnx, one activation sidecar per val/test track,
         v                                    with per-beat evidence for BOTH input conditions
     downbeat_decoder.py                  ->  an immutable bar grid: downbeat instants, phase, confidence
+        |  evaluate_downbeat.py          ->  what aubio's stream can reach, what the decoder gets,
+        v                                    and what a predicted grid costs the section decode
 ```
 
 The decoder's two input conditions are the whole point of the evaluation design: `aubio` is the beat stream the live engine actually produces (lifted from the cached sim reports) and is what the gates bind to; `expert` is the annotator's grid and is the diagnostic upper bound. The gap between them is the aubio-degradation cost, and it is reported, never assumed away.
@@ -46,6 +48,7 @@ The decoder's two input conditions are the whole point of the evaluation design:
 | `downbeat_train.py` | the downbeat head's training loop; imports the section head's determinism contract, loader policy and calibration metrics rather than restating them, and scores itself on peak F1 at the +-70 ms tolerance instead of on frames |
 | `downbeat_infer.py` | the downbeat head's inference artifact: checkpoint -> ONNX, then a sliding-window pass per track into one sidecar carrying the frame-rate activation *and* the evidence aggregated onto each beat instant of both input conditions; also owns the measurement that chose the aggregation window |
 | `downbeat_decoder.py` | the bar-phase HMM: a cyclic position within the bar, committed at a fixed lag and never revised, coasting through aubio's dropouts and reporting how sure it is; owns the candidate grid and the activation-aggregation window, because in the runtime putting an activation onto a beat stream *is* decode-path work; pure numpy, because the runtime will import this one |
+| `evaluate_downbeat.py` | the downbeat verdict: the aubio-vs-expert grid analysis that says what the live condition *can* reach and why the rest is out of reach, the val lever sweep, the one test read against a config frozen and hashed beforehand, and the show ablation that decodes sections on the predicted grid against the expert one |
 | `downbeat_baselines.py` | the numbers a downbeat F1 has to be read against -- above all a *phase-blind* perfect beat detector, because beating noise only proves the head found beats -- plus the calibration metric's own floor and the bar-phase histogram that says which decoder knob matters |
 | `compare_runs.py` | the determinism proof for either head: walks every logged number of two runs, not just the weight hash, because equal endpoints do not mean equal paths |
 | `model.py` | `SectionCRNN` -- two heads, label logits on the pooled grid and boundary logits at frame rate |
@@ -71,6 +74,10 @@ All of it is gitignored, under the data directory (`training/data/raveform/` by 
 | `models/downbeat_v1/<run>/` | the downbeat head's checkpoints and per-run reports; same layout, same TensorBoard logdir |
 | `models/downbeat_v1/downbeat.onnx` | the exported downbeat graph -- the interface every downbeat inference goes through |
 | `downbeat_posteriors/*.npz` | one downbeat sidecar per val/test track: the frame-rate activation and the per-beat evidence for both input conditions, keyed on model *and* geometry |
+| `models/downbeat_v1/downbeat_alignment_val.json` | the corpus aubio-vs-expert grid analysis: per-track offset and jitter, and every annotated downbeat labelled with why it is or is not reachable |
+| `models/downbeat_v1/downbeat_sweep_val.json` | the val lever sweep, one row per (condition, config, refinement) with its own fingerprint |
+| `models/downbeat_v1/downbeat_decoder_config.json` | the chosen bar-phase config, frozen and hashed *before* the test read |
+| `models/downbeat_v1/downbeat_eval_{val,test}.json` | the verdict, both input conditions, plus the show ablation |
 | `models/v1/model.onnx` | the exported graph -- the interface every inference goes through |
 | `models/v1/priors.json` | the fitted structural priors |
 | `posteriors/*.npz` | one posterior sidecar per track, keyed on model *and* window geometry |
