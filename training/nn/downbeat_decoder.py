@@ -110,14 +110,21 @@ BEATS_PER_BAR = 4
 
 # Nats of evidence a phase flip has to buy: ~2.7 bars of confident activation (a
 # 0.90 downbeat against 0.05 off-beats is 5.1 nats of log-odds contrast per bar).
-# **Provisional, and it suits ONE configuration.**  A 20-track val sweep put the
-# plateau at 12-16 with a sharp fall either side; the full 215-track sweep
+# **Provisional, and it suits the EXPERT condition.**  A 20-track val sweep put
+# the plateau at 12-16 with a sharp fall either side; the full 215-track sweep
 # confirms the ordering (expert-driven F1 0.7063 at 14 against a 0.5592
 # naive-picking floor on the same activations) but was too coarse to locate the
-# plateau, and the 20-track *levels* were optimistic by ~0.17.  It is also wrong
-# for ``subdivision = 2``, which peaks near 2-3 and has collapsed by 8.  Task 4
-# owns the tuning -- on all 215 val tracks, on the aubio-driven numbers the gates
-# bind to, and jointly with ``lag_beats`` and ``subdivision``.
+# plateau, and the 20-track *levels* were optimistic by ~0.17.
+#
+# **What it does NOT depend on is the subdivision, and what it DOES depend on is
+# the condition.**  Measured at *matched wall-clock look-ahead* on all 215 val
+# tracks (``lag_beats = 4 * subdivision``; see DEFAULT_LAG_BEATS for why that
+# qualifier decides the answer): the expert condition prefers 14 at both
+# subdivisions (0.7063 / 0.6864 against 0.6143 / 0.5998 at flip 3), while the
+# aubio condition prefers ~3 at both (0.3502 / 0.4275 against 0.2712 / 0.3007 at
+# flip 14).  A clean beat stream wants roughly 4-5x the penalty a noisy one does.
+# Task 4 owns the tuning -- on all 215 val tracks, on the aubio-driven numbers the
+# gates bind to, and jointly with ``lag_beats`` and ``subdivision``.
 DEFAULT_FLIP_PENALTY = 14.0
 
 # The sigmoid's own midpoint, the same neutral reference the section decoder uses
