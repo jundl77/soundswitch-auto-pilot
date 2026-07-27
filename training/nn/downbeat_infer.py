@@ -49,11 +49,10 @@ activation against frame offset from the annotated instants, so where a *trained
 activation actually peaks is a measurement in the report rather than an argument.
 ``--lag-profile`` runs it over existing sidecars.
 
-**The score is the window's maximum, not its mean.**  Aggregation exists to be
-jitter-tolerant, and a mean over three frames dilutes a sharp peak in proportion
-to how well the head localised it -- penalising exactly the behaviour the target
-was designed to produce.  A beat with no frame in range at all scores NaN: no
-evidence is not evidence of no downbeat, and the decoder distinguishes them.
+The window itself, and the arithmetic that applies it, live in
+``downbeat_decoder``: a half-beat candidate grid has to be aggregated at decode
+time off the stored curve, and in the runtime that aggregation is decode-path
+work.  This module owns the *curve* and caches the per-beat case beside it.
 
 **Determinism is a written contract.**  One pinned single-threaded CPU session
 (``export_onnx.session`` -- one definition, not a convention), windows summed in
@@ -107,8 +106,15 @@ from .infer import (
     window_offsets,
 )
 
-from build_training_table import default_data_dir, report_path  # noqa: E402
-from build_training_table import _read_json_gz  # noqa: E402
+# ``_read_json_gz`` is imported private and deliberately: it is the reader that
+# wrote the cache, and a second one that disagrees about the envelope is how a
+# report cache comes to be read as something it is not.  Same trade as the
+# downbeat dataset's private ``_take``.
+from build_training_table import (  # noqa: E402
+    _read_json_gz,
+    default_data_dir,
+    report_path,
+)
 from raveform_fetch_annotations import beat_csv_path, load_tracks  # noqa: E402
 
 MODEL_FILE = "downbeat.onnx"

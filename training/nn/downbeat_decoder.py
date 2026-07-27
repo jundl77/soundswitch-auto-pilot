@@ -157,13 +157,19 @@ EPS = 1e-6
 
 
 class PhaseDecision(NamedTuple):
-    """One immutable commit: which beat, when, what phase, how sure."""
+    """One immutable commit: which candidate, when, what position, how sure.
 
-    beat: int             # index into the decoded stream, virtual beats included
-    time: float           # song-position seconds -- the beat's own instant
-    phase: int            # 1..BEATS_PER_BAR; 1 is the downbeat
-    confidence: float     # max-plus posterior of this phase against the other three
-    virtual: bool         # True when the beat was coasted, not observed
+    ``phase`` is the position within the bar's cycle, which is four long at
+    ``subdivision = 1`` and eight at 2.  **1 is the downbeat either way**, so
+    ``downbeat_times`` needs no subdivision argument; ``bar_phase`` is what maps
+    the rest back onto 1..4.
+    """
+
+    beat: int             # index into the decoded stream, coasted ones included
+    time: float           # song-position seconds -- the candidate's own instant
+    phase: int            # 1..BEATS_PER_BAR * subdivision; 1 is the downbeat
+    confidence: float     # max-plus posterior of this position against the others
+    virtual: bool         # True when the candidate was coasted, not observed
 
 
 @dataclass(frozen=True)
