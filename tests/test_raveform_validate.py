@@ -49,6 +49,7 @@ from raveform_validate import (  # noqa: E402
     convergence,
     find_orphans,
     load_failures,
+    main,
     overall_verdict,
     prune_corrupt,
     render_text_report,
@@ -311,6 +312,30 @@ def test_an_unparsable_beat_grid_is_reported(tmp_path):
     assert any("0001.aaa" in issue for issue in issues)
 
 
+def test_a_record_with_no_key_is_reported_rather_than_crashing_the_run(tmp_path):
+    # The check must survive exactly the malformed input it exists to describe:
+    # asking for a keyless record's beat-grid path raises, and the exception
+    # would escape before a single artifact was written -- a validation run that
+    # produces no report at all, on the one corpus that most needs one.
+    _write_corpus(tmp_path, [("0001.aaa", "aaa", 300.0)])
+    from raveform_fetch_annotations import load_tracks
+
+    tracks = load_tracks(tmp_path) + [{"id": "zzz", "duration": 10.0, "sections": []}]
+    issues = check_annotations(tmp_path, gate.load_manifest_rows(tmp_path), tracks)
+    assert any("does not parse" in issue for issue in issues)
+
+
+def test_two_records_under_one_key_are_reported(tmp_path):
+    # The second silently replaces the first everywhere downstream, so the
+    # corpus is a track short with nothing looking wrong.
+    _write_corpus(tmp_path, [("0001.aaa", "aaa", 300.0)])
+    from raveform_fetch_annotations import load_tracks
+
+    tracks = load_tracks(tmp_path)
+    issues = check_annotations(tmp_path, gate.load_manifest_rows(tmp_path), tracks + tracks)
+    assert any("duplicate" in issue for issue in issues)
+
+
 def test_a_duration_that_disagrees_with_the_manifest_is_reported(tmp_path):
     # manifest total_sec is the annotation duration rounded to ms; anything
     # beyond that means the two files describe different tracks.
@@ -381,6 +406,57 @@ def test_an_undercount_blocks_convergence_even_with_nothing_bad():
     counts = tally([_verdict("0001.a", "a", STATUS_OK)])
     converged, _statement = convergence(counts, manifest_tracks=2)
     assert not converged
+
+
+# --------------------------------------------------------------------------- #
+# The duration tolerance boundary
+# --------------------------------------------------------------------------- #
+#
+# The tolerance is max(+-10 s, +-3%) and it is the single number separating "we
+# have this track" from "this is a different recording".  Exercised through the
+# validator's own surface -- the gate's verdict mapped into a validator status --
+# because that composition is what actually decides a track's fate.
+
+
+def _status_for(decoded: float, annotation: float) -> str:
+    """The validator's verdict for a file that decodes cleanly to ``decoded``."""
+    # header == decoded, so the truncation check passes and only the annotation
+    # comparison can be what decides.
+    gate_status, detail = gate.classify("", decoded, decoded, annotation)
+    return classify_track(gate_status, detail, None)[0]
+
+
+def test_the_absolute_floor_admits_a_track_exactly_at_the_boundary():
+    # 3% of 300 s is 9 s, so the 10 s floor governs.  Inclusive: at exactly the
+    # tolerance the track is still ours.
+    assert _status_for(310.0, 300.0) == STATUS_OK
+    assert _status_for(290.0, 300.0) == STATUS_OK
+
+
+def test_the_absolute_floor_rejects_a_track_just_past_the_boundary():
+    assert _status_for(310.01, 300.0) == STATUS_DURATION_MISMATCH
+    assert _status_for(289.99, 300.0) == STATUS_DURATION_MISMATCH
+
+
+def test_the_relative_term_admits_a_long_edit_exactly_at_the_boundary():
+    # 3% of 1000 s is 30 s, well past the floor, so the proportional term
+    # governs -- a 20-minute DJ set gets proportional slack.
+    assert _status_for(1030.0, 1000.0) == STATUS_OK
+    assert _status_for(970.0, 1000.0) == STATUS_OK
+
+
+def test_the_relative_term_rejects_a_long_edit_just_past_the_boundary():
+    assert _status_for(1030.1, 1000.0) == STATUS_DURATION_MISMATCH
+    assert _status_for(969.9, 1000.0) == STATUS_DURATION_MISMATCH
+
+
+def test_the_two_regimes_meet_where_three_percent_equals_ten_seconds():
+    # Below ~333 s the floor is wider than 3%, above it the reverse; the
+    # crossover must not open a gap where neither term applies.
+    assert gate.duration_tolerance(333.0) == pytest.approx(10.0)
+    assert gate.duration_tolerance(400.0) == pytest.approx(12.0)
+    assert _status_for(343.0, 333.0) == STATUS_OK
+    assert _status_for(343.1, 333.0) == STATUS_DURATION_MISMATCH
 
 
 # --------------------------------------------------------------------------- #
@@ -618,3 +694,43 @@ def test_a_missing_beat_grid_converges_but_is_not_all_clear(tmp_path):
     assert payload["converged"] is True
     assert payload["all_clear"] is False
     assert len(payload["annotation_issues"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The exit code -- what a supervisor or CI step actually branches on
+# --------------------------------------------------------------------------- #
+
+
+@needs_ffmpeg
+def test_the_exit_code_follows_the_all_clear_not_convergence(tmp_path):
+    # The distinction only exists because convergence alone can be true while
+    # the validator's own annotation check has findings.  If the exit code
+    # tracked convergence instead, a corpus with a missing beat grid would
+    # report success to every automated caller -- so this is the assertion that
+    # makes the whole all_clear/converged split worth having.
+    tracks = [("0001.aaa", "aaa", 6.0), ("0002.bbb", "bbb", 6.0)]
+    _write_corpus(tmp_path, tracks)
+    _sine_mp3(tmp_path / "audio" / "aaa.mp3", 6.0)
+    _sine_mp3(tmp_path / "audio" / "bbb.mp3", 6.0)
+    (tmp_path / "annotations" / "beats" / "0002.bbb.beat.csv").unlink()
+
+    code = main(["--data-dir", str(tmp_path), "--workers", "1", "--skip-checksums"])
+
+    payload = json.loads((tmp_path / VALIDATION_JSON).read_text(encoding="utf-8"))
+    assert payload["converged"] is True   # the audio really does add up
+    assert code == 1                      # ...and the run is still not a success
+
+
+@needs_ffmpeg
+def test_a_clean_corpus_exits_zero(tmp_path):
+    _write_corpus(tmp_path, [("0001.aaa", "aaa", 6.0)])
+    _sine_mp3(tmp_path / "audio" / "aaa.mp3", 6.0)
+    assert main(["--data-dir", str(tmp_path), "--workers", "1", "--skip-checksums"]) == 0
+
+
+@needs_ffmpeg
+def test_an_unaccounted_track_exits_nonzero(tmp_path):
+    # The MISSING case: in the manifest, no audio, no recorded attempt.
+    _write_corpus(tmp_path, [("0001.aaa", "aaa", 6.0), ("0002.bbb", "bbb", 6.0)])
+    _sine_mp3(tmp_path / "audio" / "aaa.mp3", 6.0)
+    assert main(["--data-dir", str(tmp_path), "--workers", "1", "--skip-checksums"]) == 1

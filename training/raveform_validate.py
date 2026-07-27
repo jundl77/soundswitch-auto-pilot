@@ -188,6 +188,12 @@ def load_failures(path: Path) -> dict:
                 continue
             failures[track_id] = Failure(
                 track_id,
+                # A record with no reason becomes "other" -- the same
+                # placeholder the downloader uses for an error it has no
+                # pattern for.  Worth knowing when reading a report: an
+                # `other` in the UNAVAILABLE breakdown means "we did not
+                # recognise this failure", never "there was no failure".  The
+                # raw error tail is carried alongside for exactly that reason.
                 str(record.get("reason") or "other"),
                 str(record.get("error") or ""),
                 str(record.get("timestamp") or ""),
@@ -334,18 +340,25 @@ def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
     """
     issues = []
     by_track = {}
+    parsed = {}          # track_id -> the record, for records that parsed
     for track in tracks:
         try:
             track_id = str(track["key"])
             youtube = annotation_youtube_id(track)
             duration = float(track["duration"])
             sections = parse_sections(track)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
             issues.append(f"{track.get('key', '?')}: annotation record does not parse ({exc})")
             continue
         if not sections:
             issues.append(f"{track_id}: annotation record has no sections")
+        if track_id in by_track:
+            # Two records under one key: the second silently replaces the first
+            # everywhere downstream, and the corpus is a track short without
+            # anything looking wrong.
+            issues.append(f"{track_id}: duplicate annotation record")
         by_track[track_id] = (youtube, duration)
+        parsed[track_id] = track
 
     manifest = {row.track_id: row for row in rows}
     for track_id, (youtube, duration) in sorted(by_track.items()):
@@ -368,8 +381,11 @@ def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
         if track_id not in by_track:
             issues.append(f"{track_id}: in manifest.csv but has no annotation record")
 
-    for track in tracks:
-        track_id = str(track.get("key", "?"))
+    # Only records that parsed: a record with no usable ``key`` has already been
+    # reported, and asking for its beat-grid path would raise -- crashing the
+    # whole validation run before a single artifact is written, on exactly the
+    # malformed input the check exists to describe.
+    for track_id, track in sorted(parsed.items()):
         path = beat_csv_path(data_dir, track)
         if not path.exists():
             issues.append(f"{track_id}: beat grid missing ({path.name})")

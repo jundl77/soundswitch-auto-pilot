@@ -17,6 +17,8 @@ from raveform_download import (  # noqa: E402  (needs the path insert above)
     BLOCK_REASONS,
     INTERRUPT_REASON,
     KNOWN_REASONS,
+    RETRY_HINT,
+    RETRYABLE_REASONS,
     _REASON_PATTERNS,
     archive_path,
     classify_error,
@@ -105,6 +107,75 @@ def test_a_credential_wall_outranks_the_unavailable_text_it_carries():
     assert classify_error(blob) == "bot_check"
 
 
+def test_an_age_gate_outranks_the_sign_in_text_it_carries():
+    # The REAL yt-dlp wording.  It contains "sign in to confirm", which is a
+    # bot_check pattern, so bucket order decides -- and getting it wrong means
+    # every retry pass re-polls a video we will never sign in for, and five in a
+    # row abort a healthy run.
+    blob = (
+        "ERROR: [youtube] LuT4EqmJmnU: Sign in to confirm your age. "
+        "This video may be inappropriate for some users."
+    )
+    assert classify_error(blob) == "age_restricted"
+
+
+def test_a_real_bot_check_is_still_a_bot_check():
+    # The twin of the test above: the age-gate patterns must not swallow the
+    # actual credential wall, whose wording differs only in its last three words.
+    blob = (
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you're not a bot. "
+        "Use --cookies-from-browser or --cookies for the authentication."
+    )
+    assert classify_error(blob) == "bot_check"
+
+
+def test_a_media_url_403_is_its_own_bucket_not_other():
+    # The REAL wording, and 56% of the failures on the first full corpus sweep.
+    # As `other` it was invisible to every "just retry the blocks" hint, and the
+    # 62 tracks behind it were recovered only because the operator widened the
+    # retry list by hand.
+    blob = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    assert classify_error(blob) == "http_403"
+
+
+def test_a_403_is_retryable_and_aborts_a_sustained_run():
+    # It describes the client, not the video, so it must be re-attempted -- and
+    # a run of them back to back means the run is broken, not the manifest.
+    assert "http_403" in RETRYABLE_REASONS
+    assert "http_403" in BLOCK_REASONS
+
+
+def test_the_retry_hint_names_every_recoverable_reason():
+    # The hint used to say "bot_check (add ,timeout if any timed out)", which
+    # would have abandoned 62 recoverable tracks.  It is now generated from the
+    # same set the code reasons about, so it cannot drift narrower again.
+    for reason in RETRYABLE_REASONS:
+        assert reason in RETRY_HINT
+    assert RETRY_HINT.startswith("--retry-reasons ")
+
+
+def test_every_reason_the_table_can_emit_is_a_known_reason():
+    # --retry-reasons is validated against KNOWN_REASONS, so a bucket missing
+    # from it would be unselectable: its failures could never be retried.
+    for reason, _patterns in _REASON_PATTERNS:
+        assert reason in KNOWN_REASONS
+    assert RETRYABLE_REASONS <= KNOWN_REASONS
+
+
+def test_no_pattern_appears_in_two_buckets():
+    # A phrase listed under two reasons makes bucket ORDER the silent arbiter of
+    # meaning -- which is precisely how the private-video, age-gate and 403
+    # mis-classifications survived.  One phrase, one intended bucket.
+    seen = {}
+    for reason, patterns in _REASON_PATTERNS:
+        for pattern in patterns:
+            if pattern in seen and seen[pattern] != reason:
+                raise AssertionError(
+                    f"pattern {pattern!r} is claimed by both {seen[pattern]!r} and {reason!r}"
+                )
+            seen[pattern] = reason
+
+
 def test_a_bare_not_available_message_is_unavailable():
     # YouTube does not always put "unavailable" next to "video"; this wording
     # would otherwise fall through to `other` and be re-polled by every retry
@@ -175,11 +246,18 @@ def test_every_bucket_classify_error_can_return_is_a_known_reason():
     assert buckets <= KNOWN_REASONS
 
 
-def test_only_credential_walls_abort_the_run():
+def test_only_refusals_of_this_client_abort_the_run():
     # A dead video must never count towards --max-consecutive-blocks, or a run
-    # of deleted tracks would stop the corpus build for no reason.
-    assert BLOCK_REASONS == frozenset({"bot_check"})
+    # of deleted tracks would stop the corpus build for no reason.  What may
+    # count is a refusal aimed at *us* -- a credential wall or a 403 on the
+    # media URL -- because a run of those means the run is broken, not the
+    # manifest.  Stated as the rule rather than as a literal set, so adding a
+    # refusal bucket does not require editing the test that guards the rule.
+    permanent = {"unavailable", "age_restricted", "geo_blocked", "copyright"}
+    assert BLOCK_REASONS.isdisjoint(permanent)
+    assert BLOCK_REASONS <= RETRYABLE_REASONS  # never abort on something we won't retry
     assert BLOCK_REASONS <= KNOWN_REASONS
+    assert "bot_check" in BLOCK_REASONS
 
 
 # --------------------------------------------------------------------------- #
