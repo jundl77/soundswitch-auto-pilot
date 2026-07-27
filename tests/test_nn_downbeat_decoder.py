@@ -24,6 +24,11 @@ data: if any of them moves, the fixed-lag pruning is not doing what the name say
 and the phase after the gap must still be right, which is the only way to see
 that the tempo estimate carried the phase rather than luck.
 
+**The half-beat grid is tested against the failure it exists for.**  A beat
+stream locked half a beat off the music is unrecoverable on its own grid and
+ordinary on the eight-position one, so the pair of decodes is the test -- a
+single "it produces plausible output" assertion would pass either way.
+
 Pure numpy, no corpus, no torch -- deliberately, because the decode path must
 stay importable by a process that has neither.
 """
