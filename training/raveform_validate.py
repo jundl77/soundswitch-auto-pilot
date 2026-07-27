@@ -34,6 +34,14 @@ that only exist once you reconcile against the manifest and the download state.
 The sum is checked as well as the two zeroes, because a bucket count can only
 prove nothing was dropped if the buckets add up to the manifest.
 
+Convergence is about audio, so two findings cannot appear in it by
+construction: orphan files in ``audio/`` that no manifest row claims, and
+annotations that do not reconcile with the manifest (a missing or unparsable
+beat grid, a disagreeing YouTube id or duration).  A track can be counted OK and
+still be untrainable because its beat grid never arrived.  Those get their own
+**all-clear** verdict, which is what the exit code reports: converged *and* no
+orphans *and* no annotation issues.  Both verdicts are always printed.
+
 **What the disk says outranks what the log says.**  ``failed.jsonl`` is
 append-only, so a track that was rate-limited on one cycle and fetched on the
 next appears in both it and ``downloaded.txt``.  A file that is on disk is
@@ -255,6 +263,33 @@ def convergence(counts, manifest_tracks: int) -> tuple:
             blockers.append(f"{corrupt} CORRUPT")
         statement += "  [blocked by: " + ", ".join(blockers) + "]"
     return converged, statement
+
+
+def overall_verdict(converged: bool, orphans: list, annotation_issues: list) -> tuple:
+    """``(all_clear, statement)`` -- convergence *plus* the corpus-level checks.
+
+    Convergence is the accounting question: is every manifest row in a bucket we
+    accept?  It is deliberately left alone, because that arithmetic is the
+    contract this corpus was declared complete against.
+
+    But a track can be counted OK and still be unusable -- its beat grid may
+    have failed to download, or ``manifest.csv`` may have gone stale against a
+    re-fetched ``segments.json``.  Those findings cannot appear in the five
+    buckets by construction, since the buckets only ever describe audio.  So
+    they get their own verdict line and their own share of the exit code: a
+    supervisor branching on 0/1 must never read "all good" while the annotation
+    cross-check has findings.  Two numbers, both stated, neither hidden.
+    """
+    findings = []
+    if not converged:
+        findings.append("the corpus does not converge")
+    if annotation_issues:
+        findings.append(f"{len(annotation_issues)} annotation issue(s)")
+    if orphans:
+        findings.append(f"{len(orphans)} orphan audio file(s)")
+    if not findings:
+        return True, "ALL CLEAR: converged, no orphans, no annotation issues"
+    return False, "NOT CLEAR: " + ", ".join(findings)
 
 
 # --------------------------------------------------------------------------- #
@@ -530,6 +565,7 @@ def build_payload(data_dir, rows, verdicts, orphans, annotation_issues, checksum
     """The machine-readable report: counts, verdict, and every track's row."""
     counts = tally(verdicts)
     converged, statement = convergence(counts, len(rows))
+    all_clear, verdict_statement = overall_verdict(converged, orphans, annotation_issues)
     by_reason = collections.Counter(
         verdict.failure_reason for verdict in verdicts if verdict.status == STATUS_UNAVAILABLE
     )
@@ -541,6 +577,8 @@ def build_payload(data_dir, rows, verdicts, orphans, annotation_issues, checksum
         "unavailable_by_reason": dict(sorted(by_reason.items())),
         "converged": converged,
         "convergence_statement": statement,
+        "all_clear": all_clear,
+        "verdict_statement": verdict_statement,
         "tolerance": {"abs_sec": gate.ABS_TOLERANCE_SEC, "rel": gate.REL_TOLERANCE},
         "checksums": checksums,
         "orphans": orphans,
@@ -602,6 +640,8 @@ def render_text_report(payload: dict) -> str:
     add(f"annotations: {len(payload['annotation_issues'])} issue(s)")
     for issue in payload["annotation_issues"]:
         add(f"  {issue}")
+    add("")
+    add(payload.get("verdict_statement", ""))
 
     tracks = payload["tracks"]
 
@@ -647,6 +687,7 @@ def print_summary(payload: dict) -> None:
         print(f"  orphans           : {len(payload['orphans'])}")
     if payload["annotation_issues"]:
         print(f"  annotation issues : {len(payload['annotation_issues'])}")
+    print(payload["verdict_statement"])
 
 
 # --------------------------------------------------------------------------- #
@@ -707,8 +748,10 @@ def main(argv=None) -> int:
         for youtube_id in pruned:
             print(f"  {youtube_id}")
 
-    # Exit code is the verdict, so a supervisor or a CI step can branch on it.
-    return 0 if payload["converged"] else 1
+    # Exit code is the verdict, so a supervisor or a CI step can branch on it --
+    # and it is the FULL verdict, not just convergence.  A corpus that adds up
+    # but whose annotations do not reconcile is not a corpus we are done with.
+    return 0 if payload["all_clear"] else 1
 
 
 if __name__ == "__main__":

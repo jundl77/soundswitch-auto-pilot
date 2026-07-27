@@ -49,6 +49,7 @@ from raveform_validate import (  # noqa: E402
     convergence,
     find_orphans,
     load_failures,
+    overall_verdict,
     prune_corrupt,
     render_text_report,
     sha256_file,
@@ -383,6 +384,41 @@ def test_an_undercount_blocks_convergence_even_with_nothing_bad():
 
 
 # --------------------------------------------------------------------------- #
+# overall_verdict -- convergence is not the whole story
+# --------------------------------------------------------------------------- #
+
+
+def test_a_converged_corpus_with_nothing_else_wrong_is_all_clear():
+    all_clear, statement = overall_verdict(True, orphans=[], annotation_issues=[])
+    assert all_clear
+    assert "ALL CLEAR" in statement
+
+
+def test_an_annotation_issue_denies_the_all_clear_even_when_converged():
+    # The silent-failure case the whole tool exists to prevent, one layer down:
+    # every mp3 present and correct, but a track's beat grid never arrived, so
+    # it cannot be trained on.  The five buckets cannot see that -- they only
+    # ever describe audio -- so it must not be able to hide behind convergence.
+    all_clear, statement = overall_verdict(
+        True, orphans=[], annotation_issues=["0001.a: beat grid missing"]
+    )
+    assert not all_clear
+    assert "annotation" in statement
+
+
+def test_an_orphan_denies_the_all_clear_even_when_converged():
+    all_clear, statement = overall_verdict(True, orphans=["stray"], annotation_issues=[])
+    assert not all_clear
+    assert "orphan" in statement
+
+
+def test_failing_to_converge_denies_the_all_clear():
+    all_clear, statement = overall_verdict(False, orphans=[], annotation_issues=[])
+    assert not all_clear
+    assert "converge" in statement
+
+
+# --------------------------------------------------------------------------- #
 # checksums -- the local integrity baseline
 # --------------------------------------------------------------------------- #
 
@@ -433,6 +469,8 @@ def test_the_text_report_names_every_unavailable_and_mismatched_track():
         "unavailable_by_reason": {"unavailable": 1},
         "converged": True,
         "convergence_statement": "converged: 3 accounted for",
+        "all_clear": True,
+        "verdict_statement": "ALL CLEAR: converged, no orphans, no annotation issues",
         "tolerance": {"abs_sec": 10.0, "rel": 0.03},
         "checksums": {"file": CHECKSUMS_FILE, "algorithm": "sha256", "files": 1},
         "orphans": [],
@@ -456,6 +494,7 @@ def test_the_text_report_names_every_unavailable_and_mismatched_track():
     assert "0003.c" in text and "Video unavailable" in text
     assert "0002.b" in text and "200.000" in text and "400.000" in text
     assert "converged" in text.lower()
+    assert "ALL CLEAR" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -557,4 +596,25 @@ def test_a_complete_corpus_converges_end_to_end(tmp_path):
 
     assert payload["counts"][STATUS_OK] == 2
     assert payload["converged"] is True
+    assert payload["all_clear"] is True
     assert "converged" in render_text_report(payload).lower()
+
+
+@needs_ffmpeg
+def test_a_missing_beat_grid_converges_but_is_not_all_clear(tmp_path):
+    # Every mp3 present and correct, so the five buckets are perfect -- and the
+    # track still cannot be trained on.  Convergence must stay true (it is an
+    # honest statement about the audio) while the overall verdict, and the exit
+    # code that follows it, must not.
+    tracks = [("0001.aaa", "aaa", 6.0), ("0002.bbb", "bbb", 6.0)]
+    _write_corpus(tmp_path, tracks)
+    _sine_mp3(tmp_path / "audio" / "aaa.mp3", 6.0)
+    _sine_mp3(tmp_path / "audio" / "bbb.mp3", 6.0)
+    (tmp_path / "annotations" / "beats" / "0002.bbb.beat.csv").unlink()
+
+    payload = validate(tmp_path, workers=1, checksums=False)
+
+    assert payload["counts"][STATUS_OK] == 2
+    assert payload["converged"] is True
+    assert payload["all_clear"] is False
+    assert len(payload["annotation_issues"]) == 1
