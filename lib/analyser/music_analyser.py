@@ -4,14 +4,31 @@ import math
 import aubio
 import numpy as np
 from collections import deque
+from lib.analyser.drift_watchdog import DriftWatchdog, ShedLevel
+from lib.analyser.madmom_rhythm import MadmomRhythm
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.analyser.yamnet_change_detector import YamnetChangeDetector
 from lib.clock import Clock, SYSTEM_CLOCK
 
 _ONSET_DENSITY_WINDOW_SEC = 1.5  # rolling window for onset density calculation
 
+# Beats used for the BPM estimate. Eight intervals is ~3.7 s at 128 BPM — long
+# enough that one mistracked beat cannot move the median, short enough to follow
+# a real tempo change within a phrase.
+_BPM_BEAT_WINDOW = 9
+
+# Debug beeps fire on onsets; without a refractory a dense passage would buzz.
+_NOTE_REFRACTORY = datetime.timedelta(milliseconds=75)
+
+# How often the rhythm front-end reports itself at INFO. Per-beat detail is at
+# DEBUG: the engine already logs one INFO line per beat, and a second one from
+# here would double the live log's volume for no extra information.
+_RHYTHM_LOG_INTERVAL = datetime.timedelta(seconds=10)
+
 # --- Kick strength -----------------------------------------------------------
-# The mel FFT delays the sub-bass peak past aubio's beat, so the window straddles it.
+# The mel FFT delays the sub-bass peak past the reported beat, so the window
+# straddles it. This is a property of the filterbank's group delay, not of
+# whichever detector reports the beat.
 _KICK_CAPTURE_PRE_BUFFERS  = 2
 _KICK_CAPTURE_POST_BUFFERS = 6
 _KICK_BACKGROUND_BUFFERS = 200   # median over ~1.2 s = the floor the kick sits on
@@ -43,21 +60,38 @@ class MusicAnalyser:
         self.hop_s: int = self.buffer_size  # hop size
         self.mel_filters: int = 40  # slaney mel filterbank band count
         self._mel_band_indices: np.ndarray = np.arange(self.mel_filters)
-        # Debug note-click amplitude: quiet enough to sit under the music.
+        # Debug click amplitude: quiet enough to sit under the music.
         self.click_sound: float = 0.15 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
+
+        # Rhythm front-end. Built once and reset in place: _reset_state() runs
+        # every 15 minutes and on every sound stop, and rebuilding would reload
+        # eight pickled LSTMs mid-show.
+        self._rhythm: MadmomRhythm = MadmomRhythm(self.sample_rate)
+        self._drift: DriftWatchdog = DriftWatchdog(self.buffer_size / self.sample_rate,
+                                                   clock=self._clock)
 
         self._reset_state()
 
     def _reset_state(self) -> None:
-        # audio analysers
-        self.tempo_o: aubio.tempo = aubio.tempo("default", self.win_s_small, self.hop_s, self.sample_rate)
-        self.onset_o: aubio.onset = aubio.onset("default", self.win_s_small, self.hop_s, self.sample_rate)
-        self.notes_o = aubio.notes("default", self.win_s_small, self.hop_s, self.sample_rate)
+        # Spectral front-end (aubio): the FFT and the 40-band mel filterbank
+        # every trained model depends on. Rhythm is madmom's — see _rhythm.
         self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
         self.energy_filter = aubio.filterbank(self.mel_filters, self.win_s)
         self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
 
         # tracking state
+        self._rhythm.reset()
+        self._drift.reset()
+        # Beat instants in madmom's own stream time, which BPM is derived from.
+        # Stream time rather than clock time on purpose: if the input ever drops
+        # audio, stream time still measures the music the detector actually
+        # heard, so the tempo estimate stays right about the track.
+        self._beat_stream_times: deque = deque(maxlen=_BPM_BEAT_WINDOW)
+        # Rhythm-path telemetry, summarised on an interval rather than per event.
+        self._rhythm_log_at: datetime.datetime = self._clock.now() + _RHYTHM_LOG_INTERVAL
+        self._beats_since_log: int = 0
+        self._onsets_since_log: int = 0
+        self._last_beat_activation: float = 0.0
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
         self.song_start_time: datetime.datetime = self._clock.now()
@@ -104,16 +138,31 @@ class MusicAnalyser:
             return 0
 
     def get_bpm(self) -> float:
-        if self.is_playing:
-            return self._fold_bpm(self.tempo_o.get_bpm())
-        else:
+        if not self.is_playing:
             return 0
+        return self._fold_bpm(self._measured_bpm())
+
+    def _measured_bpm(self) -> float:
+        """Tempo from the median recent inter-beat interval; 0.0 until measurable.
+
+        The median rather than madmom's own `tempo` attribute, which is one
+        interval wide and jumps on any single mistracked beat. Zero during
+        warmup is deliberate — the DROP branch gates on a tempo floor, so an
+        unmeasured tempo reads as "not fast", never as a guess.
+        """
+        if len(self._beat_stream_times) < 3:
+            return 0.0
+        interval = float(np.median(np.diff(np.array(self._beat_stream_times))))
+        return 60.0 / interval if interval > 0 else 0.0
 
     @staticmethod
     def _fold_bpm(bpm: float) -> float:
         """Fold BPM into [85, 170) by octave halving/doubling; 0.0 if not finite or ≤ 0.
 
-        aubio locks onto double/half tempo during warmup and on ambiguous material.
+        A tempo and its octave are the same tempo musically, and the DROP
+        branch's floor assumes one band, so the fold keeps a half-tempo lock
+        from reading as a low-energy passage. The cost is that genuinely fast
+        genres report at half tempo (see the root CLAUDE.md's known issues).
         """
         if not math.isfinite(bpm) or bpm <= 0:
             return 0.0
@@ -207,40 +256,95 @@ class MusicAnalyser:
     async def analyse(self, audio_signal: np.ndarray) -> np.ndarray:
         now = self._clock.now()
 
+        # Backpressure first: what gets shed is decided before the work is done,
+        # not after it has already been paid for.
+        shed = self._drift.observe()
+        self._rhythm.set_onsets_enabled(shed < ShedLevel.ONSET_DETECTION)
+
         rms = float(np.sqrt(np.mean(audio_signal ** 2)))
         self._rms_window.append(rms)
         energies = self._compute_mel_energies(audio_signal)
         self._track_song_duration(energies, now)
 
-        await self._track_onset(audio_signal)
-        await self._track_beat(audio_signal, now)
-        is_note = await self._track_note(audio_signal, now)
+        rhythm = self._rhythm.process(audio_signal)
+        if rhythm.beats:
+            self._last_beat_activation = rhythm.beat_activation
+        await self._track_onset(rhythm.onsets, now)
+        await self._track_beat(rhythm.beats, now)
+        is_note = await self._track_note(rhythm.onsets, now)
+        self._log_rhythm_state(now)
 
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
-        if self.yamnet_change_detector.detect_change(audio_signal, self.get_song_current_duration()):
+        if (shed < ShedLevel.SECTION_DETECTION
+                and self.yamnet_change_detector.detect_change(
+                    audio_signal, self.get_song_current_duration())):
             await self.handler.on_section_change()
 
         if is_note and self.note_clicks:
             # Audible click for debug playback monitoring (returned buffer only —
-            # feature extraction above already ran on the clean signal).
+            # feature extraction above already ran on the clean signal, and the
+            # rhythm adapter copies what it is given).
             audio_signal += self.click_sound
 
         await self.handler.on_cycle()
         return audio_signal
 
-    async def _track_onset(self, audio_signal: np.ndarray) -> bool:
-        is_onset: bool = self.onset_o(audio_signal)[0] > 0
-        if is_onset:
-            self._onset_times.append(self._clock.now())
-            await self.handler.on_onset()
-        return is_onset
+    def _log_rhythm_state(self, now: datetime.datetime) -> None:
+        """Periodic proof that rhythm is flowing, and where it stands.
 
-    async def _track_beat(self, audio_signal: np.ndarray, now: datetime.datetime) -> bool:
-        is_beat: bool = self.tempo_o(audio_signal)[0] > 0
-        if is_beat:
+        Rate-bounded on purpose: a per-buffer line is 172 lines a second and a
+        per-beat line duplicates what the engine already prints. What this adds
+        is the front-end's own view — how many events actually came out of
+        madmom, what the beat network thought of the last one, and whether the
+        loop is keeping up with the input.
+        """
+        if now < self._rhythm_log_at:
+            return
+        window = (now - (self._rhythm_log_at - _RHYTHM_LOG_INTERVAL)).total_seconds()
+        self._rhythm_log_at = now + _RHYTHM_LOG_INTERVAL
+        drift = self.get_drift_status()
+        logging.info(
+            f'[rhythm] madmom {self._beats_since_log} beats '
+            f'({self._beats_since_log / window:.2f}/s), '
+            f'{self._onsets_since_log} onsets ({self._onsets_since_log / window:.2f}/s) '
+            f'over {window:.1f}s | bpm={self.get_bpm():.1f} '
+            f'| last beat activation={self._last_beat_activation:.3f} '
+            f'| drift={drift["drift_sec"]:+.3f}s shed={drift["shed_level"]} '
+            f'| adapter lag={drift["adapter_latency_sec"] * 1000:.1f}ms')
+        self._beats_since_log = 0
+        self._onsets_since_log = 0
+
+    def get_drift_status(self) -> dict:
+        """What the backpressure watchdog currently sees — for logs and soaks."""
+        return {
+            'shed_level': self._drift.level.name,
+            'drift_sec': round(self._drift.drift_sec, 4),
+            'peak_drift_sec': round(self._drift.peak_drift_sec, 4),
+            'total_drift_sec': round(self._drift.total_drift_sec, 4),
+            'adapter_latency_sec': round(self._rhythm.pending_latency_sec, 5),
+        }
+
+    async def _track_onset(self, onsets: list, now: datetime.datetime) -> bool:
+        for onset_time in onsets:
+            self._onset_times.append(now)
+            self._onsets_since_log += 1
+            logging.debug(f'[rhythm] onset @ {onset_time:.3f}s (madmom stream)')
+            await self.handler.on_onset()
+        return bool(onsets)
+
+    async def _track_beat(self, beats: list, now: datetime.datetime) -> bool:
+        for beat_time in beats:
+            interval = (beat_time - self._beat_stream_times[-1]
+                        if self._beat_stream_times else 0.0)
+            self._beat_stream_times.append(beat_time)
+            self._beats_since_log += 1
             this_bpm: float = self.get_bpm()
+            logging.debug(
+                f'[rhythm] beat #{self.beat_count + 1} @ {beat_time:.3f}s '
+                f'(madmom stream), interval={interval:.3f}s, bpm={this_bpm:.1f}, '
+                f'activation={self._last_beat_activation:.3f}')
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
             self._density_samples.append(self.get_onset_density())
@@ -248,10 +352,10 @@ class MusicAnalyser:
             if self._centroid_window:
                 self._beat_centroid_samples.append(self._centroid_window[-1])
             await self.handler.on_beat(self.beat_count, this_bpm, bpm_changed)
-            self.last_bpm = self.get_bpm()
+            self.last_bpm = this_bpm
             self.time_to_last_beat_sec = (now - self.last_beat_detected).total_seconds()
             self.last_beat_detected = now
-        return is_beat
+        return bool(beats)
 
     def _resolve_pending_kicks(self) -> None:
         """Compute the kick ratio of every queued beat whose capture window has closed."""
@@ -270,9 +374,11 @@ class MusicAnalyser:
                 continue
             self._kick_ratios.append(min(peak / background, _KICK_MAX_RATIO))
 
-    async def _track_note(self, audio_signal: np.ndarray, now: datetime.datetime) -> bool:
-        note = self.notes_o(audio_signal)
-        is_note = note[0] > 0 and now - self.last_note_detected > datetime.timedelta(milliseconds=75)
+    async def _track_note(self, onsets: list, now: datetime.datetime) -> bool:
+        """The debug beep trigger. Onsets replace aubio's note detector, whose
+        only consumer this ever was; the refractory keeps the click density the
+        same as before rather than buzzing through a busy bar."""
+        is_note = bool(onsets) and now - self.last_note_detected > _NOTE_REFRACTORY
         if is_note:
             await self.handler.on_note()
             self.last_note_detected = now
@@ -331,8 +437,9 @@ class MusicAnalyser:
             self.handler.on_sound_stop()
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:
-        if self.is_playing:
-            # 5% change in bpm constitutes a change in bpm, defined arbitrarily
-            return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05
-        else:
+        # An unmeasured tempo is not a tempo change — and it is the denominator,
+        # so treating it as one would divide by zero during every warmup.
+        if not self.is_playing or current_bpm <= 0:
             return False
+        # 5% change in bpm constitutes a change in bpm, defined arbitrarily
+        return (abs(current_bpm - self.last_bpm) / current_bpm) > 0.05

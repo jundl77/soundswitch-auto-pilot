@@ -67,7 +67,7 @@ class EventBuffer:
         with self._lock:
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                'onset_density': onset_density,   # onsets/sec (aubio rolling window)
+                'onset_density': onset_density,   # onsets/sec (madmom onsets, rolling window)
                 'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
                 'change': change,
                 # Full feature row — the sim report doubles as a training table.

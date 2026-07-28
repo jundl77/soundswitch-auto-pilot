@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 # Intent classifier
 # ---------------------------------------------------------------------------
 # These thresholds are a starting point — tune against real DJ sets.
-# onset_density = onsets/sec over a 1.5-second rolling window (from aubio).
+# onset_density = onsets/sec over a 1.5-second rolling window (madmom onsets).
 #
 # Structure of a typical EDM track and how we detect it:
 #   ATMOSPHERIC — no beats detected for >2 s (intro, full breakdown, outro)

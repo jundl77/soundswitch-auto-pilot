@@ -39,11 +39,16 @@ FRAME_SIZE = 2048
 # aubio stream it replaces rather than by taking madmom's library default —
 # every density constant in lib/engine/light_engine.py is expressed against
 # that rate, so moving it would make the migration's deltas unreadable.
-# Measured over 17 tracks x 90 s by training/onset_operating_point.py, evidence
-# committed beside it: aubio's median is 6.656/s and this threshold lands
-# within 0.011/s of it. madmom's own default (0.50) would have come in 24 %
-# low. Re-measure before trusting this on materially different material.
-ONSET_THRESHOLD = 0.30
+# Measured over 17 WHOLE tracks by training/onset_operating_point.py, evidence
+# committed beside it: aubio's median is 6.077/s and this lands within 0.028/s
+# of it, per-track ratio p10/p50/p90 = 0.85 / 1.03 / 1.28. madmom's own default
+# (0.50) would have come in 13 % low.
+#
+# Whole tracks, not prefixes, and that is load-bearing: the same sweep matches
+# at 0.30 on 90 s prefixes and 0.40 on 240 s ones, because the two detectors'
+# rate ratio rises with the density of the material and a track's opening is
+# its sparsest. Calibrating on a prefix calibrates against an intro.
+ONSET_THRESHOLD = 0.40
 
 
 @dataclass
@@ -52,6 +57,11 @@ class RhythmEvents:
 
     beats: list[float] = field(default_factory=list)
     onsets: list[float] = field(default_factory=list)
+    # The beat network's output at the hop that produced the last beat. This is
+    # a raw activation, NOT a calibrated confidence — the DBN decides beats from
+    # the whole activation sequence, so a low value here can still be a correct
+    # beat. Carried for debug logging, deliberately not used for any decision.
+    beat_activation: float = 0.0
 
 
 class _BeatStage:
@@ -75,13 +85,14 @@ class _BeatStage:
         self._dbn.reset()
         self._buffer(np.zeros(FRAME_SIZE, dtype=np.float32))
         self._primed = False
+        self.last_activation = 0.0
 
     def __call__(self, hop: np.ndarray) -> np.ndarray:
         frame = self._buffer(hop)
-        activation = self._rnn(frame, reset=not self._primed)
+        activation = np.atleast_1d(self._rnn(frame, reset=not self._primed)).flatten()[-1:]
         self._primed = True
-        return self._dbn.process_online(
-            np.atleast_1d(activation).flatten()[-1:], reset=False)
+        self.last_activation = float(activation[0])
+        return self._dbn.process_online(activation, reset=False)
 
 
 class _OnsetStage:
@@ -157,7 +168,10 @@ class MadmomRhythm:
         while len(self._pending) >= HOP_SIZE:
             hop, self._pending = self._pending[:HOP_SIZE], self._pending[HOP_SIZE:]
             hop = Signal(hop, sample_rate=SAMPLE_RATE, num_channels=1)
-            events.beats.extend(np.atleast_1d(self._beats(hop)).tolist())
+            beats = np.atleast_1d(self._beats(hop)).tolist()
+            if beats:
+                events.beats.extend(beats)
+                events.beat_activation = getattr(self._beats, 'last_activation', 0.0)
             if self._onsets_enabled:
                 events.onsets.extend(np.atleast_1d(self._onsets(hop)).tolist())
         return events

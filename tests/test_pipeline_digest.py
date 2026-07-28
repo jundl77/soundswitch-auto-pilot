@@ -94,12 +94,20 @@ def test_digest_survives_a_report_with_no_beats():
 
 
 @pytest.mark.integration
-async def test_bundled_track_matches_the_committed_baseline():
-    """The whole point of the fixture: the bundled track's spectral columns and
-    report schema are byte-stable across the migration."""
+async def test_bundled_track_keeps_the_committed_report_schema():
+    """The report is a published contract — the visualizer, the evaluator and
+    the inspector all read it. Changing the beat source may move every number
+    in it; it may not move a key.
+
+    Note what this deliberately does NOT assert. The digest's `spectral`
+    section is the filterbank's output *sampled at beat instants*, so it moves
+    whenever the beat grid moves — which is the whole point of this migration.
+    An equality assertion there would fail for the expected reason and prove
+    nothing about the filterbank. The filterbank's own invariance is pinned
+    directly, and beat-independently, in test_music_analyser.py.
+    """
     from training.pipeline_digest import digest_track
     baseline = json.loads(BASELINE.read_text())[SAMPLE_SONG_NAME]
     sample = Path(__file__).parent.parent / 'samples' / SAMPLE_SONG_NAME
     actual = await digest_track(str(sample))
     assert actual['schema'] == baseline['schema']
-    assert actual['spectral'] == baseline['spectral']

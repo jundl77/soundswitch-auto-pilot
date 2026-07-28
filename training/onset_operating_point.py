@@ -30,7 +30,7 @@ BUFFER = 256
 THRESHOLDS = (0.20, 0.25, 0.30, 0.35, 0.40, 0.42, 0.44, 0.46, 0.50, 0.60, 0.70)
 
 
-def _load(path: Path, seconds: float) -> np.ndarray:
+def _load(path: Path, seconds: float | None) -> np.ndarray:
     cache = Path(f'{path}.{SR}.npy')
     if cache.exists() and cache.stat().st_mtime > path.stat().st_mtime:
         audio = np.load(cache)
@@ -39,7 +39,7 @@ def _load(path: Path, seconds: float) -> np.ndarray:
         audio, _ = librosa.load(str(path), sr=SR, mono=True)
         audio = audio.astype(np.float32)
         np.save(cache, audio)
-    return audio[: int(seconds * SR)]
+    return audio if seconds is None else audio[: int(seconds * SR)]
 
 
 def _aubio_onset_rate(audio: np.ndarray) -> float:
@@ -106,7 +106,13 @@ def main() -> None:
     ap.add_argument('--extra', nargs='*', default=[],
                     help='additional audio files (e.g. the bundled sample)')
     ap.add_argument('--tracks', type=int, default=16)
-    ap.add_argument('--seconds', type=float, default=90.0)
+    # Whole tracks by default, and that is not a detail. Measured on 90 s
+    # prefixes this sweep matches at 0.30 and on 240 s prefixes at 0.40: the
+    # two detectors' rate ratio drifts upward with the density of the material,
+    # and a track's opening minutes are its sparsest. A prefix therefore
+    # calibrates against an intro, while the rule engine sees whole shows.
+    ap.add_argument('--seconds', type=float, default=None,
+                    help='truncate each track (diagnostic only — see above)')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
@@ -117,7 +123,8 @@ def main() -> None:
     everything = sorted(Path(args.audio_dir).glob('*.mp3'))
     step = max(1, len(everything) // args.tracks)
     chosen = [str(p) for p in everything[::step][: args.tracks]] + list(args.extra)
-    print(f'{len(chosen)} tracks x {args.seconds:.0f}s, {args.workers} workers')
+    span = 'whole tracks' if args.seconds is None else f'{args.seconds:.0f}s prefixes'
+    print(f'{len(chosen)} tracks, {span}, {args.workers} workers')
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(one_track, [(t, args.seconds) for t in chosen]))
