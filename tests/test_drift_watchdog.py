@@ -9,6 +9,8 @@ real time is a second of lead permanently gone unless it is drained back. So
 
 import logging
 
+import pytest
+
 from lib.analyser.drift_watchdog import DriftWatchdog, ShedLevel
 
 
@@ -77,19 +79,52 @@ def test_a_single_stall_does_not_latch_the_watchdog_forever():
     clock.advance(2.0)          # one 2-second stall
     dog.observe()
     assert dog.level is not ShedLevel.NONE, 'a 2 s stall must be noticed'
-    _feed(dog, clock, 3000, BUF * 0.3)   # then catch up
+    # Two levels to climb down, one calm window each — so the catch-up has to
+    # last longer than one window for the recovery to complete.
+    _feed(dog, clock, 8000, BUF * 0.3)
     assert dog.level is ShedLevel.NONE, 'and must be recovered from'
 
 
-def test_recovery_is_hysteretic_so_the_level_cannot_flap():
+def test_running_at_exactly_real_time_counts_as_recovered():
+    """A live input is hardware-paced: the sound card hands over one buffer per
+    buffer period and the analyser physically cannot consume audio faster than
+    it arrives, so drift can never go negative however much headroom there is.
+
+    An earlier version required negative drift to recover. A live run proved it
+    unsatisfiable — the tool shed section detection during YAMNet's start-up
+    stall and then sat degraded for the whole run at a steady-state drift of
+    +0.002 s. What matters is that the backlog has stopped growing.
+    """
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 1200, BUF * 1.1)
     assert dog.level is ShedLevel.SECTION_DETECTION
-    # Exactly real-time is not recovery: it holds the lost lead, it does not
-    # win it back. The level must persist.
-    _feed(dog, clock, 1200, BUF)
+    _feed(dog, clock, 2000, BUF)
+    assert dog.level is ShedLevel.NONE
+
+
+def test_recovery_waits_out_a_full_window_before_restoring_work():
+    """Restoring a shed component to a loop that is still struggling would just
+    re-shed it. A momentary dip below the exit threshold is not recovery."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 1200, BUF * 1.1)
     assert dog.level is ShedLevel.SECTION_DETECTION
+    # Calm, but for less than one window of wall time.
+    _feed(dog, clock, 300, BUF)
+    assert dog.level is ShedLevel.SECTION_DETECTION
+
+
+def test_a_dip_below_the_exit_threshold_does_not_bank_progress():
+    """The calm timer restarts on every breach, so alternating good and bad
+    stretches never accumulate their way to a recovery."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 1200, BUF * 1.1)
+    for _ in range(8):
+        _feed(dog, clock, 200, BUF)          # calm, under one window
+        _feed(dog, clock, 200, BUF * 1.3)    # breach again
+    assert dog.level is not ShedLevel.NONE
 
 
 def test_every_level_change_is_logged_at_warning_or_above(caplog):
@@ -108,9 +143,26 @@ def test_peak_and_total_drift_are_reported_for_the_soak_run():
     _feed(dog, clock, 200, BUF)
     clock.advance(1.5)
     dog.observe()
-    _feed(dog, clock, 3000, BUF * 0.3)
     assert dog.peak_drift_sec >= 1.4
-    assert dog.total_drift_sec >= 1.4, 'total is cumulative and never forgets'
+    assert dog.total_drift_sec == pytest.approx(1.5, abs=0.01), \
+        'total is cumulative and never forgets'
+
+
+def test_total_drift_is_a_difference_of_totals_not_a_sum_of_excesses():
+    """A hardware-paced input alternates: one read returns instantly because a
+    buffer was already queued, the next blocks for two buffer periods. Summing
+    only the positive excursions measures that jitter and calls it drift — a
+    150 s live run reported 83 s of it while the windowed drift sat at +0.002 s.
+    """
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    for _ in range(2000):
+        clock.advance(0.0)          # buffer already queued
+        dog.observe()
+        clock.advance(BUF * 2)      # next read blocks
+        dog.observe()
+    assert abs(dog.total_drift_sec) < 0.05, \
+        f'jitter must cancel, got {dog.total_drift_sec:.3f}s'
 
 
 def test_reset_returns_it_to_the_constructed_state():

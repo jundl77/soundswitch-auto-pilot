@@ -347,3 +347,31 @@ async def test_the_beep_refractory_survived_the_migration(analyser):
     assert await analyser._track_note([1.0], now) is True
     assert await analyser._track_note([1.01], now + datetime.timedelta(milliseconds=50)) is False
     assert await analyser._track_note([1.1], now + datetime.timedelta(milliseconds=80)) is True
+
+
+# ---------------------------------------------------------------------------
+# Backpressure state is loop-scoped, not song-scoped
+# ---------------------------------------------------------------------------
+
+async def test_a_song_reset_does_not_clear_the_drift_watchdog(analyser):
+    """_reset_state() fires whenever the input goes quiet for 0.3 s — between
+    tracks, and continuously on a silent input. Clearing the watchdog there
+    emptied its rolling window over and over, so it re-entered its first shed
+    level roughly once a second and logged a degradation every time. Found by
+    running the tool against a silent live input, not by a test.
+    """
+    from lib.analyser.drift_watchdog import ShedLevel
+    analyser._drift._level = ShedLevel.SECTION_DETECTION
+    analyser._drift.total_drift_sec = 4.2
+    analyser._reset_state()
+    assert analyser._drift.level is ShedLevel.SECTION_DETECTION
+    assert analyser._drift.total_drift_sec == 4.2
+
+
+async def test_a_song_reset_does_clear_the_rhythm_stack(analyser):
+    """The opposite case, and the reason the two are not reset together: madmom
+    state IS song-scoped — carrying a tempo lock across a stop would fight the
+    next track."""
+    analyser._beat_stream_times.extend([1.0, 2.0, 3.0])
+    analyser._reset_state()
+    assert len(analyser._beat_stream_times) == 0

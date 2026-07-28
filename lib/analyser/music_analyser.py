@@ -81,7 +81,13 @@ class MusicAnalyser:
 
         # tracking state
         self._rhythm.reset()
-        self._drift.reset()
+        # The drift watchdog is deliberately NOT reset here. It measures the
+        # LOOP's health, which has nothing to do with song boundaries, and
+        # _reset_state() fires every time the input goes quiet for 0.3 s —
+        # between tracks, during a stop, all night on a silent input. Resetting
+        # it there emptied its window continuously, so it re-entered its first
+        # shed level every second or so and logged a degradation each time.
+        # Found by running the tool against a silent live input.
         # Beat instants in madmom's own stream time, which BPM is derived from.
         # Stream time rather than clock time on purpose: if the input ever drops
         # audio, stream time still measures the music the detector actually

@@ -36,3 +36,24 @@ def test_virtual_clock_is_deterministic_across_instances():
         b.advance(256 / 44100)
     assert a.monotonic() == b.monotonic()
     assert a.now() == b.now()
+
+
+def test_the_system_clock_can_resolve_a_single_audio_buffer():
+    """Everything in the pipeline is timed against a 5.805 ms buffer, and the
+    drift watchdog measures spans of a few buffers. `time.monotonic` reports a
+    15.625 ms resolution on Windows/CPython 3.11 — coarser than the quantity
+    being measured — so the system clock must be built on a finer source."""
+    import time
+
+    from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
+    from lib.clock import SYSTEM_CLOCK
+
+    buffer_sec = BUFFER_SIZE / SAMPLE_RATE
+    # Identify the underlying source by resolution rather than by name, so the
+    # test survives an implementation change that keeps the property.
+    best = min(time.get_clock_info(name).resolution
+               for name in ('perf_counter', 'monotonic'))
+    assert best < buffer_sec / 10
+
+    samples = {SYSTEM_CLOCK.monotonic() for _ in range(2000)}
+    assert len(samples) > 100, 'system clock is quantised too coarsely to time a buffer'
