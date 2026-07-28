@@ -1,4 +1,4 @@
-"""Tests for the download supervisor (training/raveform_supervisor.py).
+"""Tests for the download supervisor (training/raveform/raveform_supervisor.py).
 
 The supervisor is operational tooling -- it waits, relaunches the downloader,
 and reads its exit code -- so most of it is wall-clock and subprocess work that
@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 from raveform_supervisor import (  # noqa: E402  (needs the path insert above)
     DOWNLOADER_FILE,
@@ -64,9 +64,9 @@ def test_the_reasons_are_sorted_so_a_relaunch_is_reproducible(tmp_path):
 def test_the_real_downloader_yields_the_real_recoverable_set():
     # The pair that matters in production: the supervisor's argument and the
     # downloader's own notion of what is worth retrying must be the same set.
-    assert _retry_reasons(TRAINING_DIR) == ",".join(sorted(RETRYABLE_REASONS))
-    assert "http_403" in _retry_reasons(TRAINING_DIR)
-    assert "other" in _retry_reasons(TRAINING_DIR)
+    assert _retry_reasons(RAVEFORM_DIR) == ",".join(sorted(RETRYABLE_REASONS))
+    assert "http_403" in _retry_reasons(RAVEFORM_DIR)
+    assert "other" in _retry_reasons(RAVEFORM_DIR)
 
 
 def test_an_absent_downloader_falls_back_rather_than_crashing(tmp_path):

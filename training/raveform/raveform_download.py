@@ -47,7 +47,7 @@ Stdlib only.  Requires ``yt-dlp`` and ``ffmpeg`` on PATH.
 
 Usage::
 
-    uv run python training/raveform_download.py \
+    uv run python training/raveform/raveform_download.py \
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform \
         --limit 10
 """
@@ -270,7 +270,8 @@ def install_interrupt_handler() -> None:
 
 
 def default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
+    # parents[2] is the repo root: this file sits in training/raveform/.
+    return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 
 def manifest_path(data_dir: Path) -> Path:

@@ -1,4 +1,4 @@
-"""Tests for the raveform downloader's pure state logic (training/raveform_download.py).
+"""Tests for the raveform downloader's pure state logic (training/raveform/raveform_download.py).
 
 These cover the three decisions that make an unattended multi-hour run
 recoverable: how a failure is bucketed, which failures a re-run retries, and how
@@ -9,9 +9,9 @@ import json
 import sys
 from pathlib import Path
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 from raveform_download import (  # noqa: E402  (needs the path insert above)
     BLOCK_REASONS,

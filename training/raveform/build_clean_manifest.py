@@ -51,7 +51,7 @@ Stdlib only.  Requires ``ffmpeg`` and ``ffprobe`` on PATH.
 
 Usage::
 
-    uv run python training/build_clean_manifest.py \\
+    uv run python training/raveform/build_clean_manifest.py \\
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
 """
 
@@ -346,7 +346,7 @@ def load_manifest_rows(data_dir: Path) -> list:
         ]
     if not rows:
         raise RuntimeError(
-            f"no tracks in {path} -- run training/raveform_manifest.py first"
+            f"no tracks in {path} -- run training/raveform/raveform_manifest.py first"
         )
     return rows
 
@@ -516,7 +516,8 @@ def print_report(
 
 
 def default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
+    # parents[2] is the repo root: this file sits in training/raveform/.
+    return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 
 def require_tools(tools: tuple = ("ffmpeg", "ffprobe")) -> None:

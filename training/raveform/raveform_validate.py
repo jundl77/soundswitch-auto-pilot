@@ -64,7 +64,7 @@ Stdlib only.  Requires ``ffmpeg`` and ``ffprobe`` on PATH.
 
 Usage::
 
-    uv run python training/raveform_validate.py \\
+    uv run python training/raveform/raveform_validate.py \\
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
 """
 

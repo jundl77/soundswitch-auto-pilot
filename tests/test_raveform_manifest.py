@@ -1,4 +1,4 @@
-"""Tests for the raveform manifest's canonical-label fold (training/raveform_manifest.py).
+"""Tests for the raveform manifest's canonical-label fold (training/raveform/raveform_manifest.py).
 
 The canonical fold is the definition of the training vocabulary: it decides
 which labels exist, how long each section is, and therefore what the duration
@@ -8,9 +8,9 @@ anything -- it would quietly train a different model, so it is worth pinning.
 import sys
 from pathlib import Path
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 from raveform_manifest import (  # noqa: E402  (needs the path insert above)
     CANONICAL_DROP,

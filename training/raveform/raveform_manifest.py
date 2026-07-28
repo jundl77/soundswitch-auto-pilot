@@ -29,7 +29,7 @@ Stdlib only.  Reuses the Task 2 parse helpers rather than re-parsing the JSON.
 
 Usage::
 
-    uv run python training/raveform_manifest.py \
+    uv run python training/raveform/raveform_manifest.py \
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
 """
 
@@ -464,7 +464,8 @@ def _counter_line(counter: collections.Counter) -> str:
 
 
 def default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
+    # parents[2] is the repo root: this file sits in training/raveform/.
+    return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 
 def main(argv: list | None = None) -> int:

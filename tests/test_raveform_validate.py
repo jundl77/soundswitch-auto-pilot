@@ -1,4 +1,4 @@
-"""Tests for the full-corpus validator (training/raveform_validate.py).
+"""Tests for the full-corpus validator (training/raveform/raveform_validate.py).
 
 The validator answers one question the owner asked in absolute terms: is every
 single annotated track either present-and-correct on disk, or precisely recorded
@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pytest
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 import build_clean_manifest as gate  # noqa: E402  (needs the path insert above)
 from raveform_validate import (  # noqa: E402

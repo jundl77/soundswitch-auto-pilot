@@ -1,4 +1,4 @@
-"""Tests for the cleanliness gate (training/build_clean_manifest.py).
+"""Tests for the cleanliness gate (training/raveform/build_clean_manifest.py).
 
 The gate decides which audio is allowed to become training data.  A bug here is
 silent: it either admits a truncated/corrupt file (poisoning every downstream
@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 from build_clean_manifest import (  # noqa: E402  (needs the path insert above)
     ABS_TOLERANCE_SEC,
