@@ -35,13 +35,15 @@ HOP_SIZE = SAMPLE_RATE // FPS       # 441 samples = 10 ms
 # size costs no latency — it only sets how much past context each frame carries.
 FRAME_SIZE = 2048
 
-# Onset peak-picking threshold. Set by matching the median onset RATE of the
-# aubio stream this replaces, measured across a multi-track corpus by
-# training/onset_operating_point.py — not by taking madmom's library default,
-# which would silently move the rate that every density constant in
-# lib/engine/light_engine.py is expressed against. See that script's recorded
-# sweep for the measurement this number comes from.
-ONSET_THRESHOLD = 0.44
+# Onset peak-picking threshold, set by matching the median onset RATE of the
+# aubio stream it replaces rather than by taking madmom's library default —
+# every density constant in lib/engine/light_engine.py is expressed against
+# that rate, so moving it would make the migration's deltas unreadable.
+# Measured over 17 tracks x 90 s by training/onset_operating_point.py, evidence
+# committed beside it: aubio's median is 6.656/s and this threshold lands
+# within 0.011/s of it. madmom's own default (0.50) would have come in 24 %
+# low. Re-measure before trusting this on materially different material.
+ONSET_THRESHOLD = 0.30
 
 
 @dataclass
