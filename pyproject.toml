@@ -16,6 +16,7 @@ dependencies = [
     "python-rtmidi>=1.5,<2",
     "cython",
     "aubio",
+    "madmom",
     "numpy>=1.26,<2",
     "pyaudio",
     "pandas",
@@ -49,10 +50,21 @@ extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer
 override-dependencies = [
     "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",
 ]
+# madmom's last PyPI release (0.16.1, 2018) cannot be imported on Python >= 3.10
+# — `from collections import MutableSequence`. Git main fixed that and carries a
+# pyproject.toml, so it builds on py3.11/MSVC; there is no tagged release with
+# the fix, hence a SHA. Build isolation is off because the Cython/numpy build
+# needs this environment's numpy ABI, and the build deps are named explicitly
+# rather than inherited from whatever happens to be installed.
+no-build-isolation-package = ["madmom"]
+extra-build-dependencies = { madmom = ["cython", "numpy>=1.26,<2", "setuptools<71"] }
+
+[tool.uv.sources]
+madmom = { git = "https://github.com/CPJKU/madmom.git", rev = "27f032e8947204902c675e5e341a3faf5dc86dae" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: full-pipeline simulation tests (slow, requires aubio)",
+    "integration: full-pipeline simulation tests (slow, requires aubio and madmom)",
 ]
