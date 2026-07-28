@@ -24,9 +24,12 @@ if str(TRAINING_DIR) not in sys.path:
 from build_training_table import (  # noqa: E402  (needs the path insert above)
     KICK_MIN_RMS,
     MEL_BANDS,
+    MEL_EXPORTER_KEY,
+    MEL_EXPORTER_VERSION,
     POOL_BUFFERS,
     MelEnergyStream,
     pooled_log_mel,
+    sidecar_generation,
     write_feature_sidecar,
 )
 
@@ -186,3 +189,16 @@ def test_sidecar_roundtrips_the_arrays_the_spec_requires(tmp_path):
         assert float(loaded["t0"]) == pytest.approx(t0)
         assert int(loaded["sample_rate"]) == SAMPLE_RATE
         assert int(loaded["pool_buffers"]) == POOL_BUFFERS
+
+
+def test_a_new_sidecar_records_which_exporter_wrote_it(tmp_path):
+    """Geometry cannot answer "same features?": a different log transform or a
+    different pooling reduction keeps the frame rate and the band count and
+    changes every number.  The generation says so explicitly, and the cache
+    check reads it off the file rather than assuming."""
+    path = tmp_path / "abc.npz"
+    write_feature_sidecar(path, np.zeros((2, MEL_BANDS), dtype=np.float32), 0.046, 0.046)
+
+    with np.load(path) as loaded:
+        assert int(loaded[MEL_EXPORTER_KEY]) == MEL_EXPORTER_VERSION
+    assert sidecar_generation(path) == MEL_EXPORTER_VERSION

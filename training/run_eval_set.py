@@ -25,7 +25,14 @@ exactly the way the corpus does it -- and scored with
 gated: macro-F1, time-weighted accuracy, boundary-F1 of the intent stream at the
 primary tolerance, and flicker per audience-minute.  The first three regress
 downward; flicker regresses UPWARD, because it counts changes the audience had
-no musical reason for.
+no musical reason for.  Beside them, the recorded COUNT facts (rows,
+label boundaries, scored seconds) are compared exactly: they cost nothing and
+they move for causes a 0.02 score tolerance absorbs.
+
+**The same question.**  Scores are only comparable against the labels they were
+cut over, and ``annotations/segments.json`` is gitignored corpus that a re-fetch
+can move.  The eval set recorded its sha256 at freeze time, so every run checks
+it before simulating anything and refuses outright if it has moved.
 
 Both gates fire together on a deliberate improvement (better scores still move
 the checksums), and that is the intended workflow: read the table, decide the
@@ -75,7 +82,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (str(REPO_ROOT), str(REPO_ROOT / "training")):
+for _path in (
+    str(REPO_ROOT),
+    str(REPO_ROOT / "training"),
+    str(REPO_ROOT / "training" / "raveform"),
+):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
@@ -98,7 +109,7 @@ from evaluate_against_labels import (  # noqa: E402
     write_json,
 )
 from raveform_fetch_annotations import SEGMENTS_FILE, annotations_dir  # noqa: E402
-from select_eval_set import EVAL_SET_FILE, load_eval_set  # noqa: E402
+from select_eval_set import EVAL_SET_FILE, load_eval_set, verify_inputs  # noqa: E402
 
 BASELINE_FILE = REPO_ROOT / "training" / "eval_set_baseline.json"
 
@@ -123,11 +134,19 @@ GUARDED_METRICS = {
 DEFAULT_SCORE_TOLERANCE = 0.02
 DEFAULT_FLICKER_TOLERANCE = 0.20
 
+# Facts, not scores: how many beats survived the join, how many boundaries the
+# annotation carries, and how much show time was scored.  Compared for EXACT
+# equality, because a tolerance on a count means nothing and because they fail
+# for causes the four gated scores cannot see -- a join that starts dropping
+# beats, or an annotation that gained a section, moves these while macro-F1
+# stays comfortably inside its 0.02.  Free: they are already in every row.
+COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec")
+
 # The one line a machine without the corpus must see.  Audio is never committed
 # (the repo is public), so an absent eval set is an ordinary state of a fresh
 # clone -- but it must be loud, not a silent skip: a skipped benchmark that
 # nobody notices is the same as no benchmark.
-AUDIO_MISSING_HINT = "eval-set audio missing -- run training/raveform_download.py"
+AUDIO_MISSING_HINT = "eval-set audio missing -- run training/raveform/raveform_download.py"
 
 SCHEMA_VERSION = 1
 
@@ -204,7 +223,8 @@ def shortest_track_ids(document: dict, count: int) -> list:
     literal id: the budget it is protecting is wall time, so the selection has
     to follow the durations if the set is ever re-frozen.  Ties break on
     ``track_id`` so the answer is a function of the document and not of the
-    order anything happened to be written in.
+    order anything happened to be written in.  A library entry point, not a
+    flag: ``--only`` already spells any subset a human wants from the shell.
     """
     tracks = list(document.get("tracks") or [])
     by_length = sorted(tracks, key=lambda track: (float(track["duration_sec"]),
@@ -223,12 +243,39 @@ def missing_inputs(data_dir: Path, tracks: list) -> list:
     segments = annotations_dir(Path(data_dir)) / SEGMENTS_FILE
     if not segments.exists():
         problems.append(f"missing {segments} -- run "
-                        f"training/raveform_fetch_annotations.py")
+                        f"training/raveform/raveform_fetch_annotations.py")
     for track in tracks:
         mp3 = audio_path(data_dir, track["youtube_id"])
         if not mp3.exists():
             problems.append(f"{AUDIO_MISSING_HINT}: {track['track_id']} ({mp3})")
     return problems
+
+
+def verify_ground_truth(document: dict, data_dir: Path) -> None:
+    """Refuse to score against labels the eval set was not frozen against.
+
+    ``segments.json`` is gitignored corpus, not a committed artifact, so
+    nothing in the repository pins it: re-fetching the annotations can move a
+    section boundary under a baseline that was cut before the move, and every
+    number in this run would then be measuring a different question while the
+    gate reported "MATCHES BASELINE".  The eval set already recorded that
+    file's sha256 at freeze time, so the check costs one hash of a file the run
+    is about to read anyway.
+
+    Fatal rather than a warning, and checked here rather than at the freeze:
+    the freeze can survive a corpus that has moved on (that is what freezing
+    is for), a *score* cannot.  ``clean_manifest.csv`` is deliberately not
+    checked -- it chose which tracks are in the set and grows with every
+    download batch, and it feeds no number in this file.
+    """
+    drift = verify_inputs(document, Path(data_dir), only=(SEGMENTS_FILE,))
+    if drift:
+        raise RuntimeError(
+            f"the eval set's GROUND TRUTH has moved since the freeze: "
+            f"{'; '.join(drift)} -- every score here would be against labels "
+            f"the committed baseline never saw.  Restore {SEGMENTS_FILE}, or "
+            f"re-freeze the eval set and re-cut the baseline together."
+        )
 
 
 def same_path(left: Path, right: Path) -> bool:
@@ -462,12 +509,13 @@ class Comparison(NamedTuple):
     ungated: list       # a guarded metric one side does not carry
     checksum_drift: list
     regressions: list
+    fact_drift: list    # a recorded count moved: the run measured something else
     subset: bool        # fewer tracks than the baseline: aggregate not compared
 
     @property
     def failed(self) -> bool:
         return bool(self.desync or self.unbaselined or self.ungated
-                    or self.checksum_drift or self.regressions)
+                    or self.checksum_drift or self.regressions or self.fact_drift)
 
 
 def _regression(name: str, metric: str, before: float, after: float,
@@ -486,9 +534,23 @@ def _regression(name: str, metric: str, before: float, after: float,
             f"({delta:+.4f}, tolerance {tolerance:.4f})")
 
 
+def _fact_drift(name: str, before: dict, after: dict) -> list:
+    """Count facts of one row that stopped agreeing, exactly.
+
+    Only compared where BOTH sides carry the fact: the aggregate row is four
+    scores and nothing else, and inventing a failure for a field that row was
+    never supposed to have would make the tripwire noise.
+    """
+    return [
+        f"{name}: {fact} {before[fact]} -> {after[fact]}"
+        for fact in COUNT_FACTS
+        if fact in before and fact in after and before[fact] != after[fact]
+    ]
+
+
 def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: float,
                      flicker_tolerance: float) -> tuple:
-    """``(ungated, regressions)`` for one row of the table.
+    """``(ungated, regressions, facts)`` for one row of the table.
 
     A guarded metric that either side does not carry is a FAILURE, not a skip.
     Skipping it is silent un-gating: an old-schema or hand-edited baseline would
@@ -508,7 +570,7 @@ def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: floa
                            float(after[metric]), tolerance)
         if line:
             regressions.append(line)
-    return ungated, regressions
+    return ungated, regressions, _fact_drift(name, before, after)
 
 
 def compare(baseline: dict, current: dict,
@@ -516,13 +578,15 @@ def compare(baseline: dict, current: dict,
             flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> Comparison:
     """Judge a run against the committed baseline.
 
-    Four independent failures, kept apart because they mean different things: a
+    Five independent failures, kept apart because they mean different things: a
     DESYNC says the baseline describes a different benchmark (re-cut it), an
     UNGATED metric says the baseline cannot judge this run at all, a CHECKSUM
     DRIFT says the pipeline's behaviour moved (look at the scores, then accept
-    or fix), and a REGRESSION says the show got worse (fix it).
+    or fix), a REGRESSION says the show got worse (fix it), and a FACT DRIFT
+    says a recorded count moved, i.e. the run scored something other than what
+    the baseline scored.
     """
-    desync, unbaselined, ungated, drift, regressions = [], [], [], [], []
+    desync, unbaselined, ungated, drift, regressions, facts = [], [], [], [], [], []
 
     baseline_sha = (baseline.get("eval_set") or {}).get("sha256")
     current_sha = (current.get("eval_set") or {}).get("sha256")
@@ -552,21 +616,24 @@ def compare(baseline: dict, current: dict,
                 f"(beats {before.get('beats')} -> {after.get('beats')}, "
                 f"intent changes {before.get('changes_intent')} -> "
                 f"{after.get('changes_intent')})")
-        row_ungated, row_regressions = _compare_metrics(
+        row_ungated, row_regressions, row_facts = _compare_metrics(
             track_id, before, after, score_tolerance, flicker_tolerance)
         ungated += row_ungated
         regressions += row_regressions
+        facts += row_facts
 
     # A subset run's aggregate is an aggregate of the subset; comparing it to
     # the ten-track number would be comparing two different quantities.
     if not subset:
-        row_ungated, row_regressions = _compare_metrics(
+        row_ungated, row_regressions, row_facts = _compare_metrics(
             "(aggregate)", baseline.get("aggregate") or {},
             current.get("aggregate") or {}, score_tolerance, flicker_tolerance)
         ungated += row_ungated
         regressions += row_regressions
+        facts += row_facts
 
-    return Comparison(desync, unbaselined, ungated, drift, regressions, subset)
+    return Comparison(desync, unbaselined, ungated, drift, regressions, facts,
+                      subset)
 
 
 # --------------------------------------------------------------------------- #
@@ -631,13 +698,17 @@ def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
         lines += [f"    - {line}" for line in outcome.checksum_drift]
     if outcome.regressions:
         lines += ["", "  REGRESSIONS"] + [f"    - {line}" for line in outcome.regressions]
+    if outcome.fact_drift:
+        lines += ["", "  MEASURING SOMETHING ELSE (a recorded count moved)"]
+        lines += [f"    - {line}" for line in outcome.fact_drift]
     if not outcome.failed:
         scope = "subset" if outcome.subset else "full set"
         lines += ["", f"  MATCHES BASELINE ({scope}): {baseline_path}"]
         return "\n".join(lines)
     lines += [""]
     if (outcome.checksum_drift and not outcome.regressions
-            and not outcome.desync and not outcome.ungated):
+            and not outcome.desync and not outcome.ungated
+            and not outcome.fact_drift):
         lines += ["  Scores held or improved (no regressions).  A behaviour change",
                   "  fails this gate whichever way the numbers moved -- it is the",
                   "  operator, not the tool, who decides an improvement was meant.",
@@ -713,6 +784,7 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
     problems = missing_inputs(data_dir, tracks)
     if problems:
         raise RuntimeError("; ".join(problems))
+    verify_ground_truth(eval_document, Path(data_dir))
 
     jobs = build_jobs(data_dir, tracks, load_sections_by_track(Path(data_dir)))
     started = time.monotonic()
@@ -749,8 +821,6 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--only", default=None,
                         help="comma-separated track_ids or youtube_ids to run "
                              "(default: the whole frozen set)")
-    parser.add_argument("--shortest", type=int, default=None,
-                        help="run the N shortest tracks of the set (a subset run)")
     parser.add_argument("--score-tolerance", type=float,
                         default=DEFAULT_SCORE_TOLERANCE,
                         help="how far F1/accuracy may fall (default: %(default)s)")
@@ -769,9 +839,6 @@ def main(argv: list | None = None) -> int:
         only = None
         if args.only:
             only = [item for item in args.only.split(",") if item.strip()]
-        if args.shortest is not None:
-            shortest = shortest_track_ids(document, args.shortest)
-            only = shortest if only is None else [*only, *shortest]
         # Refused BEFORE the simulations run: a two-minute run that ends in a
         # refusal teaches the same lesson two minutes later.
         if args.write_baseline:

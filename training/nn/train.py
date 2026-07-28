@@ -576,8 +576,9 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *,
 def train(config: dict) -> dict:
     """Run (or resume) one training job; returns the training report."""
     data_dir = Path(config["data_dir"])
-    run_dir = data_dir / MODELS_DIR / MODEL_VERSION / config["run_name"]
-    tb_dir = data_dir / MODELS_DIR / MODEL_VERSION / TB_DIR / config["run_name"]
+    version = config.get("model_version") or MODEL_VERSION
+    run_dir = data_dir / MODELS_DIR / version / config["run_name"]
+    tb_dir = data_dir / MODELS_DIR / version / TB_DIR / config["run_name"]
     run_dir.mkdir(parents=True, exist_ok=True)
 
     seed_everything(config["seed"])
@@ -623,6 +624,11 @@ def train(config: dict) -> dict:
 
     checkpoint_path = run_dir / LAST_CHECKPOINT
     if config["resume"] and checkpoint_path.exists():
+        # weights_only=False is required here and nowhere else: the resume state
+        # holds pickled RNG tuples.  Trust boundary: this file was written by
+        # this script minutes ago, into the gitignored corpus, and is never
+        # fetched or shared -- unlike a published checkpoint, which the exporter
+        # now reads with weights_only=True.
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
         if state["config_fingerprint"] != fingerprint:
             raise RuntimeError(
@@ -877,6 +883,12 @@ def build_parser() -> argparse.ArgumentParser:
                              f"<data-dir>/{MODELS_DIR}/{MODEL_VERSION}/<run-name> "
                              "(default: %(default)s)")
     parser.add_argument("--run-name", default="v1", help="run directory name")
+    parser.add_argument("--model-version", default=MODEL_VERSION,
+                        help="artifact generation; runs land in "
+                             f"<data-dir>/{MODELS_DIR}/<model-version>/<run-name>. "
+                             "A retrain on a grown corpus takes a new generation so "
+                             "the checkpoints backing an already-published verdict "
+                             "are never overwritten (default: %(default)s)")
     parser.add_argument("--epochs", type=int, default=60)
     # 128, not the plan's 32: the pre-flight measured throughput saturating well
     # before it and ~3.1 GB reserved, which fits the 3070 with a desktop open.

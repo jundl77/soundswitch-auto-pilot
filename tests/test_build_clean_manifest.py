@@ -1,4 +1,4 @@
-"""Tests for the cleanliness gate (training/build_clean_manifest.py).
+"""Tests for the cleanliness gate (training/raveform/build_clean_manifest.py).
 
 The gate decides which audio is allowed to become training data.  A bug here is
 silent: it either admits a truncated/corrupt file (poisoning every downstream
@@ -19,11 +19,12 @@ from pathlib import Path
 
 import pytest
 
-TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
-if str(TRAINING_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINING_DIR))
+RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
+if str(RAVEFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(RAVEFORM_DIR))
 
 from build_clean_manifest import (  # noqa: E402  (needs the path insert above)
+    _run,
     ABS_TOLERANCE_SEC,
     CLEAN_MANIFEST_HEADER,
     MIN_AGE_SEC,
@@ -200,6 +201,24 @@ def test_delta_just_beyond_the_relative_tolerance_is_a_mismatch():
 def test_mismatch_detail_reports_the_delta_and_the_tolerance():
     _status, detail = _consistent(100.0, 300.0)
     assert "200" in detail  # the delta, so a human can see how far off it is
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess text decoding
+# --------------------------------------------------------------------------- #
+
+
+def test_a_tool_that_writes_undecodable_bytes_does_not_kill_the_worker():
+    """ffmpeg echoes the offending file's tag text when it complains, and the
+    corpus is full-of-the-world track titles.  Left to the locale this raises
+    UnicodeDecodeError out of `subprocess.run` -- inside a pool worker, taking
+    a whole batch down over one byte in a filename.  The encoding is pinned and
+    undecodable bytes become U+FFFD, so the complaint still reaches the log."""
+    proc = _run([sys.executable, "-c",
+                 r"import sys; sys.stdout.buffer.write(b'\xff\x81 done')"])
+
+    assert proc.stdout.endswith(" done")
+    assert "�" in proc.stdout
 
 
 # --------------------------------------------------------------------------- #

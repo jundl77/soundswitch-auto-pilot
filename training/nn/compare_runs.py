@@ -26,7 +26,7 @@ import argparse
 import json
 from pathlib import Path
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
 
 from build_training_table import default_data_dir  # noqa: E402
 

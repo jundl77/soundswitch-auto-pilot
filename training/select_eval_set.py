@@ -78,7 +78,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# training/ for the eval-pipeline scripts, training/raveform/ for the
+# corpus-acquisition ones -- both are scripts, not packages.
+for _path in (
+    str(Path(__file__).resolve().parent),
+    str(REPO_ROOT / "training" / "raveform"),
+):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from build_clean_manifest import CLEAN_MANIFEST_FILE, STATUS_OK  # noqa: E402
 from build_training_table import V1_ORDER, label_v1  # noqa: E402
@@ -475,7 +482,7 @@ def load_eval_set(path: Path) -> dict:
     return document
 
 
-def verify_inputs(document: dict, data_dir: Path) -> list:
+def verify_inputs(document: dict, data_dir: Path, only: tuple | None = None) -> list:
     """Which recorded selection inputs no longer match the corpus on disk.
 
     Empty list means the frozen set was selected from exactly the files that
@@ -483,10 +490,19 @@ def verify_inputs(document: dict, data_dir: Path) -> list:
     grows, and the whole point of freezing is that the benchmark does not
     follow it -- but it is the difference between "frozen deliberately" and
     "frozen by accident", so every caller gets to see it.
+
+    ``only`` narrows the check to named inputs.  The two recorded files carry
+    very different weight: ``clean_manifest.csv`` decided WHICH tracks are in
+    the set and legitimately moves with every download batch, while
+    ``segments.json`` is the ground truth every score is computed against and
+    must not move at all under a committed baseline.  The benchmark runner
+    checks the second alone and treats it as fatal (``run_eval_set.run``).
     """
     recorded = (document.get("selected_from") or {}).get("inputs") or {}
     drift = []
     for name, path in input_paths(data_dir).items():
+        if only is not None and name not in only:
+            continue
         expected = recorded.get(name)
         if expected is None:
             drift.append(f"{name}: no checksum recorded in the eval set")
@@ -606,7 +622,7 @@ def load_ok_rows(data_dir: Path) -> list:
     path = data_dir / CLEAN_MANIFEST_FILE
     if not path.exists():
         raise RuntimeError(
-            f"missing {path} -- run training/build_clean_manifest.py first"
+            f"missing {path} -- run training/raveform/build_clean_manifest.py first"
         )
     with open(path, "r", encoding="utf-8", newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["status"] == STATUS_OK]
@@ -683,12 +699,10 @@ def main(argv: list | None = None) -> int:
         "--data-dir", type=Path, default=default_data_dir(),
         help="corpus root; reads clean_manifest.csv + annotations/ (default: %(default)s)",
     )
-    parser.add_argument(
-        "--out", type=Path, default=EVAL_SET_FILE,
-        help="where the committed eval set is written (default: %(default)s)",
-    )
-    parser.add_argument("--size", type=int, default=DEFAULT_SIZE,
-                        help="tracks to select (default: %(default)s)")
+    # No --out and no --size.  The output path IS the benchmark's identity (a
+    # committed baseline, a test that reads EVAL_SET_FILE, and the NN splits all
+    # name it), and the size is what the baseline was cut over; a flag for
+    # either is a way to produce a file that looks frozen and gates nothing.
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
                         help="tiebreak seed, recorded in the output (default: %(default)s)")
     parser.add_argument("--dry-run", action="store_true",
@@ -702,13 +716,13 @@ def main(argv: list | None = None) -> int:
     print("raveform eval-set selection")
     print(f"data dir: {data_dir}")
 
-    if args.out.exists() and not (args.force or args.dry_run):
-        return refuse_to_overwrite(args.out, data_dir)
+    if EVAL_SET_FILE.exists() and not (args.force or args.dry_run):
+        return refuse_to_overwrite(EVAL_SET_FILE, data_dir)
 
     ok_rows = load_ok_rows(data_dir)
     candidates = build_candidates(data_dir, ok_rows, load_tracks(data_dir))
     eligible = [candidate for candidate in candidates if is_eligible(candidate)]
-    picks = select(candidates, size=args.size, seed=args.seed)
+    picks = select(candidates, size=DEFAULT_SIZE, seed=args.seed)
     if not picks:
         # Loud and specific: an empty selection means the gate or the fetch has
         # not run, not that the corpus is merely thin.  Crashing in the summary
@@ -717,8 +731,8 @@ def main(argv: list | None = None) -> int:
               f"criteria (duration {MIN_DURATION_SEC:.0f}-{MAX_DURATION_SEC:.0f} s, "
               f">= {MIN_BOUNDARIES} v1 boundaries) -- nothing written")
         return 1
-    if len(picks) < args.size:
-        print(f"WARNING: only {len(picks)}/{args.size} tracks satisfy the criteria "
+    if len(picks) < DEFAULT_SIZE:
+        print(f"WARNING: only {len(picks)}/{DEFAULT_SIZE} tracks satisfy the criteria "
               f"-- the corpus is too small or too uniform for this size")
 
     print_table(picks)
@@ -729,12 +743,12 @@ def main(argv: list | None = None) -> int:
         print("--dry-run: nothing written")
         return 0
 
-    if args.out.exists():
-        warn_refreeze(args.out, data_dir)
+    if EVAL_SET_FILE.exists():
+        warn_refreeze(EVAL_SET_FILE, data_dir)
 
     document = build_document(picks, data_dir, len(ok_rows), len(candidates),
                               len(eligible), args.seed)
-    path = write_eval_set(args.out, document)
+    path = write_eval_set(EVAL_SET_FILE, document)
     print()
     print(f"eval set: {path}")
     print(f"  ids: {', '.join(document['youtube_ids'])}")

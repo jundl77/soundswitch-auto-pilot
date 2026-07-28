@@ -53,7 +53,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
 
 from build_clean_manifest import CLEAN_MANIFEST_FILE, STATUS_OK  # noqa: E402
 from build_training_table import (  # noqa: E402
@@ -220,7 +220,7 @@ def _clean_manifest_rows(data_dir: Path) -> list:
     path = Path(data_dir) / CLEAN_MANIFEST_FILE
     if not path.exists():
         raise RuntimeError(
-            f"missing {path} -- run training/build_clean_manifest.py first"
+            f"missing {path} -- run training/raveform/build_clean_manifest.py first"
         )
     with open(path, "r", encoding="utf-8", newline="") as handle:
         return [row for row in csv.DictReader(handle) if row.get("status") == STATUS_OK]

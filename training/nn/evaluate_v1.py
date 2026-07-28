@@ -72,6 +72,7 @@ import dataclasses
 import datetime
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -85,7 +86,6 @@ from evaluate_against_labels import (  # noqa: E402
     INTENT_TO_LABELS,
     PRIMARY_TOLERANCE_SEC,
     SPACES,
-    STREAM_ORDER,
     TOLERANCES_SEC,
     Score,
     TrackBeats,
@@ -115,6 +115,10 @@ UNDECODED = NO_INTENT
 
 SPLITS_FILE = "splits.json"
 POSTERIORS_DIR = "posteriors"
+# Duplicated from export_onnx rather than imported: that module builds torch
+# modules at import time, and the decode-and-score path is torch-free by
+# contract.  One filename is a cheaper coupling than dragging torch in.
+MODEL_FILE = "model.onnx"
 # Named after the split it scored, so a ``--split test`` run without ``--out``
 # cannot silently overwrite the val verdict with test numbers -- the two
 # readings answer different questions and must both survive on disk.
@@ -430,9 +434,58 @@ def split_ids(data_dir: Path, split: str) -> list:
     return list(document[split])
 
 
+def read_ids_file(path) -> list:
+    """An explicit youtube-id list: a JSON array, or one id per line.
+
+    Exists so a run over a hand-picked subset -- comparing two generations on
+    exactly the tracks one of them was already judged on, say -- is reachable
+    from the CLI instead of from a script that lives in someone's scratchpad and
+    cannot be re-run by a reader of the artifact.  Blank lines and ``#``
+    comments are ignored so a list can say why it exists.
+    """
+    text = Path(path).read_text(encoding="utf-8").strip()
+    if not text:
+        raise RuntimeError(f"{path} is empty")
+    if text[0] in "[{":
+        document = json.loads(text)
+        ids = document if isinstance(document, list) else (
+            document.get("ids") or document.get("youtube_ids"))
+        if not isinstance(ids, list):
+            raise RuntimeError(
+                f"{path} is JSON but carries no id list (expected an array, or "
+                f"an object with 'ids' or 'youtube_ids')")
+    else:
+        ids = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+    ids = [str(i) for i in ids if str(i).strip()]
+    if not ids:
+        raise RuntimeError(f"{path} lists no ids")
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise RuntimeError(f"{path} repeats {len(duplicates)} id(s): {duplicates[:5]} "
+                           f"-- a track scored twice would be weighted twice")
+    return ids
+
+
+def sidecar_model_sha(path) -> str | None:
+    """The graph sha a posterior sidecar records, or ``None`` if it records none.
+
+    Read on its own rather than out of ``bar_observations`` because the identity
+    check has to happen BEFORE the expensive aggregation, and because a sidecar
+    predating the stamp must read as "unknown" rather than raise -- the caller
+    decides whether unknown is fatal.
+    """
+    try:
+        with np.load(path) as archive:
+            return str(archive["model_sha"])
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return None
+
+
 def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
                 boundary_tolerance_sec: float = DecodeParams().boundary_tolerance_sec,
                 table_path: Path | None = None,
+                posteriors_dir: Path | None = None,
+                model_sha: str | None = None,
                 allow_missing: bool = False) -> tuple:
     """``(inputs, skipped)`` for the given youtube ids, in id order.
 
@@ -443,6 +496,16 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
     123 tracks.  A verdict measured over a silently different track set than it
     names is worse than no verdict, so the default is fail-loud and
     ``allow_missing`` is the deliberate, recorded override.
+
+    ``model_sha`` closes the reader half of the identity check.  The writer
+    stamps each sidecar with the graph that produced it (``infer.sidecar_is_current``
+    refuses to reuse another model's answers), but the generation and the sidecar
+    directory are independent arguments here, so a caller can name one
+    generation's priors and decoder while pointing at another's posteriors.
+    That combination loads cleanly, decodes, and writes a provenance block naming
+    a chain that never ran.  Given the expected sha, every sidecar must carry it
+    or the whole run is refused -- a mismatch is never a per-track skip, because
+    a partial answer to "which model is this" is not an answer.
     """
     data_dir = Path(data_dir)
     table_path = Path(table_path) if table_path else data_dir / TABLE_FILE
@@ -450,10 +513,11 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
     # the beat CSV stem; youtube ids are [A-Za-z0-9_-]{11} so the split is exact.
     by_youtube_id = {t.track_id.split(".", 1)[-1]: t for t in load_tracks(table_path)}
     beats_dir = annotations_dir(data_dir) / BEATS_DIR
-    posteriors_dir = data_dir / POSTERIORS_DIR
+    posteriors_dir = Path(posteriors_dir) if posteriors_dir else data_dir / POSTERIORS_DIR
 
     inputs: list = []
     skipped: list = []
+    wrong_model: list = []
     for youtube_id in ids:
         track = by_youtube_id.get(youtube_id)
         sidecar = posteriors_dir / f"{youtube_id}.npz"
@@ -464,6 +528,11 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
         if not sidecar.exists():
             skipped.append({"youtube_id": youtube_id, "reason": "no posterior sidecar"})
             continue
+        if model_sha is not None:
+            found = sidecar_model_sha(sidecar)
+            if found != model_sha:
+                wrong_model.append((youtube_id, found))
+                continue
         if not beat_csv.exists():
             skipped.append({"youtube_id": youtube_id, "reason": "no beat grid"})
             continue
@@ -479,6 +548,16 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
             track_id=track.track_id, youtube_id=youtube_id, edges=edges,
             posteriors=posteriors, boundary=boundary, times=track.times,
             labels=track.labels, intents=track.intents))
+    if wrong_model:
+        shown = ", ".join(f"{youtube_id} ({(found or 'unstamped')[:12]})"
+                          for youtube_id, found in wrong_model[:10])
+        raise RuntimeError(
+            f"{len(wrong_model)} of {len(list(ids))} sidecars in {posteriors_dir} "
+            f"were written by a different model than the one named: expected "
+            f"{model_sha[:12]}, found {shown}"
+            f"{' ...' if len(wrong_model) > 10 else ''} -- regenerate the sidecars "
+            f"for this model, or point --posteriors-dir at the ones it wrote"
+        )
     if skipped and not allow_missing:
         detail = ", ".join(f"{item['youtube_id']} ({item['reason']})"
                            for item in skipped[:10])
@@ -900,7 +979,8 @@ def write_json(path: Path, payload: dict) -> None:
     _write_json(path, payload)
 
 
-def artifact_provenance(data_dir: Path) -> dict:
+def artifact_provenance(data_dir: Path, model_version: str = MODEL_VERSION,
+                        posteriors_dir: Path | None = None) -> dict:
     """Which model, priors, splits and table produced these numbers.
 
     A verdict table without this is unfalsifiable: the whole chain is content
@@ -909,9 +989,9 @@ def artifact_provenance(data_dir: Path) -> dict:
     checkpoint someone re-trained in between.
     """
     data_dir = Path(data_dir)
-    model_dir = data_dir / MODELS_DIR / MODEL_VERSION
+    model_dir = data_dir / MODELS_DIR / model_version
     wanted = {
-        "model_onnx": model_dir / "model.onnx",
+        "model_onnx": model_dir / MODEL_FILE,
         "priors": model_dir / PRIORS_FILE,
         "splits": data_dir / SPLITS_FILE,
         "training_table": data_dir / TABLE_FILE,
@@ -921,30 +1001,74 @@ def artifact_provenance(data_dir: Path) -> dict:
         files[name] = ({"path": str(path), "sha256": file_sha256(path),
                         "bytes": path.stat().st_size} if path.exists()
                        else {"path": str(path), "sha256": None})
-    return {"git_sha": git_sha(), "files": files}
+    return {"git_sha": git_sha(), "model_version": model_version,
+            "posteriors_dir": str(Path(posteriors_dir) if posteriors_dir
+                                  else data_dir / POSTERIORS_DIR),
+            "files": files}
+
+
+def default_output_name(split: str, ids_file=None) -> str:
+    """The filename a run writes to when ``--out`` was not given.
+
+    ``--split`` does not select anything once ``--ids-file`` is present -- it
+    only labels the run -- so both would otherwise land on ``eval_<split>.json``,
+    the published verdict for that whole split.  A subset scored over a handful
+    of hand-picked tracks would silently replace the artifact the generation is
+    judged by, in the model directory, with no flag involved.  The ids file's own
+    name distinguishes them, and distinguishes two subsets from each other.
+    """
+    if ids_file is None:
+        return EVAL_FILE.format(split=split)
+    return EVAL_FILE.format(split=f"{split}_{Path(ids_file).stem}")
 
 
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--split", default="val",
-                        help="val by default; test is Task 6's to read")
+                        help="split to score; val by default, and the test split "
+                             "is read once. With --ids-file this names the run "
+                             "rather than selecting it (default: %(default)s)")
+    parser.add_argument("--ids-file", type=Path, default=None,
+                        help="score exactly the youtube ids in this file (JSON "
+                             "array, or one per line) instead of a whole split. "
+                             "--split then only labels the run, and the default "
+                             "output is named after this file so a subset can "
+                             "never overwrite the split's published verdict")
     parser.add_argument("--config", type=Path, default=None,
-                        help="decoder_config.json from the sweep (default: "
-                             "models/v1/decoder_config.json if present)")
+                        help="decoder_config.json from the sweep (default: the "
+                             "named generation's, if present)")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--model-version", default=MODEL_VERSION,
+                        help="artifact generation to score: reads priors, the "
+                             "decoder config and the graph from "
+                             f"<data-dir>/{MODELS_DIR}/<model-version>/ and writes "
+                             "the verdict beside them (default: %(default)s)")
+    parser.add_argument("--posteriors-dir", type=Path, default=None,
+                        help=f"sidecar directory (default: <data-dir>/{POSTERIORS_DIR}); "
+                             "a retrain writes its own so the sidecars backing a "
+                             "published verdict are never overwritten")
     args = parser.parse_args(argv)
 
-    model_dir = args.data_dir / MODELS_DIR / MODEL_VERSION
+    model_dir = args.data_dir / MODELS_DIR / args.model_version
     config_path = args.config or model_dir / DECODER_CONFIG_FILE
     params = (load_decoder_config(config_path) if Path(config_path).exists()
               else DecodeParams())
     priors = Priors.load(model_dir / PRIORS_FILE)
 
-    ids = split_ids(args.data_dir, args.split)
+    graph = model_dir / MODEL_FILE
+    if not graph.exists():
+        raise RuntimeError(
+            f"no exported graph at {graph} -- without it the sidecars cannot be "
+            f"checked against the generation this run claims to score")
+    model_sha = file_sha256(graph)
+
+    ids = (read_ids_file(args.ids_file) if args.ids_file
+           else split_ids(args.data_dir, args.split))
     inputs, skipped = load_inputs(
         args.data_dir, ids, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec)
+        boundary_tolerance_sec=params.boundary_tolerance_sec,
+        posteriors_dir=args.posteriors_dir, model_sha=model_sha)
     if not inputs:
         print(f"no usable tracks in split {args.split!r}", file=sys.stderr)
         return 1
@@ -954,8 +1078,14 @@ def main(argv: list | None = None) -> int:
         provenance={"config_source": str(config_path)
                                      if Path(config_path).exists() else "defaults",
                     "requested_tracks": len(ids),
-                    "artifacts": artifact_provenance(args.data_dir)})
-    out = args.out or model_dir / EVAL_FILE.format(split=args.split)
+                    # An explicit list is recorded in full: the artifact has to
+                    # say which tracks it covers, or a reader holding only the
+                    # report cannot reproduce the run it describes.
+                    **({"ids_file": str(args.ids_file), "ids": list(ids)}
+                       if args.ids_file else {}),
+                    "artifacts": artifact_provenance(
+                        args.data_dir, args.model_version, args.posteriors_dir)})
+    out = args.out or model_dir / default_output_name(args.split, args.ids_file)
     write_json(out, report)
     print(render(report))
     print(f"\nwrote {out}")

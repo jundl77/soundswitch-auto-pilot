@@ -61,7 +61,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
 
 from raveform_fetch_annotations import (  # noqa: E402
     beat_csv_path,

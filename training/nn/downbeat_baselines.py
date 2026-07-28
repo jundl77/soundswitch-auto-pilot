@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
 
 from .dataset import FRAME_SEC, candidate_tracks, make_splits
 from .downbeat_dataset import (

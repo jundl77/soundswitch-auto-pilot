@@ -32,9 +32,10 @@ mp3's size and mtime.  A track whose stamp still matches, and whose mel sidecar
 is on disk, skips BOTH the simulation and the multi-second decode, so a rebuild
 over an unchanged corpus costs seconds and a rebuild after 20 new downloads
 costs 20 tracks.  Any mismatch -- new pipeline, re-encoded audio, missing
-sidecar, unreadable cache -- is a miss and is re-simulated; ``--force`` misses
-everything.  Hit and miss counts (with reasons) are printed and recorded in the
-meta file, so a run that unexpectedly re-simulates the corpus says why.
+sidecar, a sidecar from an older mel exporter, unreadable cache -- is a miss and
+is re-simulated; ``--force`` misses everything.  Hit and miss counts (with
+reasons) are printed and recorded in the meta file, so a run that unexpectedly
+re-simulates the corpus says why.
 
 Label semantics (binding, from the validated corpus)
 ----------------------------------------------------
@@ -104,6 +105,7 @@ import concurrent.futures
 import csv
 import datetime
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -116,7 +118,14 @@ from typing import NamedTuple
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (str(REPO_ROOT), str(REPO_ROOT / "training")):
+# training/raveform/ holds the corpus-acquisition scripts (gate, manifest,
+# annotations); they are scripts rather than a package, so their directory has
+# to be on the path to import them.
+for _path in (
+    str(REPO_ROOT),
+    str(REPO_ROOT / "training"),
+    str(REPO_ROOT / "training" / "raveform"),
+):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
@@ -213,6 +222,28 @@ CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro",
 MEL_BANDS = 40          # must equal MusicAnalyser.mel_filters
 POOL_BUFFERS = 8        # 8 x 256 samples @ 44.1 kHz ~= 46 ms per frame
 
+# Which exporter wrote a sidecar, recorded IN the sidecar.  Bump it whenever
+# `pooled_log_mel` produces different numbers for input it already handled -- a
+# different compression than log1p, a different pooling reduction, a filterbank
+# change.  Geometry cannot stand in for this: all three of those changes leave
+# the frame rate and the band count exactly where they were, so a corpus rebuilt
+# on top of the old sidecars would train one model on two feature generations
+# and say nothing.  The stamp lives here and NOT in the cached report because
+# the report's bytes are what the eval-set baseline checksums, and a provenance
+# field has no business moving a benchmark number.
+MEL_EXPORTER_VERSION = 1
+MEL_EXPORTER_KEY = "exporter_version"
+
+# `MusicAnalyser` throws its rolling state away every 15 minutes (`lib/main.py`)
+# to stop the windows growing without bound.  The simulation runs that code
+# unmodified, so a track that reaches the horizon has its beat stream restart
+# mid-song while `pooled_log_mel` -- which has no such reset -- keeps going.  The
+# two then describe the same audio from different states, and the training table
+# joins them anyway: wrong rows, no error, no counter.  The corpus tops out at
+# 899.889 s, i.e. 0.11 s of margin, so this is a live edge and not a hypothetical
+# one.  Tracks at or past it are dropped from the build with a line saying why.
+ANALYSER_RESET_SEC = 900.0
+
 
 # --------------------------------------------------------------------------- #
 # Label geometry
@@ -232,9 +263,6 @@ class Timeline:
         self._starts = [span[0] for span in ordered]
         self._ends = [span[1] for span in ordered]
         self._values = [span[2] for span in ordered]
-
-    def __len__(self) -> int:
-        return len(self._starts)
 
     def at(self, t: float):
         """Value of the span covering ``t``, or ``None``."""
@@ -651,11 +679,33 @@ def write_feature_sidecar(path, mel: np.ndarray, frame_sec: float, t0: float) ->
                 t0=np.float64(t0),
                 sample_rate=np.int32(SAMPLE_RATE),
                 pool_buffers=np.int32(POOL_BUFFERS),
+                **{MEL_EXPORTER_KEY: np.int32(MEL_EXPORTER_VERSION)},
             )
         tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def sidecar_generation(path: Path) -> int:
+    """Which mel exporter wrote ``path``.
+
+    Sidecars written before this stamp existed carry no such key.  They are
+    reported as generation 1 -- the generation that in fact wrote them -- rather
+    than as unknown, so the check grandfathers the corpus instead of ordering a
+    1,387-track re-simulation to learn something already known.  A sidecar this
+    cannot open reads the same way, deliberately: freshness is not the place to
+    diagnose a corrupt file (the dataset builder fails loudly on one), and
+    widening this check to catch it would have changed a behaviour nobody asked
+    to change.
+    """
+    try:
+        with np.load(path) as archive:
+            if MEL_EXPORTER_KEY in archive.files:
+                return int(archive[MEL_EXPORTER_KEY])
+    except (OSError, ValueError, EOFError, KeyError):
+        pass
+    return 1
 
 
 # --------------------------------------------------------------------------- #
@@ -805,18 +855,46 @@ def simulate_track(job: SimJob) -> SimResult:
 
 
 def load_ok_rows(data_dir: Path) -> list:
-    """The ``status == ok`` rows of ``clean_manifest.csv``, sorted by track_id."""
+    """The ``status == ok``, short-enough rows of ``clean_manifest.csv``.
+
+    Sorted by track_id, and stopping short of the analyser's self-reset -- see
+    ``ANALYSER_RESET_SEC``.
+    """
     path = data_dir / CLEAN_MANIFEST_FILE
     if not path.exists():
         raise RuntimeError(
-            f"missing {path} -- run training/build_clean_manifest.py first"
+            f"missing {path} -- run training/raveform/build_clean_manifest.py first"
         )
     with open(path, "r", encoding="utf-8", newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["status"] == STATUS_OK]
+    rows, rejected = _reject_past_the_analyser_reset(rows)
+    for track_id, seconds in rejected:
+        print(f"  SKIP {track_id}: {seconds / 60.0:.1f} min reaches MusicAnalyser's "
+              f"{ANALYSER_RESET_SEC / 60.0:.0f}-minute self-reset -- its beats and "
+              f"its mel sidecar would no longer describe the same audio", flush=True)
     if not rows:
         raise RuntimeError(f"no ok rows in {path} -- nothing to build from")
     rows.sort(key=lambda row: row["track_id"])
     return rows
+
+
+def _reject_past_the_analyser_reset(rows: list) -> tuple:
+    """``(kept, [(track_id, seconds)])`` -- split on ``ANALYSER_RESET_SEC``.
+
+    A blank or unparseable duration is kept: this gate exists to catch one
+    specific, measurable condition, and it is not the cleanliness gate.
+    """
+    kept, rejected = [], []
+    for row in rows:
+        try:
+            seconds = float(row.get("decoded_duration_sec") or 0.0)
+        except ValueError:
+            seconds = 0.0
+        if seconds >= ANALYSER_RESET_SEC:
+            rejected.append((row["track_id"], seconds))
+        else:
+            kept.append(row)
+    return kept, rejected
 
 
 def load_sections_by_track(data_dir: Path) -> dict:
@@ -825,7 +903,7 @@ def load_sections_by_track(data_dir: Path) -> dict:
 
 
 def select_jobs(rows: list, data_dir: Path, force: bool = False,
-                min_age_sec: float = MIN_AGE_SEC, now: float | None = None,
+                min_age_sec: float = MIN_AGE_SEC,
                 preexisting_caches: set | None = None,
                 sha: str | None = None) -> tuple:
     """``(jobs, counts)`` -- which tracks still need simulating, and why.
@@ -839,7 +917,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
     ``min_age_sec`` is left for a later run -- a downloader may still be writing
     it -- and is never a cache hit either, since its bytes are still moving.
     """
-    now = time.time() if now is None else now
+    now = time.time()
     preexisting_caches = preexisting_caches or set()
     sha = pipeline_sha() if sha is None else sha
     jobs: list = []
@@ -887,6 +965,8 @@ def _cache_miss_reason(cached: Path, sidecar: Path, sha: str,
         return "miss_new"
     if not sidecar.exists():
         return "miss_no_sidecar"
+    if sidecar_generation(sidecar) != MEL_EXPORTER_VERSION:
+        return "miss_sidecar_generation"
     try:
         envelope = _read_json_gz(cached)
     except (OSError, ValueError, EOFError):
@@ -1092,15 +1172,27 @@ def pipeline_sha(repo_root: Path = REPO_ROOT) -> str:
     Keying on HEAD would throw away the whole corpus cache on every commit,
     which is exactly what the cache exists to prevent.
 
-    Uncommitted changes to those sources append ``+dirty``, so an edit that has
-    not been committed yet still invalidates the cache instead of silently
-    reusing reports the current code would no longer produce.
+    Uncommitted changes to those sources append ``+dirty.<digest>``, so an edit
+    that has not been committed yet still invalidates the cache instead of
+    silently reusing reports the current code would no longer produce -- and so
+    do TWO different uncommitted edits against each other.  A constant ``+dirty``
+    suffix gave every working-tree state the same cache key, which is the one
+    state a developer changes the pipeline in most often.
+
+    The digest is over ``git status`` (which names untracked files a diff cannot
+    show) plus ``git diff HEAD`` (which carries the content of staged and
+    unstaged edits alike).  A CLEAN tree still returns the bare commit sha, so
+    every report already cached against a committed pipeline stays valid.
     """
     sha = _git(repo_root, "log", "-1", "--format=%H", "--", *_PIPELINE_PATHSPEC)
     if not sha:
         return "unknown"
     dirty = _git(repo_root, "status", "--porcelain", "--", *_PIPELINE_PATHSPEC)
-    return f"{sha}+dirty" if dirty else sha
+    if not dirty:
+        return sha
+    diff = _git(repo_root, "diff", "HEAD", "--", *_PIPELINE_PATHSPEC) or ""
+    digest = hashlib.sha256(f"{dirty}\n{diff}".encode("utf-8")).hexdigest()
+    return f"{sha}+dirty.{digest[:12]}"
 
 
 def sidecar_stats(data_dir: Path) -> tuple:

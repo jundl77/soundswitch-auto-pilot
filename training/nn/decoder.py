@@ -57,7 +57,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .priors import MODEL_VERSION, MODELS_DIR, PRIORS_FILE, Priors
+from .priors import Priors
 
 # ~5.6 s at the corpus median bar of 1.875 s: the spec's "5-6 s into the 8 s
 # look-ahead budget", leaving margin for quantisation, inference cadence and
@@ -526,29 +526,21 @@ def bar_observations(posterior_npz, edges, *, min_coverage: int = DEFAULT_MIN_CO
     return posteriors, scores
 
 
-def default_priors_path(posterior_npz) -> Path:
-    """``<data-dir>/models/v1/priors.json`` inferred from a sidecar's location."""
-    return Path(posterior_npz).resolve().parents[1] / MODELS_DIR / MODEL_VERSION / PRIORS_FILE
-
-
 def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
-                 priors: Priors | None = None) -> list:
+                 priors: Priors) -> list:
     """One track, end to end: ``[(bar_start_seconds, label), ...]``.
 
     The convenience Task 5 sweeps and Task 6 evaluates through.  Bar-stamped
     rather than run-length encoded on purpose -- the evaluator wants a decision
     per grid position, and ``segments`` collapses it when a timeline is what is
     wanted instead.
+
+    ``priors`` is required.  Guessing them from the sidecar's directory layout
+    put a second, silent notion of "which generation is this" beside the
+    ``--model-version`` every caller already passes -- and the guess was pinned
+    to v1, so a v2 sweep would have decoded against v1 priors without a word.
     """
     params = params or DecodeParams()
-    if priors is None:
-        path = default_priors_path(posterior_npz)
-        if not path.exists():
-            raise RuntimeError(
-                f"no priors at {path} -- run `python -m training.nn.priors` or "
-                f"pass priors= explicitly")
-        priors = Priors.load(path)
-
     edges = bar_grid(beat_csv)
     posteriors, boundary = bar_observations(
         posterior_npz, edges, min_coverage=params.min_coverage,
@@ -564,18 +556,3 @@ def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
         floor_scale=params.floor_scale)
     decisions = decoder.decode(posteriors, boundary)
     return [(float(edges[d.bar]), d.label) for d in decisions]
-
-
-def track_timeline(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
-                   priors: Priors | None = None) -> list:
-    """``decode_track`` collapsed to ``[(start_sec, end_sec, label)]`` spans."""
-    params = params or DecodeParams()
-    edges = bar_grid(beat_csv)
-    decoded = decode_track(posterior_npz, beat_csv, params, priors=priors)
-    spans: list = []
-    for bar, (start, label) in enumerate(decoded):
-        if spans and spans[-1][2] == label:
-            spans[-1][1] = float(edges[bar + 1])
-        else:
-            spans.append([float(start), float(edges[bar + 1]), label])
-    return [(start, end, label) for start, end, label in spans]
