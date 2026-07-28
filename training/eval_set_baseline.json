@@ -2,7 +2,7 @@
   "schema": 1,
   "eval_set": {
     "path": "training/eval_set.json",
-    "sha256": "ef0e5ae4e2489a0808460dad0e99f166879cc412608cf0dc5b0df81a6c2a3247",
+    "sha256": "67986cb788343ea3bf647832a702751acbf7dd629db59026c27a0b4b4a22121d",
     "tracks": 10,
     "youtube_ids": [
       "hzIFjGcOKbg",

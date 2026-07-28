@@ -8,6 +8,10 @@ spotify_details.json
 *.egg-info/
 .DS_Store
 *.pkl
+# Decode caches (<audio>.<rate>.npy), ~7.7x the mp3 -- including the ones the
+# benchmark leaves beside the committed mp3s in training/eval_audio/.
 *.npy
 report.json
+# The Raveform corpus: ~90 GB, machine-local, never committed.  The ten eval-set
+# tracks are the deliberate exception and live in training/eval_audio/.
 training/data/

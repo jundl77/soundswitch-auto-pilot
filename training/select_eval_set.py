@@ -5,9 +5,11 @@ Writes ``training/eval_set.json`` -- the COMMITTED identity of the simulation
 benchmark.  Ten tracks, chosen from the cleanliness-gated corpus, that the fast
 simulation is scored against and that the neural section classifier must never
 see: ``dataset.make_splits`` (not written yet -- NN plan Task 1) will exclude
-every id listed here from train, val and test alike.  Audio is never committed;
-this file is ids + the evidence behind them, and the mp3s stay in the gitignored
-corpus.
+every id listed here from train, val and test alike.  This file is ids + the
+evidence behind them; the ten tracks' audio and labels are committed beside it
+under derived, opaque names (owner-authorised -- see ``training/eval_assets.py``,
+whose scheme this document records in its ``artifacts`` block) so that the
+benchmark runs from a fresh clone.  The rest of the corpus stays gitignored.
 
 Once frozen it STAYS frozen: re-running this script over a grown corpus refuses
 to overwrite the file without ``--force``, because Task B's baseline records
@@ -89,6 +91,7 @@ for _path in (
 
 from build_clean_manifest import CLEAN_MANIFEST_FILE, STATUS_OK  # noqa: E402
 from build_training_table import V1_ORDER, label_v1  # noqa: E402
+from eval_assets import artifacts_block  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     SEGMENTS_FILE,
     annotations_dir,
@@ -535,6 +538,11 @@ def build_document(picks: list, data_dir: Path, clean_rows: int, candidates: int
                 for name, path in input_paths(data_dir).items()
             },
         },
+        # What is committed alongside this file, and how its filenames are
+        # derived -- the scheme, never a mapping (see eval_assets).  A re-freeze
+        # rewrites this document, so it has to be emitted, not hand-added, or
+        # the first --force would drop it.
+        "artifacts": artifacts_block(),
         "rationale": {
             pick.candidate.youtube_id: rationale_line(pick) for pick in picks
         },

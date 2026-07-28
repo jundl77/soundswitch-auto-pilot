@@ -15,9 +15,12 @@ from every neural training and validation split.  Two layers:
   committed baseline.  Also the shortest three, for the same reason (the full
   ten-track benchmark is a ~2 min manual run, not a test).
 
-The audio is gitignored -- the repo is public -- so a checkout without the
-corpus fails these with one line naming the downloader.  Deliberately a failure
-and not a skip: a benchmark nobody notices has been skipped is not a benchmark.
+Both things a run reads are COMMITTED -- the ten mp3s under derived, opaque
+names in ``training/eval_audio/`` and their labels in ``training/eval_labels.json``
+(see ``training/eval_assets.py``) -- so these run from a fresh clone with no
+corpus and no downloads.  If either is ever pruned, they fail with one line
+naming both places to get it back; deliberately a failure and not a skip, since
+a benchmark nobody notices has been skipped is not a benchmark.
 
 Marked @pytest.mark.integration so you can skip with:
   pytest -m "not integration"
