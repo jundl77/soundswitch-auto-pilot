@@ -118,7 +118,14 @@ from typing import NamedTuple
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (str(REPO_ROOT), str(REPO_ROOT / "training")):
+# training/raveform/ holds the corpus-acquisition scripts (gate, manifest,
+# annotations); they are scripts rather than a package, so their directory has
+# to be on the path to import them.
+for _path in (
+    str(REPO_ROOT),
+    str(REPO_ROOT / "training"),
+    str(REPO_ROOT / "training" / "raveform"),
+):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
@@ -856,7 +863,7 @@ def load_ok_rows(data_dir: Path) -> list:
     path = data_dir / CLEAN_MANIFEST_FILE
     if not path.exists():
         raise RuntimeError(
-            f"missing {path} -- run training/build_clean_manifest.py first"
+            f"missing {path} -- run training/raveform/build_clean_manifest.py first"
         )
     with open(path, "r", encoding="utf-8", newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["status"] == STATUS_OK]

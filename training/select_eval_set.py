@@ -78,7 +78,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# training/ for the eval-pipeline scripts, training/raveform/ for the
+# corpus-acquisition ones -- both are scripts, not packages.
+for _path in (
+    str(Path(__file__).resolve().parent),
+    str(REPO_ROOT / "training" / "raveform"),
+):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from build_clean_manifest import CLEAN_MANIFEST_FILE, STATUS_OK  # noqa: E402
 from build_training_table import V1_ORDER, label_v1  # noqa: E402
@@ -615,7 +622,7 @@ def load_ok_rows(data_dir: Path) -> list:
     path = data_dir / CLEAN_MANIFEST_FILE
     if not path.exists():
         raise RuntimeError(
-            f"missing {path} -- run training/build_clean_manifest.py first"
+            f"missing {path} -- run training/raveform/build_clean_manifest.py first"
         )
     with open(path, "r", encoding="utf-8", newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["status"] == STATUS_OK]

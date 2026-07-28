@@ -82,7 +82,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for _path in (str(REPO_ROOT), str(REPO_ROOT / "training")):
+for _path in (
+    str(REPO_ROOT),
+    str(REPO_ROOT / "training"),
+    str(REPO_ROOT / "training" / "raveform"),
+):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
@@ -142,7 +146,7 @@ COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec")
 # (the repo is public), so an absent eval set is an ordinary state of a fresh
 # clone -- but it must be loud, not a silent skip: a skipped benchmark that
 # nobody notices is the same as no benchmark.
-AUDIO_MISSING_HINT = "eval-set audio missing -- run training/raveform_download.py"
+AUDIO_MISSING_HINT = "eval-set audio missing -- run training/raveform/raveform_download.py"
 
 SCHEMA_VERSION = 1
 
@@ -239,7 +243,7 @@ def missing_inputs(data_dir: Path, tracks: list) -> list:
     segments = annotations_dir(Path(data_dir)) / SEGMENTS_FILE
     if not segments.exists():
         problems.append(f"missing {segments} -- run "
-                        f"training/raveform_fetch_annotations.py")
+                        f"training/raveform/raveform_fetch_annotations.py")
     for track in tracks:
         mp3 = audio_path(data_dir, track["youtube_id"])
         if not mp3.exists():

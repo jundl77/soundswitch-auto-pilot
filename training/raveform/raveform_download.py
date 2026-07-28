@@ -47,7 +47,7 @@ Stdlib only.  Requires ``yt-dlp`` and ``ffmpeg`` on PATH.
 
 Usage::
 
-    uv run python training/raveform_download.py \
+    uv run python training/raveform/raveform_download.py \
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform \
         --limit 10
 """
@@ -94,9 +94,41 @@ _PROGRESS_EVERY = 10
 # substring-on-lowercase; the raw stderr tail is always kept alongside, so a
 # mis-classification loses nothing.
 
-_REASON_PATTERNS = (
-    # Ordered: the first match wins, so credential walls outrank the generic
-    # "video unavailable" text that YouTube often appends to them.
+# Ordered: the first match wins, and the ordering encodes exactly one rule --
+#
+#     a PERMANENT condition outranks a TRANSIENT one.
+#
+# Every mis-classification found in this table so far was a violation of it, and
+# they all failed the same way.  YouTube's permanent errors habitually carry
+# transient-looking text: a private video ends with "Use --cookies-from-browser",
+# an age gate opens with "Sign in to confirm your age".  A transient bucket
+# placed above them silently swallows a video that is gone for good, and the
+# cost is never just a wrong label -- every retry pass re-polls it forever, and
+# a run of them trips --max-consecutive-blocks and aborts a healthy run.
+#
+# So the permanent buckets come first, then the refusals, then the generic
+# permanent text that the specific patterns above have already claimed.
+_PERMANENT_PATTERNS = (
+    # Access we will never be granted is not a block.
+    ("unavailable", ("private video", "this video is private")),
+    # "Sign in to confirm your age" contains "sign in to confirm", which is a
+    # bot_check pattern.  The age gate is the more specific reading and the
+    # permanent one: we do not sign in, so the video is not obtainable.
+    (
+        "age_restricted",
+        (
+            "age-restricted",
+            "age restricted",
+            "sign in to confirm your age",
+            "inappropriate for some users",
+        ),
+    ),
+    # Must stay above the generic "this video is not available" below, which
+    # would otherwise swallow the country-specific wording.
+    ("geo_blocked", ("not available in your country", "geo restricted", "geo-restricted")),
+)
+
+_TRANSIENT_PATTERNS = (
     (
         "bot_check",
         (
@@ -111,12 +143,30 @@ _REASON_PATTERNS = (
             "too many requests",
         ),
     ),
-    ("age_restricted", ("age-restricted", "age restricted", "inappropriate for some users")),
-    ("geo_blocked", ("not available in your country", "geo restricted", "geo-restricted")),
+    # A 403 on the media URL is YouTube refusing *this client* -- a signature/nsig
+    # challenge that could not be solved, which is a property of our toolchain and
+    # not of the video.  Measured on the first full corpus sweep: 68 such events,
+    # and every single one of the 62 tracks behind them came back on a later
+    # attempt.  That is why it sits in a retryable bucket rather than with the
+    # dead videos -- patience is the remedy that was actually needed.
+    # It gets its own bucket rather than folding into bot_check because the two
+    # demand opposite remedies: bot_check is a credential wall and an owner
+    # decision, while a 403 wave means fix the extractor and re-run.  Reporting
+    # one as the other invites precisely the wrong fix (cookies).  It was worth
+    # 56% of the failures on the first full corpus sweep, all of them recovered
+    # by a plain re-attempt.
+    ("http_403", ("http error 403", "403: forbidden")),
+)
+
+_REASON_PATTERNS = _PERMANENT_PATTERNS + _TRANSIENT_PATTERNS + (
     (
         "unavailable",
         (
             "video unavailable",
+            # YouTube says this without the word "unavailable" attached to the
+            # word "video", so the pattern above misses it and the failure lands
+            # in `other` -- which retry passes re-poll.
+            "this video is not available",
             "private video",
             "this video is private",
             "has been removed",
@@ -133,8 +183,10 @@ _REASON_PATTERNS = (
 INTERRUPT_REASON = "interrupted"
 
 # Categories that mean "YouTube is refusing this client", not "this video is
-# gone".  Consecutive ones abort the run.
-BLOCK_REASONS = frozenset({"bot_check"})
+# gone".  Consecutive ones abort the run: if the refusals are back to back the
+# problem is the run, not the manifest, and burning the remaining tracks into
+# failure records makes the corpus harder to finish rather than easier.
+BLOCK_REASONS = frozenset(reason for reason, _patterns in _TRANSIENT_PATTERNS)
 
 # Every reason this script can record.  `--retry-reasons` is validated against
 # it so a typo fails loudly instead of silently selecting nothing.
@@ -142,6 +194,22 @@ KNOWN_REASONS = frozenset(
     {reason for reason, _patterns in _REASON_PATTERNS}
     | {"other", "timeout", "missing_output", "empty_output"}
 )
+
+# Reasons worth re-attempting: the failure was about this run, not about the
+# video.  `other` belongs here precisely because it is the *unclassified*
+# bucket -- an error we have no pattern for is far likelier to be something
+# transient we have not named than a video that vanished without YouTube
+# saying so.  Leaving it out is what makes a "just retry the blocks" hint
+# quietly abandon tracks: on the first full corpus sweep 62 of the 65 `other`
+# failures were 403s that a plain re-attempt recovered.
+#
+# This is the list the operator-facing hints print, so the advice this script
+# gives can never again be narrower than the advice that actually works.
+RETRYABLE_REASONS = frozenset(
+    BLOCK_REASONS | {"timeout", "empty_output", "missing_output", "other"}
+)
+
+RETRY_HINT = "--retry-reasons " + ",".join(sorted(RETRYABLE_REASONS))
 
 
 def classify_error(text: str) -> str:
@@ -202,7 +270,8 @@ def install_interrupt_handler() -> None:
 
 
 def default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
+    # parents[2] is the repo root: this file sits in training/raveform/.
+    return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 
 def manifest_path(data_dir: Path) -> Path:
@@ -487,8 +556,10 @@ def main(argv: list | None = None) -> int:
         "--retry-reasons",
         default="",
         metavar="R1,R2",
-        help="re-attempt only the failures whose recorded reason is in this comma list "
-        f"(e.g. bot_check,timeout); the rest stay skipped. Known: {','.join(sorted(KNOWN_REASONS))}",
+        help="re-attempt only the failures whose recorded reason is in this comma list; "
+        f"the rest stay skipped. To retry everything that is worth retrying, use "
+        f"{','.join(sorted(RETRYABLE_REASONS))} -- the reasons that describe this run "
+        f"rather than the video. Known: {','.join(sorted(KNOWN_REASONS))}",
     )
     parser.add_argument(
         "--timeout-sec",
@@ -683,12 +754,48 @@ def main(argv: list | None = None) -> int:
             f"for the remaining {remaining_total}"
         )
 
+    # A plain re-run skips every recorded failure, so a run that ends with
+    # recoverable ones must say out loud how to get them back -- and must name
+    # every such reason, not a sample of them.  Under-naming here is what
+    # silently abandons tracks the corpus could have had.
+    recoverable = sorted(reason for reason in reasons if reason in RETRYABLE_REASONS)
+    if recoverable:
+        print()
+        print(
+            f"  RECOVERABLE : {sum(reasons[reason] for reason in recoverable)} of this run's "
+            f"failures may not be permanent ({', '.join(recoverable)})."
+        )
+        print(f"                A plain re-run SKIPS them. To re-attempt:  {RETRY_HINT}")
+
     blocks = reasons.get("bot_check", 0)
     if blocks:
         print()
         print(
             f"  BOT CHECK   : {blocks} sign-in / rate-limit refusal(s). No cookie or credential "
             "workaround was attempted -- this is an owner decision."
+        )
+    forbidden = reasons.get("http_403", 0)
+    if forbidden:
+        # Deliberately NOT the cookie advice: a 403 on the media URL is an
+        # extraction failure on our side, and pointing at credentials would send
+        # the owner after a problem they do not have.
+        print()
+        print(
+            f"  HTTP 403    : {forbidden} refusal(s) on the media URL -- a signature/nsig "
+            "challenge yt-dlp could not solve. These are"
+        )
+        print(
+            "                NOT dead videos, and on the full corpus sweep every one of "
+            "them came back on a later attempt:"
+        )
+        print(f"                re-run with  {RETRY_HINT}  and let it work through them again.")
+        print(
+            "                If a wave survives repeated patient re-runs, it is a toolchain "
+            "problem (yt-dlp version, or a JS"
+        )
+        print(
+            "                runtime not visible to this process) and an owner decision -- "
+            "not something to keep retrying."
         )
     if aborted:
         print(
@@ -699,10 +806,7 @@ def main(argv: list | None = None) -> int:
             "                Those tracks are now in failed.jsonl, so a PLAIN RE-RUN WILL SKIP "
             "THEM. To bring them back once"
         )
-        print(
-            "                the block clears, re-run with:  --retry-reasons bot_check   "
-            "(add ,timeout if any timed out)."
-        )
+        print(f"                the block clears, re-run with:  {RETRY_HINT}")
         return 2
     if interrupted:
         print("  INTERRUPTED : Ctrl-C. State on disk is resumable; re-run to continue.")

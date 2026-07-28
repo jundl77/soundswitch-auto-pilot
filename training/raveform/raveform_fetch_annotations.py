@@ -23,7 +23,7 @@ size is left untouched, so re-running only re-reads the archive index.
 
 Usage::
 
-    uv run python training/raveform_fetch_annotations.py \
+    uv run python training/raveform/raveform_fetch_annotations.py \
         --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
 """
 
@@ -399,7 +399,8 @@ def validate(data_dir: Path) -> int:
 
 
 def default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
+    # parents[2] is the repo root: this file sits in training/raveform/.
+    return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 
 def main(argv: list | None = None) -> int:
