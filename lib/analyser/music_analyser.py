@@ -88,13 +88,13 @@ class MusicAnalyser:
         self.yamnet_change_detector: YamnetChangeDetector = YamnetChangeDetector(self.sample_rate, self.buffer_size)
 
         # constants
-        self.win_s: int = self.buffer_size * 4  # fft size
-        self.win_s_small: int = self.buffer_size * 2  # fft size
-        self.hop_s: int = self.buffer_size  # hop size
-        self.mel_filters: int = 40  # slaney mel filterbank band count
-        self._mel_band_indices: np.ndarray = np.arange(self.mel_filters)
+        # `win_s_small` is gone with the aubio rhythm objects that were its only
+        # consumers; the FFT size for the bank lives in MelFilterbank now.
+        self._mel_band_indices: np.ndarray = np.arange(MelFilterbank.BANDS)
         # Debug click amplitude: quiet enough to sit under the music.
-        self.click_sound: float = 0.15 * np.sin(2. * np.pi * np.arange(self.hop_s) / self.hop_s * self.sample_rate / 3000.)
+        self.click_sound: float = 0.15 * np.sin(
+            2. * np.pi * np.arange(self.buffer_size) / self.buffer_size
+            * self.sample_rate / 3000.)
 
         # Rhythm front-end. Built once and reset in place: _reset_state() runs
         # every 15 minutes and on every sound stop, and rebuilding would reload
