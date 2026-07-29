@@ -144,3 +144,26 @@ def test_the_first_observation_cannot_report_drift():
     clock.advance(10.0)
     assert dog.observe() is ShedLevel.NONE
     assert dog.drift_sec == 0.0
+
+
+def test_a_deliberate_stall_sheds_unless_forgiven():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 2000, BUF)
+    assert dog.level is ShedLevel.NONE
+
+    clock.advance(0.2)
+    dog.observe()
+    assert dog.level is ShedLevel.SECTION_DETECTION
+
+
+def test_forgiving_a_deliberate_stall_prevents_the_shed():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 2000, BUF)
+
+    clock.advance(0.2)
+    dog.forgive(0.2)
+    _feed(dog, clock, 200, BUF)
+    assert dog.level is ShedLevel.NONE
+    assert abs(dog.total_drift_sec) < 0.05

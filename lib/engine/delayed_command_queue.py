@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from typing import Callable, Awaitable
 from lib.clock import Clock, SYSTEM_CLOCK
 
@@ -14,7 +15,7 @@ class DelayedCommandQueue:
         self._delay_sec = delay_sec
         self._clock = clock
         self._queue: list[tuple[float, float, str, CommandFactory]] = []
-        self._timing_log: list[dict] = []
+        self._timing_log: deque = deque(maxlen=2000)
 
     @property
     def delay_sec(self) -> float:

@@ -51,6 +51,16 @@ class DriftWatchdog:
     def level(self) -> ShedLevel:
         return self._level
 
+    def forgive(self, sec: float) -> None:
+        """Deliberate stalls (the MIDI settle at a song boundary) are not lost lead."""
+        if sec <= 0:
+            return
+        self._samples = deque((w + sec, s) for w, s in self._samples)
+        if self._first_wall is not None:
+            self._first_wall += sec
+        if self._calm_since is not None:
+            self._calm_since += sec
+
     @property
     def drift_sec(self) -> float:
         """Lead lost inside the rolling window. Negative means catching up."""

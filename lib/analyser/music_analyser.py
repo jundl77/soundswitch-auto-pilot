@@ -420,7 +420,9 @@ class MusicAnalyser:
         was_playing = self.is_playing
         self._reset_state()
         if was_playing:
+            handler_started = self._clock.monotonic()
             self.handler.on_sound_stop()
+            self._drift.forgive(self._clock.monotonic() - handler_started)
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:
         if not self.is_playing or current_bpm <= 0:

@@ -225,3 +225,28 @@ def test_the_real_stack_streams_and_is_deterministic():
     first, second = run(), run()
     assert first == second
     assert first[0], 'expected beats on 20 s of four-on-the-floor'
+
+
+def test_the_shipped_onset_threshold_is_the_calibrated_one():
+    import json
+    from pathlib import Path
+    from lib.analyser.madmom_rhythm import ONSET_THRESHOLD
+
+    evidence = json.loads(
+        (Path(__file__).resolve().parents[1] / 'training' / 'onset_operating_point.json').read_text())
+    assert ONSET_THRESHOLD == evidence['chosen_threshold']
+    assert evidence['stability']['mode'] == evidence['chosen_threshold']
+
+
+def test_a_multi_event_decoder_return_still_counts_one_onset_per_hop():
+    from lib.analyser.madmom_rhythm import HOP_SIZE
+
+    class BurstStage(FakeStage):
+        def __call__(self, hop):
+            self.hops.append(np.asarray(hop).copy())
+            return np.array([0.01, 0.02, 0.03], dtype=float)
+
+    rhythm, _, _ = _rhythm()
+    rhythm._onsets = BurstStage()
+    events = rhythm.process(np.zeros(HOP_SIZE, dtype=np.float32))
+    assert len(events.onsets) == 1
