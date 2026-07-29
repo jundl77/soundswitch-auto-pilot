@@ -196,7 +196,7 @@ uv run pytest                        # unit + integration (minutes, not seconds)
 
 **Flags (`run`):**
 - `-i / -o` â€” audio device indices from `list`; passing `-o` enables delayed audio monitoring on that device
-- `-d` â€” debug: adds a click on detected notes to the monitored audio (implies monitoring on the default output if `-o` is not given)
+- `-d` â€” debug: adds a click on every detected BEAT to the monitored audio (implies monitoring on the default output if `-o` is not given). Beat-triggered by owner preference, not the note-triggered click aubio used to drive â€” roughly half the clicks, landing on the pulse rather than on every onset.
 - `--no-os2l` â€” disable VirtualDJ connection
 - `--ui` â€” launch Dash real-time visualizer at http://localhost:8050
 - `--ui-port N` â€” change visualizer port
@@ -416,8 +416,8 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
   report rows would be indistinguishable from a genuinely sparse passage.
   Restoring either shed component clears its buffers first, because everything
   they hold describes audio from before the gap.
-- **madmom is CC BY-NC-SA** (models). Fine for a personal project per decisions #57;
-  it forecloses a commercial turn without a JKU licence. aubio's GPL note stands.
+- **madmom is CC BY-NC-SA** (models). Fine for a personal project; it forecloses a
+  commercial turn without a JKU licence. aubio's GPL note stands.
 - **madmom is pinned to a git SHA**, not a release: the last PyPI release cannot be
   imported on Python 3.10+. An upgrade is deliberate and `tests/test_madmom_contract.py`
   is what makes it a checked one.

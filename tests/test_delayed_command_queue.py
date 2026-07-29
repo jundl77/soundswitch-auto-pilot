@@ -16,7 +16,7 @@ async def test_zero_delay_fires_on_next_drain():
 
 
 async def test_positive_delay_holds_until_due():
-    q = DelayedCommandQueue(60.0)  # 1 minute — won't fire in this test
+    q = DelayedCommandQueue(60.0)
     fired = []
 
     async def cmd():
@@ -70,16 +70,7 @@ async def test_undrained_commands_not_in_log():
 
 
 async def test_command_fires_only_after_delay_has_elapsed():
-    """Commands must not fire early; they must fire once the delay is past.
-
-    asyncio.sleep() precision is intentionally not tested here — it is
-    hardware/scheduler-dependent and produces flaky results on macOS. The
-    integration test (test_simulation.py) covers end-to-end timing with a
-    real pipeline loop. This test only verifies the logical invariants:
-      1. The command does NOT fire before the delay expires.
-      2. The command DOES fire after the delay expires.
-      3. The recorded actual_delta_sec is always >= the configured delay.
-    """
+    # No sleep-precision assertions here — scheduler jitter makes them flaky.
     delay = 0.05
     q = DelayedCommandQueue(delay)
     fired = []
@@ -89,11 +80,9 @@ async def test_command_fires_only_after_delay_has_elapsed():
 
     await q.enqueue('timed', cmd)
 
-    # Drain immediately — command must NOT fire yet.
     await q.drain()
     assert fired == [], "command fired before delay elapsed"
 
-    # Wait well past the delay (generous factor to survive slow CI), then drain.
     await asyncio.sleep(delay * 5)
     await q.drain()
     assert fired == [1], "command did not fire after delay elapsed"
@@ -102,10 +91,6 @@ async def test_command_fires_only_after_delay_has_elapsed():
     assert len(log) == 1
     assert log[0]['actual_delta_sec'] >= delay, "command fired before configured delay"
 
-
-# ---------------------------------------------------------------------------
-# Virtual clock
-# ---------------------------------------------------------------------------
 
 from lib.clock import VirtualClock
 
@@ -120,11 +105,11 @@ async def test_virtual_clock_command_fires_only_after_virtual_delay():
 
     await q.enqueue('x', cmd)
     await q.drain()
-    assert fired == []  # no virtual time has passed
+    assert fired == []
 
     clock.advance(2.4)
     await q.drain()
-    assert fired == []  # still 0.1s short
+    assert fired == []
 
     clock.advance(0.2)
     await q.drain()

@@ -22,7 +22,7 @@ Every `aubio` symbol reachable from the live pipeline, classified. Verified by
 |---|---|---|---|
 | 1 | `aubio.tempo("default", win_s_small, hop_s, sr)` — `self.tempo_o` | beat instants (`_track_beat`) **and** BPM (`get_bpm` → `tempo_o.get_bpm()`) | **MIGRATES** — madmom `RNNBeatProcessor(online=True)` → `DBNBeatTrackingProcessor(online=True)`; BPM derived from the emitted beat stream |
 | 2 | `aubio.onset("default", …)` — `self.onset_o` | onset instants (`_track_onset`) feeding `get_onset_density` / `get_onset_density_trend` / `_density_samples` | **MIGRATES** — madmom online onset processor + `OnsetPeakPickingProcessor(online=True)` |
-| 3 | `aubio.notes("default", …)` — `self.notes_o` | the `-d` debug click trigger only (`_track_note` → `handler.on_note()` → `click_sound` mixed into the monitored buffer) | **MIGRATES** — retriggered from the madmom onset stream, same 75 ms refractory, same click, same `-d` UX |
+| 3 | `aubio.notes("default", …)` — `self.notes_o` | the `-d` debug click trigger only (`_track_note` → `handler.on_note()` → `click_sound` mixed into the monitored buffer) | **MIGRATES** — the note event now comes from the madmom onset stream and keeps driving the overlay bar; the audible `-d` click was moved to the BEAT stream by owner decision (see Task 9) |
 | 4 | `aubio.pvoc(win_s, hop_s)` — `self.pvoc_o` | the FFT that feeds the filterbank | **STAYS** (filterbank role; owner amendment #72a) |
 | 5 | `aubio.filterbank(40, win_s)` + `set_mel_coeffs_slaney(sr)` — `self.energy_filter` | the 40-band mel bank behind `kick_strength`, `sub_bass_ratio`, `spectral_centroid_trend`, `_is_silence`, and every trained model's sidecars | **STAYS** (owner amendment #72a) |
 
@@ -195,7 +195,8 @@ what madmom's library default would have given.
 `MusicAnalyser` loses `tempo_o`, `onset_o`, `notes_o`; keeps `pvoc_o`,
 `energy_filter`. `_track_beat` / `_track_onset` / `_track_note` are driven by
 the adapter's per-buffer output. `get_bpm` derives from the beat stream (D4).
-The beep keeps its 75 ms refractory, its click, and its `-d` wiring.
+The note event keeps its 75 ms refractory and its overlay wiring. The audible
+`-d` click was subsequently moved to the beat stream by owner decision.
 
 Suite must be green here, with skip-count and collected-count unchanged and
 explained if not (#47/#59).
@@ -246,7 +247,13 @@ not quietly skipped.
 ### Task 9 — beeps, verified not asserted
 
 A `-d`-equivalent simulated run that writes the click-mixed monitor buffer and
-shows the clicks landing on the reported onsets. Evidence recorded.
+shows the clicks landing where they should. Evidence recorded.
+
+**AMENDED BY OWNER DECISION.** The click now fires on the **beat**, not on
+onsets. This is a deliberate UX change, not the parity the charter originally
+asked for: beats run ~2.1/s against ~3.6/s of onsets, so the monitor is sparser
+and marks the pulse. The end-to-end test asserts clicks land on beats *and* that
+they do not follow the onset stream, so a drift back is caught.
 
 ### Task 9b — soak (added mid-flight by ruling)
 

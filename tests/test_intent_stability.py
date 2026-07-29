@@ -1,20 +1,12 @@
-"""
-Unit tests for intent-stability mechanisms in LightEngine._commit_intent:
-  - Vote buffer: requires _VOTE_BUFFER_SIZE consecutive identical votes
-  - Minimum dwell: requires _MIN_DWELL_BEATS beats in current intent before switching
-  - Invalid-transition guard: blocks musically impossible jumps
-  - PEAK promotion: a sustained DROP becomes PEAK, which then absorbs DROP votes
-
-These tests drive _commit_intent directly with a synthetic _beat_history,
-bypassing on_beat() and the audio pipeline entirely.
-"""
-
+import datetime
 import pytest
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 from lib.engine.light_engine import (
+    BeatRecord,
     LightEngine,
+    _BEAT_ABSENCE_SEC,
     _VOTE_BUFFER_SIZE,
     _MIN_DWELL_BEATS,
     _PEAK_PROMOTION_BEATS,
@@ -30,61 +22,58 @@ from lib.engine.effect_definitions import LightIntent
 from lib.engine.event_buffer import EventBuffer
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _make_engine(look_ahead_sec: float = 1.0,
-                 event_buffer: EventBuffer | None = None) -> LightEngine:
-    """Build a minimal LightEngine backed by mock clients for unit testing."""
+                 event_buffer: EventBuffer | None = None,
+                 command_queue=None,
+                 clock=None) -> LightEngine:
     effect_controller = MagicMock()
     effect_controller.change_effect = AsyncMock()
+    os2l_client = MagicMock()
+    os2l_client.send_beat = AsyncMock()
     engine = LightEngine(
         midi_client=MagicMock(),
-        os2l_client=MagicMock(),
+        os2l_client=os2l_client,
         overlay_client=MagicMock(),
         effect_controller=effect_controller,
-        command_queue=None,
+        command_queue=command_queue,
         event_buffer=event_buffer,
         look_ahead_sec=look_ahead_sec,
+        **({'clock': clock} if clock else {}),
     )
     analyser = MagicMock()
     analyser.is_song_playing.return_value = True
     analyser.get_seconds_since_last_beat.return_value = 0.0
+    analyser.get_song_current_duration.return_value = datetime.timedelta(seconds=1)
+    analyser.get_bpm.return_value = 128.0
+    analyser.get_onset_density.return_value = _DROP_MIN_DENSITY_ENTER + 1
+    analyser.get_onset_density_trend.return_value = 1.0
+    analyser.get_sub_bass_ratio.return_value = 0.3
+    analyser.get_rms_energy.return_value = 0.5
+    analyser.get_kick_strength.return_value = KICK_PRESENT
+    analyser.get_spectral_centroid_trend.return_value = 1.0
     engine.set_analyser(analyser)
     return engine
 
 
 KICK_PRESENT = _KICK_PRESENCE_THRESHOLD + 0.5
-# Below DROP's exit threshold but above BREAKDOWN's entry: GROOVE even from DROP or PEAK.
 GROOVE_DENSITY = (_BREAKDOWN_MAX_DENSITY_ENTER + _DROP_MIN_DENSITY_EXIT) / 2
 
 
 def _seed_beat_history(engine: LightEngine, density: float, bpm: float = 128.0,
                        kick: float = KICK_PRESENT, centroid_trend: float = 1.0, n: int = 7):
-    """Fill _beat_history with beats spread symmetrically around the engine clock's now.
-
-    All beats land within look_ahead_sec of now so they are included in the
-    window when _commit_intent(enqueue_time=now, ...) is called immediately after.
-    """
-    now = engine._clock.monotonic()  # the engine's own clock, whatever it is
+    now = engine._clock.monotonic()
     half = engine._look_ahead_sec * 0.9
     for i in range(n):
         t = now - half + i * (2 * half / max(n - 1, 1))
-        engine._beat_history.append((t, density, bpm, 0.0, 0.5, kick, centroid_trend))
-    return now  # use as enqueue_time
+        engine._beat_history.append(BeatRecord(t, density, bpm, 0.0, 0.5, kick, centroid_trend))
+    return now
 
-
-# ---------------------------------------------------------------------------
-# Vote-buffer tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_single_vote_does_not_switch():
-    """One unanimous vote is not enough — buffer must be full."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
-    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10  # bypass dwell
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
     await engine._commit_intent(enqueue_time, 128.0)
@@ -95,7 +84,6 @@ async def test_single_vote_does_not_switch():
 
 @pytest.mark.asyncio
 async def test_full_unanimous_votes_triggers_switch():
-    """_VOTE_BUFFER_SIZE identical votes with sufficient dwell → intent switch."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -110,68 +98,51 @@ async def test_full_unanimous_votes_triggers_switch():
 
 @pytest.mark.asyncio
 async def test_mixed_votes_do_not_switch():
-    """A mix of DROP and GROOVE votes prevents a switch even after the buffer is full.
-
-    We inject votes directly into the buffer to isolate the voting logic from
-    the windowed classifier (which depends on a correctly seeded beat history).
-    """
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # Pre-load a mixed vote buffer: [GROOVE, DROP, GROOVE]
-    from collections import deque
+    # One vote short of full, and disagreeing: the incoming DROP fills the buffer
+    # and differs from the current intent, so only consensus can stop the switch.
     engine._intent_vote_buffer = deque(
-        [LightIntent.GROOVE, LightIntent.DROP, LightIntent.GROOVE],
+        [LightIntent.DROP, LightIntent.GROOVE],
         maxlen=_VOTE_BUFFER_SIZE,
     )
 
-    # Call _commit_intent with a window that classifies as GROOVE.
-    # The vote buffer is full but not unanimous → no switch.
-    enqueue_time = _seed_beat_history(engine, density=GROOVE_DENSITY)
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
     await engine._commit_intent(enqueue_time, 128.0)
 
-    # The new vote (GROOVE) overwrites oldest (GROOVE): [DROP, GROOVE, GROOVE] — still mixed.
+    assert len(engine._intent_vote_buffer) == _VOTE_BUFFER_SIZE
     assert engine._current_intent == LightIntent.GROOVE
     engine.effect_controller.change_effect.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Minimum-dwell tests
-# ---------------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_dwell_prevents_early_switch():
-    """Unanimous votes cannot switch until _MIN_DWELL_BEATS beats have elapsed."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
-    engine._beats_in_current_intent = 0  # just entered GROOVE
+    engine._beats_in_current_intent = 0
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
-    # Fill vote buffer with unanimous DROP votes — but dwell counter is too low
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
 
-    # After _VOTE_BUFFER_SIZE calls, dwell = _VOTE_BUFFER_SIZE which is < _MIN_DWELL_BEATS
     assert engine._current_intent == LightIntent.GROOVE
     engine.effect_controller.change_effect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_switch_allowed_after_dwell_met():
-    """Once _MIN_DWELL_BEATS beats have elapsed, a unanimous vote switches intent."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
-    engine._beats_in_current_intent = _MIN_DWELL_BEATS - 1  # one beat short
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS - 1
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
-    # First call brings dwell to _MIN_DWELL_BEATS — still can't switch (buffer not full).
     await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.GROOVE
 
-    # Remaining calls fill the vote buffer; dwell is now satisfied.
     for _ in range(_VOTE_BUFFER_SIZE - 1):
         await engine._commit_intent(enqueue_time, 128.0)
 
@@ -179,13 +150,8 @@ async def test_switch_allowed_after_dwell_met():
     engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.DROP)
 
 
-# ---------------------------------------------------------------------------
-# Invalid-transition tests
-# ---------------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_invalid_transition_atmospheric_to_drop_blocked():
-    """ATMOSPHERIC → DROP is an invalid transition and must be blocked."""
     assert (LightIntent.ATMOSPHERIC, LightIntent.DROP) in _INVALID_TRANSITIONS
 
     engine = _make_engine()
@@ -196,14 +162,12 @@ async def test_invalid_transition_atmospheric_to_drop_blocked():
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
 
-    # Should remain ATMOSPHERIC despite DROP votes
     assert engine._current_intent == LightIntent.ATMOSPHERIC
     engine.effect_controller.change_effect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_valid_transition_groove_to_drop_allowed():
-    """GROOVE → DROP is a valid transition and should proceed when all checks pass."""
     assert (LightIntent.GROOVE, LightIntent.DROP) not in _INVALID_TRANSITIONS
 
     engine = _make_engine()
@@ -220,7 +184,6 @@ async def test_valid_transition_groove_to_drop_allowed():
 
 @pytest.mark.asyncio
 async def test_invalid_transition_atmospheric_to_buildup_blocked():
-    """ATMOSPHERIC → BUILDUP is an invalid transition."""
     assert (LightIntent.ATMOSPHERIC, LightIntent.BUILDUP) in _INVALID_TRANSITIONS
     assert (LightIntent.ATMOSPHERIC, LightIntent.PEAK) in _INVALID_TRANSITIONS
 
@@ -228,7 +191,6 @@ async def test_invalid_transition_atmospheric_to_buildup_blocked():
     engine._current_intent = LightIntent.ATMOSPHERIC
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # Moderate density (below DROP entry) with a rising spectral centroid → BUILDUP
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER - 0.5,
                                       centroid_trend=_CENTROID_BUILDUP_TREND + 0.1)
     for _ in range(_VOTE_BUFFER_SIZE):
@@ -240,7 +202,6 @@ async def test_invalid_transition_atmospheric_to_buildup_blocked():
 
 @pytest.mark.asyncio
 async def test_vote_buffer_cleared_after_switch():
-    """After a successful intent switch the vote buffer is cleared (fresh start)."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -250,44 +211,33 @@ async def test_vote_buffer_cleared_after_switch():
         await engine._commit_intent(enqueue_time, 128.0)
 
     assert engine._current_intent == LightIntent.DROP
-    # Vote buffer should be empty after the switch
     assert len(engine._intent_vote_buffer) == 0
-    # Dwell counter should be reset
     assert engine._beats_in_current_intent == 0
 
-
-# ---------------------------------------------------------------------------
-# PEAK promotion tests — PEAK is an engine-level promotion, never a classification
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_sustained_drop_promotes_to_peak():
-    """A committed DROP that survives _PEAK_PROMOTION_BEATS commit-beats becomes PEAK."""
     engine = _make_engine()
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
-    # Phase 1: unanimous DROP votes commit DROP and reset the dwell counter.
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.DROP
     assert engine._beats_in_current_intent == 0
 
-    # Phase 2: one commit-beat short of the promotion threshold — still DROP.
     for _ in range(_PEAK_PROMOTION_BEATS - 1):
         await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.DROP
 
-    # Phase 3: the _PEAK_PROMOTION_BEATS-th commit-beat promotes DROP → PEAK.
     await engine._commit_intent(enqueue_time, 128.0)
     assert engine._current_intent == LightIntent.PEAK
     engine.effect_controller.change_effect.assert_awaited_with(LightIntent.PEAK)
     assert engine._beats_in_current_intent == 0
     assert len(engine._intent_vote_buffer) == 0
 
-    # Phase 4: promotion fires exactly once — continued DROP votes do not re-fire it.
     awaits_after_promotion = engine.effect_controller.change_effect.await_count
     for _ in range(_PEAK_PROMOTION_BEATS + 1):
         await engine._commit_intent(enqueue_time, 128.0)
@@ -297,7 +247,6 @@ async def test_sustained_drop_promotes_to_peak():
 
 @pytest.mark.asyncio
 async def test_peak_absorbs_drop_votes():
-    """While in PEAK, unanimous DROP consensus must not switch back to DROP."""
     engine = _make_engine()
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -312,7 +261,6 @@ async def test_peak_absorbs_drop_votes():
 
 @pytest.mark.asyncio
 async def test_peak_holds_through_mid_hysteresis_density_dip():
-    """PEAK inherits DROP's exit threshold — a dip below entry does not eject it."""
     engine = _make_engine()
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
@@ -328,12 +276,11 @@ async def test_peak_holds_through_mid_hysteresis_density_dip():
 
 @pytest.mark.asyncio
 async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
-    """The reported intent timeline must agree with the lights during a PEAK hold."""
     buffer = EventBuffer()
     buffer.start()
     engine = _make_engine(event_buffer=buffer)
     engine._current_intent = LightIntent.DROP
-    engine._beats_in_current_intent = _PEAK_PROMOTION_BEATS - 1  # one beat from promotion
+    engine._beats_in_current_intent = _PEAK_PROMOTION_BEATS - 1
 
     enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
 
@@ -341,7 +288,6 @@ async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
     assert engine._current_intent == LightIntent.PEAK
     assert buffer.snapshot()['intent'] == LightIntent.PEAK.value
 
-    # Subsequent beats reach DROP consensus and are absorbed — no 'drop' block.
     for _ in range(_VOTE_BUFFER_SIZE * 2):
         await engine._commit_intent(enqueue_time, 128.0)
 
@@ -352,14 +298,12 @@ async def test_peak_timeline_stays_peak_through_absorbed_drop_votes():
 
 @pytest.mark.asyncio
 async def test_peak_exits_to_groove_on_consensus():
-    """Any non-DROP consensus exits PEAK through the normal pipeline."""
     assert (LightIntent.PEAK, LightIntent.GROOVE) not in _INVALID_TRANSITIONS
 
     engine = _make_engine()
     engine._current_intent = LightIntent.PEAK
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    # Density eased below DROP's exit threshold, no riser → classifies as GROOVE
     enqueue_time = _seed_beat_history(engine, density=GROOVE_DENSITY)
     for _ in range(_VOTE_BUFFER_SIZE):
         await engine._commit_intent(enqueue_time, 128.0)
@@ -367,10 +311,6 @@ async def test_peak_exits_to_groove_on_consensus():
     assert engine._current_intent == LightIntent.GROOVE
     engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.GROOVE)
 
-
-# ---------------------------------------------------------------------------
-# Virtual clock — beat history timestamps come from the injected clock
-# ---------------------------------------------------------------------------
 
 from lib.clock import VirtualClock
 
@@ -407,4 +347,78 @@ async def test_beat_history_uses_injected_clock():
 
     clock.advance(10.0)
     await engine.on_beat(beat_number=1, bpm=128.0, bpm_changed=False)
-    assert engine._beat_history[-1][0] == 10.0  # virtual monotonic, not wall time
+    assert engine._beat_history[-1].at == 10.0
+
+
+@pytest.mark.asyncio
+async def test_commits_left_in_flight_by_a_sound_stop_light_nothing():
+    buffer = EventBuffer()
+    buffer.start()
+    engine = _make_engine(event_buffer=buffer)
+    engine._current_intent = LightIntent.DROP
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
+
+    engine.on_sound_stop()
+    for _ in range(_VOTE_BUFFER_SIZE + _MIN_DWELL_BEATS):
+        await engine._commit_intent(enqueue_time, 128.0)
+
+    assert engine._current_intent is None
+    engine.effect_controller.change_effect.assert_not_awaited()
+    assert buffer.snapshot()['intents'] == []
+
+
+@pytest.mark.asyncio
+async def test_a_section_change_commits_the_intent_it_lit():
+    buffer = EventBuffer()
+    buffer.start()
+    engine = _make_engine(event_buffer=buffer)
+    engine._current_intent = LightIntent.BREAKDOWN
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
+    engine._intent_vote_buffer.extend([LightIntent.BREAKDOWN] * 2)
+    _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
+
+    await engine.on_section_change()
+
+    assert engine._current_intent is LightIntent.DROP
+    engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.DROP)
+    assert [e['intent'] for e in buffer.snapshot()['intents']] == [LightIntent.DROP.value]
+    assert not engine._intent_vote_buffer
+    assert engine._beats_in_current_intent == 0
+
+
+@pytest.mark.asyncio
+async def test_a_section_change_without_beats_lights_nothing():
+    engine = _make_engine()
+    engine._current_intent = LightIntent.GROOVE
+
+    await engine.on_section_change()
+
+    assert engine._current_intent is LightIntent.GROOVE
+    engine.effect_controller.change_effect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_atmospheric_and_its_return_ride_the_look_ahead_delay():
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+
+    clock = VirtualClock()
+    queue = DelayedCommandQueue(2.5, clock=clock)
+    engine = _make_engine(look_ahead_sec=2.5, command_queue=queue, clock=clock)
+    engine.analyser.get_seconds_since_last_beat.return_value = _BEAT_ABSENCE_SEC + 0.1
+
+    await engine.on_100ms_callback()
+    engine.effect_controller.change_effect.assert_not_awaited()
+
+    clock.advance(2.5)
+    await queue.drain()
+    engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.ATMOSPHERIC)
+
+    engine.analyser.get_seconds_since_last_beat.return_value = 0.0
+    await engine.on_beat(beat_number=1, bpm=128.0, bpm_changed=False)
+    assert engine.effect_controller.change_effect.await_count == 1
+
+    clock.advance(2.5)
+    await queue.drain()
+    assert engine.effect_controller.change_effect.await_count == 2
+    assert engine._current_intent is LightIntent.DROP

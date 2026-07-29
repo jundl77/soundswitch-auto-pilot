@@ -14,7 +14,6 @@ from lib.clock import Clock, SYSTEM_CLOCK
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
 
-# Trigger the autoloop change 1 sec before the event so SoundSwitch has time to settle.
 APPLY_COLOR_OVERRIDE_INTERVAL_SEC = 60 * 5
 
 
@@ -33,11 +32,6 @@ class EffectController:
         pass
 
     async def change_effect(self, intent: LightIntent) -> None:
-        """Select and apply a MIDI effect for the given intent.
-
-        Picks a random channel from the intent's pool (never the same as last time).
-        For PEAK intent the pool includes a strobe special effect.
-        """
         logging.info(f'[effect_controller] change_effect called, intent={intent.name}')
         pool = INTENT_EFFECTS[intent]
         new_effect = self._select_new_random_effect(pool, self.last_effect)

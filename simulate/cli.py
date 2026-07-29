@@ -1,21 +1,3 @@
-"""
-Simulation CLI handlers — wired into 'auto_pilot simulate' subcommand.
-
-MODES
-  file            — FAST headless (default): run the whole file through the
-                    pipeline on a virtual clock (~25-40× real-time), write the
-                    JSON report, print the evaluation, exit 0=PASS / 1=FAIL.
-  file --ui       — real-time paced run with the live Dash timeline (previous
-                    default behavior; --play-audio available here).
-  realtime        — capture from microphone in real time with Dash timeline.
-
-EXAMPLES
-  python auto_pilot simulate file samples/song.mp3
-  python auto_pilot simulate file samples/song.mp3 --report out.json
-  python auto_pilot simulate file samples/song.mp3 --ui --play-audio
-  python auto_pilot simulate realtime --device-index 1
-"""
-
 import asyncio
 import json
 import logging
@@ -68,12 +50,10 @@ async def run_file(args):
 
 
 async def _run_file_fast(args):
-    """Fast headless mode: virtual clock, no UI, report + evaluation + exit code."""
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import run_fast_simulation
 
-    # A fast run emits thousands of per-beat/per-note INFO lines that bury the
-    # report and cost real wall time on console I/O — warnings only.
+    # Per-beat INFO lines cost more wall time than the DSP at fast-sim speed.
     logging.getLogger().setLevel(logging.WARNING)
 
     wall_start = time.monotonic()
@@ -91,7 +71,6 @@ async def _run_file_fast(args):
 
 
 def _run_file_realtime_ui(args):
-    """Real-time paced run with the live Dash timeline (previous default behavior)."""
     from lib.engine.event_buffer import EventBuffer
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import build_simulation, LOOK_AHEAD_SEC
@@ -156,7 +135,6 @@ def run_realtime(args):
 
 
 def add_simulate_subparser(subparsers):
-    """Register the 'simulate' subcommand and its sub-subcommands."""
     sim = subparsers.add_parser(
         'simulate',
         help='Run the pipeline against a file (fast, headless) or microphone (live UI)',

@@ -9,7 +9,7 @@ class OverlayEffect(Enum):
 
 class OverlayDefinition:
     def __init__(self, start_offset: int, dmx_data: list[int]):
-        """ start_offset is 0-indexed """
+        # start_offset is 0-indexed; DMX channel numbering is 1-indexed.
         assert 0 < start_offset + len(dmx_data) <= 512
         self.start_offset: int = start_offset
         self.dmx_data: list[int] = dmx_data

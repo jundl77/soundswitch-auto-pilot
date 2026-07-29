@@ -52,12 +52,10 @@ async def test_change_effect_peak_uses_bank1(effect_controller):
 
 @pytest.mark.asyncio
 async def test_change_effect_drop_can_produce_special_or_autoloop(effect_controller):
-    # DROP pool has BANK_1D, BANK_1E (autoloop) and STROBE (special effect)
     seen_types = set()
     for _ in range(50):
         effect_controller.reset_state()
         await effect_controller.change_effect(LightIntent.DROP)
-        # last_effect is only set for autoloop; last_special_effect for special
         seen_types.add(effect_controller.last_effect.type)
     assert EffectType.AUTOLOOP in seen_types
 
@@ -69,10 +67,6 @@ async def test_reset_state_clears_last_effect(effect_controller):
     assert effect_controller.last_effect.midi_channel.name == 'AUTOLOOP_BANK_1A'
 
 
-# ---------------------------------------------------------------------------
-# Virtual clock — color override cooldown runs on injected time
-# ---------------------------------------------------------------------------
-
 from lib.clock import VirtualClock
 from lib.engine.effect_controller import APPLY_COLOR_OVERRIDE_INTERVAL_SEC
 
@@ -82,17 +76,13 @@ async def test_color_override_cooldown_uses_injected_clock(stub_midi):
     clock = VirtualClock()
     controller = EffectController(stub_midi, clock=clock)
 
-    # Immediately after construction the cooldown is active.
     await controller._apply_color_override_if_due()
     first_time = controller.last_color_override_time
 
-    # First call should NOT have sent a color override (cooldown active).
     assert not any(e['label'] == 'set_color_override' for e in stub_midi.events)
 
-    # Advance virtual time past the cooldown — the override must now fire.
     clock.advance(APPLY_COLOR_OVERRIDE_INTERVAL_SEC + 1)
     await controller._apply_color_override_if_due()
     assert controller.last_color_override_time != first_time
 
-    # Second call should have sent a color override (cooldown elapsed).
     assert any(e['label'] == 'set_color_override' for e in stub_midi.events)
