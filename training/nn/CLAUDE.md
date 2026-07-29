@@ -26,7 +26,7 @@ clean_manifest.csv + mel sidecars + annotations
 
 Each stage reads the previous stage's artifact off disk. That is deliberate: the expensive stages run once and every cheap stage downstream is re-runnable in seconds.
 
-A **second chain is under construction beside it**: a downbeat head and a bar-phase decoder, because the section decoder commits at bar rate and live audio arrives with beats but no bar. It shares the sidecars, the splits and the window machinery, and it is the deployment prerequisite the v1 verdict named. Spec: `docs/superpowers/specs/2026-07-27-live-downbeat-tracking-design.md`; the live (aubio-driven) condition is the one its gates bind to.
+A **second chain is under construction beside it**: a downbeat head and a bar-phase decoder, because the section decoder commits at bar rate and live audio arrives with beats but no bar. It shares the sidecars, the splits and the window machinery, and it is the deployment prerequisite the v1 verdict named. Spec: `docs/superpowers/specs/2026-07-27-live-downbeat-tracking-design.md`; the live (aubio-driven) condition is the one its gates bound to — see the dating note below, which now matters because that stream has been replaced.
 
 ```
 downbeat_dataset.py (expert beat grids)  ->  downbeat_model.py + downbeat_train.py
@@ -37,7 +37,9 @@ downbeat_dataset.py (expert beat grids)  ->  downbeat_model.py + downbeat_train.
         v                                    and what a predicted grid costs the section decode
 ```
 
-The decoder's two input conditions are the whole point of the evaluation design: `aubio` is the beat stream the live engine actually produces (lifted from the cached sim reports) and is what the gates bind to; `expert` is the annotator's grid and is the diagnostic upper bound. The gap between them is the aubio-degradation cost, and it is reported, never assumed away.
+The decoder's two input conditions are the whole point of the evaluation design: `aubio` is the beat stream the live engine produced when this chain was evaluated (lifted from the cached sim reports) and is what the gates bound to; `expert` is the annotator's grid and is the diagnostic upper bound. The gap between them is the beat-source degradation cost, and it is reported, never assumed away.
+
+> **The live condition here is dated, and deliberately so.** madmom replaced aubio as the rhythm source after this chain was scored, so everything in this package that says `aubio` describes the stream the evaluation *ran on*, not the one the engine produces now. It is kept verbatim as the record of why the component was blocked. Per owner decisions #84 it is not re-run: the verdict was a single read of the held-out split, and spending a second read to re-date a blocked component buys nothing the next generation does not buy properly. The condition name stays `aubio` throughout for the same reason — renaming it to "live" would quietly reassign a measurement to a stream it was never taken on. A future downbeat generation evaluates against madmom, under its own frozen config and its own single test read.
 
 | Module | Role |
 |---|---|

@@ -15,9 +15,12 @@ from every neural training and validation split.  Two layers:
   committed baseline.  Also the shortest three, for the same reason (the full
   ten-track benchmark is a ~2 min manual run, not a test).
 
-The audio is gitignored -- the repo is public -- so a checkout without the
-corpus fails these with one line naming the downloader.  Deliberately a failure
-and not a skip: a benchmark nobody notices has been skipped is not a benchmark.
+Both things a run reads are COMMITTED -- the ten mp3s under derived, opaque
+names in ``training/eval_audio/`` and their labels in ``training/eval_labels.json``
+(see ``training/eval_assets.py``) -- so these run from a fresh clone with no
+corpus and no downloads.  If either is ever pruned, they fail with one line
+naming both places to get it back; deliberately a failure and not a skip, since
+a benchmark nobody notices has been skipped is not a benchmark.
 
 Marked @pytest.mark.integration so you can skip with:
   pytest -m "not integration"
@@ -125,9 +128,17 @@ async def test_report_duration_matches_song_not_flush_tail():
 @pytest.mark.integration
 async def test_runs_much_faster_than_real_time():
     """The track must simulate in a small fraction of its length — a regression
-    guard against accidental wall-clock pacing."""
+    guard against accidental wall-clock pacing.
+
+    The bound moved from 4x to 2x when the rhythm front-end became madmom's
+    online networks: the same pipeline measured 46.3x on this box with aubio and
+    3.79x with madmom, because state-of-the-art online beat and onset tracking
+    costs 25.7 % of a core against aubio's 1.4 %. Accidental wall-clock pacing —
+    the thing this test exists to catch — reads 1.0x, so a 2x bound still
+    catches it decisively while leaving room for a slower machine.
+    """
     run = await _sample_run()
-    assert run['wall_elapsed'] < run['song_sec'] / 4, (
+    assert run['wall_elapsed'] < run['song_sec'] / 2, (
         f"{run['song_sec']:.0f}s of audio took {run['wall_elapsed']:.1f}s wall"
     )
 

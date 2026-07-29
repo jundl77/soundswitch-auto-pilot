@@ -30,9 +30,12 @@ label boundaries, scored seconds) are compared exactly: they cost nothing and
 they move for causes a 0.02 score tolerance absorbs.
 
 **The same question.**  Scores are only comparable against the labels they were
-cut over, and ``annotations/segments.json`` is gitignored corpus that a re-fetch
-can move.  The eval set recorded its sha256 at freeze time, so every run checks
-it before simulating anything and refuses outright if it has moved.
+cut over.  The ten tracks' labels are COMMITTED (``training/eval_labels.json``,
+cut by ``eval_assets``) and carry the sha256 of the ``annotations/segments.json``
+they came out of, so the run proves the slice belongs to the frozen set before
+scoring anything.  A machine without the slice falls back to the gitignored
+corpus file, which a re-fetch can move, and is checked against the sha the eval
+set recorded at freeze time.  Either way the run refuses outright on a mismatch.
 
 Both gates fire together on a deliberate improvement (better scores still move
 the checksums), and that is the intended workflow: read the table, decide the
@@ -63,7 +66,9 @@ the eval set is ten tracks and it is re-run constantly -- by the integration
 suite on every ``uv run pytest``.  Keeping the caches costs under a gigabyte and
 removes the decode (several seconds a track) from every run after the first.
 This is deliberate, and ``build_training_table`` already honours it: its
-``keep_cache`` rule leaves behind any cache that existed before its batch.
+``keep_cache`` rule leaves behind any cache that existed before its batch.  They
+now land in ``training/eval_audio/`` beside the committed mp3s, where the
+repository's ``*.npy`` rule keeps them out of git.
 
 Exit codes: 0 clean, 1 the gate failed, 2 an input is missing or the command was
 refused.
@@ -91,13 +96,21 @@ for _path in (
         sys.path.insert(0, _path)
 
 from build_training_table import (  # noqa: E402  (needs the path inserts above)
-    AUDIO_DIR,
     _git,
     default_workers,
     join_track,
     load_sections_by_track,
     pipeline_sha,
 )
+from eval_assets import (  # noqa: E402
+    EVAL_AUDIO_DIR,
+    EVAL_LABELS_FILE,
+    committed_audio_path,
+    corpus_audio_path,
+    labels_source_sha,
+    load_labels,
+)
+from eval_assets import sections_by_track as sections_from_slice  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
     PRIMARY_TOLERANCE_SEC,
     SPACES,
@@ -142,11 +155,17 @@ DEFAULT_FLICKER_TOLERANCE = 0.20
 # stays comfortably inside its 0.02.  Free: they are already in every row.
 COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec")
 
-# The one line a machine without the corpus must see.  Audio is never committed
-# (the repo is public), so an absent eval set is an ordinary state of a fresh
-# clone -- but it must be loud, not a silent skip: a skipped benchmark that
-# nobody notices is the same as no benchmark.
-AUDIO_MISSING_HINT = "eval-set audio missing -- run training/raveform/raveform_download.py"
+# The one line a machine with neither copy must see.  The ten mp3s are COMMITTED
+# (owner-authorised, under derived names -- see eval_assets), so this is no
+# longer an ordinary state of a fresh clone; it means the committed dir was
+# pruned and the corpus is not there either.  Still loud, never a silent skip: a
+# skipped benchmark that nobody notices is the same as no benchmark.
+AUDIO_MISSING_HINT = (
+    "eval-set audio missing -- expected the committed copy in "
+    f"{EVAL_AUDIO_DIR.relative_to(REPO_ROOT).as_posix()}/ (re-cut it with "
+    "training/eval_assets.py --cut) or the corpus mp3 from "
+    "training/raveform/raveform_download.py"
+)
 
 SCHEMA_VERSION = 1
 
@@ -187,8 +206,39 @@ def corpus_dir() -> Path:
 
 
 def audio_path(data_dir: Path, youtube_id: str) -> Path:
-    """Where the downloader parks one eval track's mp3."""
-    return Path(data_dir) / AUDIO_DIR / f"{youtube_id}.mp3"
+    """The mp3 this run will read: the committed copy first, else the corpus.
+
+    Committed first because that is the copy every machine has, and because the
+    two are byte-identical by construction (``eval_assets.copy_audio`` re-hashes
+    every copy), so which one is read cannot move a report checksum.  When
+    neither exists the CORPUS path is returned: it is the one a human can act
+    on, and it is what the missing-input line prints.
+    """
+    committed = committed_audio_path(youtube_id)
+    if committed.exists():
+        return committed
+    return corpus_audio_path(Path(data_dir), youtube_id)
+
+
+def labels_source(data_dir: Path, labels: Path | None = None) -> tuple:
+    """``(path, committed)`` -- the section labels this run scores against.
+
+    One resolver for the three things that need the answer (is it there, is it
+    the right one, read it), because a run that CHECKED the corpus file and
+    SCORED against the committed slice would be checking nothing.
+    """
+    committed = Path(labels or EVAL_LABELS_FILE)
+    if committed.exists():
+        return committed, True
+    return annotations_dir(Path(data_dir)) / SEGMENTS_FILE, False
+
+
+def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
+    """``track_id -> [(start, end, label)]`` from whichever labels resolved."""
+    path, committed = labels_source(data_dir, labels)
+    if committed:
+        return sections_from_slice(load_labels(path))
+    return load_sections_by_track(Path(data_dir))
 
 
 def select_tracks(document: dict, only: list | None = None) -> list:
@@ -233,17 +283,20 @@ def shortest_track_ids(document: dict, count: int) -> list:
     return [track["track_id"] for track in tracks if track["track_id"] in chosen]
 
 
-def missing_inputs(data_dir: Path, tracks: list) -> list:
+def missing_inputs(data_dir: Path, tracks: list, labels: Path | None = None) -> list:
     """Everything the run needs and does not have, one human line each.
 
-    Reported all at once rather than raising on the first: a fresh clone should
-    learn it needs the annotations AND three mp3s from one run, not three.
+    Reported all at once rather than raising on the first: a machine missing
+    both should learn it needs the annotations AND three mp3s from one run, not
+    three.  On a fresh clone this is empty -- both are committed.
     """
     problems = []
-    segments = annotations_dir(Path(data_dir)) / SEGMENTS_FILE
-    if not segments.exists():
-        problems.append(f"missing {segments} -- run "
-                        f"training/raveform/raveform_fetch_annotations.py")
+    segments, committed = labels_source(data_dir, labels)
+    if not committed and not segments.exists():
+        problems.append(
+            f"missing {segments} -- run "
+            f"training/raveform/raveform_fetch_annotations.py, or restore the "
+            f"committed {EVAL_LABELS_FILE.name}")
     for track in tracks:
         mp3 = audio_path(data_dir, track["youtube_id"])
         if not mp3.exists():
@@ -251,16 +304,19 @@ def missing_inputs(data_dir: Path, tracks: list) -> list:
     return problems
 
 
-def verify_ground_truth(document: dict, data_dir: Path) -> None:
+def verify_ground_truth(document: dict, data_dir: Path,
+                        labels: Path | None = None) -> None:
     """Refuse to score against labels the eval set was not frozen against.
 
-    ``segments.json`` is gitignored corpus, not a committed artifact, so
-    nothing in the repository pins it: re-fetching the annotations can move a
-    section boundary under a baseline that was cut before the move, and every
-    number in this run would then be measuring a different question while the
-    gate reported "MATCHES BASELINE".  The eval set already recorded that
-    file's sha256 at freeze time, so the check costs one hash of a file the run
-    is about to read anyway.
+    Re-fetching the annotations can move a section boundary under a baseline
+    that was cut before the move, and every number in this run would then be
+    measuring a different question while the gate reported "MATCHES BASELINE".
+
+    Two ways to be sure, one per source.  The COMMITTED slice cannot move
+    behind git's back, so what has to be proved of it is provenance: it records
+    the sha256 of the ``segments.json`` it was cut from, and that must be the
+    sha the eval set froze against.  The CORPUS file is gitignored and nothing
+    in the repository pins it, so it is hashed on every run.
 
     Fatal rather than a warning, and checked here rather than at the freeze:
     the freeze can survive a corpus that has moved on (that is what freezing
@@ -268,6 +324,21 @@ def verify_ground_truth(document: dict, data_dir: Path) -> None:
     checked -- it chose which tracks are in the set and grows with every
     download batch, and it feeds no number in this file.
     """
+    path, committed = labels_source(data_dir, labels)
+    if committed:
+        frozen = ((document.get("selected_from") or {}).get("inputs")
+                  or {}).get(SEGMENTS_FILE)
+        cut_from = labels_source_sha(load_labels(path))
+        if not frozen or not cut_from or frozen != cut_from:
+            raise RuntimeError(
+                f"the eval set's GROUND TRUTH does not match the freeze: "
+                f"{Path(path).name} was cut from {SEGMENTS_FILE} "
+                f"{str(cut_from)[:12]}..., the eval set froze against "
+                f"{str(frozen)[:12]}... -- re-cut the slice "
+                f"(training/eval_assets.py --cut) and the baseline together."
+            )
+        return
+
     drift = verify_inputs(document, Path(data_dir), only=(SEGMENTS_FILE,))
     if drift:
         raise RuntimeError(
@@ -786,7 +857,7 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
         raise RuntimeError("; ".join(problems))
     verify_ground_truth(eval_document, Path(data_dir))
 
-    jobs = build_jobs(data_dir, tracks, load_sections_by_track(Path(data_dir)))
+    jobs = build_jobs(data_dir, tracks, load_sections(data_dir))
     started = time.monotonic()
     runs = execute(jobs, workers, quiet=quiet)
     # Elapsed, not the sum of the tracks': under a pool they overlap, and the

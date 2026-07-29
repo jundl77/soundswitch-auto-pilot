@@ -27,6 +27,7 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+from eval_assets import EVAL_LABELS_FILE, committed_audio_path  # noqa: E402
 from run_eval_set import (  # noqa: E402  (needs the path insert above)
     AUDIO_MISSING_HINT,
     BASELINE_FILE,
@@ -40,11 +41,14 @@ from run_eval_set import (  # noqa: E402  (needs the path insert above)
     build_document,
     build_jobs,
     compare,
+    corpus_audio_path,
     corpus_dir,
     default_data_dir,
     file_sha256,
+    labels_source,
     load_baseline,
     load_eval_set,
+    load_sections,
     missing_inputs,
     partial_baseline_refusal,
     score_report,
@@ -55,6 +59,10 @@ from run_eval_set import (  # noqa: E402  (needs the path insert above)
 )
 
 LOOK_AHEAD = 2.5
+
+# The committed label slice is always there, so every test of the CORPUS branch
+# has to say so explicitly -- otherwise it silently exercises the other one.
+NO_SLICE = "absent-labels.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -173,22 +181,23 @@ def test_select_tracks_rejects_an_id_outside_the_frozen_set():
 # --------------------------------------------------------------------------- #
 
 
-def test_missing_inputs_names_every_absent_mp3_and_the_download_hint(tmp_path):
+def test_missing_inputs_names_every_absent_mp3_and_both_places_to_get_it(tmp_path):
     document = eval_document(("a.1", "1", 400.0), ("b.2", "2", 250.0))
     (tmp_path / "audio").mkdir()
-    audio_path(tmp_path, "1").write_bytes(b"not really an mp3")
+    corpus_audio_path(tmp_path, "1").write_bytes(b"not really an mp3")
     (tmp_path / "annotations").mkdir()
     (tmp_path / "annotations" / "segments.json").write_text("[]", encoding="utf-8")
 
     problems = missing_inputs(tmp_path, select_tracks(document))
     assert len(problems) == 1
     assert "b.2" in problems[0] and AUDIO_MISSING_HINT in problems[0]
+    assert "eval_audio" in problems[0] and "raveform_download" in problems[0]
 
 
 def test_missing_inputs_is_empty_when_everything_is_there(tmp_path):
     document = eval_document(("a.1", "1", 400.0))
     (tmp_path / "audio").mkdir()
-    audio_path(tmp_path, "1").write_bytes(b"x")
+    corpus_audio_path(tmp_path, "1").write_bytes(b"x")
     (tmp_path / "annotations").mkdir()
     (tmp_path / "annotations" / "segments.json").write_text("[]", encoding="utf-8")
     assert missing_inputs(tmp_path, select_tracks(document)) == []
@@ -212,25 +221,146 @@ def test_build_jobs_gives_each_worker_only_its_own_sections(tmp_path):
 
 
 def test_missing_inputs_reports_a_missing_annotation_file(tmp_path):
+    """Only reachable with no committed slice: then the corpus file is the
+    ground truth, and its absence has to be named."""
     document = eval_document(("a.1", "1", 400.0))
     (tmp_path / "audio").mkdir()
-    audio_path(tmp_path, "1").write_bytes(b"x")
-    problems = missing_inputs(tmp_path, select_tracks(document))
+    corpus_audio_path(tmp_path, "1").write_bytes(b"x")
+    problems = missing_inputs(tmp_path, select_tracks(document),
+                              labels=tmp_path / NO_SLICE)
     assert any("segments.json" in problem for problem in problems)
+
+
+def test_missing_inputs_does_not_want_the_corpus_when_the_slice_is_committed(tmp_path):
+    """The fresh-clone promise: with the committed labels and the committed
+    mp3s, a machine with no corpus at all is missing nothing."""
+    document = eval_document(("a.1", "1", 400.0))
+    (tmp_path / "audio").mkdir()
+    corpus_audio_path(tmp_path, "1").write_bytes(b"x")
+    assert missing_inputs(tmp_path, select_tracks(document)) == []
+
+
+# --------------------------------------------------------------------------- #
+# Resolution: committed artifacts first, corpus second
+# --------------------------------------------------------------------------- #
+
+
+def test_audio_resolution_prefers_the_committed_copy(tmp_path, monkeypatch):
+    """The whole point of committing the ten mp3s: a machine that has BOTH must
+    read the committed one, or a fresh clone and a corpus machine would be
+    running the benchmark off different files."""
+    youtube_id = load_eval_set(EVAL_SET_FILE)["youtube_ids"][0]
+    (tmp_path / "audio").mkdir()
+    corpus_audio_path(tmp_path, youtube_id).write_bytes(b"a decoy corpus mp3")
+
+    assert audio_path(tmp_path, youtube_id) == committed_audio_path(youtube_id)
+
+
+def test_audio_resolution_falls_back_to_the_corpus(tmp_path):
+    """An id with no committed copy -- a corpus track outside the eval set, or
+    an eval set re-frozen before the artifacts were re-cut."""
+    assert audio_path(tmp_path, "not-an-eval-track") == corpus_audio_path(
+        tmp_path, "not-an-eval-track")
+
+
+def test_missing_audio_names_the_corpus_path_a_human_can_act_on(tmp_path):
+    """With neither copy there, the returned path is the one a download would
+    create; the committed dir is named in the hint instead."""
+    assert audio_path(tmp_path, "nope") == corpus_audio_path(tmp_path, "nope")
+
+
+def test_labels_resolution_prefers_the_committed_slice(tmp_path):
+    path, committed = labels_source(tmp_path)
+    assert committed is True
+    assert path == EVAL_LABELS_FILE
+
+
+def test_labels_resolution_falls_back_to_the_corpus_annotation(tmp_path):
+    path, committed = labels_source(tmp_path, labels=tmp_path / NO_SLICE)
+    assert committed is False
+    assert path == tmp_path / "annotations" / "segments.json"
+
+
+def test_the_committed_slice_covers_exactly_the_frozen_eval_set(tmp_path):
+    """Read through the resolver, not the file: this is what a run scores
+    against, and a slice cut before a re-freeze would silently score fewer."""
+    sections = load_sections(tmp_path)
+    frozen = {track["track_id"] for track in load_eval_set(EVAL_SET_FILE)["tracks"]}
+    assert set(sections) == frozen
+    assert all(len(sections[track_id]) > 1 for track_id in frozen)
+
+
+def test_every_committed_mp3_the_eval_set_names_is_there():
+    """The fresh-clone tripwire, in the FAST suite: if the audio dir is ever
+    pruned, this says so in a second instead of the integration suite saying it
+    in a minute -- or, worse, a fresh clone saying it to a stranger."""
+    missing = [youtube_id
+               for youtube_id in load_eval_set(EVAL_SET_FILE)["youtube_ids"]
+               if not committed_audio_path(youtube_id).exists()]
+    assert not missing, f"{len(missing)} eval-set mp3s are not committed: {missing}"
 
 
 # --------------------------------------------------------------------------- #
 # Ground truth
 # --------------------------------------------------------------------------- #
 #
-# The labels are gitignored corpus.  Nothing in the repository pins them, so a
-# re-fetch can move a boundary under a baseline cut before the move and every
-# score in the run silently starts answering a different question.
+# Two sources, two ways to be sure.  The COMMITTED slice cannot move behind
+# git's back, so what is checked of it is provenance: the segments.json it was
+# cut from must be the one the eval set froze against.  The CORPUS file is
+# gitignored and nothing in the repository pins it, so a re-fetch can move a
+# boundary under a baseline cut before the move and every score in the run
+# silently starts answering a different question -- it is hashed every run.
+
+
+def slice_cut_from(tmp_path: Path, sha: str) -> Path:
+    """A committed-shaped label slice claiming it was cut from ``sha``."""
+    path = tmp_path / "eval_labels.json"
+    path.write_text(json.dumps({
+        "schema": 1,
+        "source": {"file": "annotations/segments.json", "sha256": sha},
+        "tracks": [{"key": "a.1", "sections": []}],
+    }), encoding="utf-8")
+    return path
+
+
+def test_a_slice_cut_from_the_frozen_labels_passes(tmp_path):
+    document = {"selected_from": {"inputs": {"segments.json": "abc123"}}}
+    verify_ground_truth(document, tmp_path,
+                        labels=slice_cut_from(tmp_path, "abc123"))
+
+
+def test_a_slice_cut_from_other_labels_is_a_hard_failure(tmp_path):
+    """The slice is committed, so this cannot happen by drift -- only by a
+    re-freeze that re-cut one of the two and not the other."""
+    document = {"selected_from": {"inputs": {"segments.json": "abc123"}}}
+    with pytest.raises(RuntimeError) as excinfo:
+        verify_ground_truth(document, tmp_path,
+                            labels=slice_cut_from(tmp_path, "d1ffe4e47"))
+    message = str(excinfo.value)
+    assert "GROUND TRUTH" in message and "eval_assets.py --cut" in message
+
+
+def test_a_slice_with_no_recorded_source_is_a_failure(tmp_path):
+    """A slice that cannot say where it came from proves nothing about the
+    labels the baseline was cut over."""
+    path = tmp_path / "eval_labels.json"
+    path.write_text(json.dumps({"schema": 1, "tracks": []}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="GROUND TRUTH"):
+        verify_ground_truth({"selected_from": {"inputs": {"segments.json": "a"}}},
+                            tmp_path, labels=path)
+
+
+def test_the_committed_slice_was_cut_from_the_frozen_ground_truth():
+    """The real files, in the fast suite and with no corpus: this is the whole
+    chain a fresh clone relies on -- baseline -> eval_set.json -> the sha the
+    committed slice records -> the labels every score is computed against."""
+    verify_ground_truth(load_eval_set(EVAL_SET_FILE), Path("does-not-exist"))
 
 
 def test_unmoved_labels_pass_the_ground_truth_check(tmp_path):
     data_dir = corpus(tmp_path, segments='[{"key": "a.1"}]')
-    verify_ground_truth(frozen_against(data_dir), data_dir)
+    verify_ground_truth(frozen_against(data_dir), data_dir,
+                        labels=tmp_path / NO_SLICE)
 
 
 def test_moved_labels_are_a_hard_failure_that_names_the_cause(tmp_path):
@@ -240,7 +370,7 @@ def test_moved_labels_are_a_hard_failure_that_names_the_cause(tmp_path):
         '[{"key": "a.1", "sections": "moved"}]', encoding="utf-8")
 
     with pytest.raises(RuntimeError) as excinfo:
-        verify_ground_truth(document, data_dir)
+        verify_ground_truth(document, data_dir, labels=tmp_path / NO_SLICE)
     message = str(excinfo.value)
     assert "GROUND TRUTH" in message
     assert "segments.json" in message
@@ -255,14 +385,15 @@ def test_a_grown_corpus_does_not_fail_the_ground_truth_check(tmp_path):
     document = frozen_against(data_dir)
     (data_dir / "clean_manifest.csv").write_text("track_id\nb.2\n", encoding="utf-8")
 
-    verify_ground_truth(document, data_dir)
+    verify_ground_truth(document, data_dir, labels=tmp_path / NO_SLICE)
 
 
 def test_an_eval_set_with_no_recorded_label_checksum_is_a_failure(tmp_path):
     """No checksum on record is not 'nothing moved' -- it is 'nobody can tell'."""
     data_dir = corpus(tmp_path)
     with pytest.raises(RuntimeError, match="GROUND TRUTH"):
-        verify_ground_truth({"selected_from": {"inputs": {}}}, data_dir)
+        verify_ground_truth({"selected_from": {"inputs": {}}}, data_dir,
+                            labels=tmp_path / NO_SLICE)
 
 
 # --------------------------------------------------------------------------- #

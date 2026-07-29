@@ -37,6 +37,11 @@
       "segments.json": "ab7d0b2d0dd74c645794ca9c085f30b5de42202bdc544069b035e05d97237708"
     }
   },
+  "artifacts": {
+    "audio_dir": "training/eval_audio",
+    "audio_name_scheme": "base64url(sha256(youtube_id))[:10] + '.mp3'",
+    "labels": "training/eval_labels.json"
+  },
   "rationale": {
     "hzIFjGcOKbg": "0064.hzIFjGcOKbg Drum & Bass 170.4 BPM, 7.9 min, 8 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- BPM band 168.9-174.7",
     "PNpXKsge4xM": "0096.PNpXKsge4xM Drum & Bass 174.0 BPM, 4.3 min, 8 v1 boundaries, classes intro/buildup/breakdown/drop/outro -- tempo-gap fill (block reused)",

@@ -27,7 +27,9 @@ Before opening a PR, all tests must pass:
 # Fast unit tests (run these frequently during development)
 uv run pytest -m "not integration"
 
-# Full suite including unit + integration tests
+# Full suite including unit + integration tests (a few minutes: the integration
+# tests run whole tracks through the real rhythm networks, so this is minutes,
+# not seconds. It is not hung.)
 uv run pytest
 
 # Run a single test file
@@ -36,7 +38,7 @@ uv run pytest tests/test_delayed_command_queue.py -v
 
 The integration tests in `tests/test_simulation.py` run real, expert-labelled music through the full pipeline (identical code path to production). One track pins the *mechanism* — command-timing exactness, flush behaviour, report duration, speed, byte-identical determinism, and the plumbing evaluator's verdict; three more go through `training/run_eval_set.py` in compare mode and pin the *behaviour* — per-track report checksums and label-aligned scores against the committed baseline. If they fail, the pipeline is broken or its output moved. There is one simulation mode — real audio files — paced either sped-up (default) or real-time (`--ui`).
 
-**These tests need the eval-set audio**, which is gitignored (the repo is public). A checkout without the corpus fails them with one line naming `training/raveform/raveform_download.py` — a deliberate failure rather than a skip, because a benchmark nobody notices has been skipped is not a benchmark. The corpus does not follow `git worktree add`; a linked worktree finds the main checkout's copy automatically, and `$RAVEFORM_DATA_DIR` overrides.
+**These tests run from a fresh clone with no downloads.** Both things they read — the ten eval-set mp3s and the labels they are scored against — are committed (see The benchmark). If either is ever pruned they fail with one line naming both places to get it back, a deliberate failure rather than a skip, because a benchmark nobody notices has been skipped is not a benchmark. Everything else still needs the gitignored corpus; it does not follow `git worktree add`, so a linked worktree finds the main checkout's copy automatically, and `$RAVEFORM_DATA_DIR` overrides.
 
 ### Testing philosophy
 
@@ -50,7 +52,7 @@ The integration tests in `tests/test_simulation.py` run real, expert-labelled mu
 ## What It Does
 
 1. Reads audio from a microphone/line input
-2. Extracts musical features via Aubio (BPM, onsets, notes, mel filterbank energies)
+2. Extracts rhythm via madmom's online neural trackers (beats, BPM, onsets) and spectral features via Aubio's mel filterbank
 3. Detects musical section changes via a YAMNet TensorFlow embedding + cosine similarity outlier detection
 4. Classifies audio energy as a `LightIntent` (ATMOSPHERIC / BREAKDOWN / GROOVE / BUILDUP / DROP / PEAK)
 5. Selects and sends MIDI lighting effects to SoundSwitch based on intent; also sends OS2L beat events to VirtualDJ and DMX overlays via UDP
@@ -60,7 +62,7 @@ The integration tests in `tests/test_simulation.py` run real, expert-labelled mu
 ## Architecture
 
 ```
-PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserHandler)
+PyAudio â†’ MusicAnalyser (madmom rhythm + Aubio bank) â†’ LightEngine (IMusicAnalyserHandler)
                    â†“                          â†“               â†“
         YamnetChangeDetector          EffectController    MIDI / OS2L / Overlay
                                              â†‘
@@ -76,6 +78,8 @@ PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserH
 | `lib/main.py` | `SoundSwitchAutoPilot` â€” async event loop, 100 ms / 1 s / 10 s callbacks |
 | `lib/clock.py` | `Clock` abstraction â€” `SystemClock` (prod default) vs `VirtualClock` (fast sim); every time-based component takes an injectable clock |
 | `lib/audio_config.py` | Canonical `SAMPLE_RATE` / `BUFFER_SIZE` â€” single source for live pipeline, simulation, and virtual-clock timing math |
+| `lib/analyser/madmom_rhythm.py` | `MadmomRhythm` -- madmom's online beat/onset stack, adapted from the pipeline's buffer size to madmom's frame rate; the only place that framing mismatch exists |
+| `lib/analyser/drift_watchdog.py` | `DriftWatchdog` -- measures the loop's lost lead against the live input and sheds work, cheapest loss first, when it stops keeping up |
 | `lib/analyser/music_analyser.py` | `MusicAnalyser` â€” per-buffer DSP, beat/onset/note events, YAMNet trigger |
 | `lib/analyser/yamnet_change_detector.py` | `YamnetChangeDetector` â€” TF Hub YAMNet embeddings, MAD outlier detection |
 | `lib/analyser/CLAUDE.md` | Analysis pipeline detail: features, classification design, evaluation strategy |
@@ -114,7 +118,7 @@ For the specific thresholds and tuning constants that drive classification, see 
 
 ### How classification works
 
-Classification uses BPM (octave-folded into one tempo band, so aubio's double/half-tempo locks cannot fake a high-energy moment), onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (how far sub-bass rises above its own floor on the beat â€” distinguishes a kick drum from a hi-hat-only or pad-driven passage), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
+Classification uses BPM (octave-folded into one tempo band, so a half- or double-tempo lock cannot fake a high-energy moment), onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (how far sub-bass rises above its own floor on the beat â€” distinguishes a kick drum from a hi-hat-only or pad-driven passage), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
 
 **Kick strength carries the classification.** On real material onset density barely varies across a track's sections â€” it says whether anything rhythmic is happening, not how big the moment is. The kick is what separates a drop from an intro, so it gates DROP and, by its absence, widens BREAKDOWN. Branches are tested DROP â†’ BUILDUP â†’ BREAKDOWN â†’ GROOVE; BUILDUP sits above BREAKDOWN because a riser strips the kick by design and would otherwise be swallowed by the kick-absence branch. An unmeasured or unmeasurable kick reads as *absent*, never assumed present.
 
@@ -128,7 +132,7 @@ Classification uses BPM (octave-folded into one tempo band, so aubio's double/ha
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
-**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track ~30â€“50Ã— faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track several times faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
 
 ### DMX migration path
 
@@ -165,7 +169,7 @@ python auto_pilot run 0 --ui
 python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 
 # Simulation (no hardware required) — any audio file
-python auto_pilot simulate file path/to/song.mp3          # fast headless: full song in seconds, report + evaluation
+python auto_pilot simulate file path/to/song.mp3          # fast headless: ~2x real time since madmom, report + evaluation
 python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced with live Dash timeline
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
@@ -187,7 +191,7 @@ uv run python -m training.nn.evaluate_v1 --data-dir training/data/raveform
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
-uv run pytest                        # unit + integration
+uv run pytest                        # unit + integration (minutes, not seconds)
 ```
 
 **Flags (`run`):**
@@ -202,7 +206,23 @@ uv run pytest                        # unit + integration
 
 ## ML / DSP Components
 
-- **Aubio** â€” real-time BPM, onset, note, and mel filterbank energies. Tuned for low-latency real-time use.
+- **madmom** -- all rhythm: beat tracking (a recurrent-network ensemble feeding a
+  dynamic Bayesian network), BPM, and onsets. **Online mode only**, and that is
+  load-bearing: madmom's offline decoders score better and cannot run live, so a
+  number produced by one is a number the runtime can never reproduce. Chosen over
+  aubio on a measured decoded comparison rather than reputation. The basis and
+  the measured effect on the show are in `docs/migration-evidence.md` and
+  `training/migration_deltas.json`; the onset operating point's raw sweep and its
+  stability analysis are in `training/onset_operating_point.json`, with every
+  draw taken (including the wrong ones) in `training/onset_operating_point_draws.md`.
+- **Aubio** -- the 40-band Slaney mel filterbank and the FFT that feeds it, and
+  nothing else. Every trained model and every spectral feature (kick strength,
+  sub-bass ratio, centroid trend) is built on this exact bank, so it is held
+  byte-stable by a golden test rather than reimplemented. The two-library split
+  is interim by owner decision: the next retrain generation bakes off front-ends
+  and may consolidate. Replacing the bank now would invalidate the trained stack
+  for no measured gain; replacing the rhythm source roughly doubled downbeat F1
+  at the operating point a show actually uses.
 - **YAMNet (TensorFlow Hub)** â€” Google's pre-trained audio classifier; used here for embeddings only (not tag predictions). Cosine similarity + MAD-based outlier detection finds section transitions. Degrades gracefully if model fails to load.
 
 ---
@@ -224,6 +244,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 | `build_training_table.py` | clean manifest + the unmodified fast sim -> `training_table.csv.gz` (one row per labelled beat), a sim report per track, and a pooled log-mel sidecar per track for the neural classifier |
 | `evaluate_against_labels.py` | training table -> `baseline_eval.json` + a printed report: the current classifier scored against expert labels (confusion, per-class F1, boundary-F1, flicker, worst songs) |
 | `select_eval_set.py` | clean manifest + annotations -> the frozen ten-track benchmark at `training/eval_set.json` (committed, tempo-spanning, structurally rich) |
+| `eval_assets.py` | the eval set's committed artifacts: the derived opaque mp3 names, the sha-pinned label slice, and the `--cut` that re-makes both |
 | `run_eval_set.py` | the frozen eval set -> per-track report checksums and label-aligned scores; cuts and enforces `training/eval_set_baseline.json` |
 | `nn/dataset.py` | clean manifest + mel sidecars + annotations -> `splits.json` and the windowed, loss-masked training set the CRNN reads |
 | `nn/model.py` | `SectionCRNN` -- the two-head acoustic model (label logits at ~10 Hz, boundary logits at frame rate) |
@@ -287,17 +308,19 @@ Decisions that belong here rather than in the code:
 
 ### The benchmark: the frozen eval set
 
-The simulation used to be judged against one bundled track and a plumbing-only PASS verdict that asked "did anything happen at all". It is now judged against **ten expert-labelled Raveform tracks frozen in `training/eval_set.json`**, with `training/run_eval_set.py` as the gate and `training/eval_set_baseline.json` as the committed answer. The bundled Generate track has been retired; its historical measurements survive in the Stage-1 plan under `docs/superpowers/plans/`.
+The simulation used to be judged against one bundled track and a plumbing-only PASS verdict that asked "did anything happen at all". It is now judged against **ten expert-labelled Raveform tracks frozen in `training/eval_set.json`**, with `training/run_eval_set.py` as the gate and `training/eval_set_baseline.json` as the committed answer. The bundled Generate track has been retired; its historical measurements survive in the Stage-1 plan under `docs/superpowers/plans/`. Every test that needs *a real track* rather than *the benchmark* now reads one committed eval-set track through a single fixture, so there is one answer to "which audio does the suite read" instead of two.
 
+- **A benchmark that only runs on one laptop is not a benchmark.** The ten tracks' audio and labels are committed — the audio under names derived from the YouTube id (`training/eval_audio/`, opaque so a directory listing says nothing; derived so code finds a file with no lookup table to go stale), the labels as a verbatim, sha-pinned slice of the corpus annotation. Owner-authorised, and precisely these ten: the rest of the corpus stays gitignored and machine-local. A machine that has the corpus too still reads the committed copies, so every machine benchmarks the same bytes. `training/eval_assets.py` owns the derivation and re-cuts both after a re-freeze.
 - **A benchmark that follows the corpus is not a benchmark.** The set is frozen: the selector refuses to overwrite it without `--force`, and the baseline records the eval set's own checksum so a re-freeze fails loudly instead of silently re-scoring a different ten tracks. Re-cutting the set and re-cutting the baseline is one change, never two.
 - **That checksum is over the file's bytes, so the checkout must not rewrite them.** Git on Windows defaults to `core.autocrlf=true` and materialises LF as CRLF, which changes the hash while changing nothing about the benchmark — the guard then passed in the worktree the file was written in and failed in every fresh clone, making its verdict a fact about the machine. `.gitattributes` pins the frozen artifacts to `eol=lf` so every checkout agrees with the writers, which already emit LF unconditionally. An older clone made before that pin keeps its CRLF copies until they are re-checked-out; rewriting them to LF is the remedy and leaves the index untouched.
 - **The benchmark is never learned from.** Neither the ten ids nor any track sharing an artist with one of them enters a training or validation split. This is stated twice on purpose — once here as policy, once in the split builder as code.
 - **Two gates, and they mean different things.** The *report checksum* says the pipeline's behaviour moved: a deterministic run over fixed audio can only change if the code did. The *label-aligned scores* say whether the show got better or worse. A deliberate improvement trips both, and that is the workflow — read the table, decide the change is wanted, re-cut the baseline in the same commit. A regression with no checksum change is impossible and would mean the determinism contract is broken. Beside the scores, the *count facts* each row records (beats joined, label boundaries, seconds scored) are compared exactly — a score tolerance wide enough to be useful absorbs a run that measured a different number of things.
-- **The ground truth is verified before anything is simulated.** The annotations are gitignored corpus, so nothing in the repository pins them and a re-fetch can move a boundary under a baseline cut before the move — leaving every number comparable to nothing while the gate prints "matches". The frozen eval set already recorded the annotation file's checksum, so each run re-checks it and refuses outright if it moved. The manifest that chose *which* tracks are in the set is deliberately not checked: it grows with every download batch and feeds no score.
+- **The ground truth is verified before anything is simulated.** A boundary that moves under a baseline cut before the move leaves every number comparable to nothing while the gate prints "matches". The committed label slice cannot move behind git's back, so what is checked of it is *provenance*: it records the checksum of the annotation file it was cut from, and that must be the one the eval set froze against. A machine falling back to the gitignored corpus annotation gets that file hashed on every run instead. Either way a mismatch is fatal. The manifest that chose *which* tracks are in the set is deliberately not checked: it grows with every download batch and feeds no score.
 - **Scores are the corpus's scores, not the benchmark's own.** The runner reuses the training table's beat/label join (and therefore its look-ahead realignment) and the label-aligned evaluator's metric functions. A benchmark that computed its own numbers would eventually disagree with the corpus evaluation and nobody would know which was right.
-- **The integration suite runs a subset, a human runs the set.** Three tracks fit a test-suite wall-time budget; ten do not. A subset run compares only its own tracks and deliberately does not compare the aggregate — an aggregate over three tracks is a different quantity. The full set is a manual command and takes a couple of minutes, or seconds across worker processes (parallel and serial produce identical bytes, which is checked by running both). The quoted integration wall time assumes more than one core; on a single-core machine the worker pool degrades to serial and the suite gets slower but stays inside its budget.
+- **The integration suite runs a subset, a human runs the set.** Three tracks fit a test-suite wall-time budget; ten do not. A subset run compares only its own tracks and deliberately does not compare the aggregate — an aggregate over three tracks is a different quantity. The full set is a manual command: about three minutes elapsed across worker processes since the rhythm front-end became madmom's networks, and roughly half an hour serial (parallel and serial produce identical bytes, which is checked by running both). The quoted integration wall time assumes more than one core; on a single-core machine the worker pool degrades to serial and the suite gets slower but stays inside its budget.
 - **A subset may not overwrite the committed baseline, and the baseline is itself under test.** The two ways this tripwire could be disarmed without anything failing are a baseline cut from a partial run (the gate then compares the tracks it ran against the tracks in the file, so the rest silently stop being checked) and a guarded metric missing from the file (skipped rather than flagged). So a partial `--write-baseline` at the committed path is refused outright — `--allow-partial-baseline` is the deliberate override, an explicit `--baseline PATH` is the experiment — a missing metric is a failure rather than a skip, and a fast unit test reads the committed file and asserts it still covers the whole frozen set, was cut against the current one, and carries every gated number.
-- **The eval set is exempt from the delete-your-decode-cache rule.** Everything else in the corpus discards the decoded `.npy` beside its mp3 because the corpus is thousands of tracks; the eval set is ten and is re-simulated on every test run, so its caches persist. That is under a gigabyte and removes the decode from every run after the first.
+- **The madmom migration is the benchmark's first real customer, and the first labelled read of it.** That branch measured what the new beat source did to the beat stream and to the show, and said explicitly that none of the intent-timeline movement was scored against labels — the labelled evaluation lived here. Stacking the two answered it: all ten checksums moved, aggregate macro-F1, accuracy and flicker all improved, boundary-F1 was flat, and the per-track spread is wide in both directions. The committed baseline is the record; the per-track table is in PR #8's merge comment. What it does *not* establish is that the new beat source is better *because* of these numbers — the show changed for many reasons at once, and nothing was retuned.
+- **The eval set is exempt from the delete-your-decode-cache rule.** Everything else in the corpus discards the decoded `.npy` beside its mp3 because the corpus is thousands of tracks; the eval set is ten and is re-simulated on every test run, so its caches persist. They land beside the committed mp3s, where the repository's `*.npy` rule keeps them out of git. That is under a gigabyte and removes the decode from every run after the first.
 
 ### Neural section classifier -- dataset, model, decoder and the offline verdict (`training/nn/`)
 
@@ -337,15 +360,19 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
 
 **v1 exists, it won, and it is not running anything.** The chain was scored once against the held-out test split -- tracks no selection decision had ever seen -- and beat the shipping rule classifier on every metric the plan named, in both the all-classes and the contested-core reading, while committing several times fewer state changes. The verdict artifacts are `models/v1/eval_val.json` (the tuned reading) and `models/v1/eval_test.json` (the selection-clean one); each carries the sha256 of the model, priors, splits and table that produced it, so any figure traces to a chain rather than to a memory. The figures themselves are deliberately not copied into documentation -- the corpus is still growing and a written-down number goes stale in silence. `training/nn/CLAUDE.md` maps the package; the bullets above are the reasoning behind it.
 
+- **The rule-classifier column of the v1/v2 verdict is a fact about the aubio beat stream, and it has not been re-measured.** Those verdicts were scored before the madmom migration landed under this branch. The model side is unaffected — it trains and infers on the mel stream, which the migration held byte-identical, on a fixed frame grid that has nothing to do with beats. The *baseline* side is not: the training table carries one row per detected beat, and the beat stream is now a different stream. Re-scoring it would be a second read of the test split, which the rule above forbids for exactly the reason it exists, so the number stands as dated rather than being quietly refreshed. The eval set is where the rule classifier's post-madmom behaviour *is* measured, and there it got better on three of four metrics — so the recorded margin is more likely an over-statement of today's gap than an under-statement. That direction is the safe one for a claim of "the model wins", but it is a reason to distrust the size of the win, not the sign. Any *new* model generation is scored against a freshly built table and the question closes itself.
 - **The test split is read once, and that run is the record.** Everything else in this package was chosen on val -- the decoder config, the early-stopping epoch, and which of several training runs to export -- so the test figure is the only number no decision was permitted to see, and the acoustic-layer selection noise alone is comparable to most of what the decoder sweep was tuning. Tuning after reading it spends the one clean measurement the project has. A disappointing test result is therefore a *new versioned model*, never a re-tuned old one, and that model gets its own single read.
 - **Stability is not accuracy, and the decoder buys the first with the second.** Committing few, long, confident runs is precisely what produces the large flicker win; on a track whose structure alternates faster than the fitted duration prior expects, the same property lets one run swallow several real sections. The worst tracks in *both* splits share that shape -- a couple of committed runs against an annotator's many -- and it is the dominant reason a track can lose to the rule classifier on the contested core. A twitchy classifier collects partial credit for passing through the right state; a committed one does not. This is priced rather than accidental: the decoder can trade the over-commitment back and pays macro-F1 for it, so removing the cost without paying elsewhere is acoustic-model work, not decoder work.
 - **Held-out means held out from selection, not necessarily from the music.** Splits are assigned per track id, so a remix and its original can land on opposite sides -- the artist guard protects the frozen benchmark, and nothing yet groups a corpus track with its own alternate versions. The measured effect on the verdict is negligible (it is a couple of tracks, and the result is unchanged with them removed), but the v2 split should group by song rather than by track id.
 - **Nothing here is runnable, and the gap is larger than an integration task.** Three things gate a live show, in descending order of size:
-  1. **Live downbeat tracking was built offline and does not clear its gate.** The decoder is bar-rate -- every decision, duration floor and boundary read is expressed in bars -- and offline it is handed an expert-annotated bar grid. `lib/` still has no downbeat tracker, and the training table records bar position as unknown for exactly this reason. A downbeat head and a bar-phase decoder now exist in `training/nn/` and were scored once against the held-out split; the verdict is **BLOCKED**, and the reason is worth carrying because it is not the model's:
+  1. **Live downbeat tracking was built offline and does not clear its gate.** The decoder is bar-rate -- every decision, duration floor and boundary read is expressed in bars -- and offline it is handed an expert-annotated bar grid. `lib/` still has no downbeat tracker, and the training table records bar position as unknown for exactly this reason. A downbeat head and a bar-phase decoder now exist in `training/nn/` and were scored once against the held-out split; the verdict is **BLOCKED**, and the reason is worth carrying because it is not the model's.
+
+     **Read every number below as the aubio condition, dated.** The whole evaluation binds to the beat stream aubio produced, and the madmom migration has since replaced that stream — so the ceiling these findings identify is a ceiling that has moved, by an unmeasured amount, in a direction the evidence says should be favourable. They are the record of *why the component was blocked at the time*, not a live description of the front end. They have deliberately NOT been re-run (owner decisions #84): re-running would spend the component's one clean read of the test split on a question the next generation answers for free. What can be said without re-running is that of the three costed options at the end of this list, the second one — replace the live beat source — is the one the project took.
      - **The live beat stream, not the model, sets the ceiling.** Scored against expert grids, only about half of the annotated downbeats have an aubio beat within the scoring tolerance of them — a steady half-beat lock rather than jitter — which is why the phase state space is half-beat-resolved. Even after that, one downbeat in seven is unreachable from aubio's instants at the tolerance the component is scored at, and that residual splits three ways: a pulse that fits no octave of the annotated tempo, a steady *quarter*-beat lock the half-beat grid cannot represent, and unsteady jitter — the first two roughly equal and each about a third of it.
      - **Accuracy and stability are one dial, and the plan wants both ends of it.** Forcing the bar grid to stop flipping costs roughly half the achieved F1; letting it chase the music costs the stability the show cares about. No configuration measured satisfies both gates, on val or on test.
      - **The show ablation passes, and that is a finding about the *section* decoder.** Decoding sections on the predicted grid lands within a couple of points of the expert grid at ±2 s — but so does a grid built by calling every fourth aubio beat a bar line, with no model in it at all. At that tolerance the section chain is nearly grid-independent. At ±0.5 s, where the transition-sync contract lives, the grid does matter, and which grid you have decides everything: the accuracy-maximising configuration recovers about half the distance from the null to the annotated grid, while the configuration that meets the stability gate recovers almost none of it and on one of the two section-chain generations flickers *more* than having no bar model at all.
      - The decision is the owner's and the options are costed in `.superpowers/sdd/2026-07-27-downbeat-tracking-v1/task-4-report.md`: amend the gate to what is achievable, replace the live beat source (the expert-driven bound says what the rest of the chain is worth on a clean stream, and it is well short of the gate too), or bar-snap only where the decoder's phase confidence is high and beat-snap elsewhere (measured: it roughly triples precision on a fifth of the show).
+     - **The second option has since been taken, and it does not on its own unblock this.** madmom now owns the beat stream. The coverage ceiling above was aubio's; madmom's is unmeasured and expected to be higher, since its beat stream and its own tempo estimate agree to 3 % where aubio's disagreed by 24 %. But the expert-grid bound in the same report says the rest of the chain falls short of the gate *even on a perfect grid* — so a better beat source raises the ceiling without moving that bound. Re-measuring against madmom is work for the next downbeat generation, with its own single test read; it is not a re-scoring of this one.
   2. **The show's look-ahead must grow to the decoder's budget**, in lockstep with `playback_delay_seconds` in dmx-enttec-node (`LOOK_AHEAD_SEC` in `lib/main.py`). The two systems are not latency-matched today, so the offline table compares a system running at the current delay against one designed for a larger one; the lag sweep varies only the committer's latency and must not be read as "the NN still wins at today's budget".
   3. **v1 trained on the subset that had finished downloading.** The full-corpus retrain is v2, and the split assignment was built to make the two comparable -- new tracks may only be *added* to a split, never moved between them.
 
@@ -360,8 +387,8 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
 - **MusicAnalyser full reset** every 15 min prevents rolling-window memory growth.
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread; the audio/DSP path is async on the main thread â€” mixing threading models requires care when touching shared state.
-- **Beat dropout false ATMOSPHERIC**: aubio can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts.
-- **ATMOSPHERIC never fires on mastered EDM.** Measured across the whole downloaded corpus: not one atmospheric block in any committed timeline, while ~22% of labelled time is `intro` or `outro`. ATMOSPHERIC is the only intent driven by a beat-absence timer rather than by classification, and mastered EDM intros and outros have beats -- so the timer never trips, and the two quiet label classes are unreachable no matter how the thresholds move. Whatever replaces the classifier has to be able to *say* "quiet", not merely notice that beats stopped.
+- **Beat dropout false ATMOSPHERIC**: a beat tracker can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts. Measured far less often since the madmom migration, but not eliminated.
+- **ATMOSPHERIC never fires on mastered EDM.** Measured across the whole downloaded corpus: not one atmospheric block in any committed timeline, while ~22% of labelled time is `intro` or `outro`. ATMOSPHERIC is the only intent driven by a beat-absence timer rather than by classification, and mastered EDM intros and outros have beats -- so the timer never trips, and the two quiet label classes are unreachable no matter how the thresholds move. Whatever replaces the classifier has to be able to *say* "quiet", not merely notice that beats stopped. (The corpus sweep behind this predates the madmom swap; madmom finds *more* beats than aubio did, so the conclusion can only have got stronger, but the number has not been re-measured.)
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
@@ -369,5 +396,35 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
 - **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
 - **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
 - **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode. The ten eval-set tracks keep theirs on purpose (see The benchmark); everything else in the corpus is cleaned up by the batch that created it.
-- **Integration tests need the eval-set audio.** It is gitignored, so a fresh clone must run `training/raveform/raveform_download.py` before `uv run pytest` is green. The failure names the downloader in one line; it is not a skip.
-- **The eval-set baseline lags a deliberate pipeline change by one command.** Any change to `lib/` or `simulate/` that moves the reports fails `run_eval_set.py` until the baseline is re-cut. That is the gate working, not a flake — but it does mean a pipeline PR is two steps, and the second one must not be skipped.
+- **Integration tests are green on a fresh clone.** The eval-set audio and labels are committed, so `uv run pytest` needs no corpus and no downloads. Everything else under `training/` still does.
+- **The eval-set baseline lags a deliberate pipeline change by one command.** Any change to `lib/` or `simulate/` that moves the reports fails `run_eval_set.py` until the baseline is re-cut. That is the gate working, not a flake — but it does mean a pipeline PR is two steps, and the second one must not be skipped. The madmom migration is the worked example: every one of the ten checksums moved, and the baseline was re-cut in the merge that took the new beat source.
+- **The rhythm front-end costs ~18x what aubio did** end to end (1.4% of one core
+  to 25.7%, filterbank included); the rhythm half alone went 0.8% to 25.2%. On a
+  strict reading of the campaign's >= 5x / <= 20% realtime bar, 25.7% is a MISS
+  (3.9x). That bar was written for NN posterior generation, where 5x buys the
+  rest of the stack its headroom on one core, and it was ruled not to bind a DSP
+  front-end; the front-end's gates are instead sustained 1x whole-pipeline with
+  headroom, the backpressure machinery, and a 30-minute soak, all of which pass.
+  Both readings belong in any future discussion -- the miss is real under the
+  original wording.
+- **Fast simulation is ~12x slower** (46.3x real-time to 3.8x on the bundled
+  track). Regenerating the whole corpus report cache is therefore ~41 CPU-hours
+  against ~3.4 before, or roughly 3.5 hours of wall clock at 12 workers: track
+  parallelism recovers the wall-clock, per-core throughput is what fell.
+- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and
+  the input side DROPS rather than queues, so falling behind costs audio, not
+  latency. The drift watchdog sheds section detection first and onsets second, and
+  never beats. If a log shows sustained shedding, the box is too slow for the
+  configuration -- that is the signal, not a nuisance warning.
+- **Shedding degrades explicitly, it does not fake a measurement.** A shed onset
+  detector reports density as UNKNOWN rather than zero, and the classifier holds
+  the current intent instead of classifying on a sentinel -- zero density would
+  otherwise pin the show to BREAKDOWN, with BUILDUP and DROP unreachable, and the
+  report rows would be indistinguishable from a genuinely sparse passage.
+  Restoring either shed component clears its buffers first, because everything
+  they hold describes audio from before the gap.
+- **madmom is CC BY-NC-SA** (models). Fine for a personal project per decisions #57;
+  it forecloses a commercial turn without a JKU licence. aubio's GPL note stands.
+- **madmom is pinned to a git SHA**, not a release: the last PyPI release cannot be
+  imported on Python 3.10+. An upgrade is deliberate and `tests/test_madmom_contract.py`
+  is what makes it a checked one.

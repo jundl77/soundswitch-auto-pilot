@@ -11,3 +11,9 @@
 # The writers already emit LF unconditionally (write_json uses newline="\n"),
 # so eol=lf makes the checkout agree with the writer rather than the platform.
 training/*.json text eol=lf
+
+# The committed eval-set audio must check out byte-identical to the corpus mp3s
+# it was copied from, or the two paths decode differently and the benchmark's
+# report checksums become a fact about which copy a machine happened to read.
+# Git detects mp3 as binary on its own; saying so removes the question.
+training/eval_audio/*.mp3 binary

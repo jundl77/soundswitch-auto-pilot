@@ -1,0 +1,2092 @@
+{
+  "schema": 1,
+  "source": {
+    "file": "annotations/segments.json",
+    "sha256": "ab7d0b2d0dd74c645794ca9c085f30b5de42202bdc544069b035e05d97237708",
+    "tracks_in_source": 1423
+  },
+  "tracks": [
+    {
+      "key": "0064.hzIFjGcOKbg",
+      "index": 64,
+      "id": "hzIFjGcOKbg",
+      "title": "+ Konflict - Beckoning [Renegade Hardware]",
+      "fold": 7,
+      "genre": "Drum & Bass",
+      "duration": 473.0137188209,
+      "play_count": 8,
+      "average_bpm": 170.42,
+      "tempos": [
+        {
+          "start": 0.021,
+          "bpm": 170.42,
+          "beat_position_in_bar": 1
+        },
+        {
+          "start": 395.044,
+          "bpm": 170.42,
+          "beat_position_in_bar": 3
+        }
+      ],
+      "sections": [
+        {
+          "name": "altintro",
+          "start": 0.021,
+          "end": 22.553
+        },
+        {
+          "name": "intro",
+          "start": 22.553,
+          "end": 112.683
+        },
+        {
+          "name": "buildup",
+          "start": 112.683,
+          "end": 157.748
+        },
+        {
+          "name": "drop",
+          "start": 157.748,
+          "end": 191.547
+        },
+        {
+          "name": "breakdown",
+          "start": 191.547,
+          "end": 202.813
+        },
+        {
+          "name": "drop",
+          "start": 202.813,
+          "end": 236.612
+        },
+        {
+          "name": "cooldown",
+          "start": 236.612,
+          "end": 247.878
+        },
+        {
+          "name": "breakdown",
+          "start": 247.878,
+          "end": 292.943
+        },
+        {
+          "name": "drop",
+          "start": 292.943,
+          "end": 360.541
+        },
+        {
+          "name": "drop",
+          "start": 360.541,
+          "end": 394.339
+        },
+        {
+          "name": "cooldown",
+          "start": 394.339,
+          "end": 428.138
+        },
+        {
+          "name": "outro",
+          "start": 428.138,
+          "end": 473.0137188209
+        }
+      ],
+      "played_at": [
+        "mix0189",
+        "mix0193",
+        "mix0273",
+        "mix0351",
+        "mix0783",
+        "mix1100",
+        "mix2638",
+        "mix4527"
+      ]
+    },
+    {
+      "key": "0096.PNpXKsge4xM",
+      "index": 96,
+      "id": "PNpXKsge4xM",
+      "title": "Dimension - Crowd Reaction (VIP) [CYN]",
+      "fold": 5,
+      "genre": "Drum & Bass",
+      "duration": 257.6370068027,
+      "play_count": 7,
+      "average_bpm": 174.0,
+      "tempos": [
+        {
+          "start": 0.059,
+          "bpm": 174.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.059,
+          "end": 22.128
+        },
+        {
+          "name": "buildup",
+          "start": 22.128,
+          "end": 44.197
+        },
+        {
+          "name": "breakdown",
+          "start": 44.197,
+          "end": 66.266
+        },
+        {
+          "name": "drop",
+          "start": 66.266,
+          "end": 110.404
+        },
+        {
+          "name": "breakdown",
+          "start": 110.404,
+          "end": 121.438
+        },
+        {
+          "name": "drop",
+          "start": 121.438,
+          "end": 143.507
+        },
+        {
+          "name": "breakdown",
+          "start": 143.507,
+          "end": 187.645
+        },
+        {
+          "name": "drop",
+          "start": 187.645,
+          "end": 231.783
+        },
+        {
+          "name": "outro",
+          "start": 231.783,
+          "end": 253.852
+        },
+        {
+          "name": "end",
+          "start": 253.852,
+          "end": 257.6370068027
+        }
+      ],
+      "played_at": [
+        "mix1420",
+        "mix1481",
+        "mix1489",
+        "mix1492",
+        "mix1656",
+        "mix1720",
+        "mix1838"
+      ]
+    },
+    {
+      "key": "0136.FO566BKY2Jc",
+      "index": 136,
+      "id": "FO566BKY2Jc",
+      "title": "[78] Oxia - Domino [Kompakt Extra  - KOM EX 34]",
+      "fold": 6,
+      "genre": "Techno",
+      "duration": 431.0668707483,
+      "play_count": 6,
+      "average_bpm": 128.87,
+      "tempos": [
+        {
+          "start": 0.337,
+          "bpm": 128.87,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.345,
+          "end": 45.032
+        },
+        {
+          "name": "buildup",
+          "start": 45.032,
+          "end": 74.829
+        },
+        {
+          "name": "breakdown",
+          "start": 74.829,
+          "end": 104.625
+        },
+        {
+          "name": "drop",
+          "start": 104.625,
+          "end": 149.32
+        },
+        {
+          "name": "breakdown",
+          "start": 149.32,
+          "end": 179.116
+        },
+        {
+          "name": "drop",
+          "start": 179.116,
+          "end": 208.913
+        },
+        {
+          "name": "breakdown",
+          "start": 208.913,
+          "end": 253.608
+        },
+        {
+          "name": "drop",
+          "start": 253.608,
+          "end": 283.404
+        },
+        {
+          "name": "breakdown",
+          "start": 283.404,
+          "end": 298.303
+        },
+        {
+          "name": "drop",
+          "start": 298.303,
+          "end": 328.099
+        },
+        {
+          "name": "breakdown",
+          "start": 328.099,
+          "end": 357.896
+        },
+        {
+          "name": "cooldown",
+          "start": 357.896,
+          "end": 402.591
+        },
+        {
+          "name": "outro",
+          "start": 402.591,
+          "end": 431.0668707483
+        }
+      ],
+      "played_at": [
+        "mix0220",
+        "mix0223",
+        "mix2338",
+        "mix2370",
+        "mix3062",
+        "mix3707"
+      ]
+    },
+    {
+      "key": "0434.SBnxzXkc_qw",
+      "index": 434,
+      "id": "SBnxzXkc_qw",
+      "title": "Andy C - Roll On [Ram]",
+      "fold": 3,
+      "genre": "Drum & Bass",
+      "duration": 409.8902721088,
+      "play_count": 5,
+      "average_bpm": 159.8,
+      "tempos": [
+        {
+          "start": 0.269,
+          "bpm": 159.72,
+          "beat_position_in_bar": 4
+        },
+        {
+          "start": 31.074,
+          "bpm": 159.76,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 32.576,
+          "bpm": 159.73,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 34.078,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 35.581,
+          "bpm": 159.76,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 37.083,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 38.585,
+          "bpm": 159.65,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 40.088,
+          "bpm": 159.66,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 43.095,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 44.596,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 46.097,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 47.599,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 49.1,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 50.602,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 52.103,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 53.605,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 56.608,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 58.11,
+          "bpm": 159.74,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 59.613,
+          "bpm": 159.73,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 61.115,
+          "bpm": 159.68,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 62.618,
+          "bpm": 159.66,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 64.121,
+          "bpm": 159.64,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 65.625,
+          "bpm": 159.45,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 67.13,
+          "bpm": 159.63,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 68.633,
+          "bpm": 159.71,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 70.136,
+          "bpm": 159.64,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 71.639,
+          "bpm": 159.69,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 73.142,
+          "bpm": 159.71,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 74.645,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 77.649,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 79.151,
+          "bpm": 159.76,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 80.654,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 82.156,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 83.657,
+          "bpm": 159.83,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 85.159,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 86.661,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 88.163,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 89.665,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 91.167,
+          "bpm": 159.84,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 92.669,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 94.17,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 95.671,
+          "bpm": 159.84,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 96.047,
+          "bpm": 159.84,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 97.173,
+          "bpm": 159.83,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 100.176,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 101.677,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 103.179,
+          "bpm": 159.81,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 104.681,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 106.183,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 107.685,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 110.688,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 112.19,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 115.194,
+          "bpm": 159.75,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 116.697,
+          "bpm": 159.76,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 118.199,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 119.701,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 121.203,
+          "bpm": 159.81,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 122.705,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 128.712,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 130.214,
+          "bpm": 159.83,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 131.715,
+          "bpm": 159.84,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 133.217,
+          "bpm": 159.83,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 136.22,
+          "bpm": 159.84,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 137.721,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 139.223,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 140.724,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 142.225,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 143.726,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 145.227,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 146.728,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 148.229,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 149.73,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 151.231,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 152.732,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 154.232,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 154.608,
+          "bpm": 159.94,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 155.733,
+          "bpm": 159.98,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 158.733,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 160.234,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 161.735,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 163.235,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 164.736,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 169.238,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 170.739,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 172.24,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 173.74,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 174.116,
+          "bpm": 159.92,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 175.241,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 176.742,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 178.243,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 179.743,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 181.244,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 182.744,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 184.245,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 185.746,
+          "bpm": 159.75,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 187.248,
+          "bpm": 159.98,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 188.748,
+          "bpm": 160.0,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 190.248,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 191.748,
+          "bpm": 160.04,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 193.248,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 194.747,
+          "bpm": 160.04,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 196.247,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 197.747,
+          "bpm": 159.99,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 199.247,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 202.246,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 203.745,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 205.245,
+          "bpm": 160.04,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 206.745,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 208.244,
+          "bpm": 160.07,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 209.744,
+          "bpm": 160.08,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 211.243,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 212.742,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 214.242,
+          "bpm": 159.99,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 215.742,
+          "bpm": 160.11,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 217.241,
+          "bpm": 160.08,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 218.74,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 220.24,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 221.74,
+          "bpm": 159.99,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 223.24,
+          "bpm": 160.01,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 224.74,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 226.241,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 227.744,
+          "bpm": 159.99,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 229.244,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 230.746,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 232.248,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 233.748,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 235.249,
+          "bpm": 159.97,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 236.749,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 238.25,
+          "bpm": 159.97,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 239.75,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 241.251,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 242.752,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 244.253,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 245.754,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 247.255,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 248.756,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 250.257,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 251.758,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 254.76,
+          "bpm": 159.73,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 256.263,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 257.763,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 259.264,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 262.266,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 263.767,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 265.268,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 266.769,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 268.27,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 269.771,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 271.272,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 272.773,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 274.274,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 275.775,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 277.276,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 278.777,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 280.278,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 281.778,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 282.154,
+          "bpm": 159.9,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 283.279,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 284.78,
+          "bpm": 159.73,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 286.282,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 287.783,
+          "bpm": 159.72,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 289.286,
+          "bpm": 159.91,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 292.287,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 293.788,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 295.289,
+          "bpm": 159.96,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 296.789,
+          "bpm": 159.98,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 298.289,
+          "bpm": 159.96,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 302.79,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 304.291,
+          "bpm": 159.98,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 305.791,
+          "bpm": 159.96,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 307.292,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 308.792,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 310.293,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 311.794,
+          "bpm": 159.97,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 313.294,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 314.794,
+          "bpm": 160.08,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 316.293,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 317.794,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 319.295,
+          "bpm": 160.05,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 320.795,
+          "bpm": 160.02,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 322.294,
+          "bpm": 160.0,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 323.794,
+          "bpm": 159.96,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 328.295,
+          "bpm": 159.92,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 329.796,
+          "bpm": 159.9,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 331.297,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 332.797,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 333.173,
+          "bpm": 159.94,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 334.298,
+          "bpm": 159.95,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 338.799,
+          "bpm": 159.94,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 340.3,
+          "bpm": 159.93,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 341.801,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 343.302,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 344.803,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 346.304,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 347.805,
+          "bpm": 159.82,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 349.307,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 350.809,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 352.311,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 353.813,
+          "bpm": 159.81,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 355.315,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 358.319,
+          "bpm": 159.76,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 359.821,
+          "bpm": 159.77,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 362.825,
+          "bpm": 159.78,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 364.327,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 365.829,
+          "bpm": 159.61,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 367.333,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 371.839,
+          "bpm": 159.81,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 373.341,
+          "bpm": 159.83,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 374.842,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 376.343,
+          "bpm": 159.79,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 376.719,
+          "bpm": 159.79,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 377.845,
+          "bpm": 159.8,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 379.347,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 380.849,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 382.35,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 385.352,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 386.853,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 388.355,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 389.856,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 391.357,
+          "bpm": 159.89,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 392.858,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 394.359,
+          "bpm": 159.85,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 395.861,
+          "bpm": 159.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 398.863,
+          "bpm": 159.88,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 403.367,
+          "bpm": 159.87,
+          "beat_position_in_bar": 2
+        }
+      ],
+      "sections": [
+        {
+          "name": "altintro",
+          "start": 0.645,
+          "end": 24.687
+        },
+        {
+          "name": "intro",
+          "start": 24.687,
+          "end": 60.74
+        },
+        {
+          "name": "buildup",
+          "start": 60.74,
+          "end": 72.767
+        },
+        {
+          "name": "drop",
+          "start": 72.767,
+          "end": 96.798
+        },
+        {
+          "name": "drop",
+          "start": 96.798,
+          "end": 156.858
+        },
+        {
+          "name": "cooldown",
+          "start": 156.858,
+          "end": 168.863
+        },
+        {
+          "name": "drop",
+          "start": 168.863,
+          "end": 204.87
+        },
+        {
+          "name": "cooldown",
+          "start": 204.87,
+          "end": 216.866
+        },
+        {
+          "name": "breakdown",
+          "start": 216.866,
+          "end": 240.876
+        },
+        {
+          "name": "buildup",
+          "start": 240.876,
+          "end": 252.884
+        },
+        {
+          "name": "drop",
+          "start": 252.884,
+          "end": 312.919
+        },
+        {
+          "name": "breakdown",
+          "start": 312.919,
+          "end": 324.92
+        },
+        {
+          "name": "drop",
+          "start": 324.92,
+          "end": 384.977
+        },
+        {
+          "name": "outro",
+          "start": 384.977,
+          "end": 408.996
+        },
+        {
+          "name": "end",
+          "start": 408.996,
+          "end": 409.8902721088
+        }
+      ],
+      "played_at": [
+        "mix0035",
+        "mix0191",
+        "mix0254",
+        "mix2372",
+        "mix3759"
+      ]
+    },
+    {
+      "key": "0485.MRRgXXq-0rc",
+      "index": 485,
+      "id": "MRRgXXq-0rc",
+      "title": "Piatto - Work That [1605]",
+      "fold": 4,
+      "genre": "Tech House",
+      "duration": 412.6650566893,
+      "play_count": 5,
+      "average_bpm": 127.0,
+      "tempos": [
+        {
+          "start": 0.086,
+          "bpm": 127.0,
+          "beat_position_in_bar": 1
+        },
+        {
+          "start": 0.559,
+          "bpm": 127.0,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 160.717,
+          "bpm": 127.0,
+          "beat_position_in_bar": 1
+        },
+        {
+          "start": 336.938,
+          "bpm": 127.0,
+          "beat_position_in_bar": 2
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.086,
+          "end": 30.322
+        },
+        {
+          "name": "buildup",
+          "start": 30.322,
+          "end": 60.559
+        },
+        {
+          "name": "breakdown",
+          "start": 60.559,
+          "end": 90.795
+        },
+        {
+          "name": "drop",
+          "start": 90.795,
+          "end": 151.268
+        },
+        {
+          "name": "breakdown",
+          "start": 151.268,
+          "end": 166.386
+        },
+        {
+          "name": "drop",
+          "start": 166.386,
+          "end": 181.504
+        },
+        {
+          "name": "breakdown",
+          "start": 181.504,
+          "end": 211.74
+        },
+        {
+          "name": "drop",
+          "start": 211.74,
+          "end": 257.095
+        },
+        {
+          "name": "breakdown",
+          "start": 257.095,
+          "end": 272.213
+        },
+        {
+          "name": "drop",
+          "start": 272.213,
+          "end": 302.449
+        },
+        {
+          "name": "breakdown",
+          "start": 302.449,
+          "end": 317.567
+        },
+        {
+          "name": "drop",
+          "start": 317.567,
+          "end": 347.804
+        },
+        {
+          "name": "cooldown",
+          "start": 347.804,
+          "end": 378.04
+        },
+        {
+          "name": "outro",
+          "start": 378.04,
+          "end": 408.276
+        },
+        {
+          "name": "end",
+          "start": 408.276,
+          "end": 412.6650566893
+        }
+      ],
+      "played_at": [
+        "mix0902",
+        "mix0912",
+        "mix0994",
+        "mix1136",
+        "mix1188"
+      ]
+    },
+    {
+      "key": "0501.hwdjIgtMFq8",
+      "index": 501,
+      "id": "hwdjIgtMFq8",
+      "title": "Simon Patterson - Spike [Vii]",
+      "fold": 3,
+      "genre": "Trance",
+      "duration": 415.1728117914,
+      "play_count": 5,
+      "average_bpm": 138.0,
+      "tempos": [
+        {
+          "start": 0.0,
+          "bpm": 138.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.0,
+          "end": 27.827
+        },
+        {
+          "name": "buildup",
+          "start": 27.827,
+          "end": 55.653
+        },
+        {
+          "name": "drop",
+          "start": 55.653,
+          "end": 69.566
+        },
+        {
+          "name": "drop",
+          "start": 69.566,
+          "end": 111.305
+        },
+        {
+          "name": "breakdown",
+          "start": 111.305,
+          "end": 139.131
+        },
+        {
+          "name": "buildup",
+          "start": 139.131,
+          "end": 153.044
+        },
+        {
+          "name": "drop",
+          "start": 153.044,
+          "end": 180.87
+        },
+        {
+          "name": "breakdown",
+          "start": 180.87,
+          "end": 236.522
+        },
+        {
+          "name": "drop",
+          "start": 236.522,
+          "end": 292.174
+        },
+        {
+          "name": "breakdown",
+          "start": 292.174,
+          "end": 320.0
+        },
+        {
+          "name": "drop",
+          "start": 320.0,
+          "end": 375.652
+        },
+        {
+          "name": "outro",
+          "start": 375.652,
+          "end": 403.479
+        },
+        {
+          "name": "end",
+          "start": 403.479,
+          "end": 415.1728117914
+        }
+      ],
+      "played_at": [
+        "mix3538",
+        "mix3541",
+        "mix3544",
+        "mix3609",
+        "mix3669"
+      ]
+    },
+    {
+      "key": "0640.4o4joooH5tg",
+      "index": 640,
+      "id": "4o4joooH5tg",
+      "title": "[79:26] DJ Misjah & DJ Tim - Access [X-Trax - X-002]",
+      "fold": 1,
+      "genre": "Trance",
+      "duration": 434.0854648526,
+      "play_count": 4,
+      "average_bpm": 140.86,
+      "tempos": [
+        {
+          "start": 0.064,
+          "bpm": 140.86,
+          "beat_position_in_bar": 3
+        },
+        {
+          "start": 93.347,
+          "bpm": 140.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 256.911,
+          "bpm": 140.86,
+          "beat_position_in_bar": 2
+        },
+        {
+          "start": 420.475,
+          "bpm": 140.86,
+          "beat_position_in_bar": 2
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 7.731,
+          "end": 55.437
+        },
+        {
+          "name": "drop",
+          "start": 55.437,
+          "end": 96.328
+        },
+        {
+          "name": "breakdown",
+          "start": 96.328,
+          "end": 109.958
+        },
+        {
+          "name": "drop",
+          "start": 109.958,
+          "end": 164.48
+        },
+        {
+          "name": "breakdown",
+          "start": 164.48,
+          "end": 253.077
+        },
+        {
+          "name": "drop",
+          "start": 253.077,
+          "end": 307.598
+        },
+        {
+          "name": "breakdown",
+          "start": 307.598,
+          "end": 334.859
+        },
+        {
+          "name": "drop",
+          "start": 334.859,
+          "end": 362.12
+        },
+        {
+          "name": "cooldown",
+          "start": 362.12,
+          "end": 375.75
+        },
+        {
+          "name": "cooldown",
+          "start": 375.75,
+          "end": 389.38
+        },
+        {
+          "name": "outro",
+          "start": 389.38,
+          "end": 416.641
+        },
+        {
+          "name": "outro",
+          "start": 416.641,
+          "end": 430.271
+        },
+        {
+          "name": "end",
+          "start": 430.271,
+          "end": 434.0854648526
+        }
+      ],
+      "played_at": [
+        "mix0015",
+        "mix0018",
+        "mix1913",
+        "mix1929"
+      ]
+    },
+    {
+      "key": "0834.NyEKXA7_6z0",
+      "index": 834,
+      "id": "NyEKXA7_6z0",
+      "title": "Session Victim - Never Forget [Delusions Of Grandeur]",
+      "fold": 2,
+      "genre": "Others",
+      "duration": 365.0873696145,
+      "play_count": 4,
+      "average_bpm": 117.0,
+      "tempos": [
+        {
+          "start": 0.358,
+          "bpm": 117.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "altintro",
+          "start": 0.358,
+          "end": 33.178
+        },
+        {
+          "name": "intro",
+          "start": 33.178,
+          "end": 65.999
+        },
+        {
+          "name": "buildup",
+          "start": 65.999,
+          "end": 115.229
+        },
+        {
+          "name": "drop",
+          "start": 115.229,
+          "end": 148.049
+        },
+        {
+          "name": "breakdown",
+          "start": 148.049,
+          "end": 164.459
+        },
+        {
+          "name": "drop",
+          "start": 164.459,
+          "end": 193.176
+        },
+        {
+          "name": "breakdown",
+          "start": 193.176,
+          "end": 213.689
+        },
+        {
+          "name": "drop",
+          "start": 213.689,
+          "end": 279.329
+        },
+        {
+          "name": "cooldown",
+          "start": 279.329,
+          "end": 312.149
+        },
+        {
+          "name": "outro",
+          "start": 312.149,
+          "end": 344.969
+        },
+        {
+          "name": "altoutro",
+          "start": 344.969,
+          "end": 361.379
+        },
+        {
+          "name": "end",
+          "start": 361.379,
+          "end": 365.0873696145
+        }
+      ],
+      "played_at": [
+        "mix1962",
+        "mix1982",
+        "mix1989",
+        "mix2053"
+      ]
+    },
+    {
+      "key": "0911.hSCcLy_OBLM",
+      "index": 911,
+      "id": "hSCcLy_OBLM",
+      "title": "Monte - Radical [Jeudi]",
+      "fold": 7,
+      "genre": "Tech House",
+      "duration": 411.7826984127,
+      "play_count": 4,
+      "average_bpm": 122.0,
+      "tempos": [
+        {
+          "start": 0.06,
+          "bpm": 122.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.06,
+          "end": 31.536
+        },
+        {
+          "name": "buildup",
+          "start": 31.536,
+          "end": 63.011
+        },
+        {
+          "name": "buildup",
+          "start": 63.011,
+          "end": 78.749
+        },
+        {
+          "name": "breakdown",
+          "start": 78.749,
+          "end": 94.487
+        },
+        {
+          "name": "drop",
+          "start": 94.487,
+          "end": 125.962
+        },
+        {
+          "name": "breakdown",
+          "start": 125.962,
+          "end": 141.7
+        },
+        {
+          "name": "drop",
+          "start": 141.7,
+          "end": 173.175
+        },
+        {
+          "name": "breakdown",
+          "start": 173.175,
+          "end": 236.126
+        },
+        {
+          "name": "drop",
+          "start": 236.126,
+          "end": 267.602
+        },
+        {
+          "name": "drop",
+          "start": 267.602,
+          "end": 283.339
+        },
+        {
+          "name": "breakdown",
+          "start": 283.339,
+          "end": 314.815
+        },
+        {
+          "name": "drop",
+          "start": 314.815,
+          "end": 346.29
+        },
+        {
+          "name": "cooldown",
+          "start": 346.29,
+          "end": 377.766
+        },
+        {
+          "name": "outro",
+          "start": 377.766,
+          "end": 409.241
+        },
+        {
+          "name": "end",
+          "start": 409.241,
+          "end": 411.7826984127
+        }
+      ],
+      "played_at": [
+        "mix2629",
+        "mix2653",
+        "mix2669",
+        "mix3618"
+      ]
+    },
+    {
+      "key": "1110.DnhxAxnCbrY",
+      "index": 1110,
+      "id": "DnhxAxnCbrY",
+      "title": "Greg Downey Feat. Bo Bruce - Come To Me [Kearnage]",
+      "fold": 4,
+      "genre": "Trance",
+      "duration": 447.0305895692,
+      "play_count": 4,
+      "average_bpm": 134.0,
+      "tempos": [
+        {
+          "start": 0.072,
+          "bpm": 134.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "intro",
+          "start": 0.072,
+          "end": 28.729
+        },
+        {
+          "name": "buildup",
+          "start": 28.729,
+          "end": 57.386
+        },
+        {
+          "name": "breakdown",
+          "start": 57.386,
+          "end": 71.714
+        },
+        {
+          "name": "drop",
+          "start": 71.714,
+          "end": 100.371
+        },
+        {
+          "name": "breakdown",
+          "start": 100.371,
+          "end": 129.027
+        },
+        {
+          "name": "buildup",
+          "start": 129.027,
+          "end": 157.684
+        },
+        {
+          "name": "buildup",
+          "start": 157.684,
+          "end": 186.341
+        },
+        {
+          "name": "breakdown",
+          "start": 186.341,
+          "end": 329.624
+        },
+        {
+          "name": "drop",
+          "start": 329.624,
+          "end": 386.938
+        },
+        {
+          "name": "cooldown",
+          "start": 386.938,
+          "end": 415.594
+        },
+        {
+          "name": "outro",
+          "start": 415.594,
+          "end": 429.923
+        },
+        {
+          "name": "outro",
+          "start": 429.923,
+          "end": 444.251
+        },
+        {
+          "name": "end",
+          "start": 444.251,
+          "end": 447.0305895692
+        }
+      ],
+      "played_at": [
+        "mix3294",
+        "mix3313",
+        "mix3359",
+        "mix3380"
+      ]
+    }
+  ]
+}
