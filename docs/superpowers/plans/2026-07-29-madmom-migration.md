@@ -58,11 +58,14 @@ above it should ever have to know the hop size.
 
 **D2 — the framing mismatch is the adapter's problem.** The live pipeline reads
 256-sample buffers (5.805 ms); madmom's online models are trained at 441-sample
-hops (10 ms). The adapter accumulates and emits whole hops, so a rhythm event
-can wait at most one hop-minus-one-buffer (≈4.2 ms) before it is reported.
-Measured against the 2.5 s look-ahead this is noise, and it is the same order
-as the existing quantisation to buffer boundaries. It must still be measured
-and written into the report, per the charter.
+hops (10 ms). The adapter accumulates and emits whole hops, so a sample can wait
+up to **one full hop (10 ms)** before the frame containing it is decoded — the
+residue after a hop is consumed is 0–440 samples, so the bound is the hop, not
+the hop minus a buffer. (An earlier draft of this plan said 4.2 ms; that was the
+buffer-quantisation term alone and understated it ~2.4×.) Measured live, the
+adapter's held audio ranged 0.4–8.9 ms, consistent with the bound. Against a
+2.5 s look-ahead this is 0.4 % of the budget, but it is spent, not free, and the
+adapter reports it rather than leaving it implicit.
 
 **D3 — online/causal only, and the decode is forward-only.** `process_online`
 with single-frame activations runs the HMM forward algorithm and reports a beat

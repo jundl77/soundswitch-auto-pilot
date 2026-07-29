@@ -100,6 +100,27 @@ def one_track(args) -> dict:
     }
 
 
+def _test_ids(data_dir: Path) -> set[str]:
+    """The held-out split, read from the corpus's own manifest.
+
+    A missing manifest is fatal rather than empty: silently treating "I could
+    not find the holdout list" as "there is no holdout" is how test contact
+    happens.
+    """
+    manifest = data_dir / 'splits.json'
+    if not manifest.exists():
+        raise SystemExit(f'refusing to select tracks without {manifest} — '
+                         f'cannot prove the sample is test-free')
+    return set(json.loads(manifest.read_text()).get('test', []))
+
+
+def _refuse_test_contact(paths: list[str], data_dir: Path) -> None:
+    held_out = _test_ids(data_dir)
+    offenders = [p for p in paths if Path(p).stem in held_out]
+    if offenders:
+        raise SystemExit(f'refusing: test-split tracks in the sample {offenders}')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--audio-dir', required=True)
@@ -120,9 +141,16 @@ def main() -> None:
     # Deterministic, selection-free sample: sorted filenames, evenly spaced.
     # Not the eval set — that list lives on another branch and this measurement
     # must not depend on it.
-    everything = sorted(Path(args.audio_dir).glob('*.mp3'))
+    #
+    # Test ids are REFUSED, not filtered quietly. The first version of this
+    # script had no such guard, and the sorted-and-spaced selection duly picked
+    # up two held-out test tracks: a threshold chosen with test contact is a
+    # threshold that cannot be defended, however small the contribution.
+    everything = [p for p in sorted(Path(args.audio_dir).glob('*.mp3'))
+                  if p.stem not in _test_ids(Path(args.audio_dir).parent)]
     step = max(1, len(everything) // args.tracks)
     chosen = [str(p) for p in everything[::step][: args.tracks]] + list(args.extra)
+    _refuse_test_contact(chosen, Path(args.audio_dir).parent)
     span = 'whole tracks' if args.seconds is None else f'{args.seconds:.0f}s prefixes'
     print(f'{len(chosen)} tracks, {span}, {args.workers} workers')
 

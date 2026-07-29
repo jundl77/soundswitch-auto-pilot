@@ -4,15 +4,22 @@ A full sim report is thousands of beat rows, so diffing two of them tells you
 *that* something moved but not *what class* of thing moved. This splits a report
 into the two things a rhythm-source migration must keep apart:
 
-  rhythm   — beat times, beat count, BPM, onset density. These are EXPECTED to
-             change when the beat/onset source changes. Recorded so the size of
-             the change is a number rather than an impression.
+  rhythm     — beat times, beat count, BPM, onset density. EXPECTED to change
+               when the beat/onset source changes. Recorded so the size of the
+               change is a number rather than an impression.
 
-  spectral — the per-beat columns derived from the aubio mel filterbank, plus
-             the report's schema. These MUST NOT change: the filterbank stays,
-             so anything that moves here is collateral damage, not migration.
+  filterbank — the aubio mel bank's output over the track on a FIXED TIME GRID,
+               plus the report's schema. MUST NOT change.
 
-The split is by column, not by file, because both live in the same beat row.
+  at_beats   — the same filterbank columns as the report carries them, i.e.
+               sampled at beat instants. Reported as evidence, never gated.
+
+The third section exists because the second one has to. The beat-sampled columns
+cannot be a regression gate: they are filterbank output read at beat times, so
+moving the beat grid moves them by construction, and a gate on them fires on the
+expected change while a real filterbank regression hides inside it. Sampling the
+bank on a fixed grid instead gives an anchor that a moved grid cannot perturb —
+so it can still fail, under a moved grid, for the one reason it exists.
 
 Usage:
     python training/pipeline_digest.py samples/song.mp3 [more.mp3 ...]
@@ -62,8 +69,9 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
             'metric_keys': sorted(metrics.keys()),
             'beat_keys': sorted(beats[0].keys()) if beats else [],
         },
-        # --- spectral: aubio filterbank output, must not move ---------------
-        'spectral': {
+        # --- at_beats: the same columns as the report carries them ----------
+        # Evidence only. Moves whenever the beat grid moves; see module docstring.
+        'at_beats': {
             'columns_hash': _hash([[b[c] for c in SPECTRAL_COLUMNS] for b in beats]),
             'kick_strength_mean': round(
                 sum(b['kick_strength'] for b in beats) / len(beats), 6) if beats else 0.0,
@@ -99,6 +107,52 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
     return digest
 
 
+def filterbank_fingerprint(path: str, seconds: float = 120.0) -> dict:
+    """The aubio mel bank's output over a fixed time grid — the anchor.
+
+    Runs the analyser's own mel path buffer by buffer, so it measures exactly
+    what the pipeline computes, and reduces it on a one-second grid so the
+    result depends on the audio and the bank alone. No beat, onset or tempo
+    decision can reach it, which is the whole point: it stays sensitive to a
+    filterbank regression while the beat grid underneath it moves.
+    """
+    import numpy as np
+
+    from lib.analyser.music_analyser import MusicAnalyser
+    from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
+    from simulate.fake_audio_client import FileAudioClient
+
+    class _Silent:
+        def on_sound_start(self): pass
+        def on_sound_stop(self): pass
+        async def on_cycle(self): pass
+        async def on_onset(self): pass
+        async def on_beat(self, *a): pass
+        async def on_note(self): pass
+        async def on_section_change(self): pass
+
+    client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, path)
+    client.start_streams()
+    analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, _Silent())
+
+    per_second, rows = [], []
+    buffers_per_second = SAMPLE_RATE // BUFFER_SIZE
+    limit = int(seconds * buffers_per_second)
+    for i in range(limit):
+        if client.exhausted:
+            break
+        rows.append(analyser._compute_mel_energies(client.read()))
+        if len(rows) == buffers_per_second:
+            per_second.append(np.mean(np.asarray(rows, dtype=np.float32), axis=0))
+            rows = []
+    grid = np.asarray(per_second, dtype=np.float32)
+    return {
+        'grid_shape': list(grid.shape),
+        'grid_hash': hashlib.sha256(grid.tobytes()).hexdigest()[:16],
+        'grid_sum': round(float(grid.sum()), 4),
+    }
+
+
 async def digest_track(path: str) -> dict:
     """Run one track through the fast sim and digest the result."""
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
@@ -113,6 +167,7 @@ async def digest_track(path: str) -> dict:
     wall_elapsed = time.monotonic() - wall_start
     report = event_buffer.to_report(command_queue.get_timing_log())
     digest = digest_report(report, wall_elapsed=wall_elapsed)
+    digest['filterbank'] = filterbank_fingerprint(path)
     digest['report_checksum'] = report_checksum(report)
     return digest
 

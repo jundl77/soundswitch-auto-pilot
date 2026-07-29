@@ -17,7 +17,12 @@ SR = 44100
 
 
 class FakeStage:
-    """Stands in for one madmom chain: records every hop, fires on demand."""
+    """Stands in for one madmom chain: records every hop, fires on demand.
+
+    Its event times are its OWN frame count divided by fps — which is exactly
+    what madmom's decoders do, and exactly why a stage that is skipped for a
+    while reports stale times afterwards. The adapter must not trust them.
+    """
 
     def __init__(self):
         self.hops = []
@@ -28,11 +33,12 @@ class FakeStage:
     def __call__(self, hop):
         self.hops.append(np.asarray(hop).copy())
         if len(self.hops) - 1 in self.fire_on:
-            return np.array([len(self.hops) - 1], dtype=float)
+            return np.array([(len(self.hops) - 1) / 100.0], dtype=float)
         return np.zeros(0)
 
     def reset(self):
         self.resets += 1
+        self.hops = []
 
 
 def _rhythm(**kw):
@@ -123,6 +129,73 @@ def test_shedding_is_reversible():
     assert onsets.hops
 
 
+def _feed(r, buffers, start=0):
+    out = []
+    for i in range(buffers):
+        out.append(r.process(_ramp(256, start + i * 256)))
+    return out
+
+
+def test_event_times_come_from_the_adapter_not_from_the_stages():
+    """Both madmom decoders stamp events from their OWN frame counter, which
+    only advances for frames they are handed. So the moment one chain is shed,
+    its clock stops while the other's runs on, and every event it reports after
+    a restore is early by the length of the gap — permanently, until a full
+    reset. The two streams would silently stop sharing a time base.
+
+    The adapter counts hops itself and stamps from that, so a stage's opinion of
+    the time is never used.
+    """
+    r, beats, onsets = _rhythm()
+    # Shed for 60 hops' worth of audio, then restore and fire on both chains.
+    r.set_onsets_enabled(False)
+    _feed(r, 200)
+    r.set_onsets_enabled(True)
+    beats.fire_on = {len(beats.hops)}
+    onsets.fire_on = {len(onsets.hops)}
+    results = _feed(r, 20, start=256 * 200)
+    fired = [e for e in results if e.beats or e.onsets]
+    assert fired, 'expected an event after restore'
+    event = fired[0]
+    assert event.beats and event.onsets, 'both chains should fire on the same hop'
+    assert event.beats[0] == pytest.approx(event.onsets[0]), (
+        'beat and onset times diverged across a shed — they are not on one clock')
+
+
+def test_the_adapter_clock_tracks_audio_fed_not_frames_processed():
+    r, beats, _ = _rhythm()
+    r.set_onsets_enabled(False)
+    hops = 300
+    beats.fire_on = {hops - 1}
+    results = _feed(r, int(hops * HOP_SIZE / 256) + 2)
+    fired = [e for e in results if e.beats]
+    assert fired
+    assert fired[0].beats[0] == pytest.approx((hops - 1) / 100.0, abs=0.011)
+
+
+def test_restoring_a_shed_chain_clears_its_stale_state():
+    """The shed chain's internal buffer still holds pre-gap samples and its
+    recurrent state still describes pre-gap audio. Feeding it post-gap audio
+    would splice the two inside one frame — the exact hazard reset() exists for.
+    """
+    r, _, onsets = _rhythm()
+    r.set_onsets_enabled(False)
+    _feed(r, 200)
+    resets_before = onsets.resets
+    r.set_onsets_enabled(True)
+    assert onsets.resets == resets_before + 1, 'restore must clear the shed chain'
+
+
+def test_shedding_does_not_reset_anything():
+    """Only restoring costs a reset; shedding is free and must not disturb the
+    chain that is still running."""
+    r, beats, onsets = _rhythm()
+    _feed(r, 20)
+    beat_resets = beats.resets
+    r.set_onsets_enabled(False)
+    assert beats.resets == beat_resets
+
+
 def test_reset_clears_stage_state_without_rebuilding_the_models():
     """`MusicAnalyser` resets every 15 minutes and on every sound stop.
     Rebuilding would reload eight pickled LSTMs mid-show."""
@@ -176,12 +249,19 @@ def test_pending_latency_is_reported_and_bounded_by_one_hop():
 def test_the_real_stack_streams_and_is_deterministic():
     """Two fresh adapters over identical audio must agree exactly — the whole
     determinism story rests on madmom's online path having no hidden RNG."""
+    # Decode from the committed MP3 rather than the gitignored cache. Skipping
+    # when the cache is absent would pass while measuring nothing on any fresh
+    # clone — and would do it silently, since a skip is not a failure.
     from pathlib import Path
-    npy = (Path(__file__).parent.parent / 'samples'
-           / 'generate_eric_prydz_192k.mp3.44100.npy')
-    if not npy.exists():
-        pytest.skip('decode cache absent; run the sim once to create it')
-    audio = np.load(npy)[: SR * 20]
+
+    from lib.audio_config import BUFFER_SIZE
+    from simulate.fake_audio_client import FileAudioClient
+
+    mp3 = Path(__file__).parent.parent / 'samples' / 'generate_eric_prydz_192k.mp3'
+    assert mp3.exists(), f'the committed sample track is missing: {mp3}'
+    client = FileAudioClient(SR, BUFFER_SIZE, str(mp3))
+    client.start_streams()
+    audio = np.concatenate([client.read() for _ in range(SR * 20 // BUFFER_SIZE)])
 
     def run():
         r = MadmomRhythm(SR)

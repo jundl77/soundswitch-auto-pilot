@@ -39,21 +39,37 @@ FRAME_SIZE = 2048
 # aubio stream it replaces rather than by taking madmom's library default —
 # every density constant in lib/engine/light_engine.py is expressed against
 # that rate, so moving it would make the migration's deltas unreadable.
-# Measured over 17 WHOLE tracks by training/onset_operating_point.py, evidence
-# committed beside it: aubio's median is 6.077/s and this lands within 0.028/s
-# of it, per-track ratio p10/p50/p90 = 0.85 / 1.03 / 1.28. madmom's own default
-# (0.50) would have come in 13 % low.
+# Measured over 17 WHOLE tracks, train+val only, by
+# training/onset_operating_point.py, evidence committed beside it: aubio's
+# median is 5.883/s and this lands within 0.033/s of it, per-track ratio
+# p10/p50/p90 = 0.84 / 0.99 / 1.17. madmom's own default (0.50) would have come
+# in 7 % low.
 #
-# Whole tracks, not prefixes, and that is load-bearing: the same sweep matches
-# at 0.30 on 90 s prefixes and 0.40 on 240 s ones, because the two detectors'
-# rate ratio rises with the density of the material and a track's opening is
-# its sparsest. Calibrating on a prefix calibrates against an intro.
-ONSET_THRESHOLD = 0.40
+# Two things about that measurement are load-bearing, and both moved the answer:
+#
+#   Whole tracks, not prefixes. The same sweep matches at 0.30 on 90 s prefixes
+#   and 0.40 on 240 s ones, because the two detectors' rate ratio rises with the
+#   density of the material and a track's opening is its sparsest — calibrating
+#   on a prefix calibrates against an intro.
+#
+#   Train and val only. The first sweep's sorted-and-spaced selection quietly
+#   included two held-out test tracks and read 0.40; excluding them reads 0.44.
+#   The script now refuses test ids outright rather than filtering them.
+ONSET_THRESHOLD = 0.44
 
 
 @dataclass
 class RhythmEvents:
-    """What fired inside one audio buffer. Times are madmom stream seconds."""
+    """What fired inside one audio buffer.
+
+    Times are seconds of audio fed to this adapter, stamped by the adapter's own
+    hop counter — deliberately NOT by madmom's. Both madmom decoders time their
+    output from an internal frame counter that only advances for frames they are
+    handed, so the instant one chain is shed its clock stops while the other's
+    runs on, and every event it reports after a restore is early by the length
+    of the gap. One clock, owned here, is the only way the two streams stay
+    comparable across shedding.
+    """
 
     beats: list[float] = field(default_factory=list)
     onsets: list[float] = field(default_factory=list)
@@ -136,6 +152,7 @@ class MadmomRhythm:
         self._onsets = onset_stage if onset_stage is not None else _OnsetStage()
         self._onsets_enabled = True
         self._pending = np.zeros(0, dtype=np.float32)
+        self._hops = 0
 
     @property
     def pending_latency_sec(self) -> float:
@@ -144,11 +161,22 @@ class MadmomRhythm:
         return len(self._pending) / SAMPLE_RATE
 
     def set_onsets_enabled(self, enabled: bool) -> None:
-        """Shed or restore the onset chain (the drift watchdog's lever)."""
-        if enabled != self._onsets_enabled:
-            logging.warning('[madmom] onset detection %s',
-                            'restored' if enabled else 'SHED — density features go stale')
-            self._onsets_enabled = enabled
+        """Shed or restore the onset chain (the drift watchdog's lever).
+
+        Restoring resets the chain. While shed it saw no audio, so its frame
+        buffer still holds pre-gap samples and its recurrent state still
+        describes pre-gap music; handing it post-gap audio would splice the two
+        inside a single frame and decode the seam with stale hidden state. The
+        cost is one frame of warm-up (46 ms), paid once, against a chain that
+        would otherwise be quietly wrong for as long as it kept running.
+        """
+        if enabled == self._onsets_enabled:
+            return
+        if enabled:
+            self._onsets.reset()
+        logging.warning('[madmom] onset detection %s',
+                        'restored' if enabled else 'SHED — density features go stale')
+        self._onsets_enabled = enabled
 
     def reset(self) -> None:
         """Return to the constructed state without rebuilding the models."""
@@ -157,6 +185,7 @@ class MadmomRhythm:
         # The partial hop goes too: carrying it across a sound stop would splice
         # the tail of one track onto the head of the next inside one frame.
         self._pending = np.zeros(0, dtype=np.float32)
+        self._hops = 0
 
     def process(self, audio_buffer: np.ndarray) -> RhythmEvents:
         """Feed one audio buffer; return whatever fired inside it."""
@@ -168,10 +197,13 @@ class MadmomRhythm:
         while len(self._pending) >= HOP_SIZE:
             hop, self._pending = self._pending[:HOP_SIZE], self._pending[HOP_SIZE:]
             hop = Signal(hop, sample_rate=SAMPLE_RATE, num_channels=1)
-            beats = np.atleast_1d(self._beats(hop)).tolist()
-            if beats:
-                events.beats.extend(beats)
+            # One activation goes in per call, so each decoder returns at most
+            # one event and it belongs to this hop. Its time is this hop's time.
+            now = self._hops / FPS
+            self._hops += 1
+            if len(np.atleast_1d(self._beats(hop))):
+                events.beats.append(now)
                 events.beat_activation = getattr(self._beats, 'last_activation', 0.0)
-            if self._onsets_enabled:
-                events.onsets.extend(np.atleast_1d(self._onsets(hop)).tolist())
+            if self._onsets_enabled and len(np.atleast_1d(self._onsets(hop))):
+                events.onsets.append(now)
         return events

@@ -51,25 +51,50 @@ def test_the_two_column_sets_do_not_overlap():
 
 def test_every_beat_column_is_classified():
     """A new beat column must be deliberately placed on one side of the split,
-    not silently fall outside both and escape the digest entirely."""
-    columns = set(_beat(0.0).keys())
-    assert columns == set(RHYTHM_COLUMNS) | set(SPECTRAL_COLUMNS)
+    not silently fall outside both and escape the digest entirely.
+
+    The columns come from the REAL beat record, not from this file's synthetic
+    one: checking a fixture against a fixture would let a column added to
+    EventBuffer.add_beat slip past both.
+    """
+    from lib.engine.event_buffer import EventBuffer
+
+    buffer = EventBuffer(window_sec=float('inf'))
+    buffer.start()
+    buffer.add_beat(bpm=128.0, onset_density=4.0, change=False)
+    columns = set(buffer.to_report()['beats'][0].keys())
+    assert columns == set(RHYTHM_COLUMNS) | set(SPECTRAL_COLUMNS), (
+        f'unclassified beat columns: '
+        f'{columns ^ (set(RHYTHM_COLUMNS) | set(SPECTRAL_COLUMNS))}')
+    # And the local fixture must track the real one, or every other test here
+    # is exercising a shape that no longer exists.
+    assert set(_beat(0.0).keys()) == columns
 
 
-def test_a_moved_beat_time_does_not_touch_the_spectral_hash():
-    """The migration moves beat times by design; that must not read as a
-    filterbank regression."""
+def test_a_moved_beat_time_does_not_touch_the_beat_sampled_columns():
+    """Moving WHEN a beat is reported, without moving the row it carries, must
+    not read as a filterbank change."""
     a = digest_report(_report([_beat(1.0), _beat(2.0)]))
     b = digest_report(_report([_beat(1.05), _beat(2.05)]))
     assert a['rhythm']['beat_times_hash'] != b['rhythm']['beat_times_hash']
-    assert a['spectral'] == b['spectral']
+    assert a['at_beats'] == b['at_beats']
 
 
 def test_a_moved_filterbank_column_does_not_hide_in_the_rhythm_hash():
     a = digest_report(_report([_beat(1.0)]))
     b = digest_report(_report([_beat(1.0, kick_strength=9.9)]))
-    assert a['spectral']['columns_hash'] != b['spectral']['columns_hash']
+    assert a['at_beats']['columns_hash'] != b['at_beats']['columns_hash']
     assert a['rhythm'] == b['rhythm']
+
+
+def test_the_beat_sampled_columns_are_not_a_regression_gate():
+    """They cannot be. A different beat GRID reads the same filterbank output
+    at different instants, so these values move for the expected reason -- which
+    is exactly how a real regression would hide inside them. The gate is
+    `filterbank`, sampled on a fixed time grid; this section is evidence."""
+    a = digest_report(_report([_beat(1.0), _beat(2.0)]))
+    b = digest_report(_report([_beat(1.0), _beat(1.5), _beat(2.0)]))
+    assert a['at_beats'] != b['at_beats']
 
 
 def test_schema_records_the_report_contract():
@@ -94,20 +119,43 @@ def test_digest_survives_a_report_with_no_beats():
 
 
 @pytest.mark.integration
-async def test_bundled_track_keeps_the_committed_report_schema():
-    """The report is a published contract — the visualizer, the evaluator and
-    the inspector all read it. Changing the beat source may move every number
-    in it; it may not move a key.
+async def test_bundled_track_keeps_the_committed_schema_and_filterbank():
+    """The two things the migration is not allowed to move, against a baseline
+    cut from master before any madmom code existed.
 
-    Note what this deliberately does NOT assert. The digest's `spectral`
-    section is the filterbank's output *sampled at beat instants*, so it moves
-    whenever the beat grid moves — which is the whole point of this migration.
-    An equality assertion there would fail for the expected reason and prove
-    nothing about the filterbank. The filterbank's own invariance is pinned
-    directly, and beat-independently, in test_music_analyser.py.
+    The report is a published contract — the visualizer, the evaluator and the
+    inspector all read it — so the beat source may move every number in it but
+    not a key. And the filterbank anchor is sampled on a FIXED TIME GRID, so it
+    is still able to fail under a completely rewritten beat grid, which is the
+    one thing a beat-sampled anchor could never do.
     """
     from training.pipeline_digest import digest_track
     baseline = json.loads(BASELINE.read_text())[SAMPLE_SONG_NAME]
     sample = Path(__file__).parent.parent / 'samples' / SAMPLE_SONG_NAME
     actual = await digest_track(str(sample))
     assert actual['schema'] == baseline['schema']
+    assert actual['filterbank'] == baseline['filterbank']
+
+
+@pytest.mark.integration
+def test_the_filterbank_anchor_notices_a_changed_filterbank():
+    """A gate nobody has seen fail is a gate nobody knows works. Perturbing the
+    bank must move the anchor — under whatever beat grid."""
+    from training.pipeline_digest import filterbank_fingerprint
+    sample = str(Path(__file__).parent.parent / 'samples' / SAMPLE_SONG_NAME)
+    honest = filterbank_fingerprint(sample, seconds=10.0)
+
+    import lib.analyser.music_analyser as ma
+    original = ma.MusicAnalyser._compute_mel_energies
+
+    def perturbed(self, audio_signal):
+        energies = original(self, audio_signal)
+        energies[0] *= 1.01
+        return energies
+
+    ma.MusicAnalyser._compute_mel_energies = perturbed
+    try:
+        tampered = filterbank_fingerprint(sample, seconds=10.0)
+    finally:
+        ma.MusicAnalyser._compute_mel_energies = original
+    assert tampered['grid_hash'] != honest['grid_hash']
