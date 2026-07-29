@@ -1,18 +1,4 @@
-"""Set madmom's onset peak-picking threshold by matching the stream it replaces.
-
-madmom's peak picker needs a threshold; aubio's `onset("default")` had one baked
-in. Every onset-density constant in `lib/engine/light_engine.py` is denominated
-in the RATE that detector produced, so taking madmom's library default would
-silently move the rule engine's input distribution and make the migration
-impossible to judge — the deltas would be a mix of "better beat source" and
-"different onset budget" with no way to separate them.
-
-Matching the median onset rate across a corpus is therefore the opposite of
-retuning the rule engine: it holds the engine's input fixed so that what
-changed is what actually changed.
-
-Run:  python training/onset_operating_point.py --audio-dir DIR [--tracks 16]
-"""
+"""Set madmom's onset peak-picking threshold by matching aubio's onset rate."""
 
 from __future__ import annotations
 
@@ -43,7 +29,6 @@ def _load(path: Path, seconds: float | None) -> np.ndarray:
 
 
 def _aubio_onset_rate(audio: np.ndarray) -> float:
-    """The rate the rule engine's density constants were calibrated against."""
     import aubio
     detector = aubio.onset('default', BUFFER * 2, BUFFER, SR)
     count = sum(1 for i in range(0, len(audio) - BUFFER, BUFFER)
@@ -52,8 +37,6 @@ def _aubio_onset_rate(audio: np.ndarray) -> float:
 
 
 def _madmom_activations(audio: np.ndarray) -> np.ndarray:
-    """One streaming pass; every threshold is then read off the same curve, so
-    the sweep costs one inference rather than eleven."""
     from lib.analyser.madmom_rhythm import FRAME_SIZE, HOP_SIZE
     from madmom.audio.signal import Signal
     from madmom.features.onsets import RNNOnsetProcessor
@@ -100,20 +83,12 @@ def one_track(args) -> dict:
     }
 
 
-# Splits this calibration must never read. `test` is the campaign holdout.
-# `eval_set` and `excluded_eval_set` are the benchmark tracks whose before/after
-# deltas are this PR's headline evidence — a constant tuned on them would make
-# that evidence a measurement of its own training set.
+# Splits this calibration must never read: tuning on them would make the
+# migration's before/after evidence a measurement of its own training set.
 _FORBIDDEN_SPLITS = ('test', 'eval_set', 'excluded_eval_set')
 
 
 def _golden_fixture_ids() -> set[str]:
-    """Tracks whose before/after deltas are the migration's headline evidence.
-
-    They are not in any split manifest — the bundled sample is not corpus audio
-    at all — so the manifest cannot protect them. Read from the fixture itself
-    so the list cannot drift from the thing it describes.
-    """
     fixture = (Path(__file__).parent.parent / 'tests' / 'fixtures'
                / 'pipeline_digest_baseline.json')
     if not fixture.exists():
@@ -122,12 +97,6 @@ def _golden_fixture_ids() -> set[str]:
 
 
 def _forbidden_ids(data_dir: Path) -> set[str]:
-    """Every id this calibration is not allowed to read.
-
-    A missing manifest is fatal rather than empty: silently treating "I could
-    not find the holdout list" as "there is no holdout" is how test contact
-    happens — it is how it happened here the first time.
-    """
     manifest = data_dir / 'splits.json'
     if not manifest.exists():
         raise SystemExit(f'refusing to select tracks without {manifest} — '
@@ -146,7 +115,6 @@ def _refuse_holdout_contact(paths: list[str], data_dir: Path) -> None:
 
 
 def _matched_threshold(rows: list[dict]) -> float:
-    """The threshold whose median rate is closest to aubio's, over these tracks."""
     import numpy as np
     aubio_median = float(np.median([r['aubio_rate'] for r in rows]))
     best = None
@@ -159,14 +127,6 @@ def _matched_threshold(rows: list[dict]) -> float:
 
 
 def _stability(rows: list[dict], seed: int, resamples: int = 2000) -> dict:
-    """How much the matched threshold depends on WHICH tracks were drawn.
-
-    This exists because it caught a real error: three successive 17-track pools
-    produced 0.40, 0.44 and 0.35 — two full steps of the ladder — and each was
-    reported as if it were the answer. A median over a small track sample is an
-    estimate, and shipping a point estimate without its spread is how a sampling
-    artifact becomes a constant.
-    """
     import numpy as np
     rng = np.random.default_rng(seed)
     n = len(rows)
@@ -195,11 +155,8 @@ def main() -> None:
     ap.add_argument('--extra', nargs='*', default=[],
                     help='additional audio files (e.g. the bundled sample)')
     ap.add_argument('--tracks', type=int, default=16)
-    # Whole tracks by default, and that is not a detail. Measured on 90 s
-    # prefixes this sweep matches at 0.30 and on 240 s prefixes at 0.40: the
-    # two detectors' rate ratio drifts upward with the density of the material,
-    # and a track's opening minutes are its sparsest. A prefix therefore
-    # calibrates against an intro, while the rule engine sees whole shows.
+    # Whole tracks by default: the two detectors' rate ratio rises with the
+    # density of the material, so a prefix calibrates against an intro.
     ap.add_argument('--seconds', type=float, default=None,
                     help='truncate each track (diagnostic only — see above)')
     ap.add_argument('--workers', type=int, default=4)
@@ -209,9 +166,6 @@ def main() -> None:
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 
-    # Re-analysis path: the per-track rates are the expensive part and they are
-    # already stored, so re-reading them costs a second instead of an hour. This
-    # is how the stability record gets added to a sweep that predates it.
     if args.from_json:
         results = json.loads(Path(args.from_json).read_text())['tracks']
         print(f'{len(results)} tracks, re-analysed from {args.from_json}')
@@ -221,16 +175,6 @@ def main() -> None:
     if not args.audio_dir:
         raise SystemExit('--audio-dir is required unless --from-json is given')
 
-    # Deterministic, selection-free sample: sorted filenames, evenly spaced.
-    # Not the eval set — that list lives on another branch and this measurement
-    # must not depend on it.
-    #
-    # Held-out ids are excluded LOUDLY and then refused. The first version of
-    # this script had no guard at all and the sorted-and-spaced selection duly
-    # picked up two test tracks; a constant chosen with holdout contact cannot
-    # be defended, however small the contribution. The exclusion is printed
-    # rather than done quietly, because "the pool was smaller than you think" is
-    # exactly the kind of thing that should not be discovered by reading source.
     data_dir = Path(args.audio_dir).parent
     forbidden = _forbidden_ids(data_dir)
     everything = sorted(Path(args.audio_dir).glob('*.mp3'))
@@ -288,9 +232,6 @@ def _report(results: list[dict], seed: int, out: str | None) -> None:
               'the interval, not the point estimate, is the honest result.')
 
     if out:
-        # The stability record is STORED, not merely printed. A sweep whose
-        # spread lives only in a terminal scrollback is a sweep whose spread
-        # will be forgotten by the next person to quote its point estimate.
         Path(out).write_text(json.dumps(
             {'tracks': results, 'chosen_threshold': best[0],
              'stability': stability}, indent=2) + '\n')
@@ -301,6 +242,6 @@ if __name__ == '__main__':
     try:
         import psutil
         psutil.Process(os.getpid()).nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
-    except Exception:  # noqa: BLE001 — priority is a courtesy, not a requirement
+    except Exception:  # noqa: BLE001
         pass
     main()

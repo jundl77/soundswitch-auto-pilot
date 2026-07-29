@@ -1,4 +1,3 @@
-"""Tests for EventBuffer virtual-clock timestamps and infinite window."""
 import pytest
 
 from lib.clock import VirtualClock
@@ -22,7 +21,7 @@ def test_infinite_window_keeps_old_events():
     buf.start()
     buf.set_intent('GROOVE')
     buf.add_effect('CH_A', 'AUTOLOOP')
-    clock.advance(500.0)  # far beyond the default 60 s window
+    clock.advance(500.0)
     buf.set_intent('DROP')
     buf.add_effect('CH_B', 'AUTOLOOP')
     report = buf.to_report()
@@ -32,23 +31,19 @@ def test_infinite_window_keeps_old_events():
 
 
 def test_mark_end_freezes_timeline():
-    """After mark_end, later recordings clamp to the end timestamp — the flush
-    tail must not inflate report durations past the audio length."""
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
     clock.advance(10.0)
     buf.mark_end()
-    clock.advance(2.5)  # flush tail advances the clock past the end
+    clock.advance(2.5)
     buf.set_intent('DROP')
     report = buf.to_report()
     assert report['duration_sec'] == 10.0
-    assert report['intents'][-1]['t'] == 10.0  # clamped, not 12.5
+    assert report['intents'][-1]['t'] == 10.0
 
 
 def test_infinite_window_beats_are_unbounded():
-    """The inf-window contract promises complete reports — the live-mode 3000
-    beat cap must not apply."""
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
@@ -63,9 +58,9 @@ def test_default_window_prunes_old_effects():
     buf.start()
     buf.add_effect('CH_A', 'AUTOLOOP')
     clock.advance(1.0)
-    buf.add_effect('CH_B', 'AUTOLOOP')   # closes CH_A at end=1.0
+    buf.add_effect('CH_B', 'AUTOLOOP')
     clock.advance(500.0)
-    buf.add_effect('CH_C', 'AUTOLOOP')   # closes CH_B; CH_A end=1.0 < cutoff → pruned
+    buf.add_effect('CH_C', 'AUTOLOOP')
     report = buf.to_report()
     channels = [e['channel'] for e in report['effects']]
     assert 'CH_A' not in channels

@@ -26,8 +26,6 @@ def run(path):
     while True:
         samples, read = aubio_source()
 
-        #is_onset: bool = onset_o(samples)[0] > 0
-        #if is_onset:
         if total_frames % (hop_s * 10) == 0:
             spec = pvoc_o(samples)
             new_energies = energy_filter(spec)

@@ -1,37 +1,5 @@
 #!/usr/bin/env python
-"""Build the raveform track manifest and print the label statistics.
-
-Consumes ``<data-dir>/annotations/`` (written by ``raveform_fetch_annotations.py``)
-and writes ``<data-dir>/manifest.csv`` -- one row per annotated track::
-
-    track_id,youtube_id,n_sections,total_sec
-
-``track_id`` is the dataset's ``key`` (``<index>.<youtube_id>``, also the beat-CSV
-basename), ``youtube_id`` is the 11-character YouTube video ID the downloader
-fetches, ``n_sections`` is the RAW published section count, and ``total_sec`` is
-the record's ``duration`` field (bit-equal to ``sections[-1].end`` on every track).
-
-Two views of the same annotation are reported, because they answer different
-questions:
-
-* **RAW** -- labels exactly as published, sections exactly as published. This is
-  what the manifest records and what any claim about the dataset must cite.
-  Note that the corpus does *not* merge adjacent same-label sections, so raw
-  section counts and median durations describe annotation events, not musical
-  sections.
-* **CANONICAL** -- the training vocabulary. The published vocabulary is a
-  superset of the documented seven labels; the extras are folded per the
-  project's ruling (see ``CANONICAL_*`` below), and adjacent same-label runs are
-  then merged so a "section" means one contiguous stretch of one label. These
-  are the numbers that preview the HSMM duration and transition priors.
-
-Stdlib only.  Reuses the Task 2 parse helpers rather than re-parsing the JSON.
-
-Usage::
-
-    uv run python training/raveform/raveform_manifest.py \
-        --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
-"""
+"""Build the raveform track manifest and print the label statistics."""
 
 from __future__ import annotations
 
@@ -44,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from raveform_fetch_annotations import (  # noqa: E402  (needs the path insert above)
+from raveform_fetch_annotations import (  # noqa: E402
     annotations_dir,
     load_tracks,
     parse_sections,
@@ -54,26 +22,9 @@ from raveform_fetch_annotations import (  # noqa: E402  (needs the path insert a
 MANIFEST_FILE = "manifest.csv"
 MANIFEST_HEADER = ("track_id", "youtube_id", "n_sections", "total_sec")
 
-# --------------------------------------------------------------------------- #
-# Canonical label vocabulary
-# --------------------------------------------------------------------------- #
-#
-# The published vocabulary has ten labels; the documented seven plus `end`,
-# `altintro` and `bridge`.  Project ruling (recorded in the Task 2 report):
-#
-#   end       tail sentinel, not a musical section -- median 4.8 s and always
-#             the final section.  DROPPED entirely; it would otherwise teach a
-#             spurious 1,249-example class.
-#   altintro  variant marker for the same structural role as `intro` (mirror of
-#             the already-documented `altoutro`).  Folded into `intro`.
-#   bridge    conventional mid-track section, only 54 examples -- too few to
-#             learn as its own class.  Folded into `breakdown`.
-#   altoutro  KEPT: already part of the documented seven-label vocabulary.
-#
 CANONICAL_DROP = frozenset({"end"})
 CANONICAL_MAP = {"altintro": "intro", "bridge": "breakdown"}
 
-# Musical order, for stable and readable table/matrix rows.
 CANONICAL_ORDER = (
     "intro",
     "buildup",
@@ -85,34 +36,15 @@ CANONICAL_ORDER = (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Section helpers
-# --------------------------------------------------------------------------- #
-
-
 def section_length(start: float, end: float) -> float:
-    """Length of one section, clamped at 0.
-
-    One track (``1020.c1VBubZ2w3M``) has a final section whose ``start`` exceeds
-    its ``end`` by 0.6 ms.  Clamping keeps every aggregate well-defined instead
-    of letting a sub-millisecond annotation slip subtract from a total; the
-    anomaly is reported separately rather than silently absorbed.
-    """
+    # One published track has start > end by 0.6 ms; clamping keeps aggregates
+    # well-defined.  The anomaly is reported separately, not absorbed.
     return max(0.0, end - start)
 
 
 def canonical_runs(sections: list) -> list:
-    """RAW sections -> canonical merged runs ``[(start, end, label, duration)]``.
-
-    Drops the dropped labels, applies the fold map, then merges adjacent
-    same-label runs.  Merging happens *after* the drop and the fold, so runs
-    join across a removed sentinel and across a folded variant
-    (``altintro`` + ``intro`` is one ``intro``).
-
-    A merged run's duration is the SUM of its members' clamped lengths, not
-    ``end - start``: those differ exactly when a dropped section sits between
-    two merged members, and the dropped time must not be re-attributed.
-    """
+    # A merged run's duration sums its members' clamped lengths rather than
+    # taking end - start, so time inside a dropped section is not re-attributed.
     runs: list = []
     for start, end, label in sections:
         if label in CANONICAL_DROP:
@@ -128,17 +60,10 @@ def canonical_runs(sections: list) -> list:
 
 
 def raw_runs(sections: list) -> list:
-    """RAW sections in the same ``(start, end, label, duration)`` shape."""
     return [(start, end, label, section_length(start, end)) for start, end, label in sections]
 
 
-# --------------------------------------------------------------------------- #
-# Statistics
-# --------------------------------------------------------------------------- #
-
-
 def _percentile(values_sorted: list, pct: float) -> float:
-    """Linear-interpolated percentile of an already-sorted, non-empty list."""
     if not values_sorted:
         return float("nan")
     if len(values_sorted) == 1:
@@ -150,11 +75,6 @@ def _percentile(values_sorted: list, pct: float) -> float:
 
 
 def label_stats(per_track_runs: list) -> dict:
-    """Per-label section count, track count, total seconds and duration list.
-
-    ``per_track_runs`` is one ``[(start, end, label, duration), ...]`` list per
-    track.
-    """
     counts = collections.Counter()
     totals = collections.defaultdict(float)
     tracks = collections.defaultdict(set)
@@ -177,17 +97,11 @@ def label_stats(per_track_runs: list) -> dict:
 
 
 def transition_counts(per_track_runs: list) -> collections.Counter:
-    """Count every adjacent ``from -> to`` label pair, within tracks only."""
     pairs = collections.Counter()
     for runs in per_track_runs:
         for before, after in zip(runs, runs[1:]):
             pairs[(before[2], after[2])] += 1
     return pairs
-
-
-# --------------------------------------------------------------------------- #
-# Printing
-# --------------------------------------------------------------------------- #
 
 
 def _print_label_table(stats: dict, order: list) -> None:
@@ -217,7 +131,7 @@ def _print_label_table(stats: dict, order: list) -> None:
 def _print_transitions(pairs: collections.Counter, order: list, title: str) -> None:
     print(title)
     width = max(6, max((len(label) for label in order), default=6))
-    corner = "from \\ to".ljust(12)  # f-strings below cannot carry the backslash
+    corner = "from \\ to".ljust(12)  # the f-strings below cannot carry a backslash
     print("  " + corner + "".join(f"{label:>{width + 2}}" for label in order))
     for source in order:
         row = f"  {source:<12}"
@@ -229,17 +143,7 @@ def _print_transitions(pairs: collections.Counter, order: list, title: str) -> N
     print(f"  total pairs: {sum(pairs.values())}   self-transitions (X->X): {self_pairs}")
 
 
-# --------------------------------------------------------------------------- #
-# Manifest
-# --------------------------------------------------------------------------- #
-
-
 def build_manifest_rows(tracks: list) -> list:
-    """One ``(track_id, youtube_id, n_sections, total_sec)`` row per track.
-
-    Sorted by ``track_id`` so the file is byte-identical run to run regardless
-    of the order the records happen to appear in.
-    """
     rows = []
     for track in tracks:
         sections = parse_sections(track)
@@ -256,7 +160,6 @@ def build_manifest_rows(tracks: list) -> list:
 
 
 def write_manifest(data_dir: Path, rows: list) -> Path:
-    """Write ``manifest.csv`` atomically; returns its path."""
     path = data_dir / MANIFEST_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".part")
@@ -272,13 +175,7 @@ def write_manifest(data_dir: Path, rows: list) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# Report
-# --------------------------------------------------------------------------- #
-
-
 def report(data_dir: Path, tracks: list) -> None:
-    """Print every statistic the plan asks for. Never raises on bad data."""
     per_track_raw = []
     per_track_canonical = []
     lead_ins = []
@@ -335,7 +232,6 @@ def report(data_dir: Path, tracks: list) -> None:
         if label in CANONICAL_DROP
     )
 
-    # --- corpus ----------------------------------------------------------- #
     print()
     print("corpus")
     print(f"  tracks                 : {len(tracks)}")
@@ -348,7 +244,6 @@ def report(data_dir: Path, tracks: list) -> None:
         f"mean {statistics.mean(per_track_counts):.1f}  max {per_track_counts[-1]}  (raw)"
     )
 
-    # --- raw --------------------------------------------------------------- #
     print()
     print("RAW label statistics -- labels exactly as published, sections NOT merged.")
     print(
@@ -359,7 +254,6 @@ def report(data_dir: Path, tracks: list) -> None:
     raw_order = sorted(raw_stats, key=lambda label: -raw_stats[label]["count"])
     _print_label_table(raw_stats, raw_order)
 
-    # --- canonical --------------------------------------------------------- #
     fold = ", ".join(f"{src}->{dst}" for src, dst in sorted(CANONICAL_MAP.items()))
     print()
     print(
@@ -379,14 +273,11 @@ def report(data_dir: Path, tracks: list) -> None:
     canonical_order += unmapped
     _print_label_table(canonical_stats, canonical_order)
     if unmapped:
-        # Fail loud, not open: a label the ruling never considered has appeared,
-        # and it is now silently a training class. Someone must decide on it.
         print(
             f"  WARNING: {len(unmapped)} label(s) outside the canonical vocabulary "
             f"passed through unmapped: {', '.join(unmapped)}"
         )
 
-    # --- transitions ------------------------------------------------------- #
     print()
     _print_transitions(
         raw_pairs,
@@ -406,7 +297,6 @@ def report(data_dir: Path, tracks: list) -> None:
     print("  canonical first-section labels : " + _counter_line(first_labels))
     print("  canonical last-section labels  : " + _counter_line(last_labels))
 
-    # --- leading offset ---------------------------------------------------- #
     lead_sorted = sorted(lead_ins)
     print()
     print("leading UNANNOTATED offset -- sections[0].start, audio before the first label")
@@ -428,7 +318,6 @@ def report(data_dir: Path, tracks: list) -> None:
             "-- must NOT be attributed to the first section when slicing training audio"
         )
 
-    # --- anomalies --------------------------------------------------------- #
     print()
     print("data anomalies")
     print(f"  tracks with no sections       : {empty_tracks}")
@@ -458,13 +347,7 @@ def _counter_line(counter: collections.Counter) -> str:
     return "  ".join(f"{label} {count}" for label, count in counter.most_common())
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
 def default_data_dir() -> Path:
-    # parents[2] is the repo root: this file sits in training/raveform/.
     return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
 

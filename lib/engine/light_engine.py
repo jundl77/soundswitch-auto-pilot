@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from collections import deque
-from typing import TYPE_CHECKING
+from typing import NamedTuple, TYPE_CHECKING
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_definitions import LightIntent
@@ -16,50 +16,24 @@ from lib.clock import Clock, SYSTEM_CLOCK
 if TYPE_CHECKING:
     from lib.engine.event_buffer import EventBuffer
 
-# ---------------------------------------------------------------------------
-# Intent classifier
-# ---------------------------------------------------------------------------
-# These thresholds are a starting point — tune against real DJ sets.
-# onset_density = onsets/sec over a 1.5-second rolling window (madmom onsets).
-#
-# Structure of a typical EDM track and how we detect it:
-#   ATMOSPHERIC — no beats detected for >2 s (intro, full breakdown, outro)
-#                 Detected via beat-absence in on_100ms_callback, NOT here.
-#   BREAKDOWN   — beat present but very sparse onsets (melodic, stripped)
-#   GROOVE      — moderate onsets at mid-tempo (main dance-floor loop)
-#   BUILDUP     — onset density or spectral centroid rising (pre-drop tension)
-#   DROP        — sustained high onset density with the kick locked to beats
-#   PEAK        — sustained DROP; promoted by the engine, not classified here.
+_BREAKDOWN_MAX_DENSITY_ENTER = 3.0
+_BREAKDOWN_MAX_DENSITY_EXIT = 3.5
+_BUILDUP_MIN_TREND = 1.3
+_BUILDUP_MIN_DENSITY = _BREAKDOWN_MAX_DENSITY_ENTER
+_DROP_MIN_DENSITY_ENTER = 4.0
+_DROP_MIN_DENSITY_EXIT = 3.5
+_DROP_MIN_SUB_BASS_RATIO = 0.0   # 0.0 leaves the gate open; kick_strength gates DROP instead
 
-# Hysteresis thresholds (Schmitt trigger) — separate entry and exit values per intent
-# prevent threshold-boundary oscillation ("flickering") at the edges of each zone.
-_BREAKDOWN_MAX_DENSITY_ENTER = 3.0   # enter BREAKDOWN when density < this
-_BREAKDOWN_MAX_DENSITY_EXIT  = 3.5   # exit BREAKDOWN when density exceeds this
-_BUILDUP_MIN_TREND           = 1.3   # density trend ratio — rising ≥30% → BUILDUP
-_BUILDUP_MIN_DENSITY         = _BREAKDOWN_MAX_DENSITY_ENTER  # below this a trend is noise
-_DROP_MIN_DENSITY_ENTER      = 4.0   # enter DROP when density ≥ this
-_DROP_MIN_DENSITY_EXIT       = 3.5   # exit DROP when density falls below this
-_DROP_MIN_SUB_BASS_RATIO     = 0.0   # sub-bass gate for DROP (0.0 = disabled — kick_strength is the gate)
+_KICK_PRESENCE_THRESHOLD = 2.4
+_BREAKDOWN_NO_KICK_MARGIN = 1.0
+_CENTROID_BUILDUP_TREND = 1.1
 
-# Kick detection gate: kick_strength below this means no kick on beats → no DROP.
-_KICK_PRESENCE_THRESHOLD          = 2.4
-# Kick absent → BREAKDOWN's band widens by this, entry and exit alike (dead zone preserved).
-_BREAKDOWN_NO_KICK_MARGIN         = 1.0
-# Spectral centroid trend threshold: centroid rising ≥10% → BUILDUP signal (riser/sweep).
-_CENTROID_BUILDUP_TREND           = 1.1
+_BEAT_ABSENCE_SEC = 2.5
 
-_BEAT_ABSENCE_SEC            = 2.5   # seconds without a beat → ATMOSPHERIC (5+ missed beats at 128 BPM)
-
-# Stability: vote buffer requires this many consecutive identical votes before committing a switch.
 _VOTE_BUFFER_SIZE = 3
-# Minimum beats spent in current intent before a switch is allowed.
-_MIN_DWELL_BEATS  = 4
-
-# A DROP held for this many commit-beats is promoted to PEAK (~15 s at 128 BPM).
+_MIN_DWELL_BEATS = 4
 _PEAK_PROMOTION_BEATS = 32
 
-# Musically impossible transitions: block these regardless of classifier output.
-# e.g. you cannot go from dead-silent ATMOSPHERIC straight to a full DROP.
 _INVALID_TRANSITIONS: frozenset = frozenset({
     (LightIntent.ATMOSPHERIC, LightIntent.DROP),
     (LightIntent.ATMOSPHERIC, LightIntent.BUILDUP),
@@ -69,15 +43,10 @@ _INVALID_TRANSITIONS: frozenset = frozenset({
 
 
 def _hold(current_intent: LightIntent | None) -> LightIntent:
-    """What to show when density is unmeasured: keep doing what the last real
-    measurement said.
+    """What to show when density is unmeasured: whatever the last real one said.
 
-    Except ATMOSPHERIC. That intent means "no beats" — it is set by the
-    beat-absence timer and cleared by a beat arriving. But the classifier only
-    runs on a beat, so reaching here while ATMOSPHERIC means beats ARE flowing
-    and the stage is dark anyway; holding would keep the lights off through live
-    music for as long as the onset detector stayed shed. GROOVE is the neutral
-    lit intent and the honest degradation. (decisions #108)
+    ATMOSPHERIC is the exception: only a beat reaches the classifier, so beats
+    are flowing and holding would keep the stage dark through live music.
     """
     if current_intent is None or current_intent is LightIntent.ATMOSPHERIC:
         return LightIntent.GROOVE
@@ -93,49 +62,30 @@ def _classify_intent(
     kick_strength: float = KICK_UNKNOWN,
     centroid_trend: float = 1.0,
 ) -> LightIntent:
-    """Map audio features → LightIntent using hysteresis thresholds.
+    """Map audio features → LightIntent, using the current intent's exit
+    threshold instead of its entry threshold (Schmitt trigger).
 
-    Priority order: DROP → BUILDUP → BREAKDOWN(sparse) → BREAKDOWN(no kick) → GROOVE.
-    PEAK is never returned here — the engine promotes a sustained DROP to it.
-
-    Hysteresis (Schmitt trigger): when `current_intent` is provided, the exit
-    threshold for the current intent is used instead of the entry threshold.
-
-    kick_strength gates DROP and BREAKDOWN:
-      - DROP requires kick on beats — prevents hi-hat-only high-density passages from triggering.
-      - BREAKDOWN can fire at moderate density when kick is absent (stripped arrangement).
-      - Defaults to KICK_UNKNOWN, which reads as absent: no kick data cannot assert a DROP.
-    centroid_trend fires BUILDUP independently of density_trend — catches riser sweeps
-      where the spectral centroid climbs before onset density rises.
-
-    ATMOSPHERIC is NOT detected here — fired via beat-absence timer in on_100ms_callback.
-
-    An UNMEASURED density holds the current intent. Every branch below is a
-    density comparison, so a sentinel run through them would not degrade — it
-    would classify, and always to the same answer (BREAKDOWN), for as long as
-    the detector was off. Holding is the honest degradation: the show keeps
-    doing what the last real measurement said.
+    No feature branch yields ATMOSPHERIC (beat-absence timer) or PEAK (engine
+    promotion); an unmeasured density echoes back whatever the caller holds.
     """
     if not density_is_known(onset_density):
         return _hold(current_intent)
-    # PEAK is sustained DROP — it keeps DROP's exit threshold.
-    currently_drop      = current_intent in (LightIntent.DROP, LightIntent.PEAK)
+    currently_drop = current_intent in (LightIntent.DROP, LightIntent.PEAK)
     currently_breakdown = (current_intent == LightIntent.BREAKDOWN)
 
-    drop_threshold      = _DROP_MIN_DENSITY_EXIT       if currently_drop      else _DROP_MIN_DENSITY_ENTER
-    breakdown_threshold = _BREAKDOWN_MAX_DENSITY_EXIT  if currently_breakdown else _BREAKDOWN_MAX_DENSITY_ENTER
+    drop_threshold = _DROP_MIN_DENSITY_EXIT if currently_drop else _DROP_MIN_DENSITY_ENTER
+    breakdown_threshold = (_BREAKDOWN_MAX_DENSITY_EXIT if currently_breakdown
+                           else _BREAKDOWN_MAX_DENSITY_ENTER)
 
     kick_present = kick_strength >= _KICK_PRESENCE_THRESHOLD
 
-    # DROP: sustained density + kick locked to beats + (optional) sub-bass gate
     if onset_density >= drop_threshold and bpm >= 100 and kick_present and sub_bass_ratio >= _DROP_MIN_SUB_BASS_RATIO:
         return LightIntent.DROP
-    # BUILDUP: rising density trend OR rising spectral centroid (riser sweep).
-    # Before BREAKDOWN: risers strip the kick, so the no-kick branch would swallow them.
+    # Ordered ahead of BREAKDOWN: a riser strips the kick by design, so the
+    # no-kick branch below would otherwise swallow every buildup.
     if onset_density >= _BUILDUP_MIN_DENSITY and (
             density_trend >= _BUILDUP_MIN_TREND or centroid_trend >= _CENTROID_BUILDUP_TREND):
         return LightIntent.BUILDUP
-    # BREAKDOWN: very sparse density, or kick absent at moderate density
     if onset_density < breakdown_threshold:
         return LightIntent.BREAKDOWN
     if not kick_present and onset_density < breakdown_threshold + _BREAKDOWN_NO_KICK_MARGIN:
@@ -143,64 +93,56 @@ def _classify_intent(
     return LightIntent.GROOVE
 
 
-# BeatRecord: (monotonic_time, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend)
-BeatRecord = tuple[float, float, float, float, float, float, float]
+class BeatRecord(NamedTuple):
+    at: float
+    onset_density: float
+    bpm: float
+    sub_bass_ratio: float
+    rms_energy: float
+    kick_strength: float
+    centroid_trend: float
 
 
 def _classify_windowed(
     window: list[BeatRecord],
     bpm: float,
     current_intent: LightIntent | None = None,
-) -> LightIntent:
-    """Classify intent using a symmetric look-ahead/look-behind window of beats.
+) -> LightIntent | None:
+    """Classify from a symmetric window of past and future beats around T.
 
-    Because audio playback is delayed by look_ahead_sec (dmx-enttec-node), by
-    the time we need to commit a classification for beat T the window contains
-    both past and future beats relative to T.  This gives us:
-
-      - Median density      → robust to single-beat transient spikes.
-      - Forward density trend → second half vs first half of window.
-      - Mean sub-bass       → for DROP sub-bass gate.
-      - Mean kick_strength  → averaged over window; kick must be consistently present for DROP.
-      - Mean centroid_trend → rising centroid across the window confirms BUILDUP riser.
-
-    Falls back to GROOVE if the window is empty.
-    current_intent is forwarded to _classify_intent for hysteresis-aware thresholds.
+    A median density outvotes single-beat spikes; the trend is the window's
+    second half over its first. No beats at all is not a classification — it
+    returns None, and the caller must leave the stage alone.
     """
     if not window:
-        return LightIntent.GROOVE
+        return None
 
-    # Beats recorded while the onset detector was shed carry no density. They
-    # are dropped rather than averaged in — a sentinel inside a median is just a
-    # low number — and a window with nothing measurable left holds the intent.
-    window = [entry for entry in window if density_is_known(entry[1])]
+    # A sentinel inside a median is just a low number, so unmeasured beats are
+    # dropped rather than averaged in.
+    window = [beat for beat in window if density_is_known(beat.onset_density)]
     if not window:
         return _hold(current_intent)
 
-    densities      = [entry[1] for entry in window]
-    sub_bass_vals  = [entry[3] for entry in window]
-    kick_vals      = [entry[5] for entry in window]
-    centroid_vals  = [entry[6] for entry in window]
+    densities = [beat.onset_density for beat in window]
+    sub_bass_vals = [beat.sub_bass_ratio for beat in window]
+    kick_vals = [beat.kick_strength for beat in window]
+    centroid_vals = [beat.centroid_trend for beat in window]
 
     sorted_d = sorted(densities)
-    median_density    = sorted_d[len(sorted_d) // 2]
-    mean_sub_bass     = sum(sub_bass_vals) / len(sub_bass_vals)
-    mean_kick         = sum(kick_vals) / len(kick_vals)
+    median_density = sorted_d[len(sorted_d) // 2]
+    mean_sub_bass = sum(sub_bass_vals) / len(sub_bass_vals)
+    mean_kick = sum(kick_vals) / len(kick_vals)
     mean_centroid_trend = sum(centroid_vals) / len(centroid_vals)
 
     mid = len(densities) // 2
-    past        = densities[:mid] if mid > 0 else densities
-    future      = densities[mid:] if mid > 0 else densities
-    past_mean   = sum(past) / len(past)
+    past = densities[:mid] if mid > 0 else densities
+    future = densities[mid:] if mid > 0 else densities
+    past_mean = sum(past) / len(past)
     future_mean = sum(future) / len(future)
     window_trend = future_mean / past_mean if past_mean > 0 else 1.0
 
     return _classify_intent(bpm, median_density, window_trend, current_intent, mean_sub_bass, mean_kick, mean_centroid_trend)
 
-
-# ---------------------------------------------------------------------------
-# LightEngine
-# ---------------------------------------------------------------------------
 
 class LightEngine(IMusicAnalyserHandler):
     def __init__(self,
@@ -223,19 +165,11 @@ class LightEngine(IMusicAnalyserHandler):
         self._clock: Clock = clock
         self._note_counter: int = 0
         self._needs_initial_effect: bool = False
-        self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
-        self._current_intent: LightIntent | None = None  # last committed intent (for change detection)
-        # Last tempo actually put on the wire, so a warm-up or post-reset
-        # zero can be held rather than published. See _publishable_bpm.
+        self._atmospheric_sent: bool = False
+        self._current_intent: LightIntent | None = None
         self._published_bpm: dict = {}
-        # Rolling history of BeatRecord entries for windowed classification.
-        # Kept for 2 × look_ahead_sec so the symmetric window is always available at commit time.
         self._beat_history: deque[BeatRecord] = deque()
-        # Stability: vote buffer (rolling deque of last _VOTE_BUFFER_SIZE classified intents).
-        # An intent change is only committed when the buffer is full and unanimous.
         self._intent_vote_buffer: deque[LightIntent] = deque(maxlen=_VOTE_BUFFER_SIZE)
-        # Count of beats spent in the current intent since last switch.
-        # Must reach _MIN_DWELL_BEATS before an outbound switch is allowed.
         self._beats_in_current_intent: int = 0
 
     def set_analyser(self, analyser: MusicAnalyser):
@@ -280,13 +214,11 @@ class LightEngine(IMusicAnalyserHandler):
         kick_strength  = self.analyser.get_kick_strength()
         centroid_trend = self.analyser.get_spectral_centroid_trend()
 
-        # Always record beat to history so _commit_intent has forward context.
         now_mono = self._clock.monotonic()
-        self._beat_history.append((now_mono, onset_density, bpm, sub_bass_ratio, rms_energy, kick_strength, centroid_trend))
-        # Prune entries older than 2 × look_ahead_sec (or 5 s minimum for the
-        # instantaneous path) so the deque stays bounded.
+        self._beat_history.append(BeatRecord(now_mono, onset_density, bpm, sub_bass_ratio,
+                                             rms_energy, kick_strength, centroid_trend))
         history_window = max(self._look_ahead_sec * 2, 5.0)
-        while self._beat_history and now_mono - self._beat_history[0][0] > history_window:
+        while self._beat_history and now_mono - self._beat_history[0].at > history_window:
             self._beat_history.popleft()
 
         logging.info(
@@ -304,105 +236,79 @@ class LightEngine(IMusicAnalyserHandler):
         self._atmospheric_sent = False
 
         if self._needs_initial_effect or was_atmospheric:
-            # First beat or returning from beat-absence ATMOSPHERIC: commit immediately
-            # with instantaneous classification (no delay, no window — the beat itself
-            # is the confirmation we need).
+            # The beat itself is the confirmation, so no window — but the change
+            # still rides the look-ahead, or it lands before the beat is heard.
             self._needs_initial_effect = False
             intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio, kick_strength, centroid_trend)
             logging.info(f'[engine] [immediate] intent={intent.name}')
-            if self.event_buffer:
-                self.event_buffer.set_intent(intent.value)
-            self._intent_vote_buffer.clear()
-            self._beats_in_current_intent = 0
-            self._current_intent = intent
-            await self.effect_controller.change_effect(intent)
+            await self._enqueue_or_apply('intent', intent)
         elif self._look_ahead_sec > 0 and self.command_queue:
-            # Windowed mode: schedule classification commit after look_ahead_sec.
-            # By then the window [T - look_ahead_sec, T + look_ahead_sec] is fully
-            # populated in _beat_history and we can classify using both past and
-            # future context relative to this beat.
-            _enqueue_time = now_mono
-            _bpm = bpm
             await self.command_queue.enqueue(
                 'intent',
-                lambda: self._commit_intent(_enqueue_time, _bpm)
+                lambda: self._commit_intent(now_mono, bpm)
             )
         else:
-            # Instantaneous mode (look_ahead_sec == 0): classify and update the
-            # event buffer immediately. Effect changes are driven by section
-            # changes and atmospheric detection — not every beat.
             intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio, kick_strength, centroid_trend)
             logging.info(f'[engine] intent={intent.name}')
             if self.event_buffer:
                 self.event_buffer.set_intent(intent.value)
 
-        # OS2L beat — always goes through the queue so it fires in sync with audio.
-        # The wire never carries a zero tempo: see _publishable_bpm.
-        _change, _pos, _bpm2 = (bpm_changed, beat_number,
-                                self._publishable_bpm(self._published_bpm, bpm))
+        published_bpm = self._publishable_bpm(self._published_bpm, bpm)
         if self.command_queue:
             await self.command_queue.enqueue(
                 'beat',
-                lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm2, strength=0.5)
+                lambda: self.os2l_client.send_beat(change=bpm_changed, pos=beat_number,
+                                                   bpm=published_bpm, strength=0.5)
             )
         else:
             await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number,
-                                             bpm=_bpm2, strength=0.5)
+                                             bpm=published_bpm, strength=0.5)
 
     @staticmethod
     def _publishable_bpm(state: dict, bpm: float) -> float:
-        """The tempo to put on the wire, given the tempo we just measured.
+        """Hold the last measured tempo rather than publishing a warm-up 0.0,
+        which OS2L consumers read as a tempo of zero rather than "not known yet".
 
-        A derived tempo needs two inter-beat intervals, so the first beats of a
-        track — and of every 15-minute reset — measure 0.0. aubio published a
-        number from beat one, so sending 0.0 downstream is a regression: OS2L
-        consumers read it as a tempo of zero rather than as "not yet known".
-
-        The last known tempo is held instead. A stale tempo for two beats is a
-        far smaller lie than a zero one, and on a reset it is very likely still
-        correct. 0.0 goes out only before any tempo has ever been measured,
-        where there is nothing to hold. (decisions #108)
-
-        DELIBERATE AND WORTH KNOWING: this state is NOT cleared between songs.
-        For roughly one second at the start of a new track, the wire carries the
-        PREVIOUS track's tempo. That is kept rather than fixed because adjacent
-        tracks in a set are tempo-adjacent by construction — a DJ beat-matches
-        them — so a second of the last tempo is closer to the truth than a
-        second of zero. It is a real inaccuracy nonetheless, and if a consumer
-        ever needs a strictly-this-track tempo, this is the line to change.
-        (decisions #109)
+        Not cleared between songs: a new track's first second carries the
+        previous track's tempo, which a DJ has beat-matched anyway.
         """
         if bpm > 0:
             state['last'] = bpm
             return bpm
         return state.get('last', 0.0)
 
+    async def _apply_intent(self, intent: LightIntent) -> None:
+        """The single path that moves the stage: timeline, guard state and MIDI
+        together, so nothing can light an intent the guards do not know about."""
+        if self.event_buffer:
+            self.event_buffer.set_intent(intent.value)
+        self._intent_vote_buffer.clear()
+        self._beats_in_current_intent = 0
+        self._current_intent = intent
+        await self.effect_controller.change_effect(intent)
+
+    async def _enqueue_or_apply(self, label: str, intent: LightIntent) -> None:
+        if self.command_queue:
+            await self.command_queue.enqueue(label, lambda: self._apply_intent(intent))
+        else:
+            await self._apply_intent(intent)
+
     async def _commit_intent(self, enqueue_time: float, bpm: float) -> None:
-        """Fired by DelayedCommandQueue after look_ahead_sec.
-
-        At this point the beat at `enqueue_time` is exactly when the audience
-        hears the audio.  _beat_history now contains beats from
-        [enqueue_time - look_ahead_sec, enqueue_time + look_ahead_sec], giving
-        a symmetric window for a confident classification.
-
-        Stability pipeline (applied in order):
-          1. Windowed classification with hysteresis-aware thresholds.
-          2. PEAK promotion: a DROP held for _PEAK_PROMOTION_BEATS becomes PEAK.
-          3. Vote buffer: _VOTE_BUFFER_SIZE consecutive identical votes required.
-          4. Minimum dwell: _MIN_DWELL_BEATS beats in current intent before switching.
-          5. Invalid-transition guard: musically impossible jumps are blocked.
+        """Fired by DelayedCommandQueue once the audience hears `enqueue_time`,
+        when _beat_history spans a full look-ahead either side of it.
         """
         if self._atmospheric_sent:
-            # Beat absence was detected after this beat was enqueued; ATMOSPHERIC
-            # already fired in real-time.  Skip to avoid overriding it.
             logging.debug('[engine] [windowed] skipping commit — currently in ATMOSPHERIC')
             return
 
         window = [
-            entry for entry in self._beat_history
-            if abs(entry[0] - enqueue_time) <= self._look_ahead_sec
+            beat for beat in self._beat_history
+            if abs(beat.at - enqueue_time) <= self._look_ahead_sec
         ]
         intent = _classify_windowed(window, bpm, self._current_intent)
+        if intent is None:
+            logging.debug('[engine] [windowed] no beats in the window — nothing to commit')
+            return
         self._intent_vote_buffer.append(intent)
         self._beats_in_current_intent += 1
 
@@ -411,41 +317,33 @@ class LightEngine(IMusicAnalyserHandler):
             f'buffer=[{", ".join(v.name for v in self._intent_vote_buffer)}]  '
             f'dwell={self._beats_in_current_intent}  '
             f'window={len(window)} beats  '
-            f'densities=[{", ".join(f"{e[1]:.1f}" for e in window)}]'
+            f'densities=[{", ".join(f"{b.onset_density:.1f}" for b in window)}]'
         )
 
-        # PEAK promotion: a continuation of an already-committed DROP, so it
-        # deliberately bypasses the vote and invalid-transition guards.
+        # A continuation of an already-committed DROP, so it deliberately
+        # bypasses the vote and invalid-transition guards below.
         if (self._current_intent == LightIntent.DROP
                 and self._beats_in_current_intent >= _PEAK_PROMOTION_BEATS):
             logging.info('[engine] [windowed] sustained DROP — promoting to PEAK')
-            self._intent_vote_buffer.clear()
-            self._beats_in_current_intent = 0
-            self._current_intent = LightIntent.PEAK
-            if self.event_buffer:
-                self.event_buffer.set_intent(LightIntent.PEAK.value)
-            await self.effect_controller.change_effect(LightIntent.PEAK)
+            await self._apply_intent(LightIntent.PEAK)
             return
 
-        # --- 1. Vote consensus required ---
         if len(self._intent_vote_buffer) < _VOTE_BUFFER_SIZE:
-            return  # buffer not yet full
+            return
         if not all(v == intent for v in self._intent_vote_buffer):
-            return  # mixed votes — not confident enough
+            return
 
-        # PEAK absorbs DROP votes. Before the surface step, so the timeline reports
-        # the committed show state rather than the absorbed vote.
+        # Absorbed before the surface step below, so the timeline keeps reading
+        # the committed PEAK rather than the swallowed DROP vote.
         if self._current_intent == LightIntent.PEAK and intent == LightIntent.DROP:
             return
 
-        # Consensus reached: surface to visualizer regardless of switch outcome.
         if self.event_buffer:
             self.event_buffer.set_intent(intent.value)
 
         if intent == self._current_intent:
-            return  # stable — no effect change needed
+            return
 
-        # --- 2. Minimum dwell check ---
         if self._beats_in_current_intent < _MIN_DWELL_BEATS:
             logging.debug(
                 f'[engine] [windowed] dwell check: {self._beats_in_current_intent}/'
@@ -454,7 +352,6 @@ class LightEngine(IMusicAnalyserHandler):
             )
             return
 
-        # --- 3. Invalid-transition guard ---
         if self._current_intent is not None:
             transition = (self._current_intent, intent)
             if transition in _INVALID_TRANSITIONS:
@@ -464,15 +361,11 @@ class LightEngine(IMusicAnalyserHandler):
                 )
                 return
 
-        # --- All checks passed: commit the intent change ---
         logging.info(
             f'[engine] [windowed] intent change: '
             f'{self._current_intent.name if self._current_intent else "None"} → {intent.name}'
         )
-        self._intent_vote_buffer.clear()
-        self._beats_in_current_intent = 0
-        self._current_intent = intent
-        await self.effect_controller.change_effect(intent)
+        await self._apply_intent(intent)
 
     async def on_note(self):
         dmx_data = [0] * 24
@@ -484,46 +377,31 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_section_change(self) -> None:
         logging.info('[engine] audio section change detected')
         bpm = self.analyser.get_bpm()
-        onset_density = self.analyser.get_onset_density()
-        density_trend = self.analyser.get_onset_density_trend()
 
         if self._look_ahead_sec > 0:
-            # Use the windowed classification for section changes too — the window
-            # is already populated since beats have been flowing.
-            window = list(self._beat_history)
-            intent = _classify_windowed(window, bpm, self._current_intent)
+            intent = _classify_windowed(list(self._beat_history), bpm, self._current_intent)
         else:
-            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent,
+            intent = _classify_intent(bpm, self.analyser.get_onset_density(),
+                                      self.analyser.get_onset_density_trend(),
+                                      self._current_intent,
                                       self.analyser.get_sub_bass_ratio(),
                                       self.analyser.get_kick_strength(),
                                       self.analyser.get_spectral_centroid_trend())
-
-        _intent = intent
-        if self.command_queue:
-            await self.command_queue.enqueue(
-                'section_change',
-                lambda: self.effect_controller.change_effect(_intent)
-            )
-        else:
-            await self.effect_controller.change_effect(intent)
+        if intent is None:
+            return
+        await self._enqueue_or_apply('section_change', intent)
 
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
         if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
-            if self.event_buffer:
-                self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value)
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True
-                self._intent_vote_buffer.clear()   # stale votes no longer relevant
-                self._beats_in_current_intent = 0
-                self._current_intent = LightIntent.ATMOSPHERIC
-                await self.effect_controller.change_effect(LightIntent.ATMOSPHERIC)
+                await self._enqueue_or_apply('atmospheric', LightIntent.ATMOSPHERIC)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
             return
-        # Refresh timing stats in the event buffer so the visualizer can display them.
         if self.event_buffer and self.command_queue:
             self.event_buffer.set_timing_log(self.command_queue.get_timing_log())
 

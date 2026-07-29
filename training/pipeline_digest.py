@@ -1,30 +1,4 @@
-"""Compact, diffable digest of one fast-sim run — the migration's regression anchor.
-
-A full sim report is thousands of beat rows, so diffing two of them tells you
-*that* something moved but not *what class* of thing moved. This splits a report
-into the two things a rhythm-source migration must keep apart:
-
-  rhythm     — beat times, beat count, BPM, onset density. EXPECTED to change
-               when the beat/onset source changes. Recorded so the size of the
-               change is a number rather than an impression.
-
-  filterbank — the aubio mel bank's output over the track on a FIXED TIME GRID,
-               plus the report's schema. MUST NOT change.
-
-  at_beats   — the same filterbank columns as the report carries them, i.e.
-               sampled at beat instants. Reported as evidence, never gated.
-
-The third section exists because the second one has to. The beat-sampled columns
-cannot be a regression gate: they are filterbank output read at beat times, so
-moving the beat grid moves them by construction, and a gate on them fires on the
-expected change while a real filterbank regression hides inside it. Sampling the
-bank on a fixed grid instead gives an anchor that a moved grid cannot perturb —
-so it can still fail, under a moved grid, for the one reason it exists.
-
-Usage:
-    python training/pipeline_digest.py samples/song.mp3 [more.mp3 ...]
-    python training/pipeline_digest.py --write tests/fixtures/... track.mp3 ...
-"""
+"""Compact, diffable digest of one fast-sim run — the migration's regression anchor."""
 
 from __future__ import annotations
 
@@ -37,11 +11,9 @@ from pathlib import Path
 
 from lib.analyser.music_analyser import density_is_known
 
-# Beat-row columns produced by the rhythm source (allowed to move).
 RHYTHM_COLUMNS = ('t', 'bpm', 'onset_density', 'strength', 'change')
-# Beat-row columns produced by the aubio filterbank (must not move as a result
-# of the migration — they can only shift because the beats they are sampled at
-# shifted, which is why they are hashed separately from their timestamps).
+# Hashed apart from the beat timestamps: these may only shift because the beats
+# they are sampled at shifted, never because the filterbank changed.
 SPECTRAL_COLUMNS = ('kick_strength', 'centroid_trend', 'sub_bass_ratio', 'rms')
 
 
@@ -51,14 +23,9 @@ def _hash(values) -> str:
 
 
 def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
-    """Reduce a sim report to the fields a migration is judged on."""
     beats = report['beats']
     metrics = report['metrics']
 
-    # Beats recorded while the onset detector was shed carry DENSITY_UNKNOWN
-    # (negative). Averaging or sorting those in would drag the reported density
-    # below zero — a digest that reads as a catastrophic regression when what
-    # actually happened is that nothing was measured.
     densities = sorted(b['onset_density'] for b in beats
                        if density_is_known(b['onset_density']))
     bpms = sorted(b['bpm'] for b in beats if b['bpm'] > 0)
@@ -70,14 +37,13 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
         return xs[mid] if len(xs) % 2 else (xs[mid - 1] + xs[mid]) / 2
 
     digest = {
-        # --- schema: the shape of the contract, must not move ---------------
         'schema': {
             'report_keys': sorted(report.keys()),
             'metric_keys': sorted(metrics.keys()),
             'beat_keys': sorted(beats[0].keys()) if beats else [],
         },
-        # --- at_beats: the same columns as the report carries them ----------
-        # Evidence only. Moves whenever the beat grid moves; see module docstring.
+        # Evidence only, never a regression gate: these move whenever the beat
+        # grid moves. The fixed-grid `filterbank` fingerprint is the gate.
         'at_beats': {
             'columns_hash': _hash([[b[c] for c in SPECTRAL_COLUMNS] for b in beats]),
             'kick_strength_mean': round(
@@ -86,7 +52,6 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
                 sum(b['sub_bass_ratio'] for b in beats) / len(beats), 6) if beats else 0.0,
             'rms_mean': round(sum(b['rms'] for b in beats) / len(beats), 6) if beats else 0.0,
         },
-        # --- rhythm: madmom's job now, expected to move ----------------------
         'rhythm': {
             'columns_hash': _hash([[b[c] for c in RHYTHM_COLUMNS] for b in beats]),
             'beats_detected': metrics['beats_detected'],
@@ -95,7 +60,6 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
             'onset_density_mean': round(metrics['onset_density_mean'], 6),
             'onset_density_median': round(_median(densities), 6),
         },
-        # --- show: what the audience sees ------------------------------------
         'show': {
             'duration_sec': round(report['duration_sec'], 3),
             'intent_changes_count': metrics['intent_changes_count'],
@@ -115,18 +79,6 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
 
 
 def filterbank_fingerprint(path: str, seconds: float | None = None) -> dict:
-    """The aubio mel bank's output over the WHOLE track, on a fixed time grid.
-
-    Runs the bank itself — not the analyser — buffer by buffer, and reduces the
-    result on a one-second grid. Nothing about a beat, onset or tempo decision
-    can reach it, which is the point: it stays sensitive to a filterbank
-    regression while the beat grid underneath it is completely rewritten.
-
-    Whole track by default. A truncated anchor would leave most of every fixture
-    unguarded while reading as though it covered them, and `MelFilterbank` is
-    cheap enough (~0.03 ms/buffer, no madmom, no TensorFlow) that there is no
-    reason to bound it. `seconds` exists for tests that want a short run.
-    """
     import numpy as np
 
     from lib.analyser.music_analyser import MelFilterbank
@@ -157,7 +109,6 @@ def filterbank_fingerprint(path: str, seconds: float | None = None) -> dict:
 
 
 async def digest_track(path: str) -> dict:
-    """Run one track through the fast sim and digest the result."""
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from simulate.evaluator import report_checksum
     from simulate.fake_audio_client import FileAudioClient
@@ -192,8 +143,7 @@ def main() -> None:
     if args.write:
         out = Path(args.write)
         out.parent.mkdir(parents=True, exist_ok=True)
-        # Speed is machine-dependent: it belongs in a report, never in a fixture
-        # that a test compares against.
+        # Machine-dependent: never in a fixture a test compares against.
         for d in digests.values():
             d.pop('speed', None)
         out.write_text(json.dumps(digests, indent=2, sort_keys=True) + '\n')

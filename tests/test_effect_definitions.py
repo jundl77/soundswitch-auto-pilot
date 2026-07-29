@@ -32,7 +32,7 @@ def test_effect_usable_in_set():
     e2 = Effect(EffectType.AUTOLOOP, EffectSource.MIDI, MidiChannel.AUTOLOOP_BANK_1A)
     e3 = Effect(EffectType.AUTOLOOP, EffectSource.MIDI, MidiChannel.AUTOLOOP_BANK_1B)
     pool = {e1, e2, e3}
-    assert len(pool) == 2  # e1 and e2 have equal value — deduplicated
+    assert len(pool) == 2
 
 
 def test_effect_not_equal_to_non_effect():
