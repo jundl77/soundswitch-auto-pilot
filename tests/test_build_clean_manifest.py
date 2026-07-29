@@ -1,14 +1,3 @@
-"""Tests for the cleanliness gate (training/raveform/build_clean_manifest.py).
-
-The gate decides which audio is allowed to become training data.  A bug here is
-silent: it either admits a truncated/corrupt file (poisoning every downstream
-row with beats that do not exist in the annotation) or quietly drops hundreds of
-good tracks.  So the classification rules, the tolerance boundary and the
-"don't touch a file the downloader may still be writing" guard are all pinned.
-
-ffmpeg/ffprobe are exercised for real where the point of the test is that a byte
-stream really is (or is not) decodable; the pure logic is tested without them.
-"""
 import csv
 import os
 import shutil
@@ -23,7 +12,7 @@ RAVEFORM_DIR = Path(__file__).resolve().parents[1] / "training" / "raveform"
 if str(RAVEFORM_DIR) not in sys.path:
     sys.path.insert(0, str(RAVEFORM_DIR))
 
-from build_clean_manifest import (  # noqa: E402  (needs the path insert above)
+from build_clean_manifest import (  # noqa: E402
     ABS_TOLERANCE_SEC,
     CLEAN_MANIFEST_HEADER,
     MIN_AGE_SEC,
@@ -52,13 +41,11 @@ needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not on
 
 
 def _age(path: Path, seconds: float) -> None:
-    """Backdate a file's mtime so the recency guard sees it as settled."""
     stamp = time.time() - seconds
     os.utime(path, (stamp, stamp))
 
 
 def _sine_mp3(path: Path, seconds: float) -> Path:
-    """A real, fully decodable mp3 of a given length."""
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-v", "error", "-y",
@@ -71,18 +58,11 @@ def _sine_mp3(path: Path, seconds: float) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# duration_tolerance
-# --------------------------------------------------------------------------- #
-
-
 def test_tolerance_is_the_absolute_floor_for_short_tracks():
-    # 3% of 120 s is 3.6 s, well under the 10 s floor.
     assert duration_tolerance(120.0) == ABS_TOLERANCE_SEC
 
 
 def test_tolerance_is_relative_for_long_tracks():
-    # A 20-minute DJ edit deserves proportional slack, not a flat 10 s.
     assert duration_tolerance(1200.0) == pytest.approx(1200.0 * REL_TOLERANCE)
 
 
@@ -96,13 +76,7 @@ def test_tolerance_of_a_zero_duration_is_the_floor():
     assert duration_tolerance(0.0) == ABS_TOLERANCE_SEC
 
 
-# --------------------------------------------------------------------------- #
-# classify -- corrupt beats everything
-# --------------------------------------------------------------------------- #
-
-
 def _consistent(duration: float, annotation: float):
-    """classify() for a file whose header and decoder agree on ``duration``."""
     return classify("", duration, duration, annotation)
 
 
@@ -123,7 +97,6 @@ def test_missing_decoded_duration_is_corrupt():
 
 
 def test_zero_length_audio_is_corrupt():
-    # ffmpeg can "decode" a header-only file cleanly; a 0 s result is still junk.
     assert _consistent(0.0, 300.0)[0] == STATUS_CORRUPT
 
 
@@ -131,44 +104,27 @@ def test_negative_ffprobe_duration_is_corrupt():
     assert _consistent(-1.0, 300.0)[0] == STATUS_CORRUPT
 
 
-# --------------------------------------------------------------------------- #
-# classify -- truncation: the header lies, the decoder does not
-# --------------------------------------------------------------------------- #
-
-
 def test_a_file_that_decodes_short_of_its_header_is_corrupt():
-    # The interrupted-download shape: the Xing header still advertises the full
-    # length, the decoder runs out of bytes early, and ffmpeg reports no error.
     status, detail = classify("", 12.0, 60.0, 60.0)
     assert status == STATUS_CORRUPT
     assert "truncated" in detail
 
 
 def test_truncation_outranks_a_duration_mismatch():
-    # Both rules fire (12 s is short of the 60 s header AND of the annotation);
-    # the byte-level defect is the more specific and more useful diagnosis.
     assert classify("", 12.0, 60.0, 60.0)[0] == STATUS_CORRUPT
 
 
 def test_a_track_whose_header_and_decode_agree_is_not_called_truncated():
-    # Wrong video, but intact bytes: that is a mismatch, not corruption.
     status, _detail = classify("", 200.0, 200.0, 400.0)
     assert status == STATUS_MISMATCH
 
 
 def test_header_decode_disagreement_within_tolerance_is_not_truncation():
-    # Encoder padding puts the decoded length a few tens of ms under the header.
     assert classify("", 299.95, 300.0, 300.0)[0] == STATUS_OK
 
 
 def test_a_header_shorter_than_the_decode_is_also_corrupt():
-    # The reverse disagreement is just as much a broken container.
     assert classify("", 300.0, 60.0, 300.0)[0] == STATUS_CORRUPT
-
-
-# --------------------------------------------------------------------------- #
-# classify -- the tolerance boundary
-# --------------------------------------------------------------------------- #
 
 
 def test_exact_duration_match_is_ok():
@@ -176,7 +132,6 @@ def test_exact_duration_match_is_ok():
 
 
 def test_delta_exactly_at_the_absolute_tolerance_is_ok():
-    # Inclusive boundary: "within max(+-10 s, +-3%)" includes the endpoint.
     assert _consistent(300.0 + ABS_TOLERANCE_SEC, 300.0)[0] == STATUS_OK
     assert _consistent(300.0 - ABS_TOLERANCE_SEC, 300.0)[0] == STATUS_OK
 
@@ -187,7 +142,6 @@ def test_delta_just_beyond_the_absolute_tolerance_is_a_mismatch():
 
 
 def test_delta_inside_the_relative_tolerance_is_ok_for_a_long_track():
-    # 15 s off a 20-minute track is 1.25% -- fine, though it exceeds the floor.
     assert _consistent(1200.0 + 15.0, 1200.0)[0] == STATUS_OK
 
 
@@ -199,12 +153,7 @@ def test_delta_just_beyond_the_relative_tolerance_is_a_mismatch():
 
 def test_mismatch_detail_reports_the_delta_and_the_tolerance():
     _status, detail = _consistent(100.0, 300.0)
-    assert "200" in detail  # the delta, so a human can see how far off it is
-
-
-# --------------------------------------------------------------------------- #
-# is_settled / select_candidates -- the live-downloader guard
-# --------------------------------------------------------------------------- #
+    assert "200" in detail
 
 
 def test_a_file_the_downloader_just_wrote_is_not_settled(tmp_path):
@@ -240,9 +189,9 @@ def test_select_candidates_splits_missing_fresh_and_settled(tmp_path):
     fresh.write_bytes(b"x")
 
     rows = [
-        ManifestRow("0001.aaa", "aaa", 100.0),   # never downloaded
-        ManifestRow("0002.bbb", "bbb", 200.0),   # settled -> checked
-        ManifestRow("0003.ccc", "ccc", 300.0),   # still being written -> skipped
+        ManifestRow("0001.aaa", "aaa", 100.0),
+        ManifestRow("0002.bbb", "bbb", 200.0),
+        ManifestRow("0003.ccc", "ccc", 300.0),
     ]
     jobs, missing, too_recent = select_candidates(rows, tmp_path, now=time.time())
 
@@ -269,11 +218,6 @@ def test_audio_path_follows_the_downloader_naming(tmp_path):
     assert audio_path(tmp_path, "kfJQCu-Jbec") == tmp_path / "audio" / "kfJQCu-Jbec.mp3"
 
 
-# --------------------------------------------------------------------------- #
-# check_track -- real ffmpeg
-# --------------------------------------------------------------------------- #
-
-
 @needs_ffmpeg
 def test_a_stub_mp3_that_ffmpeg_rejects_is_corrupt(tmp_path):
     junk = tmp_path / "junk.mp3"
@@ -282,7 +226,7 @@ def test_a_stub_mp3_that_ffmpeg_rejects_is_corrupt(tmp_path):
     result = check_track(TrackJob("0001.junk", "junk", str(junk), 300.0))
 
     assert result.status == STATUS_CORRUPT
-    assert result.detail  # the reason must survive to the report
+    assert result.detail
 
 
 @needs_ffmpeg
@@ -310,14 +254,8 @@ def test_a_real_mp3_matching_its_annotation_is_ok(tmp_path):
     "source", ["sine=frequency=440:duration=60", "anoisesrc=d=60:c=pink"]
 )
 def test_a_truncated_mp3_is_rejected(tmp_path, source):
-    """THE test: the failure mode that neither earlier check could see.
-
-    An mp3 cut on a frame boundary -- an interrupted download -- decodes with
-    exit 0 and empty stderr, and its Xing header still advertises the original
-    length.  Only the decoded length gives it away.  Two different signals,
-    because the first version of this gate passed a truncated file whose bit
-    reservoir happened to produce an error on one particular track.
-    """
+    # An mp3 cut on a frame boundary decodes with exit 0 and empty stderr, and
+    # its Xing header still advertises the original length.
     full = tmp_path / "full.mp3"
     subprocess.run(
         [
@@ -337,8 +275,6 @@ def test_a_truncated_mp3_is_rejected(tmp_path, source):
         f"a 20% prefix was admitted as {result.status} "
         f"(header {result.ffprobe_duration_sec}, decoded {result.decoded_duration_sec})"
     )
-    # The header keeps claiming the full length -- that is exactly why it cannot
-    # be trusted on its own.
     assert result.ffprobe_duration_sec == pytest.approx(60.0, abs=1.0)
     assert result.decoded_duration_sec < 20.0
 
@@ -355,7 +291,6 @@ def test_decode_measures_what_the_decoder_actually_produced(tmp_path):
 
 @needs_ffmpeg
 def test_a_real_mp3_far_shorter_than_its_annotation_is_a_mismatch(tmp_path):
-    # The realistic failure: yt-dlp grabbed a trailer/edit, not the full track.
     song = _sine_mp3(tmp_path / "short.mp3", 3.0)
 
     result = check_track(TrackJob("0001.short", "short", str(song), 400.0))
@@ -373,11 +308,6 @@ def test_check_track_leaves_no_files_behind(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
-# --------------------------------------------------------------------------- #
-# run_checks
-# --------------------------------------------------------------------------- #
-
-
 @needs_ffmpeg
 def test_run_checks_returns_results_in_track_id_order(tmp_path):
     jobs = []
@@ -392,11 +322,6 @@ def test_run_checks_returns_results_in_track_id_order(tmp_path):
 
 def test_run_checks_of_nothing_is_empty():
     assert run_checks([], workers=8) == []
-
-
-# --------------------------------------------------------------------------- #
-# manifest I/O
-# --------------------------------------------------------------------------- #
 
 
 def _write_manifest(data_dir: Path, rows: list) -> None:
@@ -422,7 +347,7 @@ def test_load_manifest_rows_rejects_an_empty_manifest(tmp_path):
 
 
 def test_write_clean_manifest_emits_the_agreed_schema(tmp_path):
-    results = run_checks([], workers=1)  # empty is legal; header still written
+    results = run_checks([], workers=1)
     path = write_clean_manifest(tmp_path, results)
 
     with open(path, "r", encoding="utf-8", newline="") as handle:
@@ -446,7 +371,7 @@ def test_write_clean_manifest_writes_every_status_and_sorts_by_track_id(tmp_path
 
     assert [row["track_id"] for row in rows] == ["0001.a", "0005.m", "0009.z"]
     assert [row["status"] for row in rows] == [STATUS_CORRUPT, STATUS_MISMATCH, STATUS_OK]
-    assert rows[0]["ffprobe_duration_sec"] == ""  # unknown, not a fake 0
+    assert rows[0]["ffprobe_duration_sec"] == ""
     assert rows[0]["decoded_duration_sec"] == ""
     assert rows[2]["ffprobe_duration_sec"] == "300.000"
     assert rows[2]["decoded_duration_sec"] == "300.000"
@@ -454,7 +379,6 @@ def test_write_clean_manifest_writes_every_status_and_sorts_by_track_id(tmp_path
 
 
 def test_write_clean_manifest_persists_the_rejection_reason(tmp_path):
-    # A quarantined row is only actionable if the reason survives the run.
     from build_clean_manifest import CheckResult
 
     results = [
@@ -487,11 +411,6 @@ def test_write_clean_manifest_leaves_no_part_file(tmp_path):
     assert list(tmp_path.glob("*.part")) == []
 
 
-# --------------------------------------------------------------------------- #
-# summarise
-# --------------------------------------------------------------------------- #
-
-
 def test_summarise_counts_each_status(tmp_path):
     from build_clean_manifest import CheckResult
 
@@ -507,17 +426,10 @@ def test_summarise_counts_each_status(tmp_path):
     assert counts[STATUS_CORRUPT] == 1
 
 
-# --------------------------------------------------------------------------- #
-# require_tools
-# --------------------------------------------------------------------------- #
-
-
 def test_require_tools_accepts_a_tool_that_exists():
     require_tools(("python",))
 
 
 def test_require_tools_names_the_missing_tool():
-    # Without the preflight, a missing binary reads as "the whole corpus is
-    # corrupt" -- the most misleading possible failure for this script.
     with pytest.raises(RuntimeError, match="definitely-not-a-real-tool"):
         require_tools(("definitely-not-a-real-tool",))

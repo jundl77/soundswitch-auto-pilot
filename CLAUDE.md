@@ -27,7 +27,9 @@ Before opening a PR, all tests must pass:
 # Fast unit tests (run these frequently during development)
 uv run pytest -m "not integration"
 
-# Full suite including unit + integration tests (~8s)
+# Full suite including unit + integration tests (a few minutes: the integration
+# tests run whole tracks through the real rhythm networks, so this is minutes,
+# not seconds. It is not hung.)
 uv run pytest
 
 # Run a single test file
@@ -48,7 +50,7 @@ The integration tests in `tests/test_simulation.py` run the bundled sample track
 ## What It Does
 
 1. Reads audio from a microphone/line input
-2. Extracts musical features via Aubio (BPM, onsets, notes, mel filterbank energies)
+2. Extracts rhythm via madmom's online neural trackers (beats, BPM, onsets) and spectral features via Aubio's mel filterbank
 3. Detects musical section changes via a YAMNet TensorFlow embedding + cosine similarity outlier detection
 4. Classifies audio energy as a `LightIntent` (ATMOSPHERIC / BREAKDOWN / GROOVE / BUILDUP / DROP / PEAK)
 5. Selects and sends MIDI lighting effects to SoundSwitch based on intent; also sends OS2L beat events to VirtualDJ and DMX overlays via UDP
@@ -58,7 +60,7 @@ The integration tests in `tests/test_simulation.py` run the bundled sample track
 ## Architecture
 
 ```
-PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserHandler)
+PyAudio â†’ MusicAnalyser (madmom rhythm + Aubio bank) â†’ LightEngine (IMusicAnalyserHandler)
                    â†“                          â†“               â†“
         YamnetChangeDetector          EffectController    MIDI / OS2L / Overlay
                                              â†‘
@@ -74,6 +76,8 @@ PyAudio â†’ MusicAnalyser (Aubio DSP) â†’ LightEngine (IMusicAnalyserH
 | `lib/main.py` | `SoundSwitchAutoPilot` â€” async event loop, 100 ms / 1 s / 10 s callbacks |
 | `lib/clock.py` | `Clock` abstraction â€” `SystemClock` (prod default) vs `VirtualClock` (fast sim); every time-based component takes an injectable clock |
 | `lib/audio_config.py` | Canonical `SAMPLE_RATE` / `BUFFER_SIZE` â€” single source for live pipeline, simulation, and virtual-clock timing math |
+| `lib/analyser/madmom_rhythm.py` | `MadmomRhythm` -- madmom's online beat/onset stack, adapted from the pipeline's buffer size to madmom's frame rate; the only place that framing mismatch exists |
+| `lib/analyser/drift_watchdog.py` | `DriftWatchdog` -- measures the loop's lost lead against the live input and sheds work, cheapest loss first, when it stops keeping up |
 | `lib/analyser/music_analyser.py` | `MusicAnalyser` â€” per-buffer DSP, beat/onset/note events, YAMNet trigger |
 | `lib/analyser/yamnet_change_detector.py` | `YamnetChangeDetector` â€” TF Hub YAMNet embeddings, MAD outlier detection |
 | `lib/analyser/CLAUDE.md` | Analysis pipeline detail: features, classification design, evaluation strategy |
@@ -111,7 +115,7 @@ For the specific thresholds and tuning constants that drive classification, see 
 
 ### How classification works
 
-Classification uses BPM (octave-folded into one tempo band, so aubio's double/half-tempo locks cannot fake a high-energy moment), onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (how far sub-bass rises above its own floor on the beat â€” distinguishes a kick drum from a hi-hat-only or pad-driven passage), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
+Classification uses BPM (octave-folded into one tempo band, so a half- or double-tempo lock cannot fake a high-energy moment), onset density (rhythmic busyness), onset density trend (rising vs. falling energy), kick strength (how far sub-bass rises above its own floor on the beat â€” distinguishes a kick drum from a hi-hat-only or pad-driven passage), and spectral centroid trend (rising centroid = riser/BUILDUP sweep). See `lib/analyser/CLAUDE.md` for the full feature breakdown and design rationale.
 
 **Kick strength carries the classification.** On real material onset density barely varies across a track's sections â€” it says whether anything rhythmic is happening, not how big the moment is. The kick is what separates a drop from an intro, so it gates DROP and, by its absence, widens BREAKDOWN. Branches are tested DROP â†’ BUILDUP â†’ BREAKDOWN â†’ GROOVE; BUILDUP sits above BREAKDOWN because a riser strips the kick by design and would otherwise be swallowed by the kick-absence branch. An unmeasured or unmeasurable kick reads as *absent*, never assumed present.
 
@@ -125,7 +129,7 @@ Classification uses BPM (octave-folded into one tempo band, so aubio's double/ha
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
-**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track ~30â€“50Ã— faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track several times faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
 
 ### DMX migration path
 
@@ -168,12 +172,12 @@ python training/inspect_report.py report.json
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
-uv run pytest                        # unit + integration (~6s)
+uv run pytest                        # unit + integration (minutes, not seconds)
 ```
 
 **Flags (`run`):**
 - `-i / -o` â€” audio device indices from `list`; passing `-o` enables delayed audio monitoring on that device
-- `-d` â€” debug: adds a click on detected notes to the monitored audio (implies monitoring on the default output if `-o` is not given)
+- `-d` â€” debug: adds a click on every detected BEAT to the monitored audio (implies monitoring on the default output if `-o` is not given). Beat-triggered by owner preference, not the note-triggered click aubio used to drive â€” roughly half the clicks, landing on the pulse rather than on every onset.
 - `--no-os2l` â€” disable VirtualDJ connection
 - `--ui` â€” launch Dash real-time visualizer at http://localhost:8050
 - `--ui-port N` â€” change visualizer port
@@ -183,7 +187,23 @@ uv run pytest                        # unit + integration (~6s)
 
 ## ML / DSP Components
 
-- **Aubio** â€” real-time BPM, onset, note, and mel filterbank energies. Tuned for low-latency real-time use.
+- **madmom** -- all rhythm: beat tracking (a recurrent-network ensemble feeding a
+  dynamic Bayesian network), BPM, and onsets. **Online mode only**, and that is
+  load-bearing: madmom's offline decoders score better and cannot run live, so a
+  number produced by one is a number the runtime can never reproduce. Chosen over
+  aubio on a measured decoded comparison rather than reputation. The basis and
+  the measured effect on the show are in `docs/migration-evidence.md` and
+  `training/migration_deltas.json`; the onset operating point's raw sweep and its
+  stability analysis are in `training/onset_operating_point.json`, with every
+  draw taken (including the wrong ones) in `training/onset_operating_point_draws.md`.
+- **Aubio** -- the 40-band Slaney mel filterbank and the FFT that feeds it, and
+  nothing else. Every trained model and every spectral feature (kick strength,
+  sub-bass ratio, centroid trend) is built on this exact bank, so it is held
+  byte-stable by a golden test rather than reimplemented. The two-library split
+  is interim by owner decision: the next retrain generation bakes off front-ends
+  and may consolidate. Replacing the bank now would invalidate the trained stack
+  for no measured gain; replacing the rhythm source roughly doubled downbeat F1
+  at the operating point a show actually uses.
 - **YAMNet (TensorFlow Hub)** â€” Google's pre-trained audio classifier; used here for embeddings only (not tag predictions). Cosine similarity + MAD-based outlier detection finds section transitions. Degrades gracefully if model fails to load.
 
 ---
@@ -235,11 +255,41 @@ Decisions that belong here rather than in the code:
 - **MusicAnalyser full reset** every 15 min prevents rolling-window memory growth.
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread; the audio/DSP path is async on the main thread â€” mixing threading models requires care when touching shared state.
-- **Beat dropout false ATMOSPHERIC**: aubio can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts.
+- **Beat dropout false ATMOSPHERIC**: a beat tracker can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained compression artifacts. Measured far less often since the madmom migration, but not eliminated.
 - **Weak YAMNet changes are now always accepted** (previously gated on Spotify section proximity). May cause more false-positives in stable sections. The cooldown constant is the main guard.
 - **Density trend warmup**: `get_onset_density_trend()` returns neutral until enough beat-density samples have been collected. BUILDUP cannot be detected during this initial window.
 - **Sub-bass gate disabled**: `_DROP_MIN_SUB_BASS_RATIO` is set to 0.0 (gate open). Calibrate against real hi-hat-only vs. kick+bass passages before enabling.
 - **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the single bundled sample. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
 - **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
 - **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
+- **The rhythm front-end costs ~18x what aubio did** end to end (1.4% of one core
+  to 25.7%, filterbank included); the rhythm half alone went 0.8% to 25.2%. On a
+  strict reading of the campaign's >= 5x / <= 20% realtime bar, 25.7% is a MISS
+  (3.9x). That bar was written for NN posterior generation, where 5x buys the
+  rest of the stack its headroom on one core, and it was ruled not to bind a DSP
+  front-end; the front-end's gates are instead sustained 1x whole-pipeline with
+  headroom, the backpressure machinery, and a 30-minute soak, all of which pass.
+  Both readings belong in any future discussion -- the miss is real under the
+  original wording.
+- **Fast simulation is ~12x slower** (46.3x real-time to 3.8x on the bundled
+  track). Regenerating the whole corpus report cache is therefore ~41 CPU-hours
+  against ~3.4 before, or roughly 3.5 hours of wall clock at 12 workers: track
+  parallelism recovers the wall-clock, per-core throughput is what fell.
+- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and
+  the input side DROPS rather than queues, so falling behind costs audio, not
+  latency. The drift watchdog sheds section detection first and onsets second, and
+  never beats. If a log shows sustained shedding, the box is too slow for the
+  configuration -- that is the signal, not a nuisance warning.
+- **Shedding degrades explicitly, it does not fake a measurement.** A shed onset
+  detector reports density as UNKNOWN rather than zero, and the classifier holds
+  the current intent instead of classifying on a sentinel -- zero density would
+  otherwise pin the show to BREAKDOWN, with BUILDUP and DROP unreachable, and the
+  report rows would be indistinguishable from a genuinely sparse passage.
+  Restoring either shed component clears its buffers first, because everything
+  they hold describes audio from before the gap.
+- **madmom is CC BY-NC-SA** (models). Fine for a personal project; it forecloses a
+  commercial turn without a JKU licence. aubio's GPL note stands.
+- **madmom is pinned to a git SHA**, not a release: the last PyPI release cannot be
+  imported on Python 3.10+. An upgrade is deliberate and `tests/test_madmom_contract.py`
+  is what makes it a checked one.
 - **Decode cache**: `simulate file` writes `<song>.<samplerate>.npy` beside the audio file (gitignored). Stale caches are detected by mtime; delete the `.npy` to force a re-decode.

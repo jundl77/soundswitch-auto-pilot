@@ -10,10 +10,7 @@ import time
 from collections import deque
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
-# Look-ahead delay: analysis runs LOOK_AHEAD_SEC ahead of what the audience hears.
 # Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
-# Audio played back locally (debug mode) is held in a FIFO buffer of the same duration
-# so that local monitoring stays in sync with the analysis.
 LOOK_AHEAD_SEC = 2.5
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
@@ -29,7 +26,7 @@ class SoundSwitchAutoPilot:
                  enable_ui: bool = False,
                  ui_port: int = 8050,
                  report_path: str | None = None):
-        # import here to avoid loading expensive dependencies during arg parsing
+        # Imported here, not at module scope: hoisting these makes `--help` pay the TensorFlow import.
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
@@ -49,29 +46,23 @@ class SoundSwitchAutoPilot:
         self.command_queue: DelayedCommandQueue = DelayedCommandQueue(LOOK_AHEAD_SEC)
         logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
 
-        # construct clients
-        # Audio monitoring plays when an output is requested: -o selects the
-        # device, -d additionally mixes in note-click beeps (default output).
         self._enable_playback: bool = debug_mode or output_device_index is not None
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
         self.midi_client: MidiClient = MidiClient(midi_port_index)
         self.os2l_client: Os2lClient = Os2lClient()
         self.overlay_client: OverlayClient = OverlayClient()
 
-        # construct event buffer (for --ui and/or --report)
         from lib.engine.event_buffer import EventBuffer
         self.event_buffer: EventBuffer | None = (
             EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC) if (enable_ui or report_path) else None
         )
 
-        # construct engine
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
                                                      self.command_queue, event_buffer=self.event_buffer,
                                                      look_ahead_sec=LOOK_AHEAD_SEC)
 
-        # construct analyser
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
                                                            note_clicks=debug_mode)
         self.light_engine.set_analyser(self.music_analyser)
@@ -109,12 +100,8 @@ class SoundSwitchAutoPilot:
         last_100ms_callback_execution: datetime.datetime = datetime.datetime.now()
         last_1sec_callback_execution: datetime.datetime = datetime.datetime.now()
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
-        # FIFO buffer that delays local audio playback by LOOK_AHEAD_SEC so debug
-        # monitoring (headphones) stays in sync with the classified-and-delayed lights.
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
-        # Use wall-clock time for the delay threshold — counting loop iterations is
-        # unreliable because loop speed varies with analyse() overhead.
         _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
 
         while self.is_running:
@@ -212,7 +199,6 @@ signal.signal(signal.SIGTERM, death_handler)
 
 
 def run_sync():
-    """Console-script entry point (`uv run auto_pilot ...`)."""
     loop = asyncio.new_event_loop()
     loop.run_until_complete(main())
 

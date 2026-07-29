@@ -55,7 +55,6 @@ def on_service_state_change(zeroconf: Zeroconf,
             ipv4_addresses: List[str] = service_info.parsed_scoped_addresses(IPVersion.V4Only)
             kept_addresses = [address for address in ipv4_addresses if address in local_ips]
             if len(kept_addresses) == 0:
-                # we time out after 5sec if we don't find anything
                 return
             if len(kept_addresses) != 1:
                 service_discovery_error = f'found more than one os2l service on local ips: {local_ips}, found: {kept_addresses}'
@@ -74,8 +73,7 @@ class Os2lClient:
         self.os2l_sender.set_analyser(analyser)
 
     def start(self):
-        # we can't call this from within the main asyncio event-loop, so we spawn a thread and await its completion
-        # instead
+        # zeroconf blocks and cannot run on the asyncio loop: run it on a thread and join before returning.
         thread = Thread(target=self._find_services)
         thread.start()
         thread.join()

@@ -1,14 +1,9 @@
-"""
-Thread-safe store of pipeline events.
-
-Written to from the asyncio pipeline thread (via stub clients), read from the
-Dash server thread via snapshot(). The only shared state between threads.
-"""
+"""Thread-safe store of pipeline events — the only state the Dash thread shares."""
 
 import threading
 from collections import deque
 
-from lib.analyser.music_analyser import KICK_UNKNOWN
+from lib.analyser.music_analyser import KICK_UNKNOWN, density_is_known
 from lib.clock import Clock, SYSTEM_CLOCK
 
 
@@ -18,22 +13,18 @@ class EventBuffer:
         self._lock = threading.Lock()
         self._window_sec = window_sec
         self._clock = clock
-        # Beats are stamped in song time; intent/effect blocks in audience time,
-        # one look-ahead later. Recorded so a report is self-describing.
+        # Beats are stamped in song time, intent/effect blocks one look-ahead
+        # later in audience time. Recorded so a report is self-describing.
         self._look_ahead_sec = look_ahead_sec
         self._start_time: float | None = None
         self._end_time: float | None = None
         self._is_playing: bool = False
-        # Beats: bounded in live/windowed mode to avoid unbounded memory growth.
         # An infinite window promises complete reports, so the cap comes off.
         self._beats: deque[dict] = deque(maxlen=None if window_sec == float('inf') else 3000)
-        # Effects: list so we can mutate the last entry to set 'end'
         self._effects: list[dict] = []
-        # Intent history: same structure as effects, used for the timeline
         self._intents: list[dict] = []
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
-        # Sound start/stop events for timeline markers
         self._sound_events: list[dict] = []
 
     def start(self) -> None:
@@ -41,12 +32,8 @@ class EventBuffer:
             self._start_time = self._clock.monotonic()
 
     def mark_end(self) -> None:
-        """Freeze the timeline at the current instant.
-
-        Called when the audio source ends; anything recorded afterwards (e.g.
-        intent commits fired by the look-ahead flush tail) is clamped to this
-        timestamp so report durations match the audio, not the flushed clock.
-        """
+        """Clamp later timestamps, so the look-ahead flush tail cannot stretch
+        a report past the audio that produced it."""
         with self._lock:
             self._end_time = self._clock.monotonic()
 
@@ -65,12 +52,14 @@ class EventBuffer:
                  kick_strength: float = KICK_UNKNOWN, centroid_trend: float = 1.0,
                  sub_bass_ratio: float = 0.0, rms: float = 0.0) -> None:
         with self._lock:
+            # Raw, so the row stays self-describing; only the display value is
+            # clamped, and the report metrics drop it rather than average it.
+            known = density_is_known(onset_density)
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                'onset_density': onset_density,   # onsets/sec (aubio rolling window)
-                'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
+                'onset_density': onset_density,
+                'strength': min(1.0, onset_density / 10.0) if known else 0.0,
                 'change': change,
-                # Full feature row — the sim report doubles as a training table.
                 'kick_strength': round(kick_strength, 4),
                 'centroid_trend': round(centroid_trend, 4),
                 'sub_bass_ratio': round(sub_bass_ratio, 4),
@@ -80,11 +69,9 @@ class EventBuffer:
     def add_effect(self, channel: str, effect_type: str) -> None:
         with self._lock:
             now = self._now()
-            # Close the previous open effect band
             if self._effects and 'end' not in self._effects[-1]:
                 self._effects[-1]['end'] = now
             self._effects.append({'t': now, 'channel': channel, 'type': effect_type})
-            # Prune entries well outside the window to prevent unbounded growth
             cutoff = now - self._window_sec * 2
             self._effects = [e for e in self._effects if e.get('end', now) >= cutoff]
 
@@ -93,15 +80,13 @@ class EventBuffer:
             self._is_playing = is_playing
             now = self._now()
             self._sound_events.append({'t': now, 'playing': is_playing})
-            # Prune like the other event lists — long live sessions with many
-            # start/stop transitions must not grow this without bound.
             cutoff = now - self._window_sec * 2
             self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
     def set_intent(self, intent: str) -> None:
         with self._lock:
             if intent == self._current_intent:
-                return  # no change — don't add a duplicate block
+                return
             self._current_intent = intent
             now = self._now()
             if self._intents and 'end' not in self._intents[-1]:
@@ -119,7 +104,6 @@ class EventBuffer:
         with self._lock:
             now = self._now()
             cutoff = now - self._window_sec
-            # Timing stats from the command queue (updated by LightEngine.on_1sec_callback)
             tlog = self._timing_log
             errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000 for e in tlog]
             deltas = [e['actual_delta_sec'] for e in tlog]
@@ -164,8 +148,9 @@ class EventBuffer:
             durations = [e['end'] - e['t'] for e in all_effects if 'end' in e]
             unique_channels = {e['channel'] for e in all_effects}
             all_beats = list(self._beats)
+            measured = [b['onset_density'] for b in all_beats
+                        if density_is_known(b['onset_density'])]
 
-            # Intent distribution: seconds spent in each intent
             intent_distribution: dict[str, float] = {}
             for entry in all_intents:
                 if 'end' not in entry:
@@ -191,8 +176,7 @@ class EventBuffer:
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
                     'onset_density_mean': (
-                        sum(b['onset_density'] for b in all_beats) / len(all_beats)
-                        if all_beats else 0.0
+                        sum(measured) / len(measured) if measured else 0.0
                     ),
                     'timing_error_mean_ms': (
                         sum(errors_ms) / len(errors_ms) if errors_ms else 0.0
@@ -204,7 +188,6 @@ class EventBuffer:
                         sum(durations) / len(durations) if durations else 0.0
                     ),
                     'unique_channels': sorted(unique_channels),
-                    # Intent classification metrics
                     'intent_changes_count': len(all_intents),
                     'unique_intents_count': len(intent_distribution),
                     'intent_distribution_sec': {

@@ -1,35 +1,8 @@
-"""
-Agentic evaluator: scores a simulation report against configurable criteria.
-
-Usage (headless / CI):
-  python auto_pilot simulate file song.mp3 --report report.json
-  # exit code 0 = PASS, 1 = FAIL
-
-Or in Python:
-  from simulate.evaluator import evaluate, print_evaluation
-  result = evaluate(report)   # report from EventBuffer.to_report()
-  print_evaluation(result)
-
-The report contains:
-  beats[]         — {t, bpm, onset_density, strength, change,
-                     kick_strength, centroid_trend, sub_bass_ratio, rms}
-  intents[]       — {t, intent, end}  (timestamped intent blocks)
-  effects[]       — {t, channel, type, end}
-  metrics         — aggregated stats including intent_distribution_sec
-  checksum        — content hash of everything above (see report_checksum)
-"""
-
 import hashlib
 import json
 
 
 def report_checksum(report: dict) -> str:
-    """Stable content hash of a report, excluding the checksum field itself.
-
-    Two runs of the same audio in the same environment must produce the same
-    value — the cheap way to verify simulation determinism without diffing
-    whole report files.
-    """
     payload = {k: v for k, v in report.items() if k != 'checksum'}
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -64,16 +37,6 @@ DEFAULT_CRITERIA: dict = {
 
 
 def evaluate(report: dict, criteria: dict | None = None) -> dict:
-    """
-    Score a simulation report from EventBuffer.to_report().
-
-    Returns:
-        {
-          'passed': bool,
-          'score':  float 0.0–1.0,
-          'criteria': {key: {'value', 'passed', 'score', 'spec'}},
-        }
-    """
     criteria = criteria or DEFAULT_CRITERIA
     m = report['metrics']
     duration_min = max(report['duration_sec'] / 60.0, 1e-9)

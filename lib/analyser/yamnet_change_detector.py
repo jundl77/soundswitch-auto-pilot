@@ -5,8 +5,7 @@ import numpy as np
 from enum import Enum
 from collections import deque
 
-# tensorflow and tensorflow_hub are imported lazily inside start() so that the
-# module can be imported without them installed (e.g. during unit tests).
+# Bound lazily in start(), so the module imports without TensorFlow installed.
 tf = None
 hub = None
 
@@ -51,7 +50,6 @@ class ChangeDetectionTracker:
         self.similarity_tracking_time_window_sec: int = similarity_tracking_time_window_sec
         self.cooldown_time_window_sec: int = 10
 
-        # tracking state
         self.best_previous_similarity: float = 0
         self.similarity_tracking_start: time.time = time.time()
         self.outlier_count = 0
@@ -90,8 +88,6 @@ class ChangeDetectionTracker:
     def is_high_likelihood_change(self) -> bool:
         if len(self.previous_changes_ts) < 3:
             return False
-        # if the 3rd last change is less than 5sec ago, then we had 3 hits since then,
-        # then this must be a significant change
         if time.time() - self.previous_changes_ts[0] < 3:
             self.previous_changes_ts.clear()
             return True
@@ -108,10 +104,10 @@ class YamnetChangeDetector:
     def __init__(self,
                  sample_rate: int,
                  buffer_size: int):
-        # params
         self.agg_buffer_size_multiplier: int = 16
-        self.embedding_lookback_sec: int = 2               # cannot be more than 4, rolling window stores 5 sec of data
-        self.audio_lookback_sec: int = 1                   # cannot be more than 4, rolling window stores 5 sec of data
+        # Neither lookback may exceed 4: the rolling windows only hold 5 s.
+        self.embedding_lookback_sec: int = 2
+        self.audio_lookback_sec: int = 1
         self.min_outliers_required: int = 4
         self.outlier_tracking_time_window_sec: int = 1
         self.similarity_tracking_time_window_sec: int = 3
@@ -150,6 +146,13 @@ class YamnetChangeDetector:
         if not self.change_tracker.is_cooldown_active():
             logging.info('[yamnet] resetting state, starting cooldown')
         self.change_tracker.start_cooldown()
+        # Every buffer that spans time goes: carrying one across a song boundary
+        # or a shed gap butt-joins unrelated audio inside a single embedding,
+        # and the similarity outlier that produces looks like a section change.
+        self.agg_buffer.clear()
+        self.rolling_window_audio.clear()
+        self.rolling_window_embeddings.clear()
+        self.rolling_window_similarities.clear()
 
     def detect_change(self,
                       audio_signal: np.ndarray,
@@ -158,13 +161,10 @@ class YamnetChangeDetector:
             return False
         result = False
 
-        # audio signals come in at a smaller size than we need here, so we aggregate
-        # them until we have the size we want
         is_buffer_full, agg_buffer = self._build_agg_buffer(audio_signal)
         if not is_buffer_full:
             return False
 
-        # Convert audio data to numpy array
         audio_data = np.frombuffer(agg_buffer, dtype=np.int16).astype(np.float32)
 
         audio_data = audio_data / np.iinfo(np.int16).max
@@ -193,7 +193,6 @@ class YamnetChangeDetector:
                 self.change_tracker.start_cooldown()
                 result = True
 
-        # delete old data in rolling windows
         if len(self.rolling_window_audio) > audio_lookback_index * 2:
             del self.rolling_window_audio[:audio_lookback_index * -1]
 
@@ -209,13 +208,11 @@ class YamnetChangeDetector:
         if change_type == ChangeType.STRONG_CHANGE:
             logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio (high-likelihood)')
             return True
-        # Weak changes are accepted unconditionally now that we have no Spotify sections to gate on.
         logging.info('[yamnet] CHANGE DETECTED - meaningful change detected in audio')
         return True
 
     def _build_agg_buffer(self, audio_signal: np.ndarray) -> tuple[bool, np.ndarray]:
         assert len(audio_signal) == self.buffer_size
-        # if the aggregated buffer is not full yet, add to it, otherwise return the built buffer
         if len(self.agg_buffer) != self.agg_buffer_size:
             self.agg_buffer += audio_signal.tolist()
             return False, None

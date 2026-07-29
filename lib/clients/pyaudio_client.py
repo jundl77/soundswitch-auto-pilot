@@ -18,10 +18,7 @@ class PyAudioClient:
         self.stream_out: pyaudio.Stream = None
 
     def list_devices(self):
-        # PortAudio lists every physical device once per host API (MME,
-        # DirectSound, WASAPI, WDM-KS on Windows). Show only the default host
-        # API — the one whose indices open() actually targets — so each device
-        # appears exactly once with a usable id.
+        # PortAudio repeats each device once per host API; only default-host-API indices work with open().
         default_api = self.py_audio.get_default_host_api_info()
         print(f'=== Audio devices ({default_api["name"]}) ===')
         for i in range(0, self.py_audio.get_device_count()):
@@ -37,7 +34,7 @@ class PyAudioClient:
 
     @property
     def exhausted(self) -> bool:
-        return False  # live input never ends
+        return False
 
     def start_streams(self, start_stream_out: bool = False) -> None:
         if self.input_device_index is None:
@@ -56,8 +53,6 @@ class PyAudioClient:
                                             frames_per_buffer=self.buffer_size)
         self.stream_in.start_stream()
         if start_stream_out:
-            # Resolve and log the output device only when it will actually open —
-            # logging it unconditionally used to suggest playback that never ran.
             if self.output_device_index is None:
                 default_output_device_info = self.py_audio.get_default_output_device_info()
                 self.output_device_index = default_output_device_info['index']

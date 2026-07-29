@@ -1,72 +1,5 @@
 #!/usr/bin/env python
-"""Full-corpus validation: every annotated track accounted for, or named.
-
-The cleanliness gate (``build_clean_manifest.py``) answers "which audio may we
-learn from?" and is silent about everything it does not find.  This validator
-answers the harder question the owner actually asked: **is every one of the
-1,423 annotated tracks either present-and-correct, or precisely recorded as
-unobtainable?**  Silence is the failure mode it exists to eliminate -- a corpus
-that is quietly 40 tracks short looks exactly like a complete one unless
-something insists on reconciling the manifest against the disk.
-
-Every manifest row lands in exactly one bucket::
-
-    OK                 decodes fully, and the decoded length agrees with the
-                       annotation record's duration
-    DURATION_MISMATCH  decodes fully, wrong length -- almost always a different
-                       edit or the wrong video; kept on disk, listed for a human
-    CORRUPT            on disk but undecodable, or truncated (the decoder
-                       produced less audio than the container advertises)
-    MISSING            in the manifest, not on disk, and no recorded attempt --
-                       the one bucket that means "we lost track of this"
-    UNAVAILABLE        never obtained, with the recorded yt-dlp reason and the
-                       error tail that justifies it
-
-The first three verdicts come straight from the cleanliness gate, which already
-reasons carefully about truncation vs. wrong-video; this module adds the two
-that only exist once you reconcile against the manifest and the download state.
-
-**Convergence** is the whole point, and it is arithmetic, not vibes::
-
-    OK + DURATION_MISMATCH + UNAVAILABLE == manifest rows   and
-    MISSING == CORRUPT == 0
-
-The sum is checked as well as the two zeroes, because a bucket count can only
-prove nothing was dropped if the buckets add up to the manifest.
-
-Convergence is about audio, so two findings cannot appear in it by
-construction: orphan files in ``audio/`` that no manifest row claims, and
-annotations that do not reconcile with the manifest (a missing or unparsable
-beat grid, a disagreeing YouTube id or duration).  A track can be counted OK and
-still be untrainable because its beat grid never arrived.  Those get their own
-**all-clear** verdict, which is what the exit code reports: converged *and* no
-orphans *and* no annotation issues.  Both verdicts are always printed.
-
-**What the disk says outranks what the log says.**  ``failed.jsonl`` is
-append-only, so a track that was rate-limited on one cycle and fetched on the
-next appears in both it and ``downloaded.txt``.  A file that is on disk is
-judged by decoding it; the failure log is consulted only for tracks that are
-not there.
-
-**Checksums are the integrity baseline, not a verification.**  YouTube
-publishes no canonical hashes, so there is nothing to check the corpus
-*against*; ``checksums.sha256`` records what we have, so that a future
-re-validation can prove the bytes have not changed since the day the decode
-check passed.  Written in ``sha256sum -c`` format with paths relative to the
-data dir, so it is portable and checkable without this script.
-
-Read-only over ``audio/`` unless ``--prune-corrupt`` is given, which deletes
-CORRUPT files and drops their download-archive lines so a plain re-run of
-``raveform_download.py`` genuinely re-fetches them (yt-dlp would otherwise
-answer "already recorded" forever).
-
-Stdlib only.  Requires ``ffmpeg`` and ``ffprobe`` on PATH.
-
-Usage::
-
-    uv run python training/raveform/raveform_validate.py \\
-        --data-dir C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform
-"""
+"""Full-corpus validation: every annotated track accounted for, or named."""
 
 from __future__ import annotations
 
@@ -81,7 +14,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import build_clean_manifest as gate  # noqa: E402  (needs the path insert above)
+import build_clean_manifest as gate  # noqa: E402
 import raveform_download as downloader  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     beat_csv_path,
@@ -109,33 +42,22 @@ STATUS_ORDER = (
     STATUS_UNAVAILABLE,
 )
 
-# Buckets that mean "this track is accounted for": we have it, or we know
-# exactly why we do not.
 ACCOUNTED_FOR = (STATUS_OK, STATUS_DURATION_MISMATCH, STATUS_UNAVAILABLE)
 
-# The gate's vocabulary is lower-case and local to the training-table build;
-# this module's is the owner-facing one.  One mapping, in one place.
 _GATE_TO_STATUS = {
     gate.STATUS_OK: STATUS_OK,
     gate.STATUS_MISMATCH: STATUS_DURATION_MISMATCH,
     gate.STATUS_CORRUPT: STATUS_CORRUPT,
 }
 
-# manifest.csv stores the annotation duration rounded to milliseconds, so the
-# two can differ by at most half a millisecond.  Anything larger means the
-# manifest and the annotations describe different tracks.
 MANIFEST_ROUNDING_SEC = 0.001
 
-# Enough of a yt-dlp error to identify the refusal without pasting the whole
-# stderr blob into a per-track line.
 _DETAIL_CHARS = 300
 
 _HASH_CHUNK = 1 << 20
 
 
 class Failure(NamedTuple):
-    """The most recent recorded download failure for one YouTube id."""
-
     youtube_id: str
     reason: str
     error: str
@@ -143,34 +65,19 @@ class Failure(NamedTuple):
 
 
 class TrackVerdict(NamedTuple):
-    """One manifest row's final status, and the evidence behind it."""
-
     track_id: str
     youtube_id: str
     status: str
     detail: str
-    mp3_path: str                       # "" when the file is not on disk
-    ffprobe_duration_sec: float | None  # container header -- advertised
-    decoded_duration_sec: float | None  # what the decoder produced -- the truth
+    mp3_path: str
+    ffprobe_duration_sec: float | None
+    decoded_duration_sec: float | None
     annotation_duration_sec: float
-    failure_reason: str                 # "" unless UNAVAILABLE
-    sha256: str                         # "" unless OK and checksums were run
-
-
-# --------------------------------------------------------------------------- #
-# Download state
-# --------------------------------------------------------------------------- #
+    failure_reason: str
+    sha256: str
 
 
 def load_failures(path: Path) -> dict:
-    """``youtube_id`` -> its **most recent** failure record.
-
-    Mirrors the downloader's own most-recent-wins rule (a track rate-limited on
-    Monday and found deleted on Tuesday is deleted), but keeps the error tail as
-    well as the reason: an UNAVAILABLE verdict is only worth anything if it
-    carries the evidence for itself.  A torn final line -- the shape of a hard
-    kill mid-append -- costs that one record and nothing else.
-    """
     if not path.exists():
         return {}
     failures: dict = {}
@@ -188,12 +95,6 @@ def load_failures(path: Path) -> dict:
                 continue
             failures[track_id] = Failure(
                 track_id,
-                # A record with no reason becomes "other" -- the same
-                # placeholder the downloader uses for an error it has no
-                # pattern for.  Worth knowing when reading a report: an
-                # `other` in the UNAVAILABLE breakdown means "we did not
-                # recognise this failure", never "there was no failure".  The
-                # raw error tail is carried alongside for exactly that reason.
                 str(record.get("reason") or "other"),
                 str(record.get("error") or ""),
                 str(record.get("timestamp") or ""),
@@ -201,26 +102,15 @@ def load_failures(path: Path) -> dict:
     return failures
 
 
-# --------------------------------------------------------------------------- #
-# Classification
-# --------------------------------------------------------------------------- #
-
-
 def _last_line(text: str, limit: int = _DETAIL_CHARS) -> str:
-    """yt-dlp prints its ERROR line last, so the tail is the useful summary."""
     lines = [line.strip() for line in (text or "").strip().splitlines() if line.strip()]
     return lines[-1][:limit] if lines else ""
 
 
 def classify_track(gate_status, gate_detail: str, failure) -> tuple:
-    """``(status, detail)`` for one manifest row.
-
-    ``gate_status`` is the cleanliness gate's verdict, or ``None`` when the file
-    is not on disk.  It outranks the failure log unconditionally: ``failed.jsonl``
-    is append-only, so a track that failed once and was fetched on a later cycle
-    is recorded in both places, and only one of them describes the bytes we now
-    hold.
-    """
+    # The gate's verdict outranks the failure log unconditionally: failed.jsonl
+    # is append-only, so a track fetched on a later cycle is in both places and
+    # only the bytes on disk describe what we now hold.
     if gate_status is not None:
         return _GATE_TO_STATUS[gate_status], gate_detail
     if failure is not None:
@@ -233,20 +123,12 @@ def classify_track(gate_status, gate_detail: str, failure) -> tuple:
 
 
 def tally(verdicts: list) -> collections.Counter:
-    """Status histogram, with an explicit zero for every bucket."""
     counts = collections.Counter({status: 0 for status in STATUS_ORDER})
     counts.update(verdict.status for verdict in verdicts)
     return counts
 
 
 def convergence(counts, manifest_tracks: int) -> tuple:
-    """``(converged, statement)`` -- the corpus verdict, stated in full.
-
-    Two conditions, and both are load-bearing.  The zeroes say no track is in a
-    state we refuse to accept; the sum says no track fell out of the accounting
-    altogether.  Neither implies the other: a validator that lost 40 rows would
-    report zero MISSING and zero CORRUPT quite happily.
-    """
     accounted = sum(counts.get(status, 0) for status in ACCOUNTED_FOR)
     missing = counts.get(STATUS_MISSING, 0)
     corrupt = counts.get(STATUS_CORRUPT, 0)
@@ -272,18 +154,6 @@ def convergence(counts, manifest_tracks: int) -> tuple:
 
 
 def retryable_remainder(verdicts: list) -> list:
-    """UNAVAILABLE tracks whose recorded reason is still worth re-attempting.
-
-    Convergence counts an UNAVAILABLE track as accounted for, which is right --
-    but "accounted for" is not "unobtainable".  A track recorded as ``http_403``
-    or ``timeout`` describes a bad afternoon, not a dead video, and a corpus can
-    converge perfectly while leaving a pile of those on the table.  Nothing else
-    in this report would say so: the counts look identical either way.
-
-    Moot on the corpus as it stands (all 36 remaining failures are permanent),
-    which is exactly when a guarantee is worth writing down -- it costs nothing
-    now and refuses to go quiet later.
-    """
     return sorted(
         verdict.track_id
         for verdict in verdicts
@@ -293,20 +163,6 @@ def retryable_remainder(verdicts: list) -> list:
 
 
 def overall_verdict(converged: bool, orphans: list, annotation_issues: list) -> tuple:
-    """``(all_clear, statement)`` -- convergence *plus* the corpus-level checks.
-
-    Convergence is the accounting question: is every manifest row in a bucket we
-    accept?  It is deliberately left alone, because that arithmetic is the
-    contract this corpus was declared complete against.
-
-    But a track can be counted OK and still be unusable -- its beat grid may
-    have failed to download, or ``manifest.csv`` may have gone stale against a
-    re-fetched ``segments.json``.  Those findings cannot appear in the five
-    buckets by construction, since the buckets only ever describe audio.  So
-    they get their own verdict line and their own share of the exit code: a
-    supervisor branching on 0/1 must never read "all good" while the annotation
-    cross-check has findings.  Two numbers, both stated, neither hidden.
-    """
     findings = []
     if not converged:
         findings.append("the corpus does not converge")
@@ -319,19 +175,9 @@ def overall_verdict(converged: bool, orphans: list, annotation_issues: list) -> 
     return False, "NOT CLEAR: " + ", ".join(findings)
 
 
-# --------------------------------------------------------------------------- #
-# Corpus-level checks
-# --------------------------------------------------------------------------- #
-
-
 def find_orphans(data_dir: Path, known_youtube_ids) -> list:
-    """Audio files on disk that no manifest row claims, sorted.
-
-    Only ``*.mp3`` is swept.  ``audio/`` also holds deliberate ``*.npy`` decode
-    caches (the eval set writes them beside the source) and can hold transient
-    ``*.part`` files; counting either as an orphan would invent a finding on
-    every run and bury a real one.
-    """
+    # Only *.mp3: audio/ also holds .npy decode caches and transient .part
+    # files, and counting those would invent a finding on every run.
     audio = data_dir / gate.AUDIO_DIR
     if not audio.is_dir():
         return []
@@ -342,26 +188,13 @@ def find_orphans(data_dir: Path, known_youtube_ids) -> list:
 
 
 def annotation_durations(tracks: list) -> dict:
-    """``track_id`` -> annotated duration, at the record's full precision.
-
-    This -- not ``manifest.csv``'s ``total_sec`` -- is the reference length for
-    the duration check.  The manifest rounds to milliseconds on the way out, and
-    the whole point of the check is to compare against the annotation itself.
-    """
     return {str(track["key"]): float(track["duration"]) for track in tracks}
 
 
 def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
-    """Every issue found reconciling the annotations against the manifest.
-
-    "The corpus is complete" has to mean complete *against the annotations*: a
-    track whose beat grid failed to download is as useless for training as one
-    whose audio did, and would otherwise be invisible because its mp3 is fine.
-    Returns human-readable strings, sorted; empty means clean.
-    """
     issues = []
     by_track = {}
-    parsed = {}          # track_id -> the record, for records that parsed
+    parsed = {}
     for track in tracks:
         try:
             track_id = str(track["key"])
@@ -374,9 +207,6 @@ def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
         if not sections:
             issues.append(f"{track_id}: annotation record has no sections")
         if track_id in by_track:
-            # Two records under one key: the second silently replaces the first
-            # everywhere downstream, and the corpus is a track short without
-            # anything looking wrong.
             issues.append(f"{track_id}: duplicate annotation record")
         by_track[track_id] = (youtube, duration)
         parsed[track_id] = track
@@ -402,10 +232,6 @@ def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
         if track_id not in by_track:
             issues.append(f"{track_id}: in manifest.csv but has no annotation record")
 
-    # Only records that parsed: a record with no usable ``key`` has already been
-    # reported, and asking for its beat-grid path would raise -- crashing the
-    # whole validation run before a single artifact is written, on exactly the
-    # malformed input the check exists to describe.
     for track_id, track in sorted(parsed.items()):
         path = beat_csv_path(data_dir, track)
         if not path.exists():
@@ -422,13 +248,7 @@ def check_annotations(data_dir: Path, rows: list, tracks: list) -> list:
     return sorted(issues)
 
 
-# --------------------------------------------------------------------------- #
-# Checksums
-# --------------------------------------------------------------------------- #
-
-
 def sha256_file(path: Path) -> str:
-    """Hex sha256 of a file, read in chunks (corpus files run to ~15 MB)."""
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(_HASH_CHUNK), b""):
@@ -437,13 +257,6 @@ def sha256_file(path: Path) -> str:
 
 
 def write_checksums(data_dir: Path, verdicts: list) -> tuple:
-    """Write ``checksums.sha256`` over the OK files.  Returns ``(path, count)``.
-
-    Only OK rows: the baseline records the bytes we have decided are correct,
-    so re-validation compares like with like.  ``sha256sum -c`` format with
-    data-dir-relative paths, sorted, so the file is stable across runs and
-    checkable by tools that know nothing about this corpus.
-    """
     path = data_dir / CHECKSUMS_FILE
     entries = sorted(
         (f"{gate.AUDIO_DIR}/{verdict.youtube_id}.mp3", verdict.sha256)
@@ -456,7 +269,6 @@ def write_checksums(data_dir: Path, verdicts: list) -> tuple:
 
 
 def _write_atomic(path: Path, text: str) -> Path:
-    """Write via a temp file so a kill can never leave a half-written report."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".part")
     try:
@@ -469,22 +281,9 @@ def _write_atomic(path: Path, text: str) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# Retry support
-# --------------------------------------------------------------------------- #
-
-
 def prune_corrupt(data_dir: Path, verdicts: list) -> list:
-    """Delete CORRUPT audio and forget it in the download archive.
-
-    The only path in this module that writes inside ``audio/``, and it only runs
-    on request.  Both halves are required: yt-dlp consults its archive first, so
-    deleting the file alone leaves a track that can never be re-fetched.
-
-    DURATION_MISMATCH is deliberately untouched -- a wrong-length track is a
-    judgement call about which recording YouTube served, not a bad byte stream,
-    and deleting it would destroy the evidence a human needs.
-    """
+    # Both halves are required: yt-dlp consults its archive first, so deleting
+    # the file alone leaves a track that can never be re-fetched.
     pruned = []
     for verdict in verdicts:
         if verdict.status != STATUS_CORRUPT:
@@ -497,21 +296,12 @@ def prune_corrupt(data_dir: Path, verdicts: list) -> list:
     return sorted(pruned)
 
 
-# --------------------------------------------------------------------------- #
-# The pass
-# --------------------------------------------------------------------------- #
-
-
 def validate(
     data_dir: Path,
     workers: int = gate.DEFAULT_WORKERS,
     checksums: bool = True,
     progress_every: int = 100,
 ) -> dict:
-    """Run one full validation pass and write all three artifacts.
-
-    Returns the same payload that lands in ``validation_report.json``.
-    """
     data_dir = Path(data_dir)
     rows = gate.load_manifest_rows(data_dir)
     tracks = load_tracks(data_dir)
@@ -521,9 +311,6 @@ def validate(
     jobs = []
     absent = []
     for row in rows:
-        # The annotation record is the reference length; the manifest value is
-        # the ms-rounded copy and is only the fallback if a record is missing
-        # (which check_annotations reports separately).
         duration = durations.get(row.track_id, row.annotation_duration_sec)
         path = gate.audio_path(data_dir, row.youtube_id)
         if path.exists():
@@ -599,7 +386,6 @@ def validate(
 
 
 def build_payload(data_dir, rows, verdicts, orphans, annotation_issues, checksums) -> dict:
-    """The machine-readable report: counts, verdict, and every track's row."""
     counts = tally(verdicts)
     converged, statement = convergence(counts, len(rows))
     all_clear, verdict_statement = overall_verdict(converged, orphans, annotation_issues)
@@ -625,23 +411,11 @@ def build_payload(data_dir, rows, verdicts, orphans, annotation_issues, checksum
     }
 
 
-# --------------------------------------------------------------------------- #
-# Human report
-# --------------------------------------------------------------------------- #
-
-
 def _duration(value) -> str:
     return "?" if value is None else f"{value:.3f}"
 
 
 def render_text_report(payload: dict) -> str:
-    """The human summary: counts, verdict, and every track that is not OK.
-
-    Nothing is elided.  The lists this prints in full -- UNAVAILABLE and
-    DURATION_MISMATCH -- are exactly the ones the owner has to read and judge,
-    and a "... and 47 more" line in the middle of them would defeat the purpose
-    of the whole exercise.
-    """
     lines = []
     add = lines.append
 
@@ -741,11 +515,6 @@ def print_summary(payload: dict) -> None:
     print(payload["verdict_statement"])
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -799,9 +568,6 @@ def main(argv=None) -> int:
         for youtube_id in pruned:
             print(f"  {youtube_id}")
 
-    # Exit code is the verdict, so a supervisor or a CI step can branch on it --
-    # and it is the FULL verdict, not just convergence.  A corpus that adds up
-    # but whose annotations do not reconcile is not a corpus we are done with.
     return 0 if payload["all_clear"] else 1
 
 
