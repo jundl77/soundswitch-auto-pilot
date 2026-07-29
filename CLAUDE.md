@@ -177,7 +177,7 @@ uv run pytest                        # unit + integration (minutes, not seconds)
 
 **Flags (`run`):**
 - `-i / -o` â€” audio device indices from `list`; passing `-o` enables delayed audio monitoring on that device
-- `-d` â€” debug: adds a click on detected notes to the monitored audio (implies monitoring on the default output if `-o` is not given)
+- `-d` â€” debug: adds a click on every detected BEAT to the monitored audio (implies monitoring on the default output if `-o` is not given). Beat-triggered by owner preference, not the note-triggered click aubio used to drive â€” roughly half the clicks, landing on the pulse rather than on every onset.
 - `--no-os2l` â€” disable VirtualDJ connection
 - `--ui` â€” launch Dash real-time visualizer at http://localhost:8050
 - `--ui-port N` â€” change visualizer port
