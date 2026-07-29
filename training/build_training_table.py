@@ -64,17 +64,17 @@ time -- one look-ahead delay later -- so they are shifted back by the report's
 own ``metrics.look_ahead_sec`` before being read at a beat.  Mel frames carry
 the same stamp convention as beats (see ``pooled_log_mel``).
 
-"Mostly", because the engine has two commit paths and they stamp in different
-bases.  The normal path enqueues on the delayed command queue and fires one
-look-ahead later (AUDIENCE time).  But the first beat of a run, a beat that
-re-enters after a sound stop, and beat-absence ATMOSPHERIC all write to the
-event buffer immediately, inside the callback (SONG time).  De-shifting one of
-those would move it a full look-ahead too early and let it steal beats from the
-intent before it.  ``realign_intents`` detects which base a block is in and
-corrects only the ones that need it; ``lib/`` is read-only, so the asymmetry is
-compensated here rather than removed at the source.  The number of blocks
-realigned and the number of rows whose intent that changed are both recorded in
-``meta.json`` -- if either grows unexpectedly, the engine's commit paths moved.
+"Mostly", because a block's base is not recorded in the report and has to be
+inferred.  Every intent commit now rides the delayed command queue, so every
+beat-driven block is AUDIENCE time and shifts back cleanly.  The exception is
+beat-absence ATMOSPHERIC: it rides the queue too, but a timer fired it rather
+than a beat, so ``t - look_ahead`` lands nowhere near one and the detection can
+only read it as song-stamped -- leaving it one look-ahead late.  Measured on the
+eval set, that block falls past the last label and scores nothing; a mid-song
+silence would misplace it.  Reports cut before the engine unified its commit
+paths do carry genuinely song-stamped blocks, and this reading is still right
+for them.  ``realign_intents`` records the counts in ``meta.json`` -- a growing
+``song_stamped`` means a commit path moved again.
 
 Decode-cache discipline
 -----------------------
@@ -378,14 +378,16 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
     time bases (``lib/`` is read-only, so the join compensates rather than the
     engine being changed):
 
-    * **Queue commits** (the normal path) are enqueued at a beat and fire one
-      look-ahead later, so the block is stamped in AUDIENCE time and must be
-      shifted back.
-    * **Immediate commits** -- the first beat of a run, and any beat that
-      re-enters after a sound stop or a beat-absence ATMOSPHERIC -- write to the
-      event buffer inside ``on_beat``, so the block is already stamped in SONG
-      time.  Shifting one of those back steals up to a look-ahead of beats from
-      the intent that preceded it.
+    * **Queue commits** are enqueued at a beat and fire one look-ahead later, so
+      the block is stamped in AUDIENCE time and must be shifted back.  Every
+      beat-driven commit is one of these, the first beat of a run and the beat
+      that re-enters after a sound stop included.
+    * **Beat-absence ATMOSPHERIC** rides the queue as well, but no beat caused
+      it, so nothing explains its stamp and it reads as song time below --
+      staying one look-ahead late.  Reports cut before the engine unified its
+      commit paths carry genuinely song-stamped blocks, which this same reading
+      handles correctly: shifting one of those back would steal up to a
+      look-ahead of beats from the intent that preceded it.
 
     A block is treated as a queue commit when ``t - look_ahead`` lands within
     ``tolerance`` of an actual beat, i.e. when the queue hypothesis *explains*
