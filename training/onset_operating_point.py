@@ -107,8 +107,22 @@ def one_track(args) -> dict:
 _FORBIDDEN_SPLITS = ('test', 'eval_set', 'excluded_eval_set')
 
 
+def _golden_fixture_ids() -> set[str]:
+    """Tracks whose before/after deltas are the migration's headline evidence.
+
+    They are not in any split manifest — the bundled sample is not corpus audio
+    at all — so the manifest cannot protect them. Read from the fixture itself
+    so the list cannot drift from the thing it describes.
+    """
+    fixture = (Path(__file__).parent.parent / 'tests' / 'fixtures'
+               / 'pipeline_digest_baseline.json')
+    if not fixture.exists():
+        return set()
+    return {Path(name).stem for name in json.loads(fixture.read_text())}
+
+
 def _forbidden_ids(data_dir: Path) -> set[str]:
-    """Every id this calibration is not allowed to read, from the corpus manifest.
+    """Every id this calibration is not allowed to read.
 
     A missing manifest is fatal rather than empty: silently treating "I could
     not find the holdout list" as "there is no holdout" is how test contact
@@ -122,7 +136,7 @@ def _forbidden_ids(data_dir: Path) -> set[str]:
     ids: set[str] = set()
     for name in _FORBIDDEN_SPLITS:
         ids |= set(splits.get(name, []))
-    return ids
+    return ids | _golden_fixture_ids()
 
 
 def _refuse_holdout_contact(paths: list[str], data_dir: Path) -> None:
@@ -176,7 +190,8 @@ def _stability(rows: list[dict], seed: int, resamples: int = 2000) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--audio-dir', required=True)
+    ap.add_argument('--audio-dir', default=None,
+                    help='corpus audio directory (not needed with --from-json)')
     ap.add_argument('--extra', nargs='*', default=[],
                     help='additional audio files (e.g. the bundled sample)')
     ap.add_argument('--tracks', type=int, default=16)
@@ -193,6 +208,18 @@ def main() -> None:
                     help='re-analyse an existing sweep instead of measuring again')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
+
+    # Re-analysis path: the per-track rates are the expensive part and they are
+    # already stored, so re-reading them costs a second instead of an hour. This
+    # is how the stability record gets added to a sweep that predates it.
+    if args.from_json:
+        results = json.loads(Path(args.from_json).read_text())['tracks']
+        print(f'{len(results)} tracks, re-analysed from {args.from_json}')
+        _report(results, args.seed, args.out)
+        return
+
+    if not args.audio_dir:
+        raise SystemExit('--audio-dir is required unless --from-json is given')
 
     # Deterministic, selection-free sample: sorted filenames, evenly spaced.
     # Not the eval set — that list lives on another branch and this measurement
@@ -219,6 +246,11 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(one_track, [(t, args.seconds) for t in chosen]))
 
+    _report(results, args.seed, args.out)
+
+
+def _report(results: list[dict], seed: int, out: str | None) -> None:
+    import numpy as np
     aubio_rates = np.array([r['aubio_rate'] for r in results])
     print(f'\naubio onset rate: median {np.median(aubio_rates):.3f}/s  '
           f'mean {aubio_rates.mean():.3f}  '
@@ -243,9 +275,9 @@ def main() -> None:
     print(f"madmom's library default (0.50) would have given "
           f"{np.median([r['madmom_rates']['0.50'] for r in results]):.3f}/s")
 
-    stability = _stability(results, seed=args.seed)
+    stability = _stability(results, seed=seed)
     print(f'\nstability over {stability["resamples"]} track-resamples '
-          f'(seed {args.seed}):')
+          f'(seed {seed}):')
     for threshold, share in stability['distribution']:
         bar = '#' * int(round(share * 40))
         print(f'  {threshold:.2f}  {share*100:5.1f}%  {bar}')
@@ -255,10 +287,14 @@ def main() -> None:
         print('  NOTE: the matched threshold is not resample-stable at this n — '
               'the interval, not the point estimate, is the honest result.')
 
-    if args.out:
-        Path(args.out).write_text(json.dumps(
-            {'tracks': results, 'chosen_threshold': best[0]}, indent=2) + '\n')
-        print(f'wrote {args.out}')
+    if out:
+        # The stability record is STORED, not merely printed. A sweep whose
+        # spread lives only in a terminal scrollback is a sweep whose spread
+        # will be forgotten by the next person to quote its point estimate.
+        Path(out).write_text(json.dumps(
+            {'tracks': results, 'chosen_threshold': best[0],
+             'stability': stability}, indent=2) + '\n')
+        print(f'wrote {out}')
 
 
 if __name__ == '__main__':

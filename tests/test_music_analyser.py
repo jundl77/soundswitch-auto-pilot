@@ -485,3 +485,54 @@ async def test_an_unknown_density_is_never_appended_to_the_trend_samples(analyse
     analyser._rhythm.set_onsets_enabled(False)
     await analyser._track_beat([1.0, 2.0, 3.0, 4.0], analyser._clock.now())
     assert all(density_is_known(d) for d in analyser._density_samples)
+
+
+# ---------------------------------------------------------------------------
+# The rhythm heartbeat is loop-scoped, not song-scoped
+# ---------------------------------------------------------------------------
+
+async def test_the_rhythm_heartbeat_survives_repeated_song_resets(caplog):
+    """_reset_state() fires after 0.3 s of quiet, so on a silent input it runs
+    over and over as time passes. Scheduling the heartbeat there pushed its
+    deadline forward on every reset, so it never printed -- precisely the
+    situation where a heartbeat is the only evidence the loop is alive. Found on
+    a live run against a silent cable: 33 s produced 67 drift lines and zero
+    rhythm lines.
+
+    The clock must ADVANCE between the resets for this to discriminate. A first
+    draft reset in a tight loop at a frozen instant, where `now + interval` is
+    the same deadline every time, and passed against the pre-fix code.
+    """
+    import logging
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+
+    with caplog.at_level(logging.INFO):
+        for _ in range(40):          # 40 x 0.3 s = 12 s, past one interval
+            clock.advance(0.3)
+            analyser._reset_state()
+            analyser._log_rhythm_state(clock.now())
+    assert any('[rhythm]' in r.message for r in caplog.records), (
+        'the heartbeat never fired across 12 s of repeated song resets')
+
+
+async def test_the_rhythm_heartbeat_actually_fires(caplog):
+    import logging
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(11.0)
+    with caplog.at_level(logging.INFO):
+        analyser._log_rhythm_state(clock.now())
+    assert any('[rhythm]' in r.message for r in caplog.records)
+
+
+async def test_the_heartbeat_rearms_rather_than_repeating_every_buffer(caplog):
+    import logging
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(11.0)
+    with caplog.at_level(logging.INFO):
+        analyser._log_rhythm_state(clock.now())
+        clock.advance(0.1)
+        analyser._log_rhythm_state(clock.now())
+    assert sum('[rhythm]' in r.message for r in caplog.records) == 1

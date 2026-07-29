@@ -17,7 +17,17 @@ Instrument: `training/onset_operating_point.py`. Raw sweep for the shipped draw:
 | 3 | every track | 17 | whole | 6.077/s | **0.40** | **contained 2 held-out test tracks** (`s_iJfyng3Lo`, `VzMpzT1sxEw`) |
 | 4 | test excluded | 17 | whole | 5.883/s | **0.44** | `eval_set` still selectable — the tracks whose deltas are this PR's headline evidence |
 | 5 | test + eval_set + excluded_eval_set excluded | 17 | whole | 6.792/s | **0.35** | correct scope, but n too small to be resample-stable |
-| **6** | **same scope, larger sample** | **49** | **whole** | **6.262/s** | **0.35** | **shipped** |
+| **6** | **same scope, larger sample** | **49** | **whole** | **6.262/s** | **0.35** | **shipped** — see the caveat below |
+
+**Caveat on draw 6, disclosed rather than left in the command line.** The 48
+corpus tracks were holdout-free, but the bundled `generate_eric_prydz` sample was
+added via `--extra` — and that track is a golden-fixture track whose before/after
+deltas are this PR's headline evidence. One track of 49 inside a median is not a
+manifest-holdout breach and it does not move the answer, but it is the same
+*class* of mistake as draws 3 and 4 and it should not recur: the pool is large
+enough without it. The script now derives the golden-fixture ids from
+`tests/fixtures/pipeline_digest_baseline.json` and refuses them alongside the
+split holdouts, so a future sweep cannot repeat this even via `--extra`.
 
 Draws 3, 4 and 5 differ *only* in which tracks were excluded, and they span two
 full steps of the ladder. That is sampling variance in a median, not a property

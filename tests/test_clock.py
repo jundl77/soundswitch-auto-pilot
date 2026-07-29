@@ -55,7 +55,14 @@ def test_the_system_clock_can_resolve_a_single_audio_buffer():
 
     buffer_sec = BUFFER_SIZE / SAMPLE_RATE
     samples = sorted({SYSTEM_CLOCK.monotonic() for _ in range(20000)})
-    assert len(samples) > 2, 'system clock did not advance at all'
+    # A coarse clock shows up here first — 20000 reads of a 15.6 ms clock yield
+    # a handful of distinct values — so this branch reports the real diagnosis
+    # rather than letting a bare "did not advance" stand in for it.
+    if len(samples) < 3:
+        raise AssertionError(
+            f'system clock produced only {len(samples)} distinct value(s) in '
+            f'20000 reads — it is quantised far coarser than the '
+            f'{buffer_sec * 1000:.3f} ms audio buffer it has to time')
     granularity = min(b - a for a, b in zip(samples, samples[1:]))
     assert granularity < buffer_sec / 10, (
         f'system clock granularity {granularity * 1000:.3f} ms cannot resolve a '
