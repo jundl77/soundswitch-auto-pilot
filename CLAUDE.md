@@ -259,9 +259,17 @@ Decisions that belong here rather than in the code:
 - **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the single bundled sample. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
 - **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
 - **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
-- **The rhythm front-end costs ~20x what aubio did** (~20% of one core against ~1%).
-  Comfortable live, but the fast simulator dropped from ~46x real-time to ~4x, and
-  that is the number to expect when re-running a corpus.
+- **The rhythm front-end costs ~19x what aubio did**: 25.2% of one core against
+  0.8%, measured single-threaded. On a strict reading of the campaign's >= 5x /
+  <= 20% realtime bar that is a MISS (3.9x). That bar was written for NN posterior
+  generation, where 5x buys the rest of the stack its headroom on one core, and it
+  was ruled not to bind a DSP front-end; the front-end's gates are instead
+  sustained 1x whole-pipeline with headroom, the backpressure machinery, and a
+  30-minute soak. Both readings belong in any future discussion of this cost --
+  the miss is real under the original wording.
+- **Fast simulation dropped from ~46x real-time to ~4x**, which is the honest
+  price of the migration and the number to expect when re-running a corpus. Track
+  parallelism recovers most of the wall-clock; per-core throughput is what fell.
 - **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and
   the input side DROPS rather than queues, so falling behind costs audio, not
   latency. The drift watchdog sheds section detection first and onsets second, and

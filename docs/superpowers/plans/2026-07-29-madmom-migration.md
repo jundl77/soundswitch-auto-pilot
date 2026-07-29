@@ -233,10 +233,28 @@ shows the clicks landing on the reported onsets. Evidence recorded.
 
 ## Follow-ups this PR deliberately does not do
 
-1. Rule-engine constant recalibration, if the disclosed density deltas warrant it.
-2. Corpus report-cache regeneration (~16 CPU-h) — `pipeline_sha` invalidates it
-   by construction; that is expected, not a bug to work around.
-3. `training/train.py`'s offline aubio front-end — belongs to the
+1. **Replace the onset chain with something already computed.** It runs three
+   multi-resolution STFTs and an eight-network RNN ensemble — 10.6 % of a core —
+   to feed exactly one feature: a count per second. Candidates: spectral flux
+   over the aubio filterbank we already compute, or the beat RNN's own
+   activation. madmom's *beats* stay untouched. The 49-track calibration
+   harness makes the comparison measurable: hold the onset rate matched and
+   compare the resulting intent timelines.
+
+   **Record the dead end so nobody re-prices it:** shrinking the ensemble is
+   *not* the lever. 8 → 1 models saves 2.5 percentage points, not the ~9 the
+   model count suggests, because the cost is the STFTs and their spectrogram
+   differences, not the networks — and it costs activation agreement (r = 0.977)
+   for a still-failing 4.3×.
+
+2. Rule-engine constant recalibration, if the disclosed density deltas warrant
+   it. Note the onset threshold's own 80 % interval is [0.30, 0.40]; anything
+   downstream tuned against it inherits that width.
+3. Corpus report-cache regeneration — `pipeline_sha` invalidates it by
+   construction; expected, not a bug to work around. Per-core sim throughput
+   fell ~46× → ~4×, so the regen is ~11× more CPU than before; track
+   parallelism recovers most of the wall-clock.
+4. `training/train.py`'s offline aubio front-end — belongs to the
    champion-generation front-end bake (#72/#77).
-4. Committed eval-set baseline regeneration — blocked on PR #8 (see Task 8).
-5. Dropping the interim aubio/madmom split entirely (#77) — a retrain decision.
+5. Committed eval-set baseline regeneration — blocked on PR #8 (see Task 8).
+6. Dropping the interim aubio/madmom split entirely (#77) — a retrain decision.
