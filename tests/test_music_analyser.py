@@ -558,15 +558,14 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
     Asserts the click is present, is exactly the click, lands only on beeps, and
     is absent entirely when the flag is off.
     """
-    from pathlib import Path
-
     from lib.analyser.music_analyser import MusicAnalyser
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.clock import VirtualClock
     from simulate.fake_audio_client import FileAudioClient
+    from tests.conftest import anchor_mp3_path
 
-    sample = str(Path(__file__).parent.parent / 'samples'
-                 / 'generate_eric_prydz_192k.mp3')
+    # The bundled Generate track this used to read was retired with the eval set.
+    sample = anchor_mp3_path()
 
     class _Handler(_StubHandler):
         def __init__(self):
@@ -600,7 +599,7 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
     notes_on, clicked_on = await run(note_clicks=True)
     notes_off, clicked_off = await run(note_clicks=False)
 
-    assert notes_on > 0, 'no beeps fired on 20 s of the bundled track'
+    assert notes_on > 0, 'no beeps fired on 20 s of the anchor track'
     assert clicked_on == notes_on, 'a beep fired without reaching the audio'
     assert clicked_off == 0, 'audio was modified with -d off'
 

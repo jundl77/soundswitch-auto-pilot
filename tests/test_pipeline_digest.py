@@ -10,11 +10,19 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import ANCHOR_YOUTUBE_ID
 from training.pipeline_digest import (RHYTHM_COLUMNS, SPECTRAL_COLUMNS,
                                       digest_report)
 
 BASELINE = Path(__file__).parent / 'fixtures' / 'pipeline_digest_baseline.json'
-SAMPLE_SONG_NAME = 'generate_eric_prydz_192k.mp3'
+
+# The anchor moved off the bundled Generate mp3, which the eval set retired and
+# deleted. It did NOT move to a freshly cut number: the same baseline was cut on
+# master's code over three tracks, and two of them are eval-set tracks whose
+# audio is committed. So the anchor keeps its pre-madmom provenance -- the whole
+# point of it -- and gains a file that exists in a fresh clone. The shorter of
+# the two, because this runs a whole track through the sim.
+SAMPLE_SONG_NAME = f'{ANCHOR_YOUTUBE_ID}.mp3'
 
 
 def _beat(t, **over):
@@ -119,7 +127,7 @@ def test_digest_survives_a_report_with_no_beats():
 
 
 @pytest.mark.integration
-async def test_bundled_track_keeps_the_committed_schema_and_filterbank():
+async def test_anchor_track_keeps_the_committed_schema_and_filterbank(anchor_mp3):
     """The two things the migration is not allowed to move, against a baseline
     cut from master before any madmom code existed.
 
@@ -131,18 +139,17 @@ async def test_bundled_track_keeps_the_committed_schema_and_filterbank():
     """
     from training.pipeline_digest import digest_track
     baseline = json.loads(BASELINE.read_text())[SAMPLE_SONG_NAME]
-    sample = Path(__file__).parent.parent / 'samples' / SAMPLE_SONG_NAME
-    actual = await digest_track(str(sample))
+    actual = await digest_track(anchor_mp3)
     assert actual['schema'] == baseline['schema']
     assert actual['filterbank'] == baseline['filterbank']
 
 
 @pytest.mark.integration
-def test_the_filterbank_anchor_notices_a_changed_filterbank():
+def test_the_filterbank_anchor_notices_a_changed_filterbank(anchor_mp3):
     """A gate nobody has seen fail is a gate nobody knows works. Perturbing the
     bank must move the anchor — under whatever beat grid."""
     from training.pipeline_digest import filterbank_fingerprint
-    sample = str(Path(__file__).parent.parent / 'samples' / SAMPLE_SONG_NAME)
+    sample = anchor_mp3
     honest = filterbank_fingerprint(sample, seconds=10.0)
 
     import lib.analyser.music_analyser as ma
