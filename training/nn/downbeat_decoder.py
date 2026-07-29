@@ -1,27 +1,25 @@
 """Bar-phase decoder: beat instants + downbeat activation in, a bar grid out.
 
 The downbeat head answers "does this instant sound like the start of a bar" and
-Task 2 measured exactly how far that gets you: **94.6 % of its peaks are
-beat-locked and 52 % of its false positives land on beat 3**.  The head has
-solved *is this a beat* and not *which beat*, and no better activation fixes
-that, because in four-on-the-floor beat 3 is acoustically the same event as beat
-1.  What separates them is the *sequence*: a track cannot alternate 1-3-1-3
-without paying for a phase flip over and over.  So this module is a cyclic HMM
-over the bar, at the rate of whatever candidate instants it is given, and the
-flip penalty is the knob that turns a ranking into a grid.
+Task 2 measured exactly how far that gets you, against the annotated grid:
+**94.6 % of its peaks are beat-locked and 52 % of its false positives land on
+beat 3**.  The head has solved *is this a beat* and not *which beat*, and no
+better activation fixes that, because in four-on-the-floor beat 3 is acoustically
+the same event as beat 1.  What separates them is the *sequence*: a track cannot
+alternate 1-3-1-3 without paying for a phase flip over and over.  So this module
+is a cyclic HMM over the bar, at the rate of whatever candidate instants it is
+given, and the flip penalty is the knob that turns a ranking into a grid.
 
-**The cycle is four positions or eight, and the difference is the whole live
-condition.**  Fed aubio's beats it is four (one per beat).  But aubio's dominant
-failure on this corpus is not jitter, it is a steady **half-beat lock**: only
-51.8 % of the annotated downbeats on val have an aubio beat within +-70 ms of
-them, and de-shifting each track by its own median offset recovers nothing,
-because the offset is half a beat rather than a latency.  A four-state decoder
-can only round that away.  Admitting the midpoint of every consecutive pair as a
-candidate makes the bar an eight-position cycle, turns "aubio is half a beat off"
-into a state the decoder can occupy and *hold*, and lifts the reachable ceiling
-from 51.8 % to 85.2 %.  Midpoints stay causal -- the midpoint of beats n and n+1
-exists as soon as beat n+1 arrives -- so the live discipline is unchanged.
-``subdivision`` is the switch; ``candidate_grid`` builds the instants.
+**The cycle is four positions or eight.**  At ``subdivision = 1`` it is one
+position per candidate beat.  ``subdivision = 2`` also admits the midpoint of
+every consecutive pair, which turns "the stream sits half a beat off the bar"
+into a state the decoder can occupy and *hold* rather than an error it has to
+round away -- the failure mode a beat tracker with the right tempo and the wrong
+phase produces.  Midpoints stay causal: the midpoint of beats n and n+1 exists as
+soon as beat n+1 arrives, so the live discipline is unchanged.  ``subdivision`` is
+the switch; ``candidate_grid`` builds the instants.  On the current beat source
+the denser grid does not win (see ``training/nn/CLAUDE.md``), so it is a parameter
+to re-measure rather than a recommendation.
 
 **One real lever, and the reason is structural.**  ``flip_penalty`` is the cost
 of not advancing the phase; ``downbeat_ref`` is the activation level at which a
@@ -45,8 +43,8 @@ space, i.e. one particular choice of ``downbeat_ref``
 (``pos_weight / (1 + pos_weight)``) -- so the transform is not skipped here, it
 is *exposed* as the parameter it collapses to.
 
-**Coasting, because aubio drops beats.**  Under heavy sidechain compression the
-beat stream gaps, and a decoder that only advances on arrivals loses the bar.
+**Coasting, because beat trackers drop beats.**  Under heavy sidechain compression
+the beat stream gaps, and a decoder that only advances on arrivals loses the bar.
 When a gap is a whole multiple of the running tempo the missing instants are
 interpolated and pushed as evidence-free beats, so the phase walks through the
 dropout and the grid stays dense.  Past ``MAX_COAST_BEATS`` the gap is not a
@@ -110,25 +108,18 @@ BEATS_PER_BAR = 4
 
 # Nats of evidence a phase flip has to buy: ~2.7 bars of confident activation (a
 # 0.90 downbeat against 0.05 off-beats is 5.1 nats of log-odds contrast per bar).
-# **Provisional, and it suits the EXPERT condition.**  A 20-track val sweep put
-# the plateau at 12-16 with a sharp fall either side; the full 215-track sweep
-# confirms the ordering (expert-driven F1 0.7063 at 14 against a 0.5592
+# **Provisional, and it was chosen on the EXPERT condition.**  A 20-track val
+# sweep put the plateau at 12-16 with a sharp fall either side; the full 215-track
+# sweep confirms the ordering (expert-grid F1 0.7063 at 14 against a 0.5592
 # naive-picking floor on the same activations) but was too coarse to locate the
 # plateau, and the 20-track *levels* were optimistic by ~0.17.
 #
-# **What it does NOT depend on is the subdivision, and what it DOES depend on is
-# the condition.**  Measured at *matched wall-clock look-ahead* on all 215 val
-# tracks (``lag_beats = 4 * subdivision``; see DEFAULT_LAG_BEATS for why that
-# qualifier decides the answer): the expert condition prefers 14 at both
-# subdivisions (0.7063 / 0.6864 against 0.6143 / 0.5998 at flip 3), while the
-# aubio condition prefers ~3 at both (0.3175 / 0.4845 against 0.2500 / 0.3096 at
-# flip 14).  A clean beat stream wants roughly 4-5x the penalty a noisy one does.
-#
-# The aubio levels are Task 4's post-coasting-fix measurement; the pre-fix ones
-# this comment used to quote are superseded along with every other aubio-driven
-# decoded figure from Task 3 (task-4-report.md section 5.4).  The *ordering* --
-# which is what this comment is for -- is unchanged either way.  The expert
-# levels are unaffected by that fix and are the originals.
+# The level is not a subdivision artefact: measured at *matched wall-clock
+# look-ahead* on all 215 val tracks (``lag_beats = 4 * subdivision``; see
+# DEFAULT_LAG_BEATS for why that qualifier decides the answer) the expert
+# condition prefers 14 at both subdivisions (0.7063 / 0.6864 against
+# 0.6143 / 0.5998 at flip 3).  What a *live* stream prefers depends on that
+# stream and is unmeasured on the current one.
 DEFAULT_FLIP_PENALTY = 14.0
 
 # The sigmoid's own midpoint, the same neutral reference the section decoder uses
@@ -148,10 +139,10 @@ DEFAULT_DOWNBEAT_REF = 0.5
 DEFAULT_LAG_BEATS = 4
 
 # A gap this many times the running beat period is a dropout rather than tempo
-# drift.  Below 1.5 an ordinary aubio wobble would insert phantom beats.
+# drift.  Below 1.5 an ordinary tracker wobble would insert phantom beats.
 DEFAULT_COAST_RATIO = 1.5
 
-# Four bars.  Aubio's documented failure is a few beats under sidechain
+# Four bars.  A tracker's documented failure is a few beats under sidechain
 # compression; anything longer is a discontinuity and coasting it would invent
 # downbeats that are all false positives.
 MAX_COAST_BEATS = 16
@@ -161,16 +152,12 @@ MAX_COAST_BEATS = 16
 DEFAULT_TEMPO_WINDOW = 8
 
 # Candidate instants per beat.  1 decodes on the beat stream as given; 2 adds the
-# midpoint of every consecutive pair, doubling the cycle to eight half-beat states.
-# The amendment exists because aubio's dominant failure on this corpus is a steady
-# HALF-BEAT lock, not jitter: only 51.8 % of val's annotated downbeats have an
-# aubio beat within +-70 ms of them, and admitting the midpoints lifts that
-# ceiling to 85.2 %.  (The share is over DOWNBEATS -- the instants a prediction
-# has to land on.  Over aubio's own beats, which arrive about four times as
-# often, the same fact reads ~13 %.)  A steady half-beat offset is then a state
-# the decoder can occupy and hold, rather than an error it has to round away.
-# Midpoints stay causal -- the midpoint of beats n and n+1 exists as soon as beat
-# n+1 arrives, on the same lag discipline as everything else.
+# midpoint of every consecutive pair, doubling the cycle to eight half-beat states
+# so that a stream holding a steady half-beat offset against the bar is a state
+# the decoder can occupy rather than an error it has to round away.  Midpoints stay
+# causal -- the midpoint of beats n and n+1 exists as soon as beat n+1 arrives, on
+# the same lag discipline as everything else.  Whether 2 pays for itself is a
+# property of the beat source: on the current one it does not.
 DEFAULT_SUBDIVISION = 1
 
 # Frames either side of a candidate instant that count as evidence for it.
@@ -240,8 +227,9 @@ def candidate_grid(beat_times, subdivision: int = DEFAULT_SUBDIVISION) -> np.nda
     ``subdivision = 1`` is the beat stream itself.  ``2`` interleaves the midpoint
     of every consecutive pair, so ``n`` beats yield ``2n - 1`` candidates and the
     bar becomes an eight-state cycle.  Higher subdivisions are refused rather than
-    silently approximated: the corpus is 4/4 and the measured failure mode is a
-    half-beat lock, so a third would be a different claim about the music.
+    silently approximated: the corpus is 4/4 and the failure the midpoint grid
+    absorbs is a half-beat lock, so a third would be a different claim about the
+    music.
     """
     times = np.asarray(beat_times, dtype=np.float64).reshape(-1)
     if int(subdivision) == 1:
@@ -454,8 +442,8 @@ class BarPhaseHMM:
         if self._coast_streak >= int(self.params.max_coast_beats):
             # Every arrival for a whole coastable window has needed filling.  A
             # dropout is a hole in an otherwise arriving stream, so this is not
-            # one: the *estimate* is wrong.  It happens for a documented reason
-            # -- aubio's first seconds read at double or triple tempo, which
+            # one: the *estimate* is wrong.  It happens for a documented reason --
+            # a tracker's first seconds can read at double or triple tempo, which
             # seeds the window short, and then every real interval looks like a
             # dropout whose recorded period is short too.  Dropping the estimate
             # re-seeds it from the next observed interval, which is the only
@@ -466,12 +454,7 @@ class BarPhaseHMM:
             # than the window re-seeds to the *slower* pulse, and the grid then
             # runs at half rate until the beats come back.  That is the opposite
             # error to the one it fixes, and it is the price of breaking the
-            # feedback loop with a local rule.  Measured on val: the branch fires
-            # on 116 of 215 tracks (once each on 92 of them -- the warmup) and
-            # more than once on 24; the tracks that fire most often emit grids at
-            # 0.61-0.91 of the music's bar rate, but they are also tracks where
-            # aubio delivers only 0.58-0.84 of the beats, so the slow grid is
-            # mostly the stream's and only partly this rule's.
+            # feedback loop with a local rule.
             self._periods.clear()
             return [], gap
         if not self._periods:
@@ -507,8 +490,8 @@ class BarPhaseHMM:
         """Take one beat into the trellis and emit whatever that makes final."""
         emission = self._emission(score)
         if self._delta is None:
-            # Uniform over the cycle: an aubio stream starts wherever the
-            # analysis started, which says nothing at all about the bar.
+            # Uniform over the cycle: a beat stream starts wherever the analysis
+            # started, which says nothing at all about the bar.
             seed = (np.zeros(self.cycle) if self._tail is None
                     else self._transition[self._tail])
             self._delta = seed + emission
@@ -624,8 +607,8 @@ def decode_track(sidecar_npz, condition: str, params: PhaseParams | None = None,
                  *, refine: bool = False) -> list:
     """One track, one input condition, end to end.
 
-    ``condition`` selects which beat stream drives the decode -- ``aubio`` is the
-    live condition the gates bind to, ``expert`` the diagnostic upper bound.  At
+    ``condition`` selects which beat stream drives the decode -- ``live`` is the
+    production pipeline's own, ``expert`` the diagnostic upper bound.  At
     ``subdivision = 2`` the candidate grid is built here and its evidence is
     aggregated off the sidecar's stored activation curve, so a half-beat decode
     needs no second inference pass.  Pure numpy over a cached array, which is what

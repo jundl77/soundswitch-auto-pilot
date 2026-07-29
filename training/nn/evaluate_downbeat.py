@@ -3,22 +3,22 @@
 Three questions, in the order the plan asks them, because the second and third
 are only readable in the light of the first.
 
-**1. What does aubio's beat stream do to the bar grid?**  The decoder can only
-place a downbeat where its candidate grid has an instant, so the live condition
-is bounded by aubio before any model or decoder is involved.  ``alignment_row``
-measures the stream against the annotator's (offset, jitter, missed and extra
-beats, tempo ratio) and ``reach_labels`` splits the *unreachable* downbeats into
-named causes -- outside the stream, a dropout, a tempo mismatch, a steady
-off-grid lock, or an unsteady one.  That split is the evidence any decision about
-this component rests on: a shortfall caused by aubio dropping beats and a
-shortfall caused by aubio locking a quarter beat off have different fixes and
-neither of them is "tune the decoder harder".
+**1. What does the live beat stream do to the bar grid?**  The decoder can only
+place a downbeat where its candidate grid has an instant, so the live condition is
+bounded by its beat stream before any model or decoder is involved.
+``alignment_row`` measures that stream against the annotator's (offset, jitter,
+missed and extra beats, tempo ratio) and ``reach_labels`` splits the *unreachable*
+downbeats into named causes -- outside the stream, a dropout, a tempo mismatch, a
+steady off-grid lock, or an unsteady one.  That split is the evidence any decision
+about this component rests on: a shortfall caused by the stream dropping beats and
+one caused by it locking a quarter beat off have different fixes and neither of
+them is "tune the decoder harder".
 
 **2. How well does the decoder do inside that bound?**  ``score_downbeats`` is
 the plan's F1@+-70 ms through the committed matcher, ``phase_scores`` is bar-phase
 accuracy against the annotated grid, and stability gets *two* numbers because the
-obvious one is wrong: ``phase_flips`` at subdivision 2 counts every beat aubio
-inserts or drops, which is a property of the input, not of the grid.  So the two
+obvious one is wrong: ``phase_flips`` at subdivision 2 counts every beat the
+stream inserts or drops, which is a property of the input, not of the grid.  So the two
 reported are ``beat_anchored_flips`` (did the bar position advance by exactly one
 beat between consecutive real beats) and ``interval_deviation`` (do the emitted
 downbeats keep a steady spacing).  The first is the plan's unit -- flips per
@@ -82,6 +82,12 @@ SPLITS_FILE = "splits.json"
 # whether the budget should move -- but a selected config has to fit.
 LOOK_AHEAD_BUDGET_BEATS = 4
 
+# Downbeat F1 a reachability ceiling has to clear to be worth decoding on.  The
+# plan's original 0.85 is retired: it sits above published offline SOTA on general
+# music.  Recommended replacement, at a median of two phase flips per track or
+# fewer (owner decisions #81/#133).
+GATE_F1 = 0.55
+
 # A predicted bar interval this far from the track's own running median is a
 # grid instability rather than a tempo ride.  15 % of a bar at 128 BPM is 280 ms
 # -- far larger than any real tempo change between adjacent bars, far smaller
@@ -116,7 +122,7 @@ REACHED = ("beat", "midpoint", "coast")
 # the two have different fixes and a histogram that merged them would hide that.
 RESIDUAL_BINS = tuple(round(0.05 * step, 2) for step in range(11))
 
-CONDITIONS = ("aubio", "expert")
+CONDITIONS = ("live", "expert")
 
 
 # --------------------------------------------------------------------------- #
@@ -254,31 +260,32 @@ def _iqr(values) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# 1. Alignment: what aubio does to the grid
+# 1. Alignment: what the live stream does to the grid
 # --------------------------------------------------------------------------- #
 
 
-def alignment_row(aubio, expert, downbeats, *,
+def alignment_row(live, expert, downbeats, *,
                   tolerance: float = TOLERANCE_SEC) -> dict:
-    """One track's aubio-vs-expert beat alignment.
+    """One track's live-vs-expert beat alignment.
 
     ``median_abs_phase`` is the *lock* -- how far off a beat the stream sits, in
     beats -- and ``phase_iqr`` is the *jitter* around it.  Reporting both is what
-    separates "aubio is half a beat off, steadily" (a state a denser grid can
-    occupy) from "aubio is all over the place" (which nothing downstream fixes).
+    separates "the stream is half a beat off, steadily" (a state a denser grid can
+    occupy) from "the stream is all over the place" (which nothing downstream
+    fixes).
     """
-    aubio = np.asarray(aubio, dtype=np.float64).reshape(-1)
+    live = np.asarray(live, dtype=np.float64).reshape(-1)
     expert = np.asarray(expert, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
 
-    offsets = nearest_offset(aubio, expert)
+    offsets = nearest_offset(live, expert)
     periods = local_periods(expert)
-    matched = nearest_index(aubio, expert)
-    period_at = periods[matched] if expert.size and aubio.size else np.zeros(0)
-    phases = fold_to_beats(offsets, period_at) if aubio.size else np.zeros(0)
+    matched = nearest_index(live, expert)
+    period_at = periods[matched] if expert.size and live.size else np.zeros(0)
+    phases = fold_to_beats(offsets, period_at) if live.size else np.zeros(0)
 
-    reverse = nearest_offset(expert, aubio)
-    to_downbeats = nearest_offset(downbeats, aubio)
+    reverse = nearest_offset(expert, live)
+    to_downbeats = nearest_offset(downbeats, live)
 
     def share(values) -> float:
         values = np.asarray(values, dtype=np.float64)
@@ -288,24 +295,24 @@ def alignment_row(aubio, expert, downbeats, *,
         return float(np.mean(np.abs(finite) <= tolerance))
 
     return {
-        "n_aubio": int(aubio.size),
+        "n_live": int(live.size),
         "n_expert": int(expert.size),
         "n_downbeats": int(downbeats.size),
-        "median_offset_sec": float(np.nanmedian(offsets)) if aubio.size else float("nan"),
-        "median_abs_phase": float(np.nanmedian(np.abs(phases))) if aubio.size else float("nan"),
-        "phase_iqr": _iqr(np.abs(phases)) if aubio.size else float("nan"),
-        "aubio_on_grid": share(offsets),
+        "median_offset_sec": float(np.nanmedian(offsets)) if live.size else float("nan"),
+        "median_abs_phase": float(np.nanmedian(np.abs(phases))) if live.size else float("nan"),
+        "phase_iqr": _iqr(np.abs(phases)) if live.size else float("nan"),
+        "live_on_grid": share(offsets),
         "expert_covered": share(reverse),
         "downbeat_on_beats": share(to_downbeats),
-        "median_ibi_aubio": float(np.median(np.diff(aubio))) if aubio.size > 1 else float("nan"),
+        "median_ibi_live": float(np.median(np.diff(live))) if live.size > 1 else float("nan"),
         "median_ibi_expert": float(np.median(np.diff(expert))) if expert.size > 1 else float("nan"),
-        "ibi_ratio": (float(np.median(np.diff(aubio)) / np.median(np.diff(expert)))
-                      if aubio.size > 1 and expert.size > 1 else float("nan")),
-        "extra_beats": int(aubio.size) - int(expert.size),
+        "ibi_ratio": (float(np.median(np.diff(live)) / np.median(np.diff(expert)))
+                      if live.size > 1 and expert.size > 1 else float("nan")),
+        "extra_beats": int(live.size) - int(expert.size),
     }
 
 
-def _tempo_residual(aubio_period: float, expert_period: float) -> float:
+def _tempo_residual(live_period: float, expert_period: float) -> float:
     """Relative period error after folding onto the nearest half/double octave.
 
     A stream at exactly half or double the annotated tempo still has beats *on*
@@ -313,9 +320,9 @@ def _tempo_residual(aubio_period: float, expert_period: float) -> float:
     be counted as one.  What this catches is a pulse that fits no octave of the
     grid: a drift, a triplet feel, a mistracked tempo.
     """
-    if not (np.isfinite(aubio_period) and np.isfinite(expert_period)) or expert_period <= 0:
+    if not (np.isfinite(live_period) and np.isfinite(expert_period)) or expert_period <= 0:
         return float("nan")
-    ratio = aubio_period / expert_period
+    ratio = live_period / expert_period
     return float(min(abs(ratio / multiple - 1.0) for multiple in TEMPO_MULTIPLES))
 
 
@@ -348,8 +355,8 @@ def bar_rate_ratio(beat_times, downbeats, params: PhaseParams | None = None) -> 
     **The second ceiling, and the one nobody looked for.**  A cyclic decoder that
     never flips emits exactly one downbeat per cycle, so the *rate* of the
     emitted bar grid is set by the rate of the candidate stream, not by the
-    music.  If aubio produces more candidates per bar than the cycle is long --
-    by inserting beats, or by the decoder coasting extra ones through a gap --
+    music.  If the stream produces more candidates per bar than the cycle is long
+    -- by inserting beats, or by the decoder coasting extra ones through a gap --
     the grid runs fast and the surplus downbeats are false positives no phase
     model can retract.  Above 1 this bounds precision at ``coverage / ratio`` for
     a flip-free decode, which is what the plan's stability gate demands.
@@ -362,7 +369,7 @@ def bar_rate_ratio(beat_times, downbeats, params: PhaseParams | None = None) -> 
     return float(decoder_instants(beat_times, params).size / (cycle * downbeats.size))
 
 
-def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
+def reach_labels(live, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
                  params: PhaseParams | None = None) -> list:
     """Why each annotated downbeat is, or is not, reachable from this beat stream.
 
@@ -384,32 +391,32 @@ def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
     implementation of the coasting rule.
     """
     params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
-    aubio = np.asarray(aubio, dtype=np.float64).reshape(-1)
+    live = np.asarray(live, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     expert = np.asarray(expert, dtype=np.float64).reshape(-1)
     if downbeats.size == 0:
         return []
-    if aubio.size == 0:
+    if live.size == 0:
         return ["no_coverage"] * downbeats.size
 
-    dense = candidate_grid(aubio, params.subdivision)
-    coasted = decoder_instants(aubio, params)
+    dense = candidate_grid(live, params.subdivision)
+    coasted = decoder_instants(live, params)
 
-    to_beat = np.abs(nearest_offset(downbeats, aubio))
+    to_beat = np.abs(nearest_offset(downbeats, live))
     to_dense = np.abs(nearest_offset(downbeats, dense))
     to_coast = np.abs(nearest_offset(downbeats, coasted))
 
-    aubio_periods = local_periods(aubio)
-    aubio_pulse = pulse_period(aubio)
+    live_periods = local_periods(live)
+    live_pulse = pulse_period(live)
     expert_pulse = pulse_period(expert) if expert.size > 2 else None
-    near = nearest_index(downbeats, aubio)
-    # Signed residual of every aubio beat against the annotated grid, in beats:
+    near = nearest_index(downbeats, live)
+    # Signed residual of every live-stream beat against the annotated grid, in beats:
     # its local spread is what separates a lock from jitter.
     if expert.size:
-        beat_phase = fold_to_beats(nearest_offset(aubio, expert),
-                                   local_periods(expert)[nearest_index(aubio, expert)])
+        beat_phase = fold_to_beats(nearest_offset(live, expert),
+                                   local_periods(expert)[nearest_index(live, expert)])
     else:
-        beat_phase = np.full(aubio.size, np.nan)
+        beat_phase = np.full(live.size, np.nan)
 
     labels: list = []
     for index, moment in enumerate(downbeats):
@@ -424,14 +431,14 @@ def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
             continue
 
         anchor = int(near[index])
-        period = float(aubio_periods[anchor])
-        if (moment < aubio[0] - 0.5 * period) or (moment > aubio[-1] + 0.5 * period):
+        period = float(live_periods[anchor])
+        if (moment < live[0] - 0.5 * period) or (moment > live[-1] + 0.5 * period):
             labels.append("no_coverage")
             continue
 
-        after = int(np.searchsorted(aubio, moment))
-        gap = (aubio[after] - aubio[after - 1]
-               if 0 < after < aubio.size else float("nan"))
+        after = int(np.searchsorted(live, moment))
+        gap = (live[after] - live[after - 1]
+               if 0 < after < live.size else float("nan"))
         if np.isfinite(gap) and np.isfinite(period) and period > 0 \
                 and gap >= params.coast_ratio * period:
             labels.append("dropout")
@@ -439,13 +446,13 @@ def reach_labels(aubio, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
 
         expert_period = (float(expert_pulse[int(nearest_index([moment], expert)[0])])
                          if expert_pulse is not None else float("nan"))
-        residual = _tempo_residual(float(aubio_pulse[anchor]), expert_period)
+        residual = _tempo_residual(float(live_pulse[anchor]), expert_period)
         if np.isfinite(residual) and residual > TEMPO_TOLERANCE:
             labels.append("tempo_mismatch")
             continue
 
         lo = max(0, anchor - BEATS_PER_BAR * 2)
-        hi = min(aubio.size, anchor + BEATS_PER_BAR * 2 + 1)
+        hi = min(live.size, anchor + BEATS_PER_BAR * 2 + 1)
         labels.append("fraction_lock" if _iqr(beat_phase[lo:hi]) <= LOCK_IQR_BEATS
                       else "jitter")
     return labels
@@ -471,36 +478,36 @@ def subdivided_grid(beat_times, subdivision: int) -> np.ndarray:
     return np.append(dense.reshape(-1), times[-1])
 
 
-def grid_ceiling(aubio, downbeats, subdivision: int,
+def grid_ceiling(live, downbeats, subdivision: int,
                  tolerance: float = TOLERANCE_SEC) -> float:
     """Share of annotated downbeats a subdivided beat stream can even reach."""
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     if downbeats.size == 0:
         return 0.0
-    grid = subdivided_grid(aubio, subdivision)
+    grid = subdivided_grid(live, subdivision)
     if grid.size == 0:
         return 0.0
     return float(np.mean(np.abs(nearest_offset(downbeats, grid)) <= tolerance))
 
 
-def downbeat_residuals(aubio, downbeats, expert) -> np.ndarray:
-    """Where in the beat each annotated downbeat falls, relative to aubio's grid.
+def downbeat_residuals(live, downbeats, expert) -> np.ndarray:
+    """Where in the beat each annotated downbeat falls, relative to the live grid.
 
-    ``|position|`` in beats, folded into ``[0, 0.5]``: 0 is on an aubio beat,
+    ``|position|`` in beats, folded into ``[0, 0.5]``: 0 is on a live beat,
     0.5 is exactly between two.  The shape of this distribution is what says
     whether the unreachable downbeats are a quarter-beat lock, a triplet feel or
     a spread -- three different upstream problems that a single "not reachable"
     count cannot tell apart.
     """
-    aubio = np.asarray(aubio, dtype=np.float64).reshape(-1)
+    live = np.asarray(live, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     expert = np.asarray(expert, dtype=np.float64).reshape(-1)
     if downbeats.size == 0:
         return np.zeros(0, dtype=np.float64)
-    if aubio.size == 0 or expert.size < 2:
+    if live.size == 0 or expert.size < 2:
         return np.full(downbeats.size, np.nan, dtype=np.float64)
     periods = local_periods(expert)[nearest_index(downbeats, expert)]
-    return np.abs(fold_to_beats(nearest_offset(downbeats, aubio), periods))
+    return np.abs(fold_to_beats(nearest_offset(downbeats, live), periods))
 
 
 # --------------------------------------------------------------------------- #
@@ -549,7 +556,7 @@ def phase_scores(decisions, subdivision: int, expert_times, expert_phases,
 
     A candidate committed to an interstitial half-beat position has no bar phase
     at all (``bar_phase`` returns 0).  It is counted **wrong**, not skipped:
-    excluding it would flatter a decoder that locked onto aubio's off-beats.
+    excluding it would flatter a decoder that locked onto the stream's off-beats.
     """
     expert_times = np.asarray(expert_times, dtype=np.float64).reshape(-1)
     expert_phases = np.asarray(expert_phases, dtype=np.int64).reshape(-1)
@@ -581,7 +588,7 @@ def interval_deviation(downbeats, *, deviation: float = INTERVAL_DEVIATION,
     """Grid-direct stability: bar intervals that jump away from the running one.
 
     The metric review recommended, and the reason is worth keeping: at
-    subdivision 2 ``phase_flips`` counts every candidate aubio inserts or drops,
+    subdivision 2 ``phase_flips`` counts every candidate the stream inserts or drops,
     so a *perfectly steady* bar grid over a noisy beat stream can read as
     hundreds of flips.  This reads the emitted grid instead of its input.
     """
@@ -613,7 +620,7 @@ def beat_anchored_flips(decisions, subdivision: int) -> dict:
     as *stable*, which it is: it produces a perfectly steady bar grid.
 
     A pair with a coasted candidate between its members is a **break**, not a
-    flip.  Coasting is the decoder's answer to aubio dropping beats; counting the
+    flip.  Coasting is the decoder's answer to dropped beats; counting the
     phase it walks through as instability would charge the decoder for its input.
     """
     cycle = BEATS_PER_BAR * int(subdivision)
@@ -929,7 +936,7 @@ def evaluate_ids(data_dir, ids, truth: dict, condition: str, params: PhaseParams
 
 
 def run_alignment(data_dir, ids, truth: dict) -> dict:
-    """The corpus-wide aubio-vs-expert analysis and the residual decomposition."""
+    """The corpus-wide live-vs-expert analysis and the residual decomposition."""
     data_dir = Path(data_dir)
     rows: dict = {}
     reach: dict = {label: 0 for label in REACH_LABELS}
@@ -940,9 +947,9 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
     for youtube_id in ids:
         sidecar = read_sidecar(sidecar_path(data_dir, youtube_id))
         beat_times, _phases, downbeats = truth[youtube_id]
-        aubio = sidecar["aubio_beat_time"]
-        rows[youtube_id] = alignment_row(aubio, beat_times, downbeats)
-        labels = reach_labels(aubio, downbeats, beat_times)
+        live = sidecar["live_beat_time"]
+        rows[youtube_id] = alignment_row(live, beat_times, downbeats)
+        labels = reach_labels(live, downbeats, beat_times)
         counts = {label: labels.count(label) for label in REACH_LABELS}
         per_track_reach[youtube_id] = counts
         for label, count in counts.items():
@@ -953,16 +960,16 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
             "grid": (counts["beat"] + counts["midpoint"]) / len(labels) if labels else 0.0,
             "decoder": found / len(labels) if labels else 0.0,
             # Bounds only: nothing decodes on these grids today (see subdivided_grid).
-            "quarter_bound": grid_ceiling(aubio, downbeats, 4),
-            "eighth_bound": grid_ceiling(aubio, downbeats, 8),
+            "quarter_bound": grid_ceiling(live, downbeats, 4),
+            "eighth_bound": grid_ceiling(live, downbeats, 8),
         }
         per_track_rate[youtube_id] = {
             "half_beat_grid": bar_rate_ratio(
-                aubio, downbeats, PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))),
+                live, downbeats, PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))),
             "beat_grid": bar_rate_ratio(
-                aubio, downbeats, PhaseParams(subdivision=1, lag_beats=lag_for(1, 1))),
+                live, downbeats, PhaseParams(subdivision=1, lag_beats=lag_for(1, 1))),
         }
-        for label, residual in zip(labels, downbeat_residuals(aubio, downbeats, beat_times)):
+        for label, residual in zip(labels, downbeat_residuals(live, downbeats, beat_times)):
             if np.isfinite(residual):
                 residuals[label].append(float(residual))
     total = sum(reach.values())
@@ -977,7 +984,7 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
                         if total else 0.0,
         "ceiling_decoder": sum(reach[label] for label in REACHED) / total if total else 0.0,
     }
-    for key in ("median_abs_phase", "phase_iqr", "aubio_on_grid", "expert_covered",
+    for key in ("median_abs_phase", "phase_iqr", "live_on_grid", "expert_covered",
                 "downbeat_on_beats", "ibi_ratio", "median_offset_sec"):
         values = np.asarray([row[key] for row in rows.values()], dtype=np.float64)
         finite = values[np.isfinite(values)]
@@ -989,7 +996,8 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
             values, weights=[row["n_downbeats"] for row in rows.values()]))
         summary[f"ceiling_{key}_deciles"] = [
             float(np.percentile(values, share)) for share in range(0, 101, 10)]
-        summary[f"ceiling_{key}_tracks_at_85"] = int(np.count_nonzero(values >= 0.85))
+        summary[f"ceiling_{key}_tracks_at_gate"] = int(
+            np.count_nonzero(values >= GATE_F1))
     downbeat_total = sum(row["n_downbeats"] for row in rows.values())
     for key in ("half_beat_grid", "beat_grid"):
         values = np.asarray([row[key] for row in per_track_rate.values()],
@@ -1041,17 +1049,17 @@ def sweep_rows(data_dir, ids, truth: dict, specs, *, workers: int = 1) -> list:
 
 
 def naive_grids(data_dir, ids) -> dict:
-    """Bars from every fourth aubio beat -- the show's null hypothesis.
+    """Bars from every fourth beat of the live stream -- the show's null.
 
     The engine could do this today with no model at all: take the beat stream,
     call every fourth one a bar line.  It is wrong about *phase* by construction
-    (it starts wherever aubio started) but it is right about *rate* whenever
-    aubio is, so it is the baseline any claim about the downbeat model's value to
-    a show has to clear.  A number without its null is a decoration.
+    (it starts wherever the stream started) but it is right about *rate* whenever
+    the stream is, so it is the baseline any claim about the downbeat model's
+    value to a show has to clear.  A number without its null is a decoration.
     """
     data_dir = Path(data_dir)
     return {youtube_id: read_sidecar(sidecar_path(data_dir, youtube_id))
-                        ["aubio_beat_time"][::BEATS_PER_BAR]
+                        ["live_beat_time"][::BEATS_PER_BAR]
             for youtube_id in ids}
 
 
@@ -1214,7 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", default=None)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--align", action="store_true",
-                      help="corpus aubio-vs-expert alignment + residual decomposition")
+                      help="corpus live-vs-expert alignment + residual decomposition")
     mode.add_argument("--sweep", action="store_true",
                       help="the val lever sweep (flip penalty x look-ahead x refine)")
     mode.add_argument("--freeze", action="store_true",
@@ -1302,10 +1310,10 @@ def main(argv: list | None = None) -> int:
                    # a pre-registration that does not say which config is the
                    # headline is not a pre-registration.
                    "role": args.role,
-                   "chosen_on": "val", "condition": "aubio",
+                   "chosen_on": "val", "condition": "live",
                    "refine": bool(args.refine),
                    "look_ahead_beats": args.look_ahead,
-                   **config_fingerprint(params, "aubio", refine=args.refine)}
+                   **config_fingerprint(params, "live", refine=args.refine)}
         out = Path(args.config) if args.config else model_dir(data_dir) / CONFIG_FILE
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1341,7 +1349,7 @@ def main(argv: list | None = None) -> int:
         for youtube_id in ids:
             sidecar = read_sidecar(sidecar_path(data_dir, youtube_id))
             predicted[youtube_id] = downbeat_times(
-                decode_evidence(sidecar, "aubio", params, refine=refine))
+                decode_evidence(sidecar, "live", params, refine=refine))
         chains = list(zip(args.section_dir.split(","),
                           args.section_models.split(",")))
         naive = naive_grids(data_dir, ids)

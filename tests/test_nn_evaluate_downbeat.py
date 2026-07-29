@@ -4,14 +4,15 @@ This module produces the numbers a gate is read against, so the failure it must
 not have is a *plausible* number.  Three shapes of that, and one test group each:
 
 **A ceiling attributed to the wrong cause.**  The live condition is bounded by
-where aubio puts beats, and the whole owner decision rests on splitting that
-bound into dropped beats, other-fraction locks, tempo mismatch and jitter.  Each
+where its beat stream puts beats, and the whole owner decision rests on splitting
+that bound into dropped beats, other-fraction locks, tempo mismatch and jitter.  Each
 category is therefore tested against a beat stream *built* to exhibit exactly
 that failure and nothing else -- a classifier that answered "fraction lock" to
 everything would pass any single-case test.
 
 **A stability metric that measures the input instead of the grid.**
-``phase_flips`` at subdivision 2 counts aubio's own insertions and deletions, so
+``phase_flips`` at subdivision 2 counts the stream's own insertions and
+deletions, so
 this module reports the two metrics review recommended instead.  Both are tested
 for the property that matters: a *stable* grid on a *noisy* beat stream must read
 as stable.
@@ -127,7 +128,7 @@ def test_the_rolling_median_follows_a_tempo_ride_instead_of_averaging_it():
 
 
 # --------------------------------------------------------------------------- #
-# Alignment: what aubio does to the grid
+# Alignment: what the live stream does to the grid
 # --------------------------------------------------------------------------- #
 
 
@@ -135,7 +136,7 @@ def test_a_perfectly_aligned_beat_stream_reports_no_offset_and_full_coverage():
     expert = beats(64)
     row = alignment_row(expert, expert, expert[::BEATS_PER_BAR])
     assert row["median_offset_sec"] == pytest.approx(0.0)
-    assert row["aubio_on_grid"] == pytest.approx(1.0)
+    assert row["live_on_grid"] == pytest.approx(1.0)
     assert row["expert_covered"] == pytest.approx(1.0)
     assert row["ibi_ratio"] == pytest.approx(1.0)
 
@@ -146,7 +147,7 @@ def test_a_half_beat_locked_stream_is_reported_as_a_lock_not_as_jitter():
     row = alignment_row(expert + 0.5 * PERIOD, expert, expert[::BEATS_PER_BAR])
     assert abs(row["median_abs_phase"]) == pytest.approx(0.5, abs=0.01)
     assert row["phase_iqr"] == pytest.approx(0.0, abs=0.01)
-    assert row["aubio_on_grid"] == pytest.approx(0.0, abs=0.02)
+    assert row["live_on_grid"] == pytest.approx(0.0, abs=0.02)
 
 
 def test_a_jittered_stream_is_reported_as_spread_around_zero():
@@ -156,15 +157,15 @@ def test_a_jittered_stream_is_reported_as_spread_around_zero():
                         expert[::BEATS_PER_BAR])
     assert row["median_offset_sec"] == pytest.approx(0.0, abs=0.01)
     assert row["phase_iqr"] > 0.02
-    assert row["aubio_on_grid"] > 0.9
+    assert row["live_on_grid"] > 0.9
 
 
 def test_a_half_tempo_stream_is_visible_in_the_ibi_ratio():
     expert = beats(64)
     row = alignment_row(expert[::2], expert, expert[::BEATS_PER_BAR])
     assert row["ibi_ratio"] == pytest.approx(2.0, abs=0.01)
-    # Every aubio beat is on the grid; half the expert beats are uncovered.
-    assert row["aubio_on_grid"] == pytest.approx(1.0)
+    # Every live-stream beat is on the grid; half the expert beats are uncovered.
+    assert row["live_on_grid"] == pytest.approx(1.0)
     assert row["expert_covered"] == pytest.approx(0.5, abs=0.02)
 
 
@@ -181,25 +182,25 @@ def test_an_aligned_stream_reaches_every_downbeat_on_the_beat_grid():
 
 def test_a_half_beat_lock_is_unreachable_on_beats_and_reached_by_midpoints():
     expert = beats(64)
-    aubio = expert + 0.5 * PERIOD
-    labels = reach_labels(aubio, expert[::BEATS_PER_BAR], expert)
-    # Every interior downbeat sits exactly on a midpoint of the aubio stream.
+    live = expert + 0.5 * PERIOD
+    labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
+    # Every interior downbeat sits exactly on a midpoint of the live stream.
     assert labels.count("midpoint") >= 14
     assert "beat" not in labels
 
 
 def test_a_quarter_beat_lock_is_reachable_by_neither_and_named_as_a_fraction():
     expert = beats(64)
-    aubio = expert + 0.25 * PERIOD          # 117 ms -- outside the 70 ms tolerance
-    labels = reach_labels(aubio, expert[::BEATS_PER_BAR], expert)
+    live = expert + 0.25 * PERIOD          # 117 ms -- outside the 70 ms tolerance
+    labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert set(labels) <= {"fraction_lock"}
     assert labels.count("fraction_lock") == len(labels)
 
 
 def test_a_dropout_the_decoder_cannot_coast_is_named_a_dropout():
     expert = beats(128)
-    aubio = np.concatenate([expert[:20], expert[60:]])     # 40 beats missing
-    labels = reach_labels(aubio, expert[::BEATS_PER_BAR], expert)
+    live = np.concatenate([expert[:20], expert[60:]])     # 40 beats missing
+    labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert "dropout" in labels
     # and the reached ones are still reached: a hole is local, not global.
     assert "beat" in labels
@@ -213,8 +214,8 @@ def test_a_dropout_short_enough_to_coast_is_not_charged_as_a_miss():
     condition actually has to a cause it does not have.
     """
     expert = beats(64)
-    aubio = np.concatenate([expert[:20], expert[26:]])     # 6 beats missing
-    labels = reach_labels(aubio, expert[::BEATS_PER_BAR], expert)
+    live = np.concatenate([expert[:20], expert[26:]])     # 6 beats missing
+    labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert "dropout" not in labels
     assert "coast" in labels
 
@@ -230,8 +231,8 @@ def test_a_drifting_tempo_is_named_a_tempo_mismatch():
     # 3 % fast: the offset slides through every fraction of the beat, so no fixed
     # candidate grid can hold it.  This is the category the plan calls tempo drift.
     expert = beats(96)
-    aubio = beats(96, period=PERIOD * 1.03)
-    labels = reach_labels(aubio, expert[::BEATS_PER_BAR], expert)
+    live = beats(96, period=PERIOD * 1.03)
+    labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert labels.count("tempo_mismatch") > labels.count("fraction_lock")
 
 
@@ -307,12 +308,12 @@ def test_a_quarter_beat_lock_is_unreachable_at_two_and_reachable_at_four():
     from nn.evaluate_downbeat import grid_ceiling
 
     expert = beats(64)
-    aubio = expert + 0.25 * PERIOD
+    live = expert + 0.25 * PERIOD
     # Interior downbeats only: the first one lies before the shifted stream
     # starts, which is a coverage question rather than a grid-density one.
     downbeats = expert[::BEATS_PER_BAR][1:]
-    assert grid_ceiling(aubio, downbeats, 2) == pytest.approx(0.0)
-    assert grid_ceiling(aubio, downbeats, 4) == pytest.approx(1.0)
+    assert grid_ceiling(live, downbeats, 2) == pytest.approx(0.0)
+    assert grid_ceiling(live, downbeats, 4) == pytest.approx(1.0)
 
 
 def test_the_residual_says_where_in_the_beat_the_downbeat_fell():
@@ -382,7 +383,7 @@ def test_phase_accuracy_reports_its_own_coverage_rather_than_hiding_a_gap():
 
 def test_an_interstitial_position_is_scored_wrong_not_skipped():
     # At subdivision 2 a beat committed to a half-beat position has NO bar phase.
-    # Dropping those would flatter a decoder that locked to aubio's off-beats.
+    # Dropping those would flatter a decoder that locked to the stream's off-beats.
     expert = beats(32)
     phases = grid_phases(32)
     decisions = [PhaseDecision(i, t, 2, 1.0, False) for i, t in enumerate(expert)]
@@ -466,7 +467,7 @@ def test_beat_anchored_flips_agree_with_phase_flips_when_nothing_was_coasted():
 
 
 def test_a_stable_off_beat_lock_reads_as_stable_at_beat_rate():
-    # The whole point of the metric: aubio locked half a beat off produces a
+    # The whole point of the metric: a stream locked half a beat off produces a
     # perfectly steady bar grid, and `phase_flips` at subdivision 2 must not be
     # the number the gate reads.
     decisions = clean_decisions(128, subdivision=2, first_phase=2)
@@ -511,20 +512,20 @@ def test_predicted_edges_are_sorted_even_if_the_decoder_emitted_out_of_order():
 
 
 def test_the_config_fingerprint_changes_with_every_knob_that_changes_a_number():
-    base = config_fingerprint(PhaseParams(), "aubio", refine=False)
-    assert base != config_fingerprint(PhaseParams(flip_penalty=3.0), "aubio", refine=False)
+    base = config_fingerprint(PhaseParams(), "live", refine=False)
+    assert base != config_fingerprint(PhaseParams(flip_penalty=3.0), "live", refine=False)
     assert base != config_fingerprint(PhaseParams(), "expert", refine=False)
-    assert base != config_fingerprint(PhaseParams(), "aubio", refine=True)
-    assert base == config_fingerprint(PhaseParams(), "aubio", refine=False)
+    assert base != config_fingerprint(PhaseParams(), "live", refine=True)
+    assert base == config_fingerprint(PhaseParams(), "live", refine=False)
 
 
 def test_the_fingerprint_is_a_readable_record_not_only_a_hash():
     record = config_fingerprint(PhaseParams(flip_penalty=3.0, subdivision=2,
-                                            lag_beats=8), "aubio", refine=True)
+                                            lag_beats=8), "live", refine=True)
     payload = json.loads(record["config"])
     assert payload["flip_penalty"] == 3.0
     assert payload["subdivision"] == 2
-    assert payload["condition"] == "aubio"
+    assert payload["condition"] == "live"
     assert payload["refine"] is True
     assert len(record["sha256"]) == 64
 
@@ -676,7 +677,7 @@ def test_decoding_from_memory_is_the_shipped_decode_track_exactly(tmp_path):
     path = tmp_path / "track.npz"
     np.savez(path, activation=activation, frame_sec=np.float64(frame_sec),
              t0=np.float64(frame_sec), model_sha=np.str_("test"),
-             aubio_beat_time=times, aubio_beat_score=np.full(times.size, 0.3),
+             live_beat_time=times, live_beat_score=np.full(times.size, 0.3),
              expert_beat_time=times, expert_beat_score=np.full(times.size, 0.3))
 
     sidecar = read_sidecar(path)
@@ -684,8 +685,8 @@ def test_decoding_from_memory_is_the_shipped_decode_track_exactly(tmp_path):
         for refine in (False, True):
             params = PhaseParams(lag_beats=lag_for(4, subdivision),
                                  subdivision=subdivision, flip_penalty=3.0)
-            assert (decode_evidence(sidecar, "aubio", params, refine=refine)
-                    == decode_track(path, "aubio", params, refine=refine))
+            assert (decode_evidence(sidecar, "live", params, refine=refine)
+                    == decode_track(path, "live", params, refine=refine))
 
 
 def test_the_candidate_grid_the_ceiling_is_measured_on_is_the_one_that_decodes():

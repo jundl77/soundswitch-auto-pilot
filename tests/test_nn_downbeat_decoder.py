@@ -164,9 +164,9 @@ def test_aggregation_takes_the_peak_of_the_window_not_its_mean():
 
 @pytest.mark.parametrize("jitter_ms", [-50, -25, 0, 25, 50])
 def test_the_aggregation_window_absorbs_beat_timing_jitter(jitter_ms):
-    """Aubio's instants wobble against the annotator's by tens of milliseconds.
-    A window that only finds the peak on an exact instant is a window that only
-    works on the expert grid."""
+    """A tracker's instants wobble against the annotator's by tens of
+    milliseconds.  A window that only finds the peak on an exact instant is a
+    window that only works on the expert grid."""
     frame_sec = 0.04644                      # the real mel grid, where it matters
     activation = np.zeros(400)
     downbeats = np.arange(20, 380, 32)
@@ -383,15 +383,15 @@ def test_reset_makes_a_used_decoder_indistinguishable_from_a_fresh_one():
 
 
 # --------------------------------------------------------------------------- #
-# Coasting through aubio's dropouts
+# Coasting through live's dropouts
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("dropped", [1, 2, 3, 4, 7])
 def test_phase_survives_a_dropout_and_the_gap_is_coasted(dropped):
-    """Aubio loses beats under heavy sidechain compression.  The phase after the
-    gap must still be the true one, and the missing instants must be filled by
-    tempo so the bar grid does not simply stop."""
+    """Beat trackers lose beats under heavy sidechain compression.  The phase
+    after the gap must still be the true one, and the missing instants must be
+    filled by tempo so the bar grid does not simply stop."""
     n_beats = 64
     times = beat_grid(n_beats)
     scores = clean_scores(n_beats)
@@ -457,17 +457,14 @@ def test_the_phase_re_locks_after_a_discontinuity():
     assert tail == [1 + (index - 1) % BEATS_PER_BAR for index in range(88, 96)]
 
 
-def test_aubios_double_tempo_warmup_does_not_capture_the_tempo_estimate():
-    """The cold-start case, and it is not hypothetical -- it is on 40 % of val.
+def test_a_double_tempo_warmup_does_not_capture_the_tempo_estimate():
+    """The cold-start case, and it is not hypothetical.
 
-    Aubio's documented behaviour is that the first seconds of every track read at
-    double or triple tempo.  Those intervals seed the tempo window, every real
-    interval afterwards then looks like a dropout, and the period *coasting*
-    records is the wrong short one -- so the estimate never recovers and the
-    decoder fills the whole track with phantom candidates.  Measured on the val
-    corpus before this was fixed: 2x to 5x as many committed instants as the
-    music has, on 85 of 215 tracks, which is most of the live condition's
-    precision.
+    A beat tracker's first seconds can read at double or triple tempo.  Those
+    intervals seed the tempo window, every real interval afterwards then looks
+    like a dropout, and the period *coasting* records is the wrong short one --
+    so the estimate never recovers and the decoder fills the whole track with
+    phantom candidates.
 
     The rule that fixes it: coasting *every* arrival for as long as the longest
     single coastable gap means the estimate is wrong, not the music.
@@ -494,7 +491,7 @@ def test_an_ordinary_beat_stream_coasts_nothing():
 
 
 def test_jittered_beats_do_not_trigger_coasting():
-    """Aubio's instants wobble; a 10 % tempo wobble is not a dropout."""
+    """Real instants wobble; a 10 % tempo wobble is not a dropout."""
     rng = np.random.default_rng(7)
     times = beat_grid(80) + rng.uniform(-0.05, 0.05, 80)
     times = np.sort(times)
@@ -578,9 +575,9 @@ def test_subdivision_two_gives_the_bar_eight_positions():
 
 
 def test_a_half_beat_locked_beat_stream_is_recovered_at_subdivision_two():
-    """Aubio's measured failure: every emitted beat sits half a beat off the
-    music.  On its own grid the downbeat is unreachable; on the half-beat grid it
-    is simply an odd-numbered state the decoder can sit in."""
+    """The failure the half-beat grid exists for: every emitted beat sits half a
+    beat off the music.  On its own grid the downbeat is unreachable; on the
+    half-beat grid it is simply an odd-numbered state the decoder can sit in."""
     beats = beat_grid(64)
     truth = beats + TEMPO_SEC / 2.0                     # where the bars really are
     dense = candidate_grid(beats, 2)
@@ -725,16 +722,16 @@ def test_decode_track_at_subdivision_two_builds_its_own_candidates(tmp_path):
     subdivision-2 decode needs no second inference pass over the corpus."""
     beats = np.arange(1.0, 20.0, TEMPO_SEC)
     activation = np.zeros(500, dtype=np.float32)
-    # Put the real downbeats on the MIDPOINTS -- aubio's measured failure mode.
+    # Put the real downbeats on the MIDPOINTS -- live's measured failure mode.
     downbeats = 0.5 * (beats[:-1] + beats[1:])[::BEATS_PER_BAR]
     activation[nearest_frames(downbeats, 500, FRAME_SEC, FRAME_SEC)] = 0.95
     path = tmp_path / "track.npz"
     np.savez(path, activation=activation, frame_sec=np.float64(FRAME_SEC),
-             t0=np.float64(FRAME_SEC), aubio_beat_time=beats,
-             aubio_beat_score=np.full(len(beats), 0.02))
+             t0=np.float64(FRAME_SEC), live_beat_time=beats,
+             live_beat_score=np.full(len(beats), 0.02))
 
-    on_beat = decode_track(path, "aubio", PhaseParams(subdivision=1))
-    half = decode_track(path, "aubio", PhaseParams(subdivision=2))
+    on_beat = decode_track(path, "live", PhaseParams(subdivision=1))
+    half = decode_track(path, "live", PhaseParams(subdivision=2))
 
     # The on-beat grid cannot reach the downbeats at all; the half-beat one can.
     assert match_rate(downbeat_times(on_beat), downbeats) == 0.0
@@ -751,20 +748,20 @@ def write_sidecar(path, **arrays):
 
 def test_decode_track_reads_a_sidecar_and_decodes_the_named_condition(tmp_path):
     times = beat_grid(48)
-    path = write_sidecar(tmp_path / "track.npz", aubio_beat_time=times,
-                         aubio_beat_score=clean_scores(48),
+    path = write_sidecar(tmp_path / "track.npz", live_beat_time=times,
+                         live_beat_score=clean_scores(48),
                          expert_beat_time=times[::2],
                          expert_beat_score=np.full(24, np.nan))
 
-    decisions = decode_track(path, "aubio")
+    decisions = decode_track(path, "live")
 
     assert phases_of(decisions) == [1 + index % BEATS_PER_BAR for index in range(48)]
     assert len(decode_track(path, "expert")) == 24
 
 
 def test_decode_track_names_an_unknown_condition(tmp_path):
-    path = write_sidecar(tmp_path / "track.npz", aubio_beat_time=np.zeros(1),
-                         aubio_beat_score=np.zeros(1))
+    path = write_sidecar(tmp_path / "track.npz", live_beat_time=np.zeros(1),
+                         live_beat_score=np.zeros(1))
 
     with pytest.raises(KeyError, match="madmom"):
         decode_track(path, "madmom")

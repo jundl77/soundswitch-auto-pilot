@@ -9,11 +9,11 @@ SHA-256 every sidecar carries), slides it over each track exactly as the runtime
 would, and aggregates the per-frame activation onto beat instants from **both**
 input conditions:
 
-* ``aubio`` -- the production pipeline's own beat stream, lifted bit for bit out
+* ``live`` -- the production pipeline's own beat stream, lifted bit for bit out
   of each track's cached sim report.  This is the deployment condition and the
-  one the plan's gates bind to.
+  one a gate binds to.
 * ``expert`` -- the annotator's beat grid, the diagnostic upper bound.  The gap
-  between the two is the aubio-degradation cost.
+  between the two is the beat-source degradation cost.
 
 **The sidecar carries beat *instants*, never bar phase.**  The phase is truth,
 and truth does not ride into an artifact generated for the test split.  The
@@ -122,7 +122,8 @@ MODEL_META_FILE = "downbeat.onnx.json"
 SIDECAR_DIR = "downbeat_posteriors"
 MANIFEST_FILE = "manifest.json"
 
-# The Task 2 verdict: `downbeat_v1` epoch 20, val peak F1 0.5512.  Named here so
+# The Task 2 verdict: `downbeat_v1` epoch 20, val peak F1 0.5512 by peak-picking
+# against the annotated grid -- no beat stream involved.  Named here so
 # "the downbeat model" is one file rather than whichever run someone typed last.
 DEFAULT_RUN = "downbeat_v1"
 CHECKPOINT_FILE = BEST_CHECKPOINT
@@ -132,8 +133,10 @@ OUTPUT_NAME = "downbeat_logits"
 BATCH_AXIS = "batch"
 TIME_AXIS = "time"
 
-# The two input conditions, in the order they are written and reported.
-CONDITIONS = ("aubio", "expert")
+# The two input conditions, in the order they are written and reported.  ``live``
+# is named for its role: the pipeline's beat tracker has already changed once, and
+# a key named after a tracker would outlive the stream it described.
+CONDITIONS = ("live", "expert")
 
 
 def model_dir(data_dir) -> Path:
@@ -393,7 +396,7 @@ def lag_profile(activation: np.ndarray, frames, radius: int = 4) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
-def aubio_beat_times(data_dir, youtube_id: str) -> np.ndarray:
+def live_beat_times(data_dir, youtube_id: str) -> np.ndarray:
     """The production pipeline's own beat instants, out of the cached sim report.
 
     Not a re-derivation: this is the exact stream the live engine produces, which
@@ -500,7 +503,7 @@ def split_ids(data_dir, splits=("val", "test")) -> list:
 def _beat_streams(data_dir: Path, youtube_id: str, grid,
                   activation: np.ndarray) -> dict:
     streams: dict = {}
-    for condition, times in (("aubio", aubio_beat_times(data_dir, youtube_id)),
+    for condition, times in (("live", live_beat_times(data_dir, youtube_id)),
                              ("expert", expert_beat_times(grid))):
         scores, counts = aggregate_at_beats(activation, times, FRAME_SEC, FRAME_SEC)
         streams[condition] = (times, scores, counts)

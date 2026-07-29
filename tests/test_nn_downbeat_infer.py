@@ -22,8 +22,8 @@ index (so a one-frame shift is visible) or the position within the window (so a
 leaked window edge is visible).  Real inference cannot test this: every plausible
 bug still produces a plausible-looking activation.
 
-**The aggregation.**  Beat instants are jittered on purpose.  Aubio's beats do
-not land on the mel grid and do not land where the annotator put them, so a
+**The aggregation.**  Beat instants are jittered on purpose.  A tracker's beats
+do not land on the mel grid and do not land where the annotator put them, so a
 window that only works on exact instants is a window that only works offline.
 """
 import json
@@ -51,7 +51,7 @@ from nn.downbeat_infer import (  # noqa: E402
     MODEL_FILE,
     OUTPUT_NAME,
     TIME_AXIS,
-    aubio_beat_times,
+    live_beat_times,
     build_from_checkpoint,
     declared_axes,
     default_checkpoint,
@@ -415,7 +415,7 @@ def make_track(n_frames=300):
 
 def make_arrays(model_sha="a" * 64):
     track = make_track()
-    beats = {"aubio": (np.array([1.0, 2.0]), np.array([0.3, 0.7]),
+    beats = {"live": (np.array([1.0, 2.0]), np.array([0.3, 0.7]),
                        np.array([3, 3], dtype=np.int32)),
              "expert": (np.array([1.1]), np.array([0.5]),
                         np.array([3], dtype=np.int32))}
@@ -440,7 +440,7 @@ def test_a_sidecar_round_trips_both_conditions(tmp_path):
     save_sidecar(path, make_arrays())
 
     with np.load(path) as archive:
-        assert archive["aubio_beat_time"].tolist() == [1.0, 2.0]
+        assert archive["live_beat_time"].tolist() == [1.0, 2.0]
         assert archive["expert_beat_score"].tolist() == [0.5]
         assert float(archive["pos_weight"]) == pytest.approx(9.355)
         assert float(archive["frame_sec"]) == pytest.approx(FRAME_SEC)
@@ -456,15 +456,15 @@ def test_the_stored_beat_scores_are_reproducible_from_the_stored_curve(tmp_path)
     beats = np.arange(2.0, 20.0, 0.47)
     scores, counts = aggregate_at_beats(track.activation, beats, FRAME_SEC, FRAME_SEC)
     save_sidecar(path, sidecar_arrays(
-        track, {"aubio": (beats, scores, counts), "expert": (beats, scores, counts)},
+        track, {"live": (beats, scores, counts), "expert": (beats, scores, counts)},
         "a" * 64, 9.355))
 
     with np.load(path) as archive:
         again, _counts = aggregate_at_beats(archive["activation"],
-                                            archive["aubio_beat_time"],
+                                            archive["live_beat_time"],
                                             float(archive["frame_sec"]),
                                             float(archive["t0"]))
-        assert np.array_equal(again, archive["aubio_beat_score"])
+        assert np.array_equal(again, archive["live_beat_score"])
 
 
 def test_the_sidecar_carries_no_bar_phase():
@@ -493,11 +493,11 @@ def test_a_geometry_change_invalidates_the_cache(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# The aubio beat stream
+# The live beat stream
 # --------------------------------------------------------------------------- #
 
 
-def test_aubio_beats_are_read_from_the_cached_sim_report(tmp_path):
+def test_live_beats_are_read_from_the_cached_sim_report(tmp_path):
     """The live condition's input is the production pipeline's own beat stream,
     bit for bit -- not a re-derivation."""
     import gzip
@@ -508,7 +508,7 @@ def test_aubio_beats_are_read_from_the_cached_sim_report(tmp_path):
     with gzip.open(reports / "abc.json.gz", "wt", encoding="utf-8") as handle:
         json.dump(payload, handle)
 
-    assert aubio_beat_times(tmp_path, "abc").tolist() == [1.5, 2.0]
+    assert live_beat_times(tmp_path, "abc").tolist() == [1.5, 2.0]
 
 
 # --------------------------------------------------------------------------- #
@@ -587,7 +587,7 @@ def test_a_missing_report_names_the_track(tmp_path):
     (tmp_path / "reports").mkdir()
 
     with pytest.raises(RuntimeError, match="abc"):
-        aubio_beat_times(tmp_path, "abc")
+        live_beat_times(tmp_path, "abc")
 
 
 # --------------------------------------------------------------------------- #

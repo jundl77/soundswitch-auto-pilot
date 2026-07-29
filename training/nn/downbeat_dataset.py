@@ -3,10 +3,10 @@
     uv run python -m training.nn.downbeat_dataset --data-dir <corpus> --tracks 3
 
 The section head learns *what* is playing; this head learns *where the bar
-starts*, because that is the one thing the live engine cannot get from aubio.
-Aubio emits beat instants with no bar phase, so a decoder that commits at bar
-rate and a blackout that must land on the bar before a drop both have nothing to
-quantise to.  The supervision is the corpus's own expert beat grids
+starts*, because that is the one thing the live engine's beat tracker does not
+give it.  The tracker emits beat instants with no bar phase, so a decoder that
+commits at bar rate and a blackout that must land on the bar before a drop both
+have nothing to quantise to.  The supervision is the corpus's own expert beat grids
 (``annotations/beats/<key>.beat.csv``: a time and a ``downbeat`` phase in 1..4
 for every beat).
 
