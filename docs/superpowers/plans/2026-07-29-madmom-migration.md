@@ -133,15 +133,24 @@ to change and what it must not.
 
 - Commit `training/pipeline_digest.py`: runs the fast sim on a track and emits a
   compact digest — beat count and a hash of beat times (**allowed to change**),
-  hashes of the per-beat mel-derived columns and the report's schema keys
-  (**must not change**), plus intent/effect counts and wall-clock speed.
+  the report's schema keys and a filterbank fingerprint (**must not change**),
+  plus intent/effect counts and wall-clock speed.
 - Commit `tests/fixtures/pipeline_digest_baseline.json` for three tracks: the
   bundled sample plus two eval-set tracks whose audio is on disk.
 - Commit `tests/test_pipeline_digest.py` pinning the digest's own shape (unit),
-  and an integration test asserting the bundled track's **schema + mel-feature**
+  and an integration test asserting the bundled track's **schema + filterbank**
   digest against the baseline.
 
 Red first: the digest test must fail before the digest exists.
+
+**CORRECTED IN FLIGHT.** The first version made the *beat-sampled* filterbank
+columns the anchor. That cannot work: those columns are filterbank output read
+at beat instants, so a moved beat grid moves them by construction — the anchor
+would fail for the expected reason while a genuine filterbank regression hid
+inside it. Replaced by a whole-track **fixed-time-grid** fingerprint, which no
+beat source can perturb, plus a golden hash of the mel path generated from the
+base commit's own code. The beat-sampled section survives as reported evidence
+under the honest name `at_beats`, with a test pinning that it is not a gate.
 
 ### Task 2 — the dependency, pinned and justified
 
@@ -149,9 +158,16 @@ Red first: the digest test must fail before the digest exists.
   plus `extra-build-dependencies` (cython/numpy/setuptools). PyPI 0.16.1 cannot
   import on ≥3.10; git main can. Recorded with reasons in the file.
 - `uv.lock` regenerated.
-- `tests/test_madmom_contract.py`: asserts the exact online/causal API surface
-  the adapter depends on — `online=` accepted, `process_online` present,
-  forward-only decode, and that we never import an offline downbeat path.
+- `tests/test_madmom_contract.py`: asserts the online/causal properties of the
+  **constructed** processors — no bidirectional layer anywhere in the live path
+  (with a control proving madmom still builds them for the offline variants, so
+  the assertion cannot go vacuous), forward-only decode, the online frame
+  geometry, and that nothing under `lib/` names the offline downbeat tracker.
+
+**CORRECTED IN FLIGHT.** The first version asserted that `online=` was an
+accepted keyword — which cannot fail for the reason the test exists. An upgrade
+renaming or dropping the flag would have handed the live path bidirectional
+networks with every assertion still green.
 
 ### Task 3 — `lib/analyser/madmom_rhythm.py`, TDD
 
@@ -183,6 +199,19 @@ The beep keeps its 75 ms refractory, its click, and its `-d` wiring.
 
 Suite must be green here, with skip-count and collected-count unchanged and
 explained if not (#47/#59).
+
+### Task 5b — backpressure (added mid-flight by ruling)
+
+Live audio arrives at exactly 1x and the input side DROPS rather than queues, so
+falling behind costs audio rather than latency and nothing in the pipeline said
+so. `lib/analyser/drift_watchdog.py` measures lost lead over a rolling window
+(not cumulatively — dropped samples never arrive, so a cumulative measure would
+latch after the first hiccup) and sheds work cheapest-loss-first: section
+detection, then onsets, never beats.
+
+Both shed components clear their state on restore. That is not symmetry for its
+own sake — a component fed no audio during a gap holds buffers describing
+pre-gap music, and butt-joining post-gap audio onto them decodes a seam.
 
 ### Task 6 — determinism, cross-process
 
@@ -218,6 +247,12 @@ not quietly skipped.
 
 A `-d`-equivalent simulated run that writes the click-mixed monitor buffer and
 shows the clicks landing on the reported onsets. Evidence recorded.
+
+### Task 9b — soak (added mid-flight by ruling)
+
+30+ minutes of live capture at real-time pace, over multiple tracks played back
+to back so the run exercises song boundaries rather than none. Reports max
+backlog, per-buffer p99/tail, and every shed/recover transition.
 
 ### Task 10 — docs, grep proof, PR
 
