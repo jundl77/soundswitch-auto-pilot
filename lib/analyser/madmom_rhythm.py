@@ -151,8 +151,23 @@ class MadmomRhythm:
         self._beats = beat_stage if beat_stage is not None else _BeatStage()
         self._onsets = onset_stage if onset_stage is not None else _OnsetStage()
         self._onsets_enabled = True
+        self._onset_epoch = 0
         self._pending = np.zeros(0, dtype=np.float32)
         self._hops = 0
+
+    @property
+    def onsets_enabled(self) -> bool:
+        return self._onsets_enabled
+
+    @property
+    def onset_epoch(self) -> int:
+        """Increments whenever the onset chain's history is discarded.
+
+        A counter rather than a flag because consumers poll: a shed and a
+        restore between two polls would net out to "nothing happened", and the
+        consumer would go on treating a freshly-empty window as a measurement.
+        """
+        return self._onset_epoch
 
     @property
     def pending_latency_sec(self) -> float:
@@ -174,14 +189,18 @@ class MadmomRhythm:
             return
         if enabled:
             self._onsets.reset()
-        logging.warning('[madmom] onset detection %s',
-                        'restored' if enabled else 'SHED — density features go stale')
+            self._onset_epoch += 1
+        logging.warning(
+            '[madmom] onset detection %s',
+            'restored' if enabled
+            else 'SHED — density becomes UNMEASURED, not zero (see DENSITY_UNKNOWN)')
         self._onsets_enabled = enabled
 
     def reset(self) -> None:
         """Return to the constructed state without rebuilding the models."""
         self._beats.reset()
         self._onsets.reset()
+        self._onset_epoch += 1
         # The partial hop goes too: carrying it across a sound stop would splice
         # the tail of one track onto the head of the next inside one frame.
         self._pending = np.zeros(0, dtype=np.float32)

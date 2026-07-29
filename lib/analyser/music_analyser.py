@@ -39,6 +39,39 @@ _KICK_MIN_RMS = 0.005            # below this the track is silent and ratios are
 # Kick presence unknown — below any presence threshold, so it reads as absent.
 KICK_UNKNOWN = 1.0
 
+# Onset density unmeasured. Negative because a rate cannot be: no genuinely
+# sparse passage can be mistaken for one where the detector was not running.
+# Consumers must branch on it rather than average it — see `_classify_intent`.
+DENSITY_UNKNOWN = -1.0
+
+
+def density_is_known(density: float) -> bool:
+    return density >= 0.0
+
+
+class MelFilterbank:
+    """The aubio spectral front-end: FFT into a 40-band Slaney mel bank.
+
+    Extracted so it can be built and run on its own. Every trained model and
+    every spectral feature depends on this exact bank, so tooling that wants to
+    fingerprint it should not have to construct an analyser — and therefore load
+    an eight-model beat ensemble and a TensorFlow graph — to reach two aubio
+    objects.
+    """
+
+    BANDS = 40
+
+    def __init__(self, sample_rate: int, buffer_size: int):
+        self.sample_rate = sample_rate
+        self.win_s = buffer_size * 4
+        self.hop_s = buffer_size
+        self._pvoc = aubio.pvoc(self.win_s, self.hop_s)
+        self._filterbank = aubio.filterbank(self.BANDS, self.win_s)
+        self._filterbank.set_mel_coeffs_slaney(sample_rate)
+
+    def __call__(self, audio_signal: np.ndarray) -> np.ndarray:
+        return self._filterbank(self._pvoc(audio_signal))
+
 
 class MusicAnalyser:
     def __init__(self,
@@ -69,15 +102,24 @@ class MusicAnalyser:
         self._rhythm: MadmomRhythm = MadmomRhythm(self.sample_rate)
         self._drift: DriftWatchdog = DriftWatchdog(self.buffer_size / self.sample_rate,
                                                    clock=self._clock)
+        # Shed state is loop-scoped, like the watchdog that drives it: a song
+        # boundary says nothing about whether the loop is keeping up.
+        self._section_detection_enabled: bool = True
+        # Rhythm telemetry is loop-scoped too. Scheduling it per song meant that
+        # on a quiet input — where _reset_state() fires every 0.3 s — the
+        # heartbeat's deadline was pushed forward forever and it never printed,
+        # which is exactly when a heartbeat is worth having.
+        self._rhythm_log_at: datetime.datetime = self._clock.now() + _RHYTHM_LOG_INTERVAL
+        self._beats_since_log: int = 0
+        self._onsets_since_log: int = 0
+        self._last_beat_activation: float = 0.0
 
         self._reset_state()
 
     def _reset_state(self) -> None:
         # Spectral front-end (aubio): the FFT and the 40-band mel filterbank
         # every trained model depends on. Rhythm is madmom's — see _rhythm.
-        self.pvoc_o: aubio.pvoc = aubio.pvoc(self.win_s, self.hop_s)
-        self.energy_filter = aubio.filterbank(self.mel_filters, self.win_s)
-        self.energy_filter.set_mel_coeffs_slaney(self.sample_rate)
+        self.mel: MelFilterbank = MelFilterbank(self.sample_rate, self.buffer_size)
 
         # tracking state
         self._rhythm.reset()
@@ -93,11 +135,8 @@ class MusicAnalyser:
         # audio, stream time still measures the music the detector actually
         # heard, so the tempo estimate stays right about the track.
         self._beat_stream_times: deque = deque(maxlen=_BPM_BEAT_WINDOW)
-        # Rhythm-path telemetry, summarised on an interval rather than per event.
-        self._rhythm_log_at: datetime.datetime = self._clock.now() + _RHYTHM_LOG_INTERVAL
-        self._beats_since_log: int = 0
-        self._onsets_since_log: int = 0
-        self._last_beat_activation: float = 0.0
+        self._onset_epoch_seen: int = self._rhythm.onset_epoch
+        self._density_valid_from: datetime.datetime | None = None
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
         self.song_start_time: datetime.datetime = self._clock.now()
@@ -182,8 +221,27 @@ class MusicAnalyser:
         return self.is_playing
 
     def get_onset_density(self) -> float:
-        """Onsets per second over the last 1.5 seconds (rolling window)."""
+        """Onsets per second over the last 1.5 seconds, or DENSITY_UNKNOWN.
+
+        Unknown while the onset detector is shed, and for one full window after
+        it is restored: an empty rolling window would otherwise report a low
+        rate rather than a missing one, which is the same lie a second later.
+        """
         now = self._clock.now()
+        # Edge-detected here rather than at the call site that sheds, so the
+        # answer is right no matter who flipped the switch.
+        enabled = self._rhythm.onsets_enabled
+        if self._rhythm.onset_epoch != self._onset_epoch_seen:
+            self._onset_epoch_seen = self._rhythm.onset_epoch
+            self._onset_times.clear()
+            self._density_valid_from = now + datetime.timedelta(
+                seconds=_ONSET_DENSITY_WINDOW_SEC)
+        if not enabled:
+            return DENSITY_UNKNOWN
+        if self._density_valid_from is not None:
+            if now < self._density_valid_from:
+                return DENSITY_UNKNOWN
+            self._density_valid_from = None
         cutoff = now - datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC)
         while self._onset_times and self._onset_times[0] < cutoff:
             self._onset_times.popleft()
@@ -266,6 +324,7 @@ class MusicAnalyser:
         # not after it has already been paid for.
         shed = self._drift.observe()
         self._rhythm.set_onsets_enabled(shed < ShedLevel.ONSET_DETECTION)
+        self._set_section_detection_enabled(shed < ShedLevel.SECTION_DETECTION)
 
         rms = float(np.sqrt(np.mean(audio_signal ** 2)))
         self._rms_window.append(rms)
@@ -283,7 +342,7 @@ class MusicAnalyser:
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
             self._reset_state()
 
-        if (shed < ShedLevel.SECTION_DETECTION
+        if (self._section_detection_enabled
                 and self.yamnet_change_detector.detect_change(
                     audio_signal, self.get_song_current_duration())):
             await self.handler.on_section_change()
@@ -296,6 +355,19 @@ class MusicAnalyser:
 
         await self.handler.on_cycle()
         return audio_signal
+
+    def _set_section_detection_enabled(self, enabled: bool) -> None:
+        """Shed or restore YAMNet section detection (the drift watchdog's first
+        lever). Restoring clears the detector's buffers: while shed it was fed
+        no audio, so everything it holds describes music from before the gap.
+        """
+        if enabled == self._section_detection_enabled:
+            return
+        if enabled:
+            self.yamnet_change_detector.reset()
+        logging.warning('[yamnet] section detection %s',
+                        'restored' if enabled else 'SHED — no section changes will fire')
+        self._section_detection_enabled = enabled
 
     def _log_rhythm_state(self, now: datetime.datetime) -> None:
         """Periodic proof that rhythm is flowing, and where it stands.
@@ -346,6 +418,7 @@ class MusicAnalyser:
                         if self._beat_stream_times else 0.0)
             self._beat_stream_times.append(beat_time)
             self._beats_since_log += 1
+            density = self.get_onset_density()
             this_bpm: float = self.get_bpm()
             logging.debug(
                 f'[rhythm] beat #{self.beat_count + 1} @ {beat_time:.3f}s '
@@ -353,7 +426,11 @@ class MusicAnalyser:
                 f'activation={self._last_beat_activation:.3f}')
             bpm_changed: bool = self._has_bpm_changed(this_bpm)
             self.beat_count += 1
-            self._density_samples.append(self.get_onset_density())
+            # An unmeasured density must not enter the trend deque: the trend is
+            # a ratio of two halves of it, so a sentinel would come back out as
+            # a number.
+            if density_is_known(density):
+                self._density_samples.append(density)
             self._pending_kick_beats.append(self._buffer_index)
             if self._centroid_window:
                 self._beat_centroid_samples.append(self._centroid_window[-1])
@@ -391,8 +468,7 @@ class MusicAnalyser:
         return is_note
 
     def _compute_mel_energies(self, audio_signal: np.ndarray) -> np.ndarray:
-        spec = self.pvoc_o(audio_signal)
-        energies_out = self.energy_filter(spec)
+        energies_out = self.mel(audio_signal)
 
         self._mel_energies_window.append(energies_out.copy())
 

@@ -7,12 +7,13 @@
       "sub_bass_ratio_mean": 0.319193
     },
     "filterbank": {
-      "grid_hash": "926cf33c03efc6de",
+      "grid_hash": "b9fad5028f79360a",
+      "grid_seconds": 258,
       "grid_shape": [
-        120,
+        258,
         40
       ],
-      "grid_sum": 817.8878
+      "grid_sum": 1589.4661
     },
     "report_checksum": "5c61e6fd7f80075fb870c2fced906630ff56417bad0b6167055eb4825625f315",
     "rhythm": {
@@ -83,12 +84,13 @@
       "sub_bass_ratio_mean": 0.221019
     },
     "filterbank": {
-      "grid_hash": "dc3d02a61ce9cb3e",
+      "grid_hash": "d4349ee883d38263",
+      "grid_seconds": 165,
       "grid_shape": [
-        120,
+        165,
         40
       ],
-      "grid_sum": 540.861
+      "grid_sum": 766.9173
     },
     "report_checksum": "0ec9f471113a117ea9cfedca81f6f54329d49211c488dcc8477a4415e809b912",
     "rhythm": {
@@ -160,12 +162,13 @@
       "sub_bass_ratio_mean": 0.289734
     },
     "filterbank": {
-      "grid_hash": "540f4d69964da111",
+      "grid_hash": "f9d1208b07cef607",
+      "grid_seconds": 473,
       "grid_shape": [
-        120,
+        473,
         40
       ],
-      "grid_sum": 439.1949
+      "grid_sum": 1699.4833
     },
     "report_checksum": "ffd3669d8e7781e31215d7ff0c7de4f82a3959e0ac9c25442af38fb9980f793f",
     "rhythm": {

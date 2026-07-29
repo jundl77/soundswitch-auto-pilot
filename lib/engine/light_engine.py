@@ -8,7 +8,8 @@ from lib.engine.effect_definitions import LightIntent
 from lib.clients.midi_client import MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
-from lib.analyser.music_analyser import MusicAnalyser, KICK_UNKNOWN
+from lib.analyser.music_analyser import (MusicAnalyser, KICK_UNKNOWN,
+                                         density_is_known)
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clock import Clock, SYSTEM_CLOCK
 
@@ -92,7 +93,15 @@ def _classify_intent(
       where the spectral centroid climbs before onset density rises.
 
     ATMOSPHERIC is NOT detected here — fired via beat-absence timer in on_100ms_callback.
+
+    An UNMEASURED density holds the current intent. Every branch below is a
+    density comparison, so a sentinel run through them would not degrade — it
+    would classify, and always to the same answer (BREAKDOWN), for as long as
+    the detector was off. Holding is the honest degradation: the show keeps
+    doing what the last real measurement said.
     """
+    if not density_is_known(onset_density):
+        return current_intent if current_intent is not None else LightIntent.GROOVE
     # PEAK is sustained DROP — it keeps DROP's exit threshold.
     currently_drop      = current_intent in (LightIntent.DROP, LightIntent.PEAK)
     currently_breakdown = (current_intent == LightIntent.BREAKDOWN)
@@ -144,6 +153,13 @@ def _classify_windowed(
     """
     if not window:
         return LightIntent.GROOVE
+
+    # Beats recorded while the onset detector was shed carry no density. They
+    # are dropped rather than averaged in — a sentinel inside a median is just a
+    # low number — and a window with nothing measurable left holds the intent.
+    window = [entry for entry in window if density_is_known(entry[1])]
+    if not window:
+        return current_intent if current_intent is not None else LightIntent.GROOVE
 
     densities      = [entry[1] for entry in window]
     sub_bass_vals  = [entry[3] for entry in window]

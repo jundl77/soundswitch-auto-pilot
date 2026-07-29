@@ -189,8 +189,10 @@ uv run pytest                        # unit + integration (~6s)
   dynamic Bayesian network), BPM, and onsets. **Online mode only**, and that is
   load-bearing: madmom's offline decoders score better and cannot run live, so a
   number produced by one is a number the runtime can never reproduce. Chosen over
-  aubio on a measured decoded comparison rather than reputation -- see
-  `.superpowers/sdd/2026-07-28-f1-experiments/beat-source-sweep-addendum.md`.
+  aubio on a measured decoded comparison rather than reputation; the decision,
+  the measurements that drove each constant, and the deltas are in
+  `docs/superpowers/plans/2026-07-29-madmom-migration.md`, with the onset
+  operating point's raw sweep committed at `training/onset_operating_point.json`.
 - **Aubio** -- the 40-band Slaney mel filterbank and the FFT that feeds it, and
   nothing else. Every trained model and every spectral feature (kick strength,
   sub-bass ratio, centroid trend) is built on this exact bank, so it is held
@@ -265,6 +267,13 @@ Decisions that belong here rather than in the code:
   latency. The drift watchdog sheds section detection first and onsets second, and
   never beats. If a log shows sustained shedding, the box is too slow for the
   configuration -- that is the signal, not a nuisance warning.
+- **Shedding degrades explicitly, it does not fake a measurement.** A shed onset
+  detector reports density as UNKNOWN rather than zero, and the classifier holds
+  the current intent instead of classifying on a sentinel -- zero density would
+  otherwise pin the show to BREAKDOWN, with BUILDUP and DROP unreachable, and the
+  report rows would be indistinguishable from a genuinely sparse passage.
+  Restoring either shed component clears its buffers first, because everything
+  they hold describes audio from before the gap.
 - **madmom is CC BY-NC-SA** (models). Fine for a personal project per decisions #57;
   it forecloses a commercial turn without a JKU licence. aubio's GPL note stands.
 - **madmom is pinned to a git SHA**, not a release: the last PyPI release cannot be

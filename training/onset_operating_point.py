@@ -100,25 +100,35 @@ def one_track(args) -> dict:
     }
 
 
-def _test_ids(data_dir: Path) -> set[str]:
-    """The held-out split, read from the corpus's own manifest.
+# Splits this calibration must never read. `test` is the campaign holdout.
+# `eval_set` and `excluded_eval_set` are the benchmark tracks whose before/after
+# deltas are this PR's headline evidence — a constant tuned on them would make
+# that evidence a measurement of its own training set.
+_FORBIDDEN_SPLITS = ('test', 'eval_set', 'excluded_eval_set')
+
+
+def _forbidden_ids(data_dir: Path) -> set[str]:
+    """Every id this calibration is not allowed to read, from the corpus manifest.
 
     A missing manifest is fatal rather than empty: silently treating "I could
     not find the holdout list" as "there is no holdout" is how test contact
-    happens.
+    happens — it is how it happened here the first time.
     """
     manifest = data_dir / 'splits.json'
     if not manifest.exists():
         raise SystemExit(f'refusing to select tracks without {manifest} — '
-                         f'cannot prove the sample is test-free')
-    return set(json.loads(manifest.read_text()).get('test', []))
+                         f'cannot prove the sample is holdout-free')
+    splits = json.loads(manifest.read_text())
+    ids: set[str] = set()
+    for name in _FORBIDDEN_SPLITS:
+        ids |= set(splits.get(name, []))
+    return ids
 
 
-def _refuse_test_contact(paths: list[str], data_dir: Path) -> None:
-    held_out = _test_ids(data_dir)
-    offenders = [p for p in paths if Path(p).stem in held_out]
+def _refuse_holdout_contact(paths: list[str], data_dir: Path) -> None:
+    offenders = sorted(p for p in paths if Path(p).stem in _forbidden_ids(data_dir))
     if offenders:
-        raise SystemExit(f'refusing: test-split tracks in the sample {offenders}')
+        raise SystemExit(f'refusing: held-out tracks in the sample {offenders}')
 
 
 def main() -> None:
@@ -142,15 +152,21 @@ def main() -> None:
     # Not the eval set — that list lives on another branch and this measurement
     # must not depend on it.
     #
-    # Test ids are REFUSED, not filtered quietly. The first version of this
-    # script had no such guard, and the sorted-and-spaced selection duly picked
-    # up two held-out test tracks: a threshold chosen with test contact is a
-    # threshold that cannot be defended, however small the contribution.
-    everything = [p for p in sorted(Path(args.audio_dir).glob('*.mp3'))
-                  if p.stem not in _test_ids(Path(args.audio_dir).parent)]
-    step = max(1, len(everything) // args.tracks)
-    chosen = [str(p) for p in everything[::step][: args.tracks]] + list(args.extra)
-    _refuse_test_contact(chosen, Path(args.audio_dir).parent)
+    # Held-out ids are excluded LOUDLY and then refused. The first version of
+    # this script had no guard at all and the sorted-and-spaced selection duly
+    # picked up two test tracks; a constant chosen with holdout contact cannot
+    # be defended, however small the contribution. The exclusion is printed
+    # rather than done quietly, because "the pool was smaller than you think" is
+    # exactly the kind of thing that should not be discovered by reading source.
+    data_dir = Path(args.audio_dir).parent
+    forbidden = _forbidden_ids(data_dir)
+    everything = sorted(Path(args.audio_dir).glob('*.mp3'))
+    pool = [p for p in everything if p.stem not in forbidden]
+    print(f'candidates {len(everything)}; excluded {len(everything) - len(pool)} '
+          f'held-out ({", ".join(_FORBIDDEN_SPLITS)}); pool {len(pool)}')
+    step = max(1, len(pool) // args.tracks)
+    chosen = [str(p) for p in pool[::step][: args.tracks]] + list(args.extra)
+    _refuse_holdout_contact(chosen, data_dir)
     span = 'whole tracks' if args.seconds is None else f'{args.seconds:.0f}s prefixes'
     print(f'{len(chosen)} tracks, {span}, {args.workers} workers')
 

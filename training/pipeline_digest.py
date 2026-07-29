@@ -107,46 +107,42 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
     return digest
 
 
-def filterbank_fingerprint(path: str, seconds: float = 120.0) -> dict:
-    """The aubio mel bank's output over a fixed time grid — the anchor.
+def filterbank_fingerprint(path: str, seconds: float | None = None) -> dict:
+    """The aubio mel bank's output over the WHOLE track, on a fixed time grid.
 
-    Runs the analyser's own mel path buffer by buffer, so it measures exactly
-    what the pipeline computes, and reduces it on a one-second grid so the
-    result depends on the audio and the bank alone. No beat, onset or tempo
-    decision can reach it, which is the whole point: it stays sensitive to a
-    filterbank regression while the beat grid underneath it moves.
+    Runs the bank itself — not the analyser — buffer by buffer, and reduces the
+    result on a one-second grid. Nothing about a beat, onset or tempo decision
+    can reach it, which is the point: it stays sensitive to a filterbank
+    regression while the beat grid underneath it is completely rewritten.
+
+    Whole track by default. A truncated anchor would leave most of every fixture
+    unguarded while reading as though it covered them, and `MelFilterbank` is
+    cheap enough (~0.03 ms/buffer, no madmom, no TensorFlow) that there is no
+    reason to bound it. `seconds` exists for tests that want a short run.
     """
     import numpy as np
 
-    from lib.analyser.music_analyser import MusicAnalyser
+    from lib.analyser.music_analyser import MelFilterbank
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from simulate.fake_audio_client import FileAudioClient
 
-    class _Silent:
-        def on_sound_start(self): pass
-        def on_sound_stop(self): pass
-        async def on_cycle(self): pass
-        async def on_onset(self): pass
-        async def on_beat(self, *a): pass
-        async def on_note(self): pass
-        async def on_section_change(self): pass
-
     client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, path)
     client.start_streams()
-    analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, _Silent())
+    mel = MelFilterbank(SAMPLE_RATE, BUFFER_SIZE)
 
     per_second, rows = [], []
     buffers_per_second = SAMPLE_RATE // BUFFER_SIZE
-    limit = int(seconds * buffers_per_second)
-    for i in range(limit):
-        if client.exhausted:
-            break
-        rows.append(analyser._compute_mel_energies(client.read()))
+    limit = float('inf') if seconds is None else int(seconds * buffers_per_second)
+    fed = 0
+    while fed < limit and not client.exhausted:
+        rows.append(mel(client.read()))
+        fed += 1
         if len(rows) == buffers_per_second:
             per_second.append(np.mean(np.asarray(rows, dtype=np.float32), axis=0))
             rows = []
     grid = np.asarray(per_second, dtype=np.float32)
     return {
+        'grid_seconds': int(grid.shape[0]),
         'grid_shape': list(grid.shape),
         'grid_hash': hashlib.sha256(grid.tobytes()).hexdigest()[:16],
         'grid_sum': round(float(grid.sum()), 4),

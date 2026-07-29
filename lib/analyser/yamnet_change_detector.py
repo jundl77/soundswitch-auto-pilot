@@ -150,6 +150,18 @@ class YamnetChangeDetector:
         if not self.change_tracker.is_cooldown_active():
             logging.info('[yamnet] resetting state, starting cooldown')
         self.change_tracker.start_cooldown()
+        # Drop every buffer that spans time, not just the cooldown. A partial
+        # aggregation block, a rolling audio window and a rolling embedding
+        # window all describe audio from before this reset; carrying them across
+        # a song boundary — or across a stretch where the detector was shed and
+        # handed no audio at all — butt-joins unrelated audio inside a single
+        # embedded signal and scores it against a baseline built from music that
+        # has stopped. The similarity outlier that produces is indistinguishable
+        # from a real section change.
+        self.agg_buffer.clear()
+        self.rolling_window_audio.clear()
+        self.rolling_window_embeddings.clear()
+        self.rolling_window_similarities.clear()
 
     def detect_change(self,
                       audio_signal: np.ndarray,

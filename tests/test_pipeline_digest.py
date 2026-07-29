@@ -146,16 +146,16 @@ def test_the_filterbank_anchor_notices_a_changed_filterbank():
     honest = filterbank_fingerprint(sample, seconds=10.0)
 
     import lib.analyser.music_analyser as ma
-    original = ma.MusicAnalyser._compute_mel_energies
+    original = ma.MelFilterbank.__call__
 
     def perturbed(self, audio_signal):
         energies = original(self, audio_signal)
         energies[0] *= 1.01
         return energies
 
-    ma.MusicAnalyser._compute_mel_energies = perturbed
+    ma.MelFilterbank.__call__ = perturbed
     try:
         tampered = filterbank_fingerprint(sample, seconds=10.0)
     finally:
-        ma.MusicAnalyser._compute_mel_energies = original
+        ma.MelFilterbank.__call__ = original
     assert tampered['grid_hash'] != honest['grid_hash']

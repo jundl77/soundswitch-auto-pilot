@@ -40,20 +40,23 @@ def test_virtual_clock_is_deterministic_across_instances():
 
 def test_the_system_clock_can_resolve_a_single_audio_buffer():
     """Everything in the pipeline is timed against a 5.805 ms buffer, and the
-    drift watchdog measures spans of a few buffers. `time.monotonic` reports a
-    15.625 ms resolution on Windows/CPython 3.11 — coarser than the quantity
-    being measured — so the system clock must be built on a finer source."""
-    import time
+    drift watchdog measures spans of a few of them, so the clock underneath must
+    resolve far finer than one.
 
+    The assertion is on the OBSERVED granularity of `SYSTEM_CLOCK.monotonic`
+    itself, not on which library function it happens to call. That is what makes
+    it portable *and* discriminating: `time.monotonic` reports 15.625 ms on
+    Windows/CPython 3.11 — coarser than the quantity being measured — and this
+    test fails on it there, while on platforms where `time.monotonic` is already
+    nanosecond-grade it correctly has nothing to complain about.
+    """
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.clock import SYSTEM_CLOCK
 
     buffer_sec = BUFFER_SIZE / SAMPLE_RATE
-    # Identify the underlying source by resolution rather than by name, so the
-    # test survives an implementation change that keeps the property.
-    best = min(time.get_clock_info(name).resolution
-               for name in ('perf_counter', 'monotonic'))
-    assert best < buffer_sec / 10
-
-    samples = {SYSTEM_CLOCK.monotonic() for _ in range(2000)}
-    assert len(samples) > 100, 'system clock is quantised too coarsely to time a buffer'
+    samples = sorted({SYSTEM_CLOCK.monotonic() for _ in range(20000)})
+    assert len(samples) > 2, 'system clock did not advance at all'
+    granularity = min(b - a for a, b in zip(samples, samples[1:]))
+    assert granularity < buffer_sec / 10, (
+        f'system clock granularity {granularity * 1000:.3f} ms cannot resolve a '
+        f'{buffer_sec * 1000:.3f} ms audio buffer')

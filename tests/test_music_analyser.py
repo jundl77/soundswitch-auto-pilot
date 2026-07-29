@@ -375,3 +375,113 @@ async def test_a_song_reset_does_clear_the_rhythm_stack(analyser):
     analyser._beat_stream_times.extend([1.0, 2.0, 3.0])
     analyser._reset_state()
     assert len(analyser._beat_stream_times) == 0
+
+
+# ---------------------------------------------------------------------------
+# Shedding section detection must not splice audio across the gap
+# ---------------------------------------------------------------------------
+
+def _fake_yamnet(analyser):
+    """Make the detector run its buffering path without loading TensorFlow."""
+    detector = analyser.yamnet_change_detector
+    detector.yamnet_model = object()   # not None -> detect_change proceeds
+    return detector
+
+
+async def test_restoring_section_detection_clears_its_audio_buffers(analyser):
+    """YAMNet is fed one aggregated block at a time and keeps three things
+    between calls: a partial block, a rolling audio window, and a rolling
+    embedding window scored against a MAD baseline. While shed it is handed no
+    audio at all, so on restore the post-gap audio butt-joins the pre-gap tail
+    inside one embedded signal and is compared against embeddings of music that
+    stopped seconds ago. Same hazard as the onset chain's frame buffer, one
+    level up.
+    """
+    detector = _fake_yamnet(analyser)
+    detector.agg_buffer.extend([0.1] * 100)
+    detector.rolling_window_audio.extend([0.2] * 5000)
+    detector.rolling_window_embeddings.extend([object(), object()])
+    detector.rolling_window_similarities.extend([0.9, 0.8])
+
+    analyser._set_section_detection_enabled(False)
+    analyser._set_section_detection_enabled(True)
+
+    assert not detector.agg_buffer, 'partial block survived the gap'
+    assert not detector.rolling_window_audio, 'audio window survived the gap'
+    assert not detector.rolling_window_embeddings, 'embeddings survived the gap'
+    assert not detector.rolling_window_similarities, 'MAD baseline survived the gap'
+
+
+async def test_the_splice_is_real_when_the_buffers_are_not_cleared(analyser):
+    """The mechanism, measured rather than predicted: without the clear, the
+    window handed to the model contains pre-gap and post-gap samples adjacent to
+    each other. This is what a spurious section change would be built from."""
+    detector = _fake_yamnet(analyser)
+    detector.rolling_window_audio.extend([1.0] * 4000)      # pre-gap marker
+    pre_gap_len = len(detector.rolling_window_audio)
+
+    # No clear: post-gap audio lands directly against the pre-gap tail.
+    detector.rolling_window_audio.extend([-1.0] * 4000)     # post-gap marker
+    seam = detector.rolling_window_audio[pre_gap_len - 1:pre_gap_len + 1]
+    assert seam == [1.0, -1.0], 'expected a discontinuity at the seam'
+
+    # With the clear, no pre-gap sample can reach the model.
+    detector.reset()
+    detector.rolling_window_audio.extend([-1.0] * 4000)
+    assert 1.0 not in detector.rolling_window_audio
+
+
+async def test_shedding_section_detection_does_not_clear_anything(analyser):
+    """Only restoring costs a clear; shedding must not disturb state that a
+    recovery seconds later would otherwise still be able to use."""
+    detector = _fake_yamnet(analyser)
+    detector.rolling_window_audio.extend([0.2] * 100)
+    analyser._set_section_detection_enabled(False)
+    assert detector.rolling_window_audio, 'shedding must not clear'
+
+
+# ---------------------------------------------------------------------------
+# A shed onset chain must report UNKNOWN density, never zero
+# ---------------------------------------------------------------------------
+
+async def test_shedding_onsets_reports_unknown_density_not_zero(analyser):
+    """Zero is a measurement: it says the music went sparse. Shedding the onset
+    detector produces the same number for a completely different reason, and
+    within 1.5 s the rolling window empties and every consumer sees a genuine
+    silence that is not happening -- pinning the classifier to BREAKDOWN with
+    BUILDUP and DROP unreachable, while the beats keep flowing so nothing else
+    contradicts it.
+    """
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN, density_is_known
+    analyser._onset_times.extend([analyser._clock.now()] * 6)
+    assert density_is_known(analyser.get_onset_density())
+
+    analyser._rhythm.set_onsets_enabled(False)
+    assert analyser.get_onset_density() == DENSITY_UNKNOWN
+    assert not density_is_known(analyser.get_onset_density())
+
+
+async def test_density_stays_unknown_until_the_window_has_refilled():
+    """Restoring the detector does not restore the measurement: the rolling
+    window is empty and needs a full window of audio before its rate means
+    anything. Reporting the partial count would be a low reading, not a missing
+    one -- the same lie one second later."""
+    from lib.analyser.music_analyser import (DENSITY_UNKNOWN,
+                                             _ONSET_DENSITY_WINDOW_SEC)
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    analyser._rhythm.set_onsets_enabled(False)
+    analyser._rhythm.set_onsets_enabled(True)
+    assert analyser.get_onset_density() == DENSITY_UNKNOWN
+
+    clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
+    assert analyser.get_onset_density() != DENSITY_UNKNOWN
+
+
+async def test_an_unknown_density_is_never_appended_to_the_trend_samples(analyser):
+    """The trend is a ratio of two halves of this deque. A sentinel inside it
+    would come back out as a number."""
+    from lib.analyser.music_analyser import density_is_known
+    analyser._rhythm.set_onsets_enabled(False)
+    await analyser._track_beat([1.0, 2.0, 3.0, 4.0], analyser._clock.now())
+    assert all(density_is_known(d) for d in analyser._density_samples)

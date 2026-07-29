@@ -301,3 +301,69 @@ def test_windowed_buildup_via_rising_centroid():
     rising = _CENTROID_BUILDUP_TREND + 0.1
     densities = [GROOVE_DENSITY] * 5
     assert _classify_windowed(_window(densities, centroid_trend=rising), bpm=120.0) == LightIntent.BUILDUP
+
+
+# ---------------------------------------------------------------------------
+# An unmeasured density holds, it does not classify
+# ---------------------------------------------------------------------------
+
+def test_unknown_density_holds_the_current_intent():
+    """Every branch of the classifier is a density comparison, so a sentinel run
+    through them would not degrade -- it would classify, to BREAKDOWN, for as
+    long as the onset detector stayed shed, with BUILDUP and DROP unreachable
+    and nothing to contradict it because the beats keep flowing."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_intent
+
+    for held in (LightIntent.DROP, LightIntent.GROOVE, LightIntent.BUILDUP,
+                 LightIntent.PEAK, LightIntent.BREAKDOWN):
+        assert _classify_intent(128.0, DENSITY_UNKNOWN, current_intent=held) is held
+
+
+def test_unknown_density_without_a_current_intent_is_groove():
+    """Nothing to hold: fall back to the same neutral the empty window uses."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_intent
+    assert _classify_intent(128.0, DENSITY_UNKNOWN, current_intent=None) is LightIntent.GROOVE
+
+
+def test_windowed_classification_drops_unmeasured_beats():
+    """A sentinel inside a median is just a low number, so these rows are
+    excluded rather than averaged in."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_windowed
+
+    def row(t, density):
+        return (t, density, 128.0, 0.35, 0.2, 4.0, 1.0)
+
+    dense = [row(i, 9.0) for i in range(6)]
+    verdict = _classify_windowed(dense, 128.0, LightIntent.GROOVE)
+    polluted = dense + [row(i + 6, DENSITY_UNKNOWN) for i in range(6)]
+    assert _classify_windowed(polluted, 128.0, LightIntent.GROOVE) is verdict
+
+
+def test_a_window_with_nothing_measurable_holds():
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_windowed
+    window = [(i, DENSITY_UNKNOWN, 128.0, 0.35, 0.2, 4.0, 1.0) for i in range(6)]
+    assert _classify_windowed(window, 128.0, LightIntent.DROP) is LightIntent.DROP
+
+
+def test_report_metrics_exclude_unmeasured_beats():
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.event_buffer import EventBuffer
+
+    buffer = EventBuffer(window_sec=float('inf'))
+    buffer.start()
+    buffer.add_beat(bpm=128.0, onset_density=4.0, change=False)
+    buffer.add_beat(bpm=128.0, onset_density=DENSITY_UNKNOWN, change=False)
+    report = buffer.to_report()
+    assert report['metrics']['onset_density_mean'] == 4.0
+    # The row itself keeps the sentinel: a negative rate is impossible, so the
+    # report stays self-describing rather than silently dropping the beat.
+    assert report['beats'][1]['onset_density'] == DENSITY_UNKNOWN
+    assert report['beats'][1]['strength'] == 0.0
