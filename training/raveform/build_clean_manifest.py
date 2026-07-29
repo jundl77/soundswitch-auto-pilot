@@ -123,10 +123,14 @@ def classify(
 
 
 def _run(command: list) -> subprocess.CompletedProcess:
+    # utf-8/replace, not the locale: ffmpeg echoes the offending track's tag text,
+    # and one non-cp1252 byte would raise UnicodeDecodeError inside a pool worker.
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=FFMPEG_TIMEOUT_SEC,
     )

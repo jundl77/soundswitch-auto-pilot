@@ -13,6 +13,7 @@ if str(RAVEFORM_DIR) not in sys.path:
     sys.path.insert(0, str(RAVEFORM_DIR))
 
 from build_clean_manifest import (  # noqa: E402
+    _run,
     ABS_TOLERANCE_SEC,
     CLEAN_MANIFEST_HEADER,
     MIN_AGE_SEC,
@@ -154,6 +155,14 @@ def test_delta_just_beyond_the_relative_tolerance_is_a_mismatch():
 def test_mismatch_detail_reports_the_delta_and_the_tolerance():
     _status, detail = _consistent(100.0, 300.0)
     assert "200" in detail
+
+
+def test_a_tool_that_writes_undecodable_bytes_does_not_kill_the_worker():
+    proc = _run([sys.executable, "-c",
+                 r"import sys; sys.stdout.buffer.write(b'\xff\x81 done')"])
+
+    assert proc.stdout.endswith(" done")
+    assert "�" in proc.stdout
 
 
 def test_a_file_the_downloader_just_wrote_is_not_settled(tmp_path):

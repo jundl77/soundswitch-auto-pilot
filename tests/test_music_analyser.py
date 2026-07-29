@@ -437,15 +437,14 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
     Asserting against beats rather than onsets is the whole point of the test:
     it must fail if the trigger drifts back to the onset stream.
     """
-    from pathlib import Path
-
     from lib.analyser.music_analyser import MusicAnalyser
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.clock import VirtualClock
     from simulate.fake_audio_client import FileAudioClient
+    from tests.conftest import anchor_mp3_path
 
-    sample = str(Path(__file__).parent.parent / 'samples'
-                 / 'generate_eric_prydz_192k.mp3')
+    # The bundled Generate track this used to read was retired with the eval set.
+    sample = anchor_mp3_path()
 
     class _Handler(_StubHandler):
         def __init__(self):
@@ -488,9 +487,11 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
     on, clicked_on = await run(note_clicks=True)
     _, clicked_off = await run(note_clicks=False)
 
-    assert on.beat_buffers, 'no beats on 20 s of the bundled track'
-    assert clicked_on == on.beat_buffers,         'clicks did not land exactly on the beats'
-    assert clicked_on != on.onset_buffers,         'clicks are following the onset stream, not the beat stream'
+    assert on.beat_buffers, 'no beats on 20 s of the anchor track'
+    assert clicked_on == on.beat_buffers, \
+        'clicks did not land exactly on the beats'
+    assert clicked_on != on.onset_buffers, \
+        'clicks are following the onset stream, not the beat stream'
     assert not clicked_off, 'audio was modified with -d off'
     # The sparser monitor is the intended consequence, so pin the direction.
     assert len(on.beat_buffers) < len(on.onset_buffers)

@@ -206,9 +206,9 @@ def test_the_real_stack_streams_and_is_deterministic():
 
     from lib.audio_config import BUFFER_SIZE
     from simulate.fake_audio_client import FileAudioClient
+    from tests.conftest import anchor_mp3_path
 
-    mp3 = Path(__file__).parent.parent / 'samples' / 'generate_eric_prydz_192k.mp3'
-    assert mp3.exists(), f'the committed sample track is missing: {mp3}'
+    mp3 = Path(anchor_mp3_path())
     client = FileAudioClient(SR, BUFFER_SIZE, str(mp3))
     client.start_streams()
     audio = np.concatenate([client.read() for _ in range(SR * 20 // BUFFER_SIZE)])
@@ -224,7 +224,7 @@ def test_the_real_stack_streams_and_is_deterministic():
 
     first, second = run(), run()
     assert first == second
-    assert first[0], 'expected beats on 20 s of four-on-the-floor'
+    assert first[0], 'expected beats on 20 s of real dance music'
 
 
 def test_the_shipped_onset_threshold_is_the_calibrated_one():

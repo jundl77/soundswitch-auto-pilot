@@ -6,8 +6,6 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 ---
 
----
-
 ## Where the numbers come from: two libraries, one job each
 
 The measured basis for this split, and its measured effect on the show, are in
@@ -148,10 +146,12 @@ Because PEAK *is* the DROP musical state, two things follow. It inherits DROP's 
 ### Running a simulation
 
 ```bash
-python auto_pilot simulate file samples/song.mp3 --report report.json
+python auto_pilot simulate file path/to/song.mp3 --report report.json
 ```
 
-Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock in seconds, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay. The report carries that offset in its metrics rather than leaving it implicit in the code, so a consumer can align the two time bases from the file alone — the inspector's bin table uses it to de-shift intents back to song time.
+Fast headless mode is the default: the full track runs through the identical production pipeline on a virtual clock at a few times real time, deterministically — rerunning the same file yields an identical report, so threshold changes show up as clean diffs. Beat timestamps are song-position seconds; intent blocks are stamped at audience time (one look-ahead delay after the beats that caused them), so when comparing the intent timeline against the track structure, expect that constant delay. The report carries that offset in its metrics rather than leaving it implicit in the code, so a consumer can align the two time bases from the file alone — the inspector's bin table uses it to de-shift intents back to song time.
+
+That offset is now uniform for every block a beat caused: the engine routes all intent commits through the delayed command queue, so the first beat of a run and the first beat back after a sound stop are stamped in audience time like any other. One block still is not — beat-absence ATMOSPHERIC. It rides the queue too, but a timer fired it rather than a beat, so nothing in the report explains its stamp and a consumer cannot recognise it as a queue commit; de-shifting is skipped and it lands one look-ahead late. Measured on the eval set, that block falls past the last label and scores nothing, but a mid-song silence would misplace it. A consumer must therefore still decide per block, not per report: a block is recognisably a queue commit exactly when its timestamp minus the look-ahead lands on an actual beat. See `realign_intents` in `training/build_training_table.py` for the detection, its failure modes, and why reports cut before the paths were unified still read correctly.
 
 The JSON report contains the full beat list, intent timeline, and timing log. Every beat record carries the complete feature row the classifier saw — density, BPM, kick strength, centroid trend, sub-bass ratio, RMS — which makes the report a labelled feature table, not just a debug dump. It is the intended input for the hand-labelled dataset work; keep it that way when adding features.
 
@@ -178,11 +178,33 @@ Prints per-10-second bins (mean RMS, density, kick strength, beat count, dominan
 4. Adjust thresholds in `lib/engine/light_engine.py` and re-run. The run is deterministic, so a threshold change shows up as a clean diff.
 5. Once the basic structure is reliable, enable and tune the sub-bass gate against hi-hat-only vs. kick+bass passages.
 
+### Scoring against expert labels
+
+The workflow above tunes by ear against one track. `training/evaluate_against_labels.py` does the same job against the whole expertly annotated corpus: it scores the committed intent timeline against the Raveform section labels and prints a time-weighted confusion matrix, per-class F1, boundary-F1 at three tolerances, and a flicker rate. Current numbers live in `training/data/raveform/baseline_eval.json` (the corpus is still growing, so they are not copied into documentation); see the root `CLAUDE.md` for the metric design decisions. Two of its results bear directly on the classifier rather than on the harness:
+
+- **ATMOSPHERIC is dead code on this material.** It is the only intent not driven by the beat classifier, and mastered EDM intros and outros have beats, so its timer never trips. Across the whole corpus it was committed zero times, which puts every `intro` and `outro` label permanently out of reach. (That sweep ran on the aubio beat stream. madmom finds more beats, not fewer, so the timer trips even less often — the finding survives the migration by construction, though the count has not been re-run.)
+- **The engine changes intent several times more often than the music changes section**, and the large majority of those changes are nowhere near a real boundary. The stability pipeline (votes, dwell, invalid-transition guard) stops the timeline from flickering *within* a bar; it does not make the timeline follow structure. Note the evaluator reports that count two ways -- every intent change, and only the changes that alter the *label class* -- because a model predicting label classes cannot express a DROP-to-PEAK move and must be compared against the second.
+
+### The regression gate
+
+Scoring the whole corpus is the measurement; `training/run_eval_set.py` is the *gate*. It runs the ten frozen eval-set tracks (`training/eval_set.json`) through the same fast sim and the same join, and compares both the per-track report checksums and the same v1 metrics against a committed baseline. The consequence for threshold work: **a threshold change is expected to fail it.** That failure is the whole point — it prints which track moved, which metric moved, and in which direction, so a change made to fix one section of one track cannot quietly cost more elsewhere than it gained. Read the table, then re-cut the baseline in the same commit with `--write-baseline`.
+
+The tracks span 117-174 BPM across five genres, which makes the gate the fastest available answer to the two limitations below: whether a threshold fitted to one track survives contact with another, and how much of the corpus sits above the tempo fold ceiling. Three of them run inside `uv run pytest`; the full ten are a manual command. See the root `CLAUDE.md` (The benchmark) for why the set is frozen and how it is kept out of training.
+
+### The neural replacement exists offline
+
+A trained section classifier (`training/nn/`) now scores better than everything on this page -- on tracks it has never seen, measured by the same functions that produce the baseline above. See `training/nn/CLAUDE.md` for the package map and the root `CLAUDE.md` for the verdict, its artifacts and its caveats. What it changes for this document:
+
+- **The features here are still the runtime's features.** The model trains on the pipeline's own mel stream, so the front-end above is shared rather than superseded. What it replaces is the hand-thresholded branch and the three-stage stability pipeline: it predicts the label class directly, and a decoder owns stability and latency policy in one place instead of votes, dwell and a transition guard in three.
+- **The two limitations recorded above are the model's whole motivation.** ATMOSPHERIC never fires on mastered EDM, which puts `intro` and `outro` permanently out of reach; and the engine changes intent far more often than the music changes section. The model answers both, and the second by a wide margin.
+- **It does not run yet, and the blocker is not integration effort.** The decoder decides per bar and there is no live downbeat tracker; the show's look-ahead also has to grow to the decoder's budget. Until both exist, this classifier is what ships and its thresholds are still worth tuning.
+- **Stability is a trade, not a free win -- do not import the model's preferences here.** The decoder's flicker advantage comes from committing long confident runs, and the same property lets one run swallow several sections on a track that alternates quickly. That is its known failure mode. The tuning workflow above optimises against the *opposite* failure, flapping, so a threshold change justified by "the NN commits harder" is unmeasured.
+
 ---
 
 ## Known Limitations
 
-- **One reference track.** Every threshold currently in the engine was placed against the populations measured on a single track. They separate its sections cleanly, but a threshold fitted to one track is a hypothesis, not a calibration. Re-measure the populations before trusting them on a new corpus — the measurement is cheap and deterministic.
+- **One reference track.** Every threshold currently in the engine was placed against the populations measured on a single track, which is no longer even in the repo — it was the Generate anchor, retired when the eval set replaced it. They separated its sections cleanly, but a threshold fitted to one track is a hypothesis, not a calibration. Re-measure the populations before trusting them on a new corpus — the measurement is cheap and deterministic, and the eval set is now the place to do it.
 - **Tempo above the fold ceiling.** Fast genres (drum & bass and up) fold to half tempo and fall under DROP's BPM floor, so their drops cannot be classified as such. Accepted for Stage 1.
 - **Section-boundary latency.** An intent change needs consensus across several beats, so a committed intent trails the audible transition by roughly the vote window — a second or so. That is the price of not flickering, and it is deliberate; the symmetric look-ahead window keeps the response centred on the transition rather than lagging a full window behind it.
 
