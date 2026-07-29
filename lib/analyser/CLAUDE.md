@@ -6,13 +6,52 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 ---
 
+## Where the numbers come from: two libraries, one job each
+
+The measured basis for this split, and its measured effect on the show, are in
+`docs/migration-evidence.md` and `training/migration_deltas.json`.
+
+**madmom owns rhythm** — beats, BPM and onsets — through its *online* processors
+only. The offline decoders score better and cannot run live, so any number one of
+them produced would be a number the runtime can never reproduce. Causality is not
+a claim here but a tested property: no network in the live path may contain a
+bidirectional layer, because a bidirectional layer cannot emit anything until the
+audio has ended.
+
+**aubio owns the spectral front-end** — one FFT and the 40-band Slaney mel bank —
+and nothing else. Every trained model and every feature below that mentions the
+filterbank is built on that exact bank, so it is held byte-stable by a golden
+fixture rather than reimplemented. The two-library split is interim by owner
+decision; the next retrain generation bakes off front-ends and may consolidate.
+
+**The two live on different clocks, and the adapter reconciles them.** The
+pipeline reads 256-sample buffers; madmom's online models are trained at
+441-sample hops. One module owns that mismatch, and it stamps every rhythm event
+from its own hop counter rather than from either decoder's internal frame count —
+those counters advance only for frames their decoder was handed, so the moment
+one chain is shed its clock stops while the other's runs on.
+
+**Shedding degrades explicitly.** Under sustained backpressure the analyser gives
+up section detection first and onsets second, and never beats. A shed onset
+detector reports density as *unmeasured*, not as zero: zero is a measurement, and
+since every branch of the classifier is a density comparison, a zero would not
+degrade — it would classify, always the same way, for as long as the detector was
+off. Restoring either shed component clears its buffers first, because everything
+they hold describes audio from before the gap.
+
 ## Features and Why They Were Chosen
 
 **BPM** — the primary tempo discriminator. It gates DROP: maximum-impact classification requires dance tempo. Low onset activity at any BPM → BREAKDOWN or ATMOSPHERIC.
 
-Reported BPM is *octave-folded* into a single tempo band before anyone sees it. aubio locks onto double or half tempo on ambiguous material, and reliably does so during its warmup — the first few beats of every track read at double tempo, which used to be enough to fire a false PEAK before the music had started. Folding is the right fix rather than a warmup suppression window, because the ambiguity is real and recurring: a tempo and its octave are the same tempo musically, and the fold does not touch beat phase, only the number attached to it. The cost is that genuinely fast genres (drum & bass above the fold ceiling) report at half tempo and fall below DROP's BPM floor — a known Stage 1 limitation, not a bug.
+BPM is *derived from the beat stream*, not read off a tempo estimator: it is the median of the recent inter-beat intervals, measured in the beat detector's own stream time. The median because a single mistracked beat must not move the reported tempo, and stream time because if the input ever drops audio the stream clock still measures the music the detector actually heard. Until two intervals exist it reports *unmeasured*, and the DROP branch gates on a tempo floor, so an unmeasured tempo reads as "not fast" rather than as a guess.
+
+Reported BPM is *octave-folded* into a single tempo band before anyone sees it. A tempo and its octave are the same tempo musically, and the fold does not touch beat phase, only the number attached to it — so a half-tempo lock cannot make a busy passage read as a low-energy one. The cost is that genuinely fast genres (drum & bass above the fold ceiling) report at half tempo and fall below DROP's BPM floor — a known Stage 1 limitation, not a bug.
+
+*Historical note worth keeping:* the fold was introduced because aubio locked onto double tempo during its warmup, reliably enough to fire a false PEAK before the music started. That specific failure is gone with the rhythm source, but the fold stays because the ambiguity it addresses is a property of tempo, not of any one tracker.
 
 **Onset density** (onsets/sec, rolling window) — measures rhythmic busyness. A sparse arrangement has few onsets per second; a full drop with kick, bass, hi-hat, and percussion fires many per second.
+
+Density is *unmeasured*, not zero, whenever the onset detector is shed under backpressure or has been restored for less than one full window — an empty rolling window would otherwise report a low rate rather than a missing one, which is the same error one second later. The sentinel is negative, because a rate cannot be, so no genuinely sparse passage can be mistaken for an unmeasured one; unlike the kick sentinel it *is* self-identifying in the training table. Consumers hold rather than classify on it.
 
 Density is *quantized*: it is an onset count over a fixed window, so only multiples of one-over-the-window-length are reachable. Picking a density threshold means picking which bucket it falls between; two thresholds inside the same gap are the same threshold. It is also far less discriminating than it looks — on the reference track the windowed median sits in a single bucket across intro, groove, breakdown *and* final drop alike. Density says whether anything rhythmic is happening; it does not say how big the moment is. Kick strength does that.
 
@@ -22,7 +61,7 @@ Density is *quantized*: it is an onset count over a fixed window, so only multip
 
 **Kick strength** — how far the sub-bass energy on the beat rises above the sub-bass floor around it. This is the feature that actually separates the sections of a track, and it is the primary DROP gate and the primary BREAKDOWN signal when density is moderate (stripped arrangement, no kick). Three measurement decisions make it work, each of which was wrong at some point and each of which flattened the feature to noise when it was:
 
-- **The window straddles the beat, and mostly follows it.** A kick's energy does not appear in the mel filterbank at the instant aubio reports the beat: the filterbank runs over an FFT window several buffers long, so the sub-bass peak lands *after* the beat index by roughly that window's group delay. A backward-looking capture measures the bar before the kick and reports the background twice. The consequence is that a beat's own kick value is not final when the beat fires — it resolves a few buffers later, so the feature lags by one beat. Over a multi-second classification window that is immaterial, and it is worth far more than the lag costs.
+- **The window straddles the beat, and mostly follows it.** A kick's energy does not appear in the mel filterbank at the instant the beat is reported: the filterbank runs over an FFT window several buffers long, so the sub-bass peak lands *after* the beat index by roughly that window's group delay. A backward-looking capture measures the bar before the kick and reports the background twice. The consequence is that a beat's own kick value is not final when the beat fires — it resolves a few buffers later, so the feature lags by one beat. Over a multi-second classification window that is immaterial, and it is worth far more than the lag costs.
 - **The denominator is a median, not a mean.** A mean over recent frames includes the on-beat spikes it is supposed to be compared against, and on a track with a sustained rolling bassline it also includes that. The median reads the floor the kick sits on.
 - **Numerator and denominator cover comparable spans.** Smoothing the beat side over many beats while the background side covers ~1 s makes the two lag each other, and at every section boundary the ratio reports the *transition* — a breakdown entry then reads as the strongest kick in the track. Keeping the smoothing short keeps the ratio a statement about the present.
 

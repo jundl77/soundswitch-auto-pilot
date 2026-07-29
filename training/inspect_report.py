@@ -5,6 +5,8 @@ Usage: python training/inspect_report.py report.json [--bin-sec 10]
 import argparse
 import json
 
+from lib.analyser.music_analyser import density_is_known
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -40,9 +42,15 @@ def main() -> None:
         rows = [b for b in beats if t <= b['t'] < t1]
         if rows:
             rms = sum(b.get('rms', 0.0) for b in rows) / len(rows)
-            den = sum(b['onset_density'] for b in rows) / len(rows)
+            # Beats recorded while the onset detector was shed carry
+            # DENSITY_UNKNOWN. Averaging that in would print a plausible low
+            # number for a bin where nothing was measured — the exact confusion
+            # the sentinel exists to prevent — so the bin says so instead.
+            measured = [b['onset_density'] for b in rows
+                        if density_is_known(b['onset_density'])]
+            den = f'{sum(measured) / len(measured):>7.2f}' if measured else f'{"unmeas.":>7}'
             kick = sum(b.get('kick_strength', 1.0) for b in rows) / len(rows)
-            print(f'{t:>5.0f}-{t1:<5.0f}  {rms:>6.3f}  {den:>7.2f}  {kick:>5.2f}  {len(rows):>5}  {dominant_intent_at(t, t1)}')
+            print(f'{t:>5.0f}-{t1:<5.0f}  {rms:>6.3f}  {den}  {kick:>5.2f}  {len(rows):>5}  {dominant_intent_at(t, t1)}')
         else:
             print(f'{t:>5.0f}-{t1:<5.0f}  {"-":>6}  {"-":>7}  {"-":>5}  {0:>5}  {dominant_intent_at(t, t1)}')
         t = t1

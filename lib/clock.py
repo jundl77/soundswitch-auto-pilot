@@ -25,7 +25,12 @@ class SystemClock(Clock):
         return datetime.datetime.now()
 
     def monotonic(self) -> float:
-        return time.monotonic()
+        # perf_counter, not monotonic: on Windows/CPython 3.11 `time.monotonic`
+        # has a resolution of 15.625 ms — coarser than the 5.805 ms audio buffer
+        # everything here is timed against, so it cannot resolve a single loop
+        # iteration at all. perf_counter is the same kind of clock (monotonic,
+        # undefined epoch, for measuring intervals) at ~100 ns.
+        return time.perf_counter()
 
 
 class VirtualClock(Clock):

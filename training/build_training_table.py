@@ -219,7 +219,7 @@ CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro",
 # Mel sidecar (NN features)
 # --------------------------------------------------------------------------- #
 
-MEL_BANDS = 40          # must equal MusicAnalyser.mel_filters
+MEL_BANDS = 40          # must equal MelFilterbank.BANDS
 POOL_BUFFERS = 8        # 8 x 256 samples @ 44.1 kHz ~= 46 ms per frame
 
 # Which exporter wrote a sidecar, recorded IN the sidecar.  Bump it whenever

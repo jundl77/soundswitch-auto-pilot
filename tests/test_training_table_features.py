@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lib.analyser.music_analyser import MusicAnalyser
+from lib.analyser.music_analyser import MelFilterbank, MusicAnalyser
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -73,12 +73,14 @@ def test_exporter_energies_equal_the_analyser_energies_exactly(analyser):
 
 
 def test_exporter_constructor_parameters_match_the_analyser(analyser):
+    """Same pin as before the madmom migration; the bank moved to `analyser.mel`
+    when the rhythm objects it used to share constants with were removed."""
     stream = MelEnergyStream(SAMPLE_RATE, BUFFER_SIZE)
 
-    assert stream.win_s == analyser.win_s
-    assert stream.hop_s == analyser.hop_s
-    assert stream.mel_bands == analyser.mel_filters
-    assert MEL_BANDS == analyser.mel_filters
+    assert stream.win_s == analyser.mel.win_s
+    assert stream.hop_s == analyser.mel.hop_s
+    assert stream.mel_bands == MelFilterbank.BANDS
+    assert MEL_BANDS == MelFilterbank.BANDS
 
 
 def test_kick_gate_matches_the_analysers_silence_threshold():

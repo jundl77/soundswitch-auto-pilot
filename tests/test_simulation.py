@@ -128,9 +128,17 @@ async def test_report_duration_matches_song_not_flush_tail():
 @pytest.mark.integration
 async def test_runs_much_faster_than_real_time():
     """The track must simulate in a small fraction of its length — a regression
-    guard against accidental wall-clock pacing."""
+    guard against accidental wall-clock pacing.
+
+    The bound moved from 4x to 2x when the rhythm front-end became madmom's
+    online networks: the same pipeline measured 46.3x on this box with aubio and
+    3.79x with madmom, because state-of-the-art online beat and onset tracking
+    costs 25.7 % of a core against aubio's 1.4 %. Accidental wall-clock pacing —
+    the thing this test exists to catch — reads 1.0x, so a 2x bound still
+    catches it decisively while leaving room for a slower machine.
+    """
     run = await _sample_run()
-    assert run['wall_elapsed'] < run['song_sec'] / 4, (
+    assert run['wall_elapsed'] < run['song_sec'] / 2, (
         f"{run['song_sec']:.0f}s of audio took {run['wall_elapsed']:.1f}s wall"
     )
 

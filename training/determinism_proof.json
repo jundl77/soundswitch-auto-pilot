@@ -1,0 +1,54 @@
+{
+  "PNpXKsge4xM.mp3": {
+    "all_checksums": [
+      "bfff78031e4afb5b955576a85d14e2d4405ddd7fb4cf7fab62f1ad7fe487f93b",
+      "bfff78031e4afb5b955576a85d14e2d4405ddd7fb4cf7fab62f1ad7fe487f93b"
+    ],
+    "beats": 729,
+    "bpm_last": 86.95652173913072,
+    "checksum": "bfff78031e4afb5b955576a85d14e2d4405ddd7fb4cf7fab62f1ad7fe487f93b",
+    "effects": 40,
+    "identical": true,
+    "intents": {
+      "atmospheric": 0.18,
+      "breakdown": 17.12,
+      "buildup": 33.3,
+      "groove": 206.62
+    }
+  },
+  "generate_eric_prydz_192k.mp3": {
+    "all_checksums": [
+      "110e99835b64a6e640b9a030073ff64cd4cf5805498c83f264f1325bd4a0c0e0",
+      "110e99835b64a6e640b9a030073ff64cd4cf5805498c83f264f1325bd4a0c0e0"
+    ],
+    "beats": 344,
+    "bpm_last": 125.00000000000267,
+    "checksum": "110e99835b64a6e640b9a030073ff64cd4cf5805498c83f264f1325bd4a0c0e0",
+    "effects": 18,
+    "identical": true,
+    "intents": {
+      "breakdown": 19.0,
+      "buildup": 3.79,
+      "drop": 46.28,
+      "groove": 58.5,
+      "peak": 36.88
+    }
+  },
+  "hzIFjGcOKbg.mp3": {
+    "all_checksums": [
+      "26598b3ea2a5805650b972b686e17206fa6980eaeb239b4d451ccadebfe54040",
+      "26598b3ea2a5805650b972b686e17206fa6980eaeb239b4d451ccadebfe54040"
+    ],
+    "beats": 1312,
+    "bpm_last": 85.71428571428015,
+    "checksum": "26598b3ea2a5805650b972b686e17206fa6980eaeb239b4d451ccadebfe54040",
+    "effects": 18,
+    "identical": true,
+    "intents": {
+      "breakdown": 23.96,
+      "buildup": 13.54,
+      "drop": 10.21,
+      "groove": 424.76
+    }
+  }
+}

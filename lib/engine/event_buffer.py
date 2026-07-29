@@ -8,7 +8,7 @@ Dash server thread via snapshot(). The only shared state between threads.
 import threading
 from collections import deque
 
-from lib.analyser.music_analyser import KICK_UNKNOWN
+from lib.analyser.music_analyser import KICK_UNKNOWN, density_is_known
 from lib.clock import Clock, SYSTEM_CLOCK
 
 
@@ -65,10 +65,16 @@ class EventBuffer:
                  kick_strength: float = KICK_UNKNOWN, centroid_trend: float = 1.0,
                  sub_bass_ratio: float = 0.0, rms: float = 0.0) -> None:
         with self._lock:
+            # onset_density is DENSITY_UNKNOWN (negative) on beats recorded while
+            # the onset detector was shed. It is stored as-is — a negative rate is
+            # impossible, so the row is self-describing and cannot be confused
+            # with a genuinely sparse passage — but the derived display value is
+            # clamped, and metrics exclude these rows rather than averaging them.
+            known = density_is_known(onset_density)
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                'onset_density': onset_density,   # onsets/sec (aubio rolling window)
-                'strength': min(1.0, onset_density / 10.0),  # 0–1 scaled for visualizer
+                'onset_density': onset_density,   # onsets/sec (madmom onsets, rolling window)
+                'strength': min(1.0, onset_density / 10.0) if known else 0.0,  # 0–1 for visualizer
                 'change': change,
                 # Full feature row — the sim report doubles as a training table.
                 'kick_strength': round(kick_strength, 4),
@@ -164,6 +170,10 @@ class EventBuffer:
             durations = [e['end'] - e['t'] for e in all_effects if 'end' in e]
             unique_channels = {e['channel'] for e in all_effects}
             all_beats = list(self._beats)
+            # Beats whose density was never measured (detector shed) are excluded
+            # from the aggregate rather than averaged in as a sentinel.
+            measured = [b['onset_density'] for b in all_beats
+                        if density_is_known(b['onset_density'])]
 
             # Intent distribution: seconds spent in each intent
             intent_distribution: dict[str, float] = {}
@@ -191,8 +201,7 @@ class EventBuffer:
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
                     'onset_density_mean': (
-                        sum(b['onset_density'] for b in all_beats) / len(all_beats)
-                        if all_beats else 0.0
+                        sum(measured) / len(measured) if measured else 0.0
                     ),
                     'timing_error_mean_ms': (
                         sum(errors_ms) / len(errors_ms) if errors_ms else 0.0
