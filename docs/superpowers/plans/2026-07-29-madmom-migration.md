@@ -285,6 +285,19 @@ backlog, per-buffer p99/tail, and every shed/recover transition.
 2. Rule-engine constant recalibration, if the disclosed density deltas warrant
    it. Note the onset threshold's own 80 % interval is [0.30, 0.40]; anything
    downstream tuned against it inherits that width.
+
+   **Three levers are already identified**, from explaining why one fixture
+   track's intent-change count rose while the other two fell (per *beat* its
+   stability is flat, 0.0531 → 0.0521 — the raw count moved because madmom finds
+   ~38 % more beats, so the denominator changed):
+   - hysteresis on `_BUILDUP_MIN_TREND`;
+   - guards denominated in beats rather than seconds, which shift under a
+     double-tempo lock;
+   - DROP's BPM floor interacting with octave folding.
+
+   None were touched here — retuning constants was out of scope for this PR by
+   charter — but a recalibration should start from them rather than rediscover
+   them.
 3. Corpus report-cache regeneration — `pipeline_sha` invalidates it by
    construction; expected, not a bug to work around. Per-core sim throughput
    fell ~46× → ~4×, so the regen is ~11× more CPU than before; track

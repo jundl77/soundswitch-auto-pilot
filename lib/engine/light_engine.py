@@ -362,6 +362,15 @@ class LightEngine(IMusicAnalyserHandler):
         far smaller lie than a zero one, and on a reset it is very likely still
         correct. 0.0 goes out only before any tempo has ever been measured,
         where there is nothing to hold. (decisions #108)
+
+        DELIBERATE AND WORTH KNOWING: this state is NOT cleared between songs.
+        For roughly one second at the start of a new track, the wire carries the
+        PREVIOUS track's tempo. That is kept rather than fixed because adjacent
+        tracks in a set are tempo-adjacent by construction — a DJ beat-matches
+        them — so a second of the last tempo is closer to the truth than a
+        second of zero. It is a real inaccuracy nonetheless, and if a consumer
+        ever needs a strictly-this-track tempo, this is the line to change.
+        (decisions #109)
         """
         if bpm > 0:
             state['last'] = bpm

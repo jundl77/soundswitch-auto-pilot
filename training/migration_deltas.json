@@ -4,7 +4,7 @@
   "measured_at": "2026-07-29",
   "pipeline": {
     "before": "origin/master 9749286 — aubio tempo/onset/notes for rhythm",
-    "after": "madmom_migration — madmom online beats/onsets, ONSET_THRESHOLD 0.35",
+    "after": "madmom_migration @ 2876a4f — madmom online beats/onsets, ONSET_THRESHOLD 0.35",
     "unchanged": "aubio pvoc + 40-band Slaney mel filterbank (byte-identical, see filterbank_identical)"
   },
   "instrument": "training/pipeline_digest.py, fast sim on a virtual clock, single thread",

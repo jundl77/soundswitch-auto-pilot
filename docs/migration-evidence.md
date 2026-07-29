@@ -43,9 +43,20 @@ Full per-track numbers, before and after, are in
   madmom emits 2.774/s against an implied 2.857/s: 2.9 %. That is visible in our
   own report format, needs no annotation, and is the most direct evidence that
   the old stream was dropping beats it had already counted.
+- **Onset density rose on every track**, by +15.0 %, +7.8 % and +37.1 %
+  respectively — stated per track because the spread is the point; a range
+  hides which track sits where.
 - **Intent timelines moved a lot**, and not uniformly: two tracks became
-  markedly more stable (41 → 19 and 23 → 16 intent changes), one became less
-  so (28 → 38). Onset density rose 15–37 % on whole tracks.
+  markedly more stable (41 → 19 and 23 → 16 intent changes), one apparently
+  less so (28 → 38).
+
+**That last number is an artefact of the denominator, not a stability
+regression.** Intent changes are counted per track, but madmom finds ~38 % more
+beats on `PNpXKsge4xM`, so the same show is being divided by a larger number.
+Per *beat* — the honest denominator, since the classifier runs once per beat —
+stability is **flat: 0.0531 before, 0.0521 after**. Three interacting non-bugs
+account for the raw count: beat-absence handling at the outro, the beat-count
+denominator itself, and a double-tempo lock on that track.
 
 **Do not read the intent-timeline changes as an accuracy improvement.** Nothing
 here is scored against labels. What is established is that the beat stream is

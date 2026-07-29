@@ -84,10 +84,10 @@ async def test_runs_much_faster_than_real_time():
 
     The bound moved from 4x to 2x when the rhythm front-end became madmom's
     online networks: the same pipeline measured 46.3x on this box with aubio and
-    4.2-4.5x with madmom, because state-of-the-art online beat and onset
-    tracking costs ~20 % of a core against aubio's ~1 %. Accidental wall-clock
-    pacing — the thing this test exists to catch — reads 1.0x, so a 2x bound
-    still catches it decisively while leaving room for a slower machine.
+    3.79x with madmom, because state-of-the-art online beat and onset tracking
+    costs 25.7 % of a core against aubio's 1.4 %. Accidental wall-clock pacing —
+    the thing this test exists to catch — reads 1.0x, so a 2x bound still
+    catches it decisively while leaving room for a slower machine.
     """
     run = await _sample_run()
     assert run['wall_elapsed'] < run['song_sec'] / 2, (

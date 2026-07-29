@@ -273,7 +273,7 @@ Decisions that belong here rather than in the code:
   original wording.
 - **Fast simulation is ~12x slower** (46.3x real-time to 3.8x on the bundled
   track). Regenerating the whole corpus report cache is therefore ~41 CPU-hours
-  against ~3 before, or roughly 3.5 hours of wall clock at 12 workers: track
+  against ~3.4 before, or roughly 3.5 hours of wall clock at 12 workers: track
   parallelism recovers the wall-clock, per-core throughput is what fell.
 - **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and
   the input side DROPS rather than queues, so falling behind costs audio, not
