@@ -131,6 +131,49 @@ def _refuse_holdout_contact(paths: list[str], data_dir: Path) -> None:
         raise SystemExit(f'refusing: held-out tracks in the sample {offenders}')
 
 
+def _matched_threshold(rows: list[dict]) -> float:
+    """The threshold whose median rate is closest to aubio's, over these tracks."""
+    import numpy as np
+    aubio_median = float(np.median([r['aubio_rate'] for r in rows]))
+    best = None
+    for threshold in THRESHOLDS:
+        key = f'{threshold:.2f}'
+        delta = float(np.median([r['madmom_rates'][key] for r in rows])) - aubio_median
+        if best is None or abs(delta) < abs(best[1]):
+            best = (threshold, delta)
+    return best[0]
+
+
+def _stability(rows: list[dict], seed: int, resamples: int = 2000) -> dict:
+    """How much the matched threshold depends on WHICH tracks were drawn.
+
+    This exists because it caught a real error: three successive 17-track pools
+    produced 0.40, 0.44 and 0.35 — two full steps of the ladder — and each was
+    reported as if it were the answer. A median over a small track sample is an
+    estimate, and shipping a point estimate without its spread is how a sampling
+    artifact becomes a constant.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    n = len(rows)
+    draws = []
+    for _ in range(resamples):
+        sample = [rows[i] for i in rng.integers(0, n, n)]
+        draws.append(_matched_threshold(sample))
+    draws = np.asarray(draws)
+    values, counts = np.unique(draws, return_counts=True)
+    order = np.argsort(-counts)
+    return {
+        'resamples': resamples,
+        'seed': seed,
+        'distribution': [(float(values[i]), float(counts[i] / resamples))
+                         for i in order],
+        'mode': float(values[int(np.argmax(counts))]),
+        'p10': float(np.percentile(draws, 10)),
+        'p90': float(np.percentile(draws, 90)),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--audio-dir', required=True)
@@ -145,6 +188,9 @@ def main() -> None:
     ap.add_argument('--seconds', type=float, default=None,
                     help='truncate each track (diagnostic only — see above)')
     ap.add_argument('--workers', type=int, default=4)
+    ap.add_argument('--seed', type=int, default=20260729)
+    ap.add_argument('--from-json', default=None,
+                    help='re-analyse an existing sweep instead of measuring again')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 
@@ -196,6 +242,18 @@ def main() -> None:
           f'(median delta {best[1]:+.3f}/s)')
     print(f"madmom's library default (0.50) would have given "
           f"{np.median([r['madmom_rates']['0.50'] for r in results]):.3f}/s")
+
+    stability = _stability(results, seed=args.seed)
+    print(f'\nstability over {stability["resamples"]} track-resamples '
+          f'(seed {args.seed}):')
+    for threshold, share in stability['distribution']:
+        bar = '#' * int(round(share * 40))
+        print(f'  {threshold:.2f}  {share*100:5.1f}%  {bar}')
+    print(f'  mode {stability["mode"]:.2f}, '
+          f'80% interval [{stability["p10"]:.2f}, {stability["p90"]:.2f}]')
+    if stability['p10'] != stability['p90']:
+        print('  NOTE: the matched threshold is not resample-stable at this n — '
+              'the interval, not the point estimate, is the honest result.')
 
     if args.out:
         Path(args.out).write_text(json.dumps(

@@ -39,23 +39,34 @@ FRAME_SIZE = 2048
 # aubio stream it replaces rather than by taking madmom's library default —
 # every density constant in lib/engine/light_engine.py is expressed against
 # that rate, so moving it would make the migration's deltas unreadable.
-# Measured over 17 WHOLE tracks, train+val only, by
-# training/onset_operating_point.py, evidence committed beside it: aubio's
-# median is 5.883/s and this lands within 0.033/s of it, per-track ratio
-# p10/p50/p90 = 0.84 / 0.99 / 1.17. madmom's own default (0.50) would have come
-# in 7 % low.
+# Measured over 49 WHOLE tracks, holdout-free, by
+# training/onset_operating_point.py; the sweep and its stability analysis are
+# committed beside it. aubio's median is 6.262/s and this lands within 0.078/s
+# of it, per-track ratio p10/p50/p90 = 0.89 / 1.04 / 1.24. madmom's own default
+# (0.50) would have come in 15 % low.
 #
-# Two things about that measurement are load-bearing, and both moved the answer:
+# THIS IS A POINT ESTIMATE WITH REAL SPREAD, and it should be read that way. On
+# 2000 track-resamples the matched threshold is 0.35 in half of them and the 80 %
+# interval is [0.30, 0.40]; across that interval the corpus median onset rate
+# moves about ±6 %, which is what the remaining uncertainty actually costs
+# downstream. Do not treat 0.35 as measured to two decimals.
+#
+# Three things about the measurement moved the answer, and each was an error
+# first:
 #
 #   Whole tracks, not prefixes. The same sweep matches at 0.30 on 90 s prefixes
-#   and 0.40 on 240 s ones, because the two detectors' rate ratio rises with the
-#   density of the material and a track's opening is its sparsest — calibrating
-#   on a prefix calibrates against an intro.
+#   and 0.40 on 240 s ones: the two detectors' rate ratio rises with the density
+#   of the material and a track's opening is its sparsest, so calibrating on a
+#   prefix calibrates against an intro.
 #
-#   Train and val only. The first sweep's sorted-and-spaced selection quietly
-#   included two held-out test tracks and read 0.40; excluding them reads 0.44.
-#   The script now refuses test ids outright rather than filtering them.
-ONSET_THRESHOLD = 0.44
+#   No holdout tracks. The first sweep's sorted-and-spaced selection quietly
+#   included two test tracks; the eval-set tracks whose deltas are this PR's
+#   headline evidence were selectable too. The script now refuses both.
+#
+#   Enough tracks to be resample-stable. Three successive 17-track pools gave
+#   0.40, 0.44 and 0.35 — two full steps of the ladder — and each looked like an
+#   answer on its own. A median over a small track sample is an estimate.
+ONSET_THRESHOLD = 0.35
 
 
 @dataclass
