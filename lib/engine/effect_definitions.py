@@ -16,23 +16,6 @@ class EffectType(Enum):
 
 
 class LightIntent(Enum):
-    """Semantic description of the current musical moment in an EDM track.
-
-    Each value maps to a distinct structural "ingredient" of EDM composition.
-    The intent is derived by the classifier in light_engine.py and is the
-    single value that drives both MIDI channel selection and the visualizer.
-
-    When moving to direct DMX, replace INTENT_EFFECTS with DMX sequences
-    for each intent — everything above stays unchanged.
-
-    Rough BPM + onset-density classifier (see light_engine._classify_intent):
-      ATMOSPHERIC — very sparse, ambient (intro, outro, full breakdown)
-      BREAKDOWN   — melodic, stripped, emotional (post-drop section)
-      GROOVE      — steady dance-floor mid-energy (main verse/groove loop)
-      BUILDUP     — rising tension pre-drop (onset density climbing)
-      DROP        — maximum impact: bass, kick, full arrangement
-      PEAK        — sustained maximum energy after the drop
-    """
     ATMOSPHERIC = 'atmospheric'
     BREAKDOWN   = 'breakdown'
     GROOVE      = 'groove'
@@ -90,8 +73,6 @@ SPECIAL_EFFECTS: List[Effect] = [
     Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.STATIC_LOOK_3),
 ]
 
-# Intent → MIDI channel pool. Each intent has 3 channels for variety.
-# Swap this dict for DMX sequences when moving off SoundSwitch.
 INTENT_EFFECTS: Dict[LightIntent, List[Effect]] = {
     LightIntent.ATMOSPHERIC: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2A),

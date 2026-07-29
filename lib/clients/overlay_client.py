@@ -100,8 +100,6 @@ class OverlayClient:
         for effect, definition in OVERLAY_EFFECTS.items():
             self._add_overlay(effect, definition)
 
-        # uncomment for permanent UV / other effects
-        # self.activate_overlay(OverlayEffect.WHITE_LIGHT)
         self.activate_overlay(OverlayEffect.LIGHT_BAR_24)
 
     def stop(self):

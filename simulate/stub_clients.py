@@ -1,9 +1,3 @@
-"""
-Drop-in stub replacements for all hardware-touching clients.
-Each stub records timestamped events instead of sending to real hardware,
-allowing timing validation after a simulation run.
-"""
-
 import logging
 from lib.clock import Clock, SYSTEM_CLOCK
 from lib.clients.midi_message import MidiChannel
@@ -15,10 +9,6 @@ log = logging.getLogger(__name__)
 def _event(label: str, t: float, **kwargs) -> dict:
     return {'label': label, 'time': t, **kwargs}
 
-
-# ---------------------------------------------------------------------------
-# MIDI
-# ---------------------------------------------------------------------------
 
 class StubMidiClient:
     def __init__(self, clock: Clock = SYSTEM_CLOCK):
@@ -54,10 +44,6 @@ class StubMidiClient:
         pass
 
 
-# ---------------------------------------------------------------------------
-# OS2L
-# ---------------------------------------------------------------------------
-
 class StubOs2lClient:
     def __init__(self, clock: Clock = SYSTEM_CLOCK):
         self.events: list[dict] = []
@@ -75,15 +61,11 @@ class StubOs2lClient:
         log.debug(f'[stub_os2l] beat: pos={pos}, bpm={bpm:.1f}, strength={strength:.2f}')
 
 
-# ---------------------------------------------------------------------------
-# Overlay
-# ---------------------------------------------------------------------------
-
 class StubOverlayClient:
     def __init__(self, clock: Clock = SYSTEM_CLOCK):
         self.events: list[dict] = []
         self._clock = clock
-        # Mirror the real OverlayClient's effects_to_overlay_index so assertions don't fail
+        # LightEngine asserts membership here, so the stub must mirror the real client's map.
         self.effects_to_overlay_index = {effect: i for i, effect in enumerate(OverlayEffect)}
 
     def start(self): pass
@@ -100,6 +82,5 @@ class StubOverlayClient:
     def clear_all(self): pass
 
     def flush_messages(self):
-        # Called every buffer (~5.8 ms of song time) — recording an event here
-        # would allocate ~28k unread dicts per fast run, so it stays a no-op.
+        # Deliberately not recorded: called every buffer, which is ~28k unread dicts per fast run.
         pass

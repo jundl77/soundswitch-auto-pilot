@@ -2,7 +2,7 @@ from rtmidi.midiconstants import NOTE_ON, NOTE_OFF, CONTROLLER_CHANGE
 from enum import Enum
 
 
-# max is 127 unfortunately, after that SoundSwitch does not respond
+# Values above 127 are ignored by SoundSwitch.
 class MidiChannel(Enum):
     LINK = 1
     BPM_TAP = 2
@@ -99,71 +99,46 @@ class MidiChannel(Enum):
     STATIC_LOOK_31 = 89
     STATIC_LOOK_32 = 90
 
-# use the .__members__ syntax to access all members, otherwise duplicates are coalesced into the first occurrence
+# .__members__ and not iteration: iterating an Enum coalesces duplicates, defeating the assert below.
 ALL_MIDI_CHANNEL_VALUES = [value.value for name, value in MidiChannel.__members__.items()]
 assert len(set(ALL_MIDI_CHANNEL_VALUES)) == len(ALL_MIDI_CHANNEL_VALUES), "duplicate values found in MidiChannel enum"
 
 
 def get_midi_msg_on(channel: MidiChannel):
-    """
-    get the "press down" action of the midi channel. If the channel controls a button with a toggle function, this can
-    also act as a toggle.
-    """
     assert isinstance(channel, MidiChannel), f"midi channel '{channel}' is not a valid channel, channel has to be of type MidiChannel"
     return [NOTE_ON, channel.value, 1]
 
 
 def get_midi_msg_off(channel: MidiChannel):
-    """
-    get the "press up" action of the midi channel
-    """
     assert isinstance(channel, MidiChannel), f"midi channel '{channel}' is not a valid channel, channel has to be of type MidiChannel"
     return [NOTE_OFF, channel.value, 0]
 
 
 def get_autoloop_intensity_msg(value: float):
-    """
-    set the autoloop intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.AUTOLOOP_INTENSITY.value, 127 * value]
 
 
 def get_scripted_track_intensity_msg(value: float):
-    """
-    set the scripted track intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.SCRIPTED_TRACK_INTENSITY.value, 127 * value]
 
 
 def get_group_1_intensity_msg(value: float):
-    """
-    set the group 1 intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.GROUP_1_INTENSITY.value, 127 * value]
 
 
 def get_group_2_intensity_msg(value: float):
-    """
-    set the group 2 intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.GROUP_2_INTENSITY.value, 127 * value]
 
 
 def get_group_3_intensity_msg(value: float):
-    """
-    set the group 3 intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.GROUP_3_INTENSITY.value, 127 * value]
 
 
 def get_group_4_intensity_msg(value: float):
-    """
-    set the group 4 intensity value, the real value is bound to [0, 127] but I remap it to [0, 100] for simplicity
-    """
     assert 0 <= value <= 1, "intensity value should be in [0, 1]"
     return [CONTROLLER_CHANGE, MidiChannel.GROUP_4_INTENSITY.value, 127 * value]

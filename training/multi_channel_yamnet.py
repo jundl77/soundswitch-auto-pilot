@@ -13,12 +13,11 @@ print('loading model..')
 model = hub.load('https://tfhub.dev/google/yamnet/1')
 print('loaded model successfully')
 
-sample_rate = 44100  # Sample rate of the audio
-block_size = 256 * 8 # Block size for audio processing
+sample_rate = 44100
+block_size = 256 * 8
 click_sound: float = 0.7 * np.sin(2. * np.pi * np.arange(block_size) / block_size * sample_rate / 3000.)
 
 p = pyaudio.PyAudio()
-# Start the audio stream from the microphone
 stream = p.open(format=pyaudio.paFloat32,
                 channels=1,
                 input_device_index=3,
@@ -26,7 +25,6 @@ stream = p.open(format=pyaudio.paFloat32,
                 input=True,
                 frames_per_buffer=block_size)
 
-# Start the stream
 stream.start_stream()
 stream_out = p.open(format=pyaudio.paFloat32,
                     channels=1,
@@ -74,13 +72,11 @@ def detect_outliers_mad(full_data, test_data, threshold=2.5):
 
 
 def detect_outliers(full_data, test_data):
-    #return detect_outliers_mean_std(full_data, [test_data], std_threshold=2)
     return detect_outliers_mad(full_data, test_data, threshold=2.5)
 
 
 def apply_yamnet(in_data):
     global audio_buffer, embeddings_buffer, max_last_seen, all_similarities, best_last_seen_ts, best_last_seen, flag_count, flag_count_ts
-    # Convert audio data to numpy array
     audio_data_playback = np.copy(np.frombuffer(in_data, dtype=np.float32))
     audio_data = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
     audio_data = audio_data / np.iinfo(np.int16).max
@@ -99,13 +95,10 @@ def apply_yamnet(in_data):
         similarities = []
         while count <= lookback_index:
             previous_embedding = embeddings_buffer[-1 * (count + 1)]
-            #similarity = distance.minkowski(embedding.numpy(), previous_embedding.numpy(), 2)
             similarity = abs(float(tf.keras.losses.cosine_similarity(previous_embedding, embedding)))
             similarities.append(abs(float(similarity)))
             count += num_blocks_per_100ms
 
-        #similarity = distance.minkowski(embedding.numpy(), previous_embedding.numpy(), 2)
-        #all_similarities += similarities
         best_sim = min(similarities)
         all_similarities.append(best_sim)
         outliers = detect_outliers(all_similarities, best_sim)
@@ -123,7 +116,6 @@ def apply_yamnet(in_data):
             flag_count = 0
             audio_data_playback += click_sound
             print("Meaningful change detected!")
-            # Perform further actions or analysis here
 
     if len(audio_buffer) > total_num_elements * 2:
         del audio_buffer[:total_num_elements * -1]
@@ -139,7 +131,6 @@ class Stream:
         pass
 
 
-# Callback function for audio stream
 while True:
     in_data = stream.read(block_size, exception_on_overflow=False)
     apply_yamnet(in_data)
@@ -148,5 +139,4 @@ while True:
 stream.stop_stream()
 stream.close()
 
-# Terminate PyAudio
 p.terminate()

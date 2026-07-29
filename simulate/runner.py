@@ -1,27 +1,3 @@
-"""
-Simulation runner for soundswitch-auto-pilot.
-
-Replaces all hardware-touching clients with stubs and feeds real audio files
-through the full MusicAnalyser → LightEngine → DelayedCommandQueue pipeline.
-
-Two pacing modes, selected by the caller:
-
-  Virtual (default for `simulate file`): a VirtualClock is advanced by exactly
-  one buffer duration (256/44100 s) per buffer — the run completes as fast as
-  the CPU allows while every window/delay/threshold sees identical time to a
-  real-time run. Deterministic.
-
-  Real-time (`--ui` file mode): pace_real_time=True sleeps against the wall
-  clock so the live Dash timeline scrolls in sync with actual playback.
-
-Usage examples:
-  # Fast headless evaluation (writes report.json, exits 0=PASS / 1=FAIL)
-  python auto_pilot simulate file samples/song.mp3
-
-  # Real music file with live Dash UI (real-time paced)
-  python auto_pilot simulate file samples/song.mp3 --ui
-"""
-
 import asyncio
 import datetime
 import logging
@@ -31,20 +7,13 @@ import time
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import Clock, SYSTEM_CLOCK, VirtualClock
 
-TIMING_TOLERANCE_SEC = 0.050  # 50 ms
+TIMING_TOLERANCE_SEC = 0.050
 # Must match LOOK_AHEAD_SEC in lib/main.py and playback_delay_seconds in dmx-enttec-node.
 LOOK_AHEAD_SEC = 2.5
-# Fixed seed for fast headless runs: effect selection is random by design, but
-# fast-sim reports must be reproducible run-to-run.
 FAST_SIM_RANDOM_SEED = 1337
 
 
 def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK):
-    """Wire the full pipeline with stub clients; return (app_components, command_queue).
-
-    With an EventBuffer, the engine emits beats/effects/intents into it (used by
-    the Dash timeline and the JSON report); without one, events are discarded.
-    """
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
@@ -67,8 +36,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, clock=clock)
     light_engine.set_analyser(music_analyser)
-    # Skip YAMNet loading — section detection disabled in simulation for speed.
-    # To enable: call music_analyser.start() (requires internet on first run to download model).
+    # Section detection off in simulation: music_analyser.start() would load YAMNet (slow, needs network).
     music_analyser.yamnet_change_detector.detect_change = lambda *a, **kw: False
 
     return {
@@ -85,19 +53,10 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
 
 async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
                               seed: int = FAST_SIM_RANDOM_SEED):
-    """Deterministic fast run — the single home of the fast-mode contract:
-    seeded RNG + fresh VirtualClock + infinite event window + flush tail.
-
-    audio_client: a FileAudioClient (or anything with the same interface that
-    eventually exhausts). Runs to end-of-file unless duration_sec bounds it.
-
-    Returns (audio_client, event_buffer, command_queue) for report extraction.
-    """
     from lib.engine.event_buffer import EventBuffer
 
     random.seed(seed)
     clock = VirtualClock()
-    # Infinite window: reports must never prune, whatever the song length.
     event_buffer = EventBuffer(window_sec=float('inf'), clock=clock,
                                look_ahead_sec=LOOK_AHEAD_SEC)
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
@@ -109,16 +68,6 @@ async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
 async def run_simulation(components: dict, duration_sec: float,
                          clock: Clock = SYSTEM_CLOCK,
                          pace_real_time: bool = False):
-    """Main simulation loop — mirrors SoundSwitchAutoPilot.run().
-
-    duration_sec is measured on `clock`: virtual (song) seconds under a
-    VirtualClock, wall seconds otherwise. The loop also stops when the audio
-    source reports exhaustion (end of file).
-
-    With a VirtualClock the clock is advanced by exactly one buffer duration
-    per buffer, then advanced LOOK_AHEAD_SEC past the end ("flush tail") so
-    commands enqueued near the end still fire into the timing log/report.
-    """
     audio_client = components['audio_client']
     music_analyser = components['music_analyser']
     command_queue = components['command_queue']
@@ -165,21 +114,16 @@ async def run_simulation(components: dict, duration_sec: float,
             last_10s = now
             await components['light_engine'].on_10sec_callback()
 
-    # The audio has ended: freeze the event timeline so report durations and
-    # flush-tail commits reflect the song length, not the flushed clock.
     event_buffer = components.get('event_buffer')
     if event_buffer is not None:
         event_buffer.mark_end()
 
     if is_virtual:
-        # Flush tail: advance past the look-ahead delay so pending commands fire.
         flush_until = clock.monotonic() + command_queue.delay_sec
         while clock.monotonic() < flush_until:
             clock.advance(buffer_sec)
             await command_queue.drain()
     elif pace_real_time:
-        # Real-time (--ui) tail: wait out the look-ahead so the final commands
-        # reach the timeline instead of being dropped at end-of-file.
         while command_queue.pending:
             await asyncio.sleep(buffer_sec)
             await command_queue.drain()
@@ -189,7 +133,6 @@ async def run_simulation(components: dict, duration_sec: float,
 
 
 def print_timing_report(command_queue, tolerance_sec: float = TIMING_TOLERANCE_SEC):
-    """Print a human-readable timing validation report."""
     log = command_queue.get_timing_log()
     if not log:
         print('\n[TIMING REPORT] No commands were dispatched.')

@@ -59,14 +59,14 @@ class MidiClient:
     def on_sound_start(self):
         self.set_all_intensities(1)
         if self.soundswitch_is_paused:
-            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # unpause
+            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))
             self.soundswitch_is_paused = False
 
     def on_sound_stop(self):
         self.set_all_intensities(0)
         if not self.soundswitch_is_paused:
-            time.sleep(0.2)  # we need to give soundswitch some time to process the previous message
-            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))  # pause
+            time.sleep(0.2)  # SoundSwitch drops this message unless the previous one has settled
+            self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))
             self.soundswitch_is_paused = True
 
     async def on_100ms_callback(self):
@@ -117,7 +117,6 @@ class MidiClient:
                     raise RuntimeError(f"unknown EffectAction: {effect.action}")
                 effect.is_done = True
 
-        # delete all finished coros
         i = 0
         while i < len(self._pending_effects):
             if self._pending_effects[i].is_done:

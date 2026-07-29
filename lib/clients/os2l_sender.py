@@ -20,7 +20,6 @@ class Os2lSender:
         self.is_running: bool = False
         self.logon_complete: bool = False
 
-        # state once logged in
         self.send_update_frequency: datetime.timedelta = datetime.timedelta(milliseconds=25)
         self.last_update_sent: datetime.datetime = datetime.datetime.now()
 
@@ -39,7 +38,6 @@ class Os2lSender:
             self.logon_complete = False
             self.sending_thread.join()
 
-            # send stop message to soundswitch
             shutdown_message = os2l_messages.shutdown_message()
             logging.info(f'[os2l] sending shutdown message to soundswitch: {shutdown_message}')
             self._send_message(os2l_messages.shutdown_message())
@@ -67,7 +65,7 @@ class Os2lSender:
             received_message = self.os2l_socket.recv(4096)
             self._on_message(received_message.decode('utf-8'))
         except socket.error:
-            pass  # expected
+            pass  # the socket is non-blocking: raises whenever no data is queued
 
     def _poll_queue(self):
         if not self.logon_complete:
@@ -76,7 +74,7 @@ class Os2lSender:
             message = self.message_queue.get(block=False)
             self._send_message(message)
         except Empty:
-            pass  # expected
+            pass
 
     def _send_update_if_due(self):
         now = datetime.datetime.now()
@@ -105,7 +103,6 @@ class Os2lSender:
             logging.info(f"[os2l] received message with unknown event '{os2l_event}', skipping")
 
     def _on_subscribe_message(self, json_message):
-        """ this sort-of acts as the login handshake """
         assert 'frequency' in json_message, "'json_message' was not in subscribe message"
         self.send_update_frequency = datetime.timedelta(milliseconds=int(json_message['frequency']))
         logging.info(f'[os2l] setting update frequency to {self.send_update_frequency.microseconds / 1000} ms')

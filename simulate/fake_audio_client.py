@@ -1,14 +1,3 @@
-"""
-FileAudioClient — the simulation audio source. Decodes a real audio file
-(MP3/WAV/FLAC) with librosa and feeds 256-sample buffers; caches the decoded
-array as <path>.<samplerate>.npy (valid while newer than the source) so repeat
-runs skip the multi-second decode.
-
-It never throttles: read() returns immediately. Pacing (real-time or virtual)
-is the simulation runner's responsibility. Implements the same interface as
-PyAudioClient.read() / start_streams() / close() plus an `exhausted` property.
-"""
-
 import os
 import logging
 import numpy as np
@@ -16,16 +5,8 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# File audio client
-# ---------------------------------------------------------------------------
-
 class FileAudioClient:
-    """Decodes an audio file and feeds 256-sample buffers (no throttling).
-
-    Takes no clock: it is a pure sample pump — read() walks a position,
-    nothing here consults time.
-    """
+    # Never throttles: pacing is the simulation runner's job.
 
     def __init__(self, sample_rate: int, buffer_size: int, path: str):
         self.sample_rate = sample_rate
@@ -63,7 +44,6 @@ class FileAudioClient:
     def read(self) -> np.ndarray:
         end = self._pos + self.buffer_size
         if end > len(self._audio):
-            # Pad last buffer with silence
             buf = np.zeros(self.buffer_size, dtype=np.float32)
             remaining = len(self._audio) - self._pos
             if remaining > 0:

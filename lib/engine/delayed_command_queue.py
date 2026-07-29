@@ -8,26 +8,11 @@ CommandFactory = Callable[[], Awaitable[None]]
 
 
 class DelayedCommandQueue:
-    """
-    Holds outgoing light commands and releases them after a fixed wall-clock delay.
-
-    The audio playback stack (dmx-enttec-node/app_audio_receiver) delays audio output
-    by `playback_delay_seconds`. To keep lights in sync, every command that drives
-    hardware (MIDI, OS2L, overlay) is enqueued here and only dispatched once the same
-    duration has elapsed.
-
-    Analysis happens at wall-clock time T. The audience hears that audio at T + delay.
-    Commands enqueued at T are released at T + delay, so lights change exactly when the
-    audience hears the musical event that triggered them.
-
-    All enqueuing and draining happens on the asyncio event loop — no locking needed.
-    drain() should be called on every main-loop iteration (~5.8 ms cadence).
-    """
+    # Unsynchronised: enqueue and drain must both run on the asyncio loop, never on a client thread.
 
     def __init__(self, delay_sec: float, clock: Clock = SYSTEM_CLOCK):
         self._delay_sec = delay_sec
         self._clock = clock
-        # (enqueue_time, fire_at, label, factory)
         self._queue: list[tuple[float, float, str, CommandFactory]] = []
         self._timing_log: list[dict] = []
 
@@ -37,23 +22,18 @@ class DelayedCommandQueue:
 
     @property
     def pending(self) -> int:
-        """Number of commands enqueued but not yet fired."""
         return len(self._queue)
 
     async def enqueue(self, label: str, factory: CommandFactory) -> None:
-        """Schedule factory() to be called after delay_sec.
-        Values used inside factory must be captured in a closure at call time."""
         enqueue_time = self._clock.monotonic()
         fire_at = enqueue_time + self._delay_sec
         self._queue.append((enqueue_time, fire_at, label, factory))
 
     async def drain(self) -> None:
-        """Execute all commands whose fire time has passed, in chronological order."""
         if not self._queue:
             return
         now = self._clock.monotonic()
-        # fire_at is nondecreasing (fixed delay + monotonic clock), so if the
-        # head is not due, nothing is — skips the scan on the ~172 Hz idle path.
+        # Head-only check is valid because a fixed delay on a monotonic clock keeps fire_at nondecreasing.
         if self._queue[0][1] > now:
             return
         due = [(et, ft, lbl, f) for et, ft, lbl, f in self._queue if ft <= now]
