@@ -287,8 +287,8 @@ Decisions that belong here rather than in the code:
   report rows would be indistinguishable from a genuinely sparse passage.
   Restoring either shed component clears its buffers first, because everything
   they hold describes audio from before the gap.
-- **madmom is CC BY-NC-SA** (models). Fine for a personal project per decisions #57;
-  it forecloses a commercial turn without a JKU licence. aubio's GPL note stands.
+- **madmom is CC BY-NC-SA** (models). Fine for a personal project; it forecloses a
+  commercial turn without a JKU licence. aubio's GPL note stands.
 - **madmom is pinned to a git SHA**, not a release: the last PyPI release cannot be
   imported on Python 3.10+. An upgrade is deliberate and `tests/test_madmom_contract.py`
   is what makes it a checked one.
