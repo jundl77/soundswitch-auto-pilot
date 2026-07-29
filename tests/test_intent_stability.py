@@ -1,3 +1,4 @@
+import datetime
 import pytest
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from lib.engine.light_engine import (
     BeatRecord,
     LightEngine,
+    _BEAT_ABSENCE_SEC,
     _VOTE_BUFFER_SIZE,
     _MIN_DWELL_BEATS,
     _PEAK_PROMOTION_BEATS,
@@ -21,21 +23,34 @@ from lib.engine.event_buffer import EventBuffer
 
 
 def _make_engine(look_ahead_sec: float = 1.0,
-                 event_buffer: EventBuffer | None = None) -> LightEngine:
+                 event_buffer: EventBuffer | None = None,
+                 command_queue=None,
+                 clock=None) -> LightEngine:
     effect_controller = MagicMock()
     effect_controller.change_effect = AsyncMock()
+    os2l_client = MagicMock()
+    os2l_client.send_beat = AsyncMock()
     engine = LightEngine(
         midi_client=MagicMock(),
-        os2l_client=MagicMock(),
+        os2l_client=os2l_client,
         overlay_client=MagicMock(),
         effect_controller=effect_controller,
-        command_queue=None,
+        command_queue=command_queue,
         event_buffer=event_buffer,
         look_ahead_sec=look_ahead_sec,
+        **({'clock': clock} if clock else {}),
     )
     analyser = MagicMock()
     analyser.is_song_playing.return_value = True
     analyser.get_seconds_since_last_beat.return_value = 0.0
+    analyser.get_song_current_duration.return_value = datetime.timedelta(seconds=1)
+    analyser.get_bpm.return_value = 128.0
+    analyser.get_onset_density.return_value = _DROP_MIN_DENSITY_ENTER + 1
+    analyser.get_onset_density_trend.return_value = 1.0
+    analyser.get_sub_bass_ratio.return_value = 0.3
+    analyser.get_rms_energy.return_value = 0.5
+    analyser.get_kick_strength.return_value = KICK_PRESENT
+    analyser.get_spectral_centroid_trend.return_value = 1.0
     engine.set_analyser(analyser)
     return engine
 
@@ -87,15 +102,17 @@ async def test_mixed_votes_do_not_switch():
     engine._current_intent = LightIntent.GROOVE
     engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
 
-    from collections import deque
+    # One vote short of full, and disagreeing: the incoming DROP fills the buffer
+    # and differs from the current intent, so only consensus can stop the switch.
     engine._intent_vote_buffer = deque(
-        [LightIntent.GROOVE, LightIntent.DROP, LightIntent.GROOVE],
+        [LightIntent.DROP, LightIntent.GROOVE],
         maxlen=_VOTE_BUFFER_SIZE,
     )
 
-    enqueue_time = _seed_beat_history(engine, density=GROOVE_DENSITY)
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
     await engine._commit_intent(enqueue_time, 128.0)
 
+    assert len(engine._intent_vote_buffer) == _VOTE_BUFFER_SIZE
     assert engine._current_intent == LightIntent.GROOVE
     engine.effect_controller.change_effect.assert_not_awaited()
 
@@ -331,3 +348,77 @@ async def test_beat_history_uses_injected_clock():
     clock.advance(10.0)
     await engine.on_beat(beat_number=1, bpm=128.0, bpm_changed=False)
     assert engine._beat_history[-1].at == 10.0
+
+
+@pytest.mark.asyncio
+async def test_commits_left_in_flight_by_a_sound_stop_light_nothing():
+    buffer = EventBuffer()
+    buffer.start()
+    engine = _make_engine(event_buffer=buffer)
+    engine._current_intent = LightIntent.DROP
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
+    enqueue_time = _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
+
+    engine.on_sound_stop()
+    for _ in range(_VOTE_BUFFER_SIZE + _MIN_DWELL_BEATS):
+        await engine._commit_intent(enqueue_time, 128.0)
+
+    assert engine._current_intent is None
+    engine.effect_controller.change_effect.assert_not_awaited()
+    assert buffer.snapshot()['intents'] == []
+
+
+@pytest.mark.asyncio
+async def test_a_section_change_commits_the_intent_it_lit():
+    buffer = EventBuffer()
+    buffer.start()
+    engine = _make_engine(event_buffer=buffer)
+    engine._current_intent = LightIntent.BREAKDOWN
+    engine._beats_in_current_intent = _MIN_DWELL_BEATS + 10
+    engine._intent_vote_buffer.extend([LightIntent.BREAKDOWN] * 2)
+    _seed_beat_history(engine, density=_DROP_MIN_DENSITY_ENTER + 1)
+
+    await engine.on_section_change()
+
+    assert engine._current_intent is LightIntent.DROP
+    engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.DROP)
+    assert [e['intent'] for e in buffer.snapshot()['intents']] == [LightIntent.DROP.value]
+    assert not engine._intent_vote_buffer
+    assert engine._beats_in_current_intent == 0
+
+
+@pytest.mark.asyncio
+async def test_a_section_change_without_beats_lights_nothing():
+    engine = _make_engine()
+    engine._current_intent = LightIntent.GROOVE
+
+    await engine.on_section_change()
+
+    assert engine._current_intent is LightIntent.GROOVE
+    engine.effect_controller.change_effect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_atmospheric_and_its_return_ride_the_look_ahead_delay():
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+
+    clock = VirtualClock()
+    queue = DelayedCommandQueue(2.5, clock=clock)
+    engine = _make_engine(look_ahead_sec=2.5, command_queue=queue, clock=clock)
+    engine.analyser.get_seconds_since_last_beat.return_value = _BEAT_ABSENCE_SEC + 0.1
+
+    await engine.on_100ms_callback()
+    engine.effect_controller.change_effect.assert_not_awaited()
+
+    clock.advance(2.5)
+    await queue.drain()
+    engine.effect_controller.change_effect.assert_awaited_once_with(LightIntent.ATMOSPHERIC)
+
+    engine.analyser.get_seconds_since_last_beat.return_value = 0.0
+    await engine.on_beat(beat_number=1, bpm=128.0, bpm_changed=False)
+    assert engine.effect_controller.change_effect.await_count == 1
+
+    clock.advance(2.5)
+    await queue.drain()
+    assert engine.effect_controller.change_effect.await_count == 2
+    assert engine._current_intent is LightIntent.DROP

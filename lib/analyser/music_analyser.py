@@ -75,10 +75,11 @@ class MusicAnalyser:
             2. * np.pi * np.arange(self.buffer_size) / self.buffer_size
             * self.sample_rate / 3000.)
 
-        # Everything below is LOOP-scoped and deliberately absent from
-        # _reset_state(), which fires on every 0.3 s of silence: rebuilding the
-        # rhythm models would reload eight pickled LSTMs mid-show, and a
-        # song boundary says nothing about whether the loop is keeping up.
+        # Constructed once and never rebuilt by _reset_state(), which fires on
+        # every 0.3 s of silence: the rhythm stack is cleared in place there
+        # rather than reloading eight pickled LSTMs mid-show, and everything
+        # else here is LOOP-scoped — a song boundary says nothing about whether
+        # the loop is keeping up.
         self._rhythm: MadmomRhythm = MadmomRhythm(self.sample_rate)
         self._drift: DriftWatchdog = DriftWatchdog(self.buffer_size / self.sample_rate,
                                                    clock=self._clock)
@@ -133,10 +134,13 @@ class MusicAnalyser:
             return datetime.timedelta(seconds=0)
 
     def get_beat_position(self) -> float:
-        if self.is_playing and self.time_to_last_beat_sec > 0:
+        # Read once: a song reset on the audio thread can zero this between the
+        # guard and the division, and the OS2L sender that calls this has no
+        # exception handler to survive it.
+        beat_interval_sec = self.time_to_last_beat_sec
+        if self.is_playing and beat_interval_sec > 0:
             time_to_current_beat_sec = (self._clock.now() - self.last_beat_detected).total_seconds()
-            beat_percent_elapsed = time_to_current_beat_sec / self.time_to_last_beat_sec
-            return self.beat_count + abs(beat_percent_elapsed)
+            return self.beat_count + abs(time_to_current_beat_sec / beat_interval_sec)
         else:
             return 0
 
@@ -181,6 +185,7 @@ class MusicAnalyser:
         if self._rhythm.onset_epoch != self._onset_epoch_seen:
             self._onset_epoch_seen = self._rhythm.onset_epoch
             self._onset_times.clear()
+            self._density_samples.clear()
             self._density_valid_from = now + datetime.timedelta(
                 seconds=_ONSET_DENSITY_WINDOW_SEC)
         if not enabled:
@@ -258,8 +263,8 @@ class MusicAnalyser:
         if rhythm.beats:
             self._last_beat_activation = rhythm.beat_activation
         await self._track_onset(rhythm.onsets, now)
-        await self._track_beat(rhythm.beats, now)
-        is_note = await self._track_note(rhythm.onsets, now)
+        is_beat = await self._track_beat(rhythm.beats, now)
+        await self._track_note(rhythm.onsets, now)
         self._log_rhythm_state(now)
 
         if self.get_song_current_duration() > datetime.timedelta(minutes=15):
@@ -270,7 +275,11 @@ class MusicAnalyser:
                     audio_signal, self.get_song_current_duration())):
             await self.handler.on_section_change()
 
-        if is_note and self.note_clicks:
+        if is_beat and self.note_clicks:
+            # Owner preference: the -d click marks the BEAT, not every onset.
+            # Deliberately not the aubio note-trigger this replaced — beats are
+            # ~2.1/s against ~3.6/s of onsets, so the monitor is sparser and
+            # lands on the pulse a DJ is listening for.
             # Must stay last: every feature above ran on the clean signal.
             audio_signal += self.click_sound
 

@@ -65,7 +65,8 @@ def _classify_intent(
     """Map audio features → LightIntent, using the current intent's exit
     threshold instead of its entry threshold (Schmitt trigger).
 
-    Never returns ATMOSPHERIC (beat-absence timer) or PEAK (engine promotion).
+    No feature branch yields ATMOSPHERIC (beat-absence timer) or PEAK (engine
+    promotion); an unmeasured density echoes back whatever the caller holds.
     """
     if not density_is_known(onset_density):
         return _hold(current_intent)
@@ -106,14 +107,15 @@ def _classify_windowed(
     window: list[BeatRecord],
     bpm: float,
     current_intent: LightIntent | None = None,
-) -> LightIntent:
+) -> LightIntent | None:
     """Classify from a symmetric window of past and future beats around T.
 
     A median density outvotes single-beat spikes; the trend is the window's
-    second half over its first.
+    second half over its first. No beats at all is not a classification — it
+    returns None, and the caller must leave the stage alone.
     """
     if not window:
-        return LightIntent.GROOVE
+        return None
 
     # A sentinel inside a median is just a low number, so unmeasured beats are
     # dropped rather than averaged in.
@@ -234,16 +236,12 @@ class LightEngine(IMusicAnalyserHandler):
         self._atmospheric_sent = False
 
         if self._needs_initial_effect or was_atmospheric:
-            # The beat itself is the confirmation, so no window and no delay.
+            # The beat itself is the confirmation, so no window — but the change
+            # still rides the look-ahead, or it lands before the beat is heard.
             self._needs_initial_effect = False
             intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent, sub_bass_ratio, kick_strength, centroid_trend)
             logging.info(f'[engine] [immediate] intent={intent.name}')
-            if self.event_buffer:
-                self.event_buffer.set_intent(intent.value)
-            self._intent_vote_buffer.clear()
-            self._beats_in_current_intent = 0
-            self._current_intent = intent
-            await self.effect_controller.change_effect(intent)
+            await self._enqueue_or_apply('intent', intent)
         elif self._look_ahead_sec > 0 and self.command_queue:
             await self.command_queue.enqueue(
                 'intent',
@@ -279,6 +277,22 @@ class LightEngine(IMusicAnalyserHandler):
             return bpm
         return state.get('last', 0.0)
 
+    async def _apply_intent(self, intent: LightIntent) -> None:
+        """The single path that moves the stage: timeline, guard state and MIDI
+        together, so nothing can light an intent the guards do not know about."""
+        if self.event_buffer:
+            self.event_buffer.set_intent(intent.value)
+        self._intent_vote_buffer.clear()
+        self._beats_in_current_intent = 0
+        self._current_intent = intent
+        await self.effect_controller.change_effect(intent)
+
+    async def _enqueue_or_apply(self, label: str, intent: LightIntent) -> None:
+        if self.command_queue:
+            await self.command_queue.enqueue(label, lambda: self._apply_intent(intent))
+        else:
+            await self._apply_intent(intent)
+
     async def _commit_intent(self, enqueue_time: float, bpm: float) -> None:
         """Fired by DelayedCommandQueue once the audience hears `enqueue_time`,
         when _beat_history spans a full look-ahead either side of it.
@@ -292,6 +306,9 @@ class LightEngine(IMusicAnalyserHandler):
             if abs(beat.at - enqueue_time) <= self._look_ahead_sec
         ]
         intent = _classify_windowed(window, bpm, self._current_intent)
+        if intent is None:
+            logging.debug('[engine] [windowed] no beats in the window — nothing to commit')
+            return
         self._intent_vote_buffer.append(intent)
         self._beats_in_current_intent += 1
 
@@ -308,12 +325,7 @@ class LightEngine(IMusicAnalyserHandler):
         if (self._current_intent == LightIntent.DROP
                 and self._beats_in_current_intent >= _PEAK_PROMOTION_BEATS):
             logging.info('[engine] [windowed] sustained DROP — promoting to PEAK')
-            self._intent_vote_buffer.clear()
-            self._beats_in_current_intent = 0
-            self._current_intent = LightIntent.PEAK
-            if self.event_buffer:
-                self.event_buffer.set_intent(LightIntent.PEAK.value)
-            await self.effect_controller.change_effect(LightIntent.PEAK)
+            await self._apply_intent(LightIntent.PEAK)
             return
 
         if len(self._intent_vote_buffer) < _VOTE_BUFFER_SIZE:
@@ -353,10 +365,7 @@ class LightEngine(IMusicAnalyserHandler):
             f'[engine] [windowed] intent change: '
             f'{self._current_intent.name if self._current_intent else "None"} → {intent.name}'
         )
-        self._intent_vote_buffer.clear()
-        self._beats_in_current_intent = 0
-        self._current_intent = intent
-        await self.effect_controller.change_effect(intent)
+        await self._apply_intent(intent)
 
     async def on_note(self):
         dmx_data = [0] * 24
@@ -368,38 +377,27 @@ class LightEngine(IMusicAnalyserHandler):
     async def on_section_change(self) -> None:
         logging.info('[engine] audio section change detected')
         bpm = self.analyser.get_bpm()
-        onset_density = self.analyser.get_onset_density()
-        density_trend = self.analyser.get_onset_density_trend()
 
         if self._look_ahead_sec > 0:
-            window = list(self._beat_history)
-            intent = _classify_windowed(window, bpm, self._current_intent)
+            intent = _classify_windowed(list(self._beat_history), bpm, self._current_intent)
         else:
-            intent = _classify_intent(bpm, onset_density, density_trend, self._current_intent,
+            intent = _classify_intent(bpm, self.analyser.get_onset_density(),
+                                      self.analyser.get_onset_density_trend(),
+                                      self._current_intent,
                                       self.analyser.get_sub_bass_ratio(),
                                       self.analyser.get_kick_strength(),
                                       self.analyser.get_spectral_centroid_trend())
-
-        if self.command_queue:
-            await self.command_queue.enqueue(
-                'section_change',
-                lambda: self.effect_controller.change_effect(intent)
-            )
-        else:
-            await self.effect_controller.change_effect(intent)
+        if intent is None:
+            return
+        await self._enqueue_or_apply('section_change', intent)
 
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
         if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
-            if self.event_buffer:
-                self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value)
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True
-                self._intent_vote_buffer.clear()
-                self._beats_in_current_intent = 0
-                self._current_intent = LightIntent.ATMOSPHERIC
-                await self.effect_controller.change_effect(LightIntent.ATMOSPHERIC)
+                await self._enqueue_or_apply('atmospheric', LightIntent.ATMOSPHERIC)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():

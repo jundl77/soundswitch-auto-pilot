@@ -261,19 +261,26 @@ def test_an_unmeasured_bpm_is_not_a_bpm_change(analyser):
     assert analyser._has_bpm_changed(0.0) is False
 
 
-async def test_a_beep_fires_on_an_onset(analyser):
+# `_track_note` no longer drives the -d beep -- that moved to the beat stream by
+# owner preference. It still drives the note EVENT, which the engine turns into
+# the 24-channel overlay light bar, so its onset trigger and refractory still
+# matter; they are just no longer about audio. The beep itself is covered
+# end-to-end by test_debug_clicks_are_mixed_into_the_returned_audio.
+
+async def test_a_note_event_fires_on_an_onset(analyser):
     now = analyser._clock.now()
     analyser.last_note_detected = now - datetime.timedelta(seconds=1)
     assert await analyser._track_note([1.23], now) is True
 
 
-async def test_no_onset_means_no_beep(analyser):
+async def test_no_onset_means_no_note_event(analyser):
     now = analyser._clock.now()
     analyser.last_note_detected = now - datetime.timedelta(seconds=1)
     assert await analyser._track_note([], now) is False
 
 
-async def test_the_beep_refractory_survived_the_migration(analyser):
+async def test_the_note_event_refractory_survived_the_migration(analyser):
+    """Without it a dense passage would strobe the overlay bar."""
     now = analyser._clock.now()
     analyser.last_note_detected = now - datetime.timedelta(seconds=1)
     assert await analyser._track_note([1.0], now) is True
@@ -291,9 +298,18 @@ async def test_a_song_reset_does_not_clear_the_drift_watchdog(analyser):
 
 
 async def test_a_song_reset_does_clear_the_rhythm_stack(analyser):
+    from lib.analyser.madmom_rhythm import HOP_SIZE
+
     analyser._beat_stream_times.extend([1.0, 2.0, 3.0])
+    analyser._rhythm.process(np.zeros(HOP_SIZE + 100, dtype=np.float32))
+    epoch_before = analyser._rhythm.onset_epoch
+
     analyser._reset_state()
+
     assert len(analyser._beat_stream_times) == 0
+    assert analyser._rhythm.onset_epoch > epoch_before, 'the rhythm stack kept its history'
+    assert analyser._rhythm.pending_latency_sec == 0.0, 'a partial hop survived the song'
+    assert analyser._rhythm._hops == 0, 'the rhythm time base was not rebased'
 
 
 def _fake_yamnet(analyser):
@@ -410,6 +426,17 @@ async def test_the_heartbeat_rearms_rather_than_repeating_every_buffer(caplog):
 
 @pytest.mark.integration
 async def test_debug_clicks_are_mixed_into_the_returned_audio():
+    """`-d` is a feature the owner asked for by name, and the line implementing
+    it -- `audio_signal += self.click_sound` -- is otherwise untested: the
+    trigger, the refractory and the onset stream all have coverage, so a change
+    that stopped the click reaching the audio would leave the suite green.
+
+    The click marks the BEAT (owner preference). That is a deliberate UX change
+    from the aubio note-trigger this migration replaced, not a parity claim --
+    beats run ~2.1/s against ~3.6/s of onsets, so the monitor is sparser.
+    Asserting against beats rather than onsets is the whole point of the test:
+    it must fail if the trigger drifts back to the onset stream.
+    """
     from pathlib import Path
 
     from lib.analyser.music_analyser import MusicAnalyser
@@ -422,10 +449,19 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
 
     class _Handler(_StubHandler):
         def __init__(self):
-            self.notes = 0
+            self.index = 0
+            self.beat_buffers: list[int] = []
+            self.onset_buffers: list[int] = []
+            self.note_buffers: list[int] = []
+
+        async def on_beat(self, beat_number, bpm, bpm_changed):
+            self.beat_buffers.append(self.index)
+
+        async def on_onset(self):
+            self.onset_buffers.append(self.index)
 
         async def on_note(self):
-            self.notes += 1
+            self.note_buffers.append(self.index)
 
     async def run(note_clicks: bool):
         client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, sample)
@@ -436,25 +472,28 @@ async def test_debug_clicks_are_mixed_into_the_returned_audio():
                                  note_clicks=note_clicks)
         analyser.yamnet_change_detector.detect_change = lambda *a, **k: False
 
-        clicked = 0
-        for _ in range(int(20 * SAMPLE_RATE / BUFFER_SIZE)):
+        clicked: list[int] = []
+        for i in range(int(20 * SAMPLE_RATE / BUFFER_SIZE)):
             if client.exhausted:
                 break
+            handler.index = i
             clean = client.read().copy()
             clock.advance(BUFFER_SIZE / SAMPLE_RATE)
             out = await analyser.analyse(clean.copy())
             if not np.array_equal(out, clean):
-                clicked += 1
-                assert np.allclose(out - clean, analyser.click_sound, atol=1e-5), \
-                    'the buffer was modified, but not by the click'
-        return handler.notes, clicked
+                clicked.append(i)
+                assert np.allclose(out - clean, analyser.click_sound, atol=1e-5),                     'the buffer was modified, but not by the click'
+        return handler, clicked
 
-    notes_on, clicked_on = await run(note_clicks=True)
-    notes_off, clicked_off = await run(note_clicks=False)
+    on, clicked_on = await run(note_clicks=True)
+    _, clicked_off = await run(note_clicks=False)
 
-    assert notes_on > 0, 'no beeps fired on 20 s of the bundled track'
-    assert clicked_on == notes_on, 'a beep fired without reaching the audio'
-    assert clicked_off == 0, 'audio was modified with -d off'
+    assert on.beat_buffers, 'no beats on 20 s of the bundled track'
+    assert clicked_on == on.beat_buffers,         'clicks did not land exactly on the beats'
+    assert clicked_on != on.onset_buffers,         'clicks are following the onset stream, not the beat stream'
+    assert not clicked_off, 'audio was modified with -d off'
+    # The sparser monitor is the intended consequence, so pin the direction.
+    assert len(on.beat_buffers) < len(on.onset_buffers)
 
 
 async def test_a_song_reset_reports_unknown_density_during_the_refill():
@@ -495,3 +534,60 @@ async def test_a_freshly_built_analyser_has_not_measured_density_yet():
     assert analyser.get_onset_density() == DENSITY_UNKNOWN
     clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
     assert analyser.get_onset_density() == 0.0
+
+
+async def test_a_mid_show_shed_restore_reports_unknown_density_not_zero():
+    from lib.analyser.music_analyser import (DENSITY_UNKNOWN,
+                                             _ONSET_DENSITY_WINDOW_SEC)
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(5.0)
+    analyser._onset_times.extend([clock.now()] * 9)
+    assert analyser.get_onset_density() > 0
+
+    analyser._rhythm.set_onsets_enabled(False)
+    clock.advance(30.0)
+    analyser._rhythm.set_onsets_enabled(True)
+
+    assert analyser.get_onset_density() == DENSITY_UNKNOWN, \
+        'a restore long after start-up fabricated a measured density of 0.0'
+    clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
+    assert analyser.get_onset_density() == 0.0
+
+
+async def test_a_restored_onset_detector_does_not_trend_against_pre_gap_music():
+    from lib.analyser.music_analyser import _ONSET_DENSITY_WINDOW_SEC
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
+    analyser._density_samples.extend([1.0, 1.0, 1.0, 1.0])
+
+    analyser._rhythm.set_onsets_enabled(False)
+    clock.advance(30.0)
+    analyser._rhythm.set_onsets_enabled(True)
+    analyser.get_onset_density()
+
+    assert not analyser._density_samples, 'pre-gap densities survived the restore'
+    assert analyser.get_onset_density_trend() == 1.0
+
+
+async def test_beat_position_survives_a_song_reset_landing_mid_read():
+    class _ResettingClock(VirtualClock):
+        def __init__(self):
+            super().__init__()
+            self.victim = None
+
+        def now(self):
+            victim, self.victim = self.victim, None
+            if victim is not None:
+                victim._reset_state()
+            return super().now()
+
+    clock = _ResettingClock()
+    analyser = _make_analyser(clock)
+    analyser.is_playing = True
+    analyser.time_to_last_beat_sec = 0.47
+    analyser.beat_count = 12
+    clock.victim = analyser
+
+    assert analyser.get_beat_position() >= 0

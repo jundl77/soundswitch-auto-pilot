@@ -1,8 +1,17 @@
+import functools
 import inspect
 
 import pytest
 
 pytestmark = pytest.mark.integration
+
+
+@functools.lru_cache(maxsize=None)
+def _live_stages():
+    """The stage objects the pipeline actually runs, not a rebuild from kwargs
+    copied into this file — a copy cannot fail when the shipped ones change."""
+    from lib.analyser.madmom_rhythm import _BeatStage, _OnsetStage
+    return _BeatStage(), _OnsetStage()
 
 
 def _networks(processor):
@@ -31,17 +40,13 @@ def _frame_sizes(processor) -> list[int]:
 
 
 def test_the_beat_network_we_build_contains_no_bidirectional_layer():
-    from madmom.features.beats import RNNBeatProcessor
-    kinds = _layer_kinds(RNNBeatProcessor(online=True, origin='stream',
-                                          num_frames=1, fps=100))
+    kinds = _layer_kinds(_live_stages()[0]._rnn)
     assert 'BidirectionalLayer' not in kinds
     assert 'LSTMLayer' in kinds, f'expected unidirectional LSTMs, got {kinds}'
 
 
 def test_the_onset_network_we_build_contains_no_bidirectional_layer():
-    from madmom.features.onsets import RNNOnsetProcessor
-    kinds = _layer_kinds(RNNOnsetProcessor(online=True, origin='stream',
-                                           num_frames=1, fps=100))
+    kinds = _layer_kinds(_live_stages()[1]._rnn)
     assert 'BidirectionalLayer' not in kinds
     assert 'RecurrentLayer' in kinds, f'expected unidirectional RNNs, got {kinds}'
 
@@ -55,13 +60,9 @@ def test_the_offline_variants_really_are_bidirectional():
 
 def test_the_frame_geometry_is_the_online_one():
     from lib.analyser.madmom_rhythm import FRAME_SIZE
-    from madmom.features.beats import RNNBeatProcessor
-    from madmom.features.onsets import RNNOnsetProcessor
 
-    beat = _frame_sizes(RNNBeatProcessor(online=True, origin='stream',
-                                         num_frames=1, fps=100))
-    onset = _frame_sizes(RNNOnsetProcessor(online=True, origin='stream',
-                                           num_frames=1, fps=100))
+    beat = _frame_sizes(_live_stages()[0]._rnn)
+    onset = _frame_sizes(_live_stages()[1]._rnn)
     assert beat == [2048], f'online beat geometry changed: {beat}'
     assert onset == [512, 1024, 2048], f'online onset geometry changed: {onset}'
     assert max(beat + onset) == FRAME_SIZE, (
@@ -106,6 +107,11 @@ def test_the_live_path_never_imports_the_offline_downbeat_tracker():
     offenders = [p for p in lib.rglob('*.py')
                  if 'DownBeat' in p.read_text(encoding='utf-8')]
     assert not offenders, f'offline downbeat tracker referenced in {offenders}'
+
+
+def test_the_shipped_onset_stage_picks_at_the_calibrated_threshold():
+    from lib.analyser.madmom_rhythm import ONSET_THRESHOLD
+    assert _live_stages()[1]._picker.threshold == ONSET_THRESHOLD
 
 
 def test_the_pinned_version_is_the_one_that_imports_on_this_python():

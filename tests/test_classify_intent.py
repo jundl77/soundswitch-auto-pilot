@@ -93,8 +93,9 @@ def test_windowed_stable_groove_not_classified_as_buildup():
     assert _classify_windowed(_window(densities), bpm=120.0) == LightIntent.GROOVE
 
 
-def test_windowed_empty_window_returns_groove():
-    assert _classify_windowed([], bpm=128.0) == LightIntent.GROOVE
+def test_an_empty_window_is_not_a_classification():
+    assert _classify_windowed([], bpm=128.0) is None
+    assert _classify_windowed([], bpm=128.0, current_intent=LightIntent.DROP) is None
 
 
 def test_windowed_breakdown_on_sustained_low_density():
@@ -265,10 +266,11 @@ def test_windowed_classification_drops_unmeasured_beats():
     def row(t, density):
         return BeatRecord(t, density, 128.0, 0.35, 0.2, 4.0, 1.0)
 
-    dense = [row(i, 9.0) for i in range(6)]
-    verdict = _classify_windowed(dense, 128.0, LightIntent.GROOVE)
-    polluted = dense + [row(i + 6, DENSITY_UNKNOWN) for i in range(6)]
-    assert _classify_windowed(polluted, 128.0, LightIntent.GROOVE) is verdict
+    # Outnumbered by sentinels: a median that counted them lands on one and
+    # reads a drop as a groove.
+    measured = [row(i, 9.0) for i in range(4)]
+    shed = [row(i + 4, DENSITY_UNKNOWN) for i in range(5)]
+    assert _classify_windowed(measured + shed, 128.0, LightIntent.GROOVE) is LightIntent.DROP
 
 
 def test_a_window_with_nothing_measurable_holds():
