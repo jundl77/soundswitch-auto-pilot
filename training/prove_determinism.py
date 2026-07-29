@@ -1,15 +1,4 @@
-"""Cross-process determinism proof: same audio in, byte-identical report out.
-
-Determinism is checked ACROSS PROCESSES, not within one, because the failure
-modes that matter do not survive a process boundary the way an in-process rerun
-does: hash randomisation, dict/set iteration order seeded per interpreter, a
-model that caches after first load, an RNG someone seeded once at import. A
-second run inside the same interpreter would pass through all of them.
-
-Usage:
-    python training/prove_determinism.py TRACK [TRACK ...]         # spawn + compare
-    python training/prove_determinism.py --emit TRACK              # internal
-"""
+"""Cross-process determinism proof: same audio in, byte-identical report out."""
 
 from __future__ import annotations
 
@@ -41,7 +30,8 @@ def _report_for(track: str) -> dict:
 
 
 def _spawn(track: str) -> dict:
-    """One fresh interpreter, one report summary."""
+    # A fresh interpreter is the point: hash seeds, import-time RNG and cached
+    # models all survive an in-process rerun.
     out = subprocess.run(
         [sys.executable, __file__, '--emit', track],
         capture_output=True, text=True, check=True)

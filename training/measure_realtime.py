@@ -1,20 +1,4 @@
-"""Per-buffer CPU cost of the analyser, old rhythm front-end against new.
-
-The live loop has one buffer period (256/44100 = 5.805 ms) to do everything in.
-This measures what the analyser spends of it, and splits the spend so a
-regression can be attributed rather than merely noticed:
-
-    filterbank  the aubio pvoc + mel bank that STAYS
-    rhythm      madmom's beat and onset chains that REPLACED aubio's
-    aubio-rhythm  the same job as aubio did it, for the ratio
-
-Reported against decision #18's bar: forward cost / buffer period <= 20 % of one
-core is the >= 5x-real-time pass. Tails matter as much as the mean here — a
-loop whose p99 exceeds the buffer period is one that periodically eats its own
-look-ahead — so p50/p90/p99/max are reported and not just the average.
-
-Run it on an otherwise quiet box; a concurrent sweep will contaminate it.
-"""
+"""Per-buffer CPU cost of the analyser, old rhythm front-end against new."""
 
 from __future__ import annotations
 

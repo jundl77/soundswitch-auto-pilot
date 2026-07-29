@@ -1,7 +1,4 @@
-"""Inspect a simulation report: per-10s feature/intent bins + intent timeline.
-
-Usage: python training/inspect_report.py report.json [--bin-sec 10]
-"""
+"""Inspect a simulation report: per-10s feature/intent bins + intent timeline."""
 import argparse
 import json
 
@@ -20,12 +17,10 @@ def main() -> None:
     beats = report['beats']
     intents = report['intents']
     duration = report['duration_sec']
-    # Shift intent blocks from audience time back to song time so a bin's
-    # features and its intent describe the same moment.
+    # Intent blocks are stamped in audience time; shift them back to song time.
     look_ahead = report['metrics'].get('look_ahead_sec', 0.0)
 
     def dominant_intent_at(t0: float, t1: float) -> str:
-        """Dominant intent over [t0, t1) in *song* time."""
         best, best_overlap = '-', 0.0
         for block in intents:
             start = block['t'] - look_ahead
@@ -42,10 +37,6 @@ def main() -> None:
         rows = [b for b in beats if t <= b['t'] < t1]
         if rows:
             rms = sum(b.get('rms', 0.0) for b in rows) / len(rows)
-            # Beats recorded while the onset detector was shed carry
-            # DENSITY_UNKNOWN. Averaging that in would print a plausible low
-            # number for a bin where nothing was measured — the exact confusion
-            # the sentinel exists to prevent — so the bin says so instead.
             measured = [b['onset_density'] for b in rows
                         if density_is_known(b['onset_density'])]
             den = f'{sum(measured) / len(measured):>7.2f}' if measured else f'{"unmeas.":>7}'
