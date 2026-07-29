@@ -10,6 +10,9 @@ See `music_analyser.py` for all implementation details and `lib/engine/light_eng
 
 ## Where the numbers come from: two libraries, one job each
 
+The measured basis for this split, and its measured effect on the show, are in
+`docs/migration-evidence.md` and `training/migration_deltas.json`.
+
 **madmom owns rhythm** — beats, BPM and onsets — through its *online* processors
 only. The offline decoders score better and cannot run live, so any number one of
 them produced would be a number the runtime can never reproduce. Causality is not

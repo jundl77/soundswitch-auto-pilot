@@ -113,7 +113,6 @@ class MusicAnalyser:
         self._beats_since_log: int = 0
         self._onsets_since_log: int = 0
         self._last_beat_activation: float = 0.0
-
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -135,8 +134,19 @@ class MusicAnalyser:
         # audio, stream time still measures the music the detector actually
         # heard, so the tempo estimate stays right about the track.
         self._beat_stream_times: deque = deque(maxlen=_BPM_BEAT_WINDOW)
+        # A reset empties the onset window, so it starts a refill exactly as a
+        # shed-restore does — one rule for both paths: an empty window is
+        # UNMEASURED until a window's worth of audio has filled it.
+        #
+        # The bug this replaces: `_onset_epoch_seen` was re-seeded from the
+        # counter `self._rhythm.reset()` had just bumped, which swallowed the
+        # edge the density getter watches for, WITHOUT starting a refill. Every
+        # song start and every 15-minute reset then published a confident 0.0
+        # for a window with nothing in it — on the path that runs constantly on
+        # a quiet input. Setting both together, here, is why that cannot recur.
         self._onset_epoch_seen: int = self._rhythm.onset_epoch
-        self._density_valid_from: datetime.datetime | None = None
+        self._density_valid_from: datetime.datetime | None = (
+            self._clock.now() + datetime.timedelta(seconds=_ONSET_DENSITY_WINDOW_SEC))
         self.yamnet_change_detector.reset()
         self.is_playing: bool = False
         self.song_start_time: datetime.datetime = self._clock.now()

@@ -68,6 +68,22 @@ _INVALID_TRANSITIONS: frozenset = frozenset({
 })
 
 
+def _hold(current_intent: LightIntent | None) -> LightIntent:
+    """What to show when density is unmeasured: keep doing what the last real
+    measurement said.
+
+    Except ATMOSPHERIC. That intent means "no beats" — it is set by the
+    beat-absence timer and cleared by a beat arriving. But the classifier only
+    runs on a beat, so reaching here while ATMOSPHERIC means beats ARE flowing
+    and the stage is dark anyway; holding would keep the lights off through live
+    music for as long as the onset detector stayed shed. GROOVE is the neutral
+    lit intent and the honest degradation. (decisions #108)
+    """
+    if current_intent is None or current_intent is LightIntent.ATMOSPHERIC:
+        return LightIntent.GROOVE
+    return current_intent
+
+
 def _classify_intent(
     bpm: float,
     onset_density: float,
@@ -101,7 +117,7 @@ def _classify_intent(
     doing what the last real measurement said.
     """
     if not density_is_known(onset_density):
-        return current_intent if current_intent is not None else LightIntent.GROOVE
+        return _hold(current_intent)
     # PEAK is sustained DROP — it keeps DROP's exit threshold.
     currently_drop      = current_intent in (LightIntent.DROP, LightIntent.PEAK)
     currently_breakdown = (current_intent == LightIntent.BREAKDOWN)
@@ -159,7 +175,7 @@ def _classify_windowed(
     # low number — and a window with nothing measurable left holds the intent.
     window = [entry for entry in window if density_is_known(entry[1])]
     if not window:
-        return current_intent if current_intent is not None else LightIntent.GROOVE
+        return _hold(current_intent)
 
     densities      = [entry[1] for entry in window]
     sub_bass_vals  = [entry[3] for entry in window]
@@ -209,6 +225,9 @@ class LightEngine(IMusicAnalyserHandler):
         self._needs_initial_effect: bool = False
         self._atmospheric_sent: bool = False  # True while in beat-absence ATMOSPHERIC state
         self._current_intent: LightIntent | None = None  # last committed intent (for change detection)
+        # Last tempo actually put on the wire, so a warm-up or post-reset
+        # zero can be held rather than published. See _publishable_bpm.
+        self._published_bpm: dict = {}
         # Rolling history of BeatRecord entries for windowed classification.
         # Kept for 2 × look_ahead_sec so the symmetric window is always available at commit time.
         self._beat_history: deque[BeatRecord] = deque()
@@ -318,14 +337,36 @@ class LightEngine(IMusicAnalyserHandler):
                 self.event_buffer.set_intent(intent.value)
 
         # OS2L beat — always goes through the queue so it fires in sync with audio.
-        _change, _pos, _bpm2 = bpm_changed, beat_number, bpm
+        # The wire never carries a zero tempo: see _publishable_bpm.
+        _change, _pos, _bpm2 = (bpm_changed, beat_number,
+                                self._publishable_bpm(self._published_bpm, bpm))
         if self.command_queue:
             await self.command_queue.enqueue(
                 'beat',
                 lambda: self.os2l_client.send_beat(change=_change, pos=_pos, bpm=_bpm2, strength=0.5)
             )
         else:
-            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number, bpm=bpm, strength=0.5)
+            await self.os2l_client.send_beat(change=bpm_changed, pos=beat_number,
+                                             bpm=_bpm2, strength=0.5)
+
+    @staticmethod
+    def _publishable_bpm(state: dict, bpm: float) -> float:
+        """The tempo to put on the wire, given the tempo we just measured.
+
+        A derived tempo needs two inter-beat intervals, so the first beats of a
+        track — and of every 15-minute reset — measure 0.0. aubio published a
+        number from beat one, so sending 0.0 downstream is a regression: OS2L
+        consumers read it as a tempo of zero rather than as "not yet known".
+
+        The last known tempo is held instead. A stale tempo for two beats is a
+        far smaller lie than a zero one, and on a reset it is very likely still
+        correct. 0.0 goes out only before any tempo has ever been measured,
+        where there is nothing to hold. (decisions #108)
+        """
+        if bpm > 0:
+            state['last'] = bpm
+            return bpm
+        return state.get('last', 0.0)
 
     async def _commit_intent(self, enqueue_time: float, bpm: float) -> None:
         """Fired by DelayedCommandQueue after look_ahead_sec.

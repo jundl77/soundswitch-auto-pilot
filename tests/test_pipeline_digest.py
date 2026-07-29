@@ -159,3 +159,16 @@ def test_the_filterbank_anchor_notices_a_changed_filterbank():
     finally:
         ma.MelFilterbank.__call__ = original
     assert tampered['grid_hash'] != honest['grid_hash']
+
+
+def test_density_aggregates_ignore_the_unmeasured_sentinel():
+    """DENSITY_UNKNOWN is negative, so a shed stretch would drag the reported
+    mean and median below zero -- a digest that reads as a catastrophic
+    regression when what actually happened is that nothing was measured."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+
+    measured = [_beat(float(i), onset_density=6.0) for i in range(4)]
+    shed = [_beat(float(i + 4), onset_density=DENSITY_UNKNOWN) for i in range(4)]
+    d = digest_report(_report(measured + shed))
+    assert d['rhythm']['onset_density_median'] == 6.0
+    assert d['rhythm']['onset_density_median'] > 0

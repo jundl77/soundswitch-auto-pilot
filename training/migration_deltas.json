@@ -1,0 +1,118 @@
+{
+  "what": "What the aubio-to-madmom rhythm migration did to the show, measured.",
+  "why_committed": "The investigation and sweep reports that justify this migration live under .superpowers/, which is gitignored — so without this file nothing in the repository records either the basis for the decision or its measured effect. See docs/migration-evidence.md for the prose.",
+  "measured_at": "2026-07-29",
+  "pipeline": {
+    "before": "origin/master 9749286 — aubio tempo/onset/notes for rhythm",
+    "after": "madmom_migration — madmom online beats/onsets, ONSET_THRESHOLD 0.35",
+    "unchanged": "aubio pvoc + 40-band Slaney mel filterbank (byte-identical, see filterbank_identical)"
+  },
+  "instrument": "training/pipeline_digest.py, fast sim on a virtual clock, single thread",
+
+  "beat_source_basis": {
+    "note": "Why madmom was chosen. Decoded downbeat F1 on the 215-track validation split, measured by the beat-source sweep (decisions #81). NOT re-measured in this PR — quoted with provenance.",
+    "corpus": "val-215, no subsampling, micro-averaged at +-70 ms",
+    "gate_faithful": {
+      "description": "flips median <= 1 per track — the stability a light show needs",
+      "aubio": 0.2701,
+      "madmom_online": 0.5013,
+      "delta": 0.2312,
+      "expert_beat_bound": 0.7066
+    },
+    "max_f1": {
+      "description": "no stability constraint",
+      "aubio": 0.5277,
+      "madmom_online": 0.5855,
+      "delta": 0.0578
+    },
+    "beat_stream_reachability_subdivision_1": {
+      "aubio": 0.5176,
+      "madmom_online": 0.8963
+    },
+    "caveats": [
+      "Validation split only; no test read was taken.",
+      "Only madmom's ONLINE tracker was admitted — its offline path scores better and cannot run live.",
+      "The 'doubled F1' shorthand refers to the gate-faithful row (0.2701 -> 0.5013), not to max-F1."
+    ]
+  },
+
+  "tracks": {
+    "generate_eric_prydz_192k.mp3": {
+      "duration_sec": 165.09,
+      "split": "bundled sample, not corpus audio",
+      "schema_identical": true,
+      "filterbank_identical": true,
+      "beats_detected": {"before": 344, "after": 344},
+      "bpm_median": {"before": 127.9894, "after": 127.6596},
+      "onset_density_mean": {"before": 3.627907, "after": 4.421512},
+      "intent_changes_count": {"before": 23, "after": 16},
+      "effect_changes_count": {"before": 23, "after": 17},
+      "dominant_intent": {"before": "breakdown", "after": "groove"},
+      "intent_distribution_sec": {
+        "before": {"breakdown": 46.87, "buildup": 7.76, "drop": 37.77, "groove": 44.45, "peak": 26.66},
+        "after": {"breakdown": 14.62, "buildup": 3.79, "drop": 46.28, "groove": 62.88, "peak": 36.88}
+      }
+    },
+    "hzIFjGcOKbg.mp3": {
+      "duration_sec": 473.05,
+      "split": "eval_set / excluded_eval_set — held out of train, val and test",
+      "schema_identical": true,
+      "filterbank_identical": true,
+      "beats_detected": {"before": 839, "after": 1312},
+      "bpm_median": {"before": 85.6641, "after": 85.7143},
+      "onset_density_mean": {"before": 8.459277, "after": 9.242378},
+      "intent_changes_count": {"before": 41, "after": 19},
+      "effect_changes_count": {"before": 41, "after": 19},
+      "dominant_intent": {"before": "groove", "after": "groove"},
+      "intent_distribution_sec": {
+        "before": {"breakdown": 20.31, "buildup": 71.95, "groove": 379.16},
+        "after": {"breakdown": 19.29, "buildup": 13.54, "drop": 10.21, "groove": 429.44}
+      },
+      "beat_stream_self_consistency": {
+        "note": "Emitted beat rate against the rate the source's own reported tempo implies. A tracker that disagrees with itself is dropping beats it has already counted.",
+        "aubio": {"emitted_per_sec": 1.774, "implied_by_reported_bpm": 1.428, "disagreement_pct": 24.2},
+        "madmom": {"emitted_per_sec": 2.774, "implied_by_reported_bpm": 2.857, "disagreement_pct": 2.9}
+      }
+    },
+    "PNpXKsge4xM.mp3": {
+      "duration_sec": 257.64,
+      "split": "eval_set / excluded_eval_set — held out of train, val and test",
+      "schema_identical": true,
+      "filterbank_identical": true,
+      "beats_detected": {"before": 527, "after": 729},
+      "bpm_median": {"before": 87.8861, "after": 86.9565},
+      "onset_density_mean": {"before": 4.717268, "after": 6.865569},
+      "intent_changes_count": {"before": 28, "after": 38},
+      "effect_changes_count": {"before": 28, "after": 38},
+      "dominant_intent": {"before": "groove", "after": "groove"},
+      "intent_distribution_sec": {
+        "before": {"breakdown": 44.47, "buildup": 38.24, "drop": 5.68, "groove": 167.46},
+        "after": {"atmospheric": 0.18, "breakdown": 13.6, "buildup": 31.57, "groove": 211.88}
+      }
+    }
+  },
+
+  "whole_track_onset_rates_per_sec": {
+    "note": "aubio's onset stream against madmom's at the shipped threshold.",
+    "generate_eric_prydz_192k.mp3": {"aubio": 3.671, "madmom": 4.222},
+    "hzIFjGcOKbg.mp3": {"aubio": 8.452, "madmom": 9.111},
+    "PNpXKsge4xM.mp3": {"aubio": 5.259, "madmom": 7.212}
+  },
+
+  "cost": {
+    "front_end_ms_per_buffer": {"before": 0.079, "after": 1.493, "buffer_budget_ms": 5.805},
+    "front_end_core_share_pct": {"before": 1.4, "after": 25.7},
+    "rhythm_only_core_share_pct": {"before": 0.8, "after": 25.2},
+    "fast_sim_realtime_factor": {"before": 46.31, "after": 3.79},
+    "corpus_report_cache_regen_cpu_hours": {"before": 3.4, "after": 41.3,
+      "basis": "1387 tracks, 156.6 audio-hours from clean_manifest.csv decoded durations",
+      "wall_hours_at_12_workers_after": 3.4}
+  },
+
+  "determinism_checksums_after": {
+    "note": "Byte-identical across two fresh processes per track.",
+    "generate_eric_prydz_192k.mp3": "110e99835b64a6e6",
+    "hzIFjGcOKbg.mp3": "26598b3ea2a58056",
+    "PNpXKsge4xM.mp3": "bfff78031e4afb5b"
+  }
+}

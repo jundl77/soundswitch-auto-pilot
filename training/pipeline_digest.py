@@ -35,6 +35,8 @@ import json
 import time
 from pathlib import Path
 
+from lib.analyser.music_analyser import density_is_known
+
 # Beat-row columns produced by the rhythm source (allowed to move).
 RHYTHM_COLUMNS = ('t', 'bpm', 'onset_density', 'strength', 'change')
 # Beat-row columns produced by the aubio filterbank (must not move as a result
@@ -53,7 +55,12 @@ def digest_report(report: dict, *, wall_elapsed: float | None = None) -> dict:
     beats = report['beats']
     metrics = report['metrics']
 
-    densities = sorted(b['onset_density'] for b in beats)
+    # Beats recorded while the onset detector was shed carry DENSITY_UNKNOWN
+    # (negative). Averaging or sorting those in would drag the reported density
+    # below zero — a digest that reads as a catastrophic regression when what
+    # actually happened is that nothing was measured.
+    densities = sorted(b['onset_density'] for b in beats
+                       if density_is_known(b['onset_density']))
     bpms = sorted(b['bpm'] for b in beats if b['bpm'] > 0)
 
     def _median(xs):

@@ -367,3 +367,68 @@ def test_report_metrics_exclude_unmeasured_beats():
     # report stays self-describing rather than silently dropping the beat.
     assert report['beats'][1]['onset_density'] == DENSITY_UNKNOWN
     assert report['beats'][1]['strength'] == 0.0
+
+
+def test_unknown_density_never_holds_atmospheric():
+    """ATMOSPHERIC means "no beats" -- it is set by the beat-absence timer, and
+    the only thing that clears it is a beat arriving. But the classifier only
+    RUNS on a beat, so reaching it with density unknown means beats are flowing
+    and the show is dark anyway. Holding would keep the lights off while music
+    plays, for as long as the onset detector stayed shed.
+
+    Degrade to GROOVE: the neutral, lit intent. Ruling recorded in decisions #108.
+    """
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_intent
+
+    assert _classify_intent(128.0, DENSITY_UNKNOWN,
+                            current_intent=LightIntent.ATMOSPHERIC) is LightIntent.GROOVE
+
+
+def test_unknown_density_holds_every_other_intent():
+    """The hold is still the rule everywhere it is safe -- only the dark one is
+    special-cased."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_intent
+
+    for held in (LightIntent.DROP, LightIntent.GROOVE, LightIntent.BUILDUP,
+                 LightIntent.PEAK, LightIntent.BREAKDOWN):
+        assert _classify_intent(128.0, DENSITY_UNKNOWN, current_intent=held) is held
+
+
+def test_a_windowed_classification_with_nothing_measurable_also_leaves_atmospheric():
+    """The same rule on the windowed path -- a shed that begins during a silent
+    passage must not strand the show dark once the music returns."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    from lib.engine.effect_definitions import LightIntent
+    from lib.engine.light_engine import _classify_windowed
+
+    window = [(i, DENSITY_UNKNOWN, 128.0, 0.35, 0.2, 4.0, 1.0) for i in range(6)]
+    assert _classify_windowed(window, 128.0,
+                              LightIntent.ATMOSPHERIC) is LightIntent.GROOVE
+
+
+# ---------------------------------------------------------------------------
+# A zero BPM is an absence of measurement, not a tempo — it must not go on the wire
+# ---------------------------------------------------------------------------
+
+def test_publishable_bpm_never_emits_zero_as_a_tempo():
+    """madmom needs two inter-beat intervals before it can report a tempo, so
+    the first beats of every track -- and of every 15-minute reset -- carry 0.0.
+    aubio had a number by beat 1, so publishing 0.0 downstream is a regression
+    that a VirtualDJ/SoundSwitch consumer reads as "tempo zero", not as "not yet
+    known". Ruling (decisions #108): hold the last known tempo. (0.0 only ever
+    goes out before ANY tempo has been measured, where there is nothing to hold
+    and no consumer has been told otherwise.)"""
+    from lib.engine.light_engine import LightEngine
+
+    hold = LightEngine._publishable_bpm
+    state = {}
+    assert hold(state, 0.0) == 0.0          # nothing measured yet
+    assert hold(state, 128.0) == 128.0      # first real measurement
+    assert hold(state, 0.0) == 128.0        # reset: hold, do not publish zero
+    assert hold(state, 0.0) == 128.0
+    assert hold(state, 174.0) == 174.0      # new measurement wins
+    assert hold(state, 0.0) == 174.0

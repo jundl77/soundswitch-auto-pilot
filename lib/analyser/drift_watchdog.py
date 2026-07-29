@@ -58,7 +58,10 @@ class ShedLevel(IntEnum):
 
     NONE = 0
     SECTION_DETECTION = 1   # YAMNet off — the show loses section-change cues
-    ONSET_DETECTION = 2     # + madmom onsets off — density features go stale
+    ONSET_DETECTION = 2     # + madmom onsets off — density reports UNMEASURED
+                            # (not stale, and emphatically not zero): the
+                            # classifier holds instead of classifying, and
+                            # report rows carry the sentinel.
 
 
 class DriftWatchdog:

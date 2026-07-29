@@ -27,7 +27,9 @@ Before opening a PR, all tests must pass:
 # Fast unit tests (run these frequently during development)
 uv run pytest -m "not integration"
 
-# Full suite including unit + integration tests (~8s)
+# Full suite including unit + integration tests (a few minutes: the integration
+# tests run whole tracks through the real rhythm networks, so this is minutes,
+# not seconds. It is not hung.)
 uv run pytest
 
 # Run a single test file
@@ -127,7 +129,7 @@ Classification uses BPM (octave-folded into one tempo band, so a half- or double
 
 **Look-ahead delay** (`LOOK_AHEAD_SEC`) must always match `playback_delay_seconds` in dmx-enttec-node. It is defined in `lib/main.py` and `simulate/runner.py`. Local debug audio playback is delayed by the same amount so headphone monitoring stays in sync.
 
-**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track ~30â€“50Ã— faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
+**Fast simulation:** file simulation runs on a virtual clock driven by audio sample position instead of the wall clock â€” the full pipeline (identical code path to production) processes a track several times faster than real-time and deterministically: the same file always produces byte-identical reports (RNG seeded, no wall-clock jitter). Beat timestamps are song-position seconds; intent/effect blocks are stamped when the audience hears them â€” one look-ahead delay after the beats that caused them â€” so expect intent blocks to trail the track structure by that delay when reading reports. The report records that offset in its metrics, so consumers can realign the two time bases without hardcoding the constant. The decoded audio is cached beside the source file (`*.npy`, gitignored) to skip repeat decodes. Real OS scheduler jitter is only observable in `--ui` / realtime modes, which still run on the system clock.
 
 ### DMX migration path
 
@@ -170,7 +172,7 @@ python training/inspect_report.py report.json
 
 # Tests
 uv run pytest -m "not integration"   # fast unit tests only
-uv run pytest                        # unit + integration (~6s)
+uv run pytest                        # unit + integration (minutes, not seconds)
 ```
 
 **Flags (`run`):**
@@ -189,10 +191,11 @@ uv run pytest                        # unit + integration (~6s)
   dynamic Bayesian network), BPM, and onsets. **Online mode only**, and that is
   load-bearing: madmom's offline decoders score better and cannot run live, so a
   number produced by one is a number the runtime can never reproduce. Chosen over
-  aubio on a measured decoded comparison rather than reputation; the decision,
-  the measurements that drove each constant, and the deltas are in
-  `docs/superpowers/plans/2026-07-29-madmom-migration.md`, with the onset
-  operating point's raw sweep committed at `training/onset_operating_point.json`.
+  aubio on a measured decoded comparison rather than reputation. The basis and
+  the measured effect on the show are in `docs/migration-evidence.md` and
+  `training/migration_deltas.json`; the onset operating point's raw sweep and its
+  stability analysis are in `training/onset_operating_point.json`, with every
+  draw taken (including the wrong ones) in `training/onset_operating_point_draws.md`.
 - **Aubio** -- the 40-band Slaney mel filterbank and the FFT that feeds it, and
   nothing else. Every trained model and every spectral feature (kick strength,
   sub-bass ratio, centroid trend) is built on this exact bank, so it is held
@@ -259,17 +262,19 @@ Decisions that belong here rather than in the code:
 - **Thresholds are fitted to one track**: the classifier's constants sit between populations measured on the single bundled sample. They are a hypothesis until re-measured on a wider corpus â€” see `lib/analyser/CLAUDE.md` (Known Limitations).
 - **Fast genres fold to half tempo**: BPM octave folding puts drum & bass and faster material below DROP's BPM floor, so their drops cannot classify as DROP. Accepted for Stage 1.
 - **Kick strength lags one beat**: a beat's kick value is not final until a few buffers after the beat fires (the filterbank's group delay), so each beat record carries the previous beat's measurement. Irrelevant to the multi-second classification window; relevant if you ever want a single-beat trigger.
-- **The rhythm front-end costs ~19x what aubio did**: 25.2% of one core against
-  0.8%, measured single-threaded. On a strict reading of the campaign's >= 5x /
-  <= 20% realtime bar that is a MISS (3.9x). That bar was written for NN posterior
-  generation, where 5x buys the rest of the stack its headroom on one core, and it
-  was ruled not to bind a DSP front-end; the front-end's gates are instead
-  sustained 1x whole-pipeline with headroom, the backpressure machinery, and a
-  30-minute soak. Both readings belong in any future discussion of this cost --
-  the miss is real under the original wording.
-- **Fast simulation dropped from ~46x real-time to ~4x**, which is the honest
-  price of the migration and the number to expect when re-running a corpus. Track
-  parallelism recovers most of the wall-clock; per-core throughput is what fell.
+- **The rhythm front-end costs ~18x what aubio did** end to end (1.4% of one core
+  to 25.7%, filterbank included); the rhythm half alone went 0.8% to 25.2%. On a
+  strict reading of the campaign's >= 5x / <= 20% realtime bar, 25.7% is a MISS
+  (3.9x). That bar was written for NN posterior generation, where 5x buys the
+  rest of the stack its headroom on one core, and it was ruled not to bind a DSP
+  front-end; the front-end's gates are instead sustained 1x whole-pipeline with
+  headroom, the backpressure machinery, and a 30-minute soak, all of which pass.
+  Both readings belong in any future discussion -- the miss is real under the
+  original wording.
+- **Fast simulation is ~12x slower** (46.3x real-time to 3.8x on the bundled
+  track). Regenerating the whole corpus report cache is therefore ~41 CPU-hours
+  against ~3 before, or roughly 3.5 hours of wall clock at 12 workers: track
+  parallelism recovers the wall-clock, per-core throughput is what fell.
 - **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and
   the input side DROPS rather than queues, so falling behind costs audio, not
   latency. The drift watchdog sheds section detection first and onsets second, and

@@ -110,7 +110,9 @@ def test_seconds_since_last_beat_on_virtual_clock():
 def test_onset_density_window_prunes_on_virtual_time():
     clock = VirtualClock()
     analyser = _make_analyser(clock)
-    # Two onsets now, then advance beyond the 1.5 s rolling window.
+    # Past the start-up refill window first: a freshly built analyser has an
+    # empty rolling window and reports UNMEASURED until one has filled.
+    clock.advance(2.0)
     analyser._onset_times.append(clock.now())
     analyser._onset_times.append(clock.now())
     assert analyser.get_onset_density() == 2 / 1.5
@@ -444,7 +446,7 @@ async def test_shedding_section_detection_does_not_clear_anything(analyser):
 # A shed onset chain must report UNKNOWN density, never zero
 # ---------------------------------------------------------------------------
 
-async def test_shedding_onsets_reports_unknown_density_not_zero(analyser):
+async def test_shedding_onsets_reports_unknown_density_not_zero():
     """Zero is a measurement: it says the music went sparse. Shedding the onset
     detector produces the same number for a completely different reason, and
     within 1.5 s the rolling window empties and every consumer sees a genuine
@@ -453,7 +455,10 @@ async def test_shedding_onsets_reports_unknown_density_not_zero(analyser):
     contradicts it.
     """
     from lib.analyser.music_analyser import DENSITY_UNKNOWN, density_is_known
-    analyser._onset_times.extend([analyser._clock.now()] * 6)
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(2.0)                    # past the start-up refill window
+    analyser._onset_times.extend([clock.now()] * 6)
     assert density_is_known(analyser.get_onset_density())
 
     analyser._rhythm.set_onsets_enabled(False)
@@ -536,3 +541,123 @@ async def test_the_heartbeat_rearms_rather_than_repeating_every_buffer(caplog):
         clock.advance(0.1)
         analyser._log_rhythm_state(clock.now())
     assert sum('[rhythm]' in r.message for r in caplog.records) == 1
+
+
+# ---------------------------------------------------------------------------
+# The -d click actually reaches the audio (end to end)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+async def test_debug_clicks_are_mixed_into_the_returned_audio():
+    """`-d` is a feature the owner asked for by name, and the line that
+    implements it -- `audio_signal += self.click_sound` in analyse() -- had no
+    test. Everything around it was covered: the trigger logic, the refractory,
+    the onset stream. A change that stopped the click ever reaching the audio
+    would have left the whole suite green.
+
+    Asserts the click is present, is exactly the click, lands only on beeps, and
+    is absent entirely when the flag is off.
+    """
+    from pathlib import Path
+
+    from lib.analyser.music_analyser import MusicAnalyser
+    from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
+    from lib.clock import VirtualClock
+    from simulate.fake_audio_client import FileAudioClient
+
+    sample = str(Path(__file__).parent.parent / 'samples'
+                 / 'generate_eric_prydz_192k.mp3')
+
+    class _Handler(_StubHandler):
+        def __init__(self):
+            self.notes = 0
+
+        async def on_note(self):
+            self.notes += 1
+
+    async def run(note_clicks: bool):
+        client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, sample)
+        client.start_streams()
+        clock = VirtualClock()
+        handler = _Handler()
+        analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, handler, clock=clock,
+                                 note_clicks=note_clicks)
+        analyser.yamnet_change_detector.detect_change = lambda *a, **k: False
+
+        clicked = 0
+        for _ in range(int(20 * SAMPLE_RATE / BUFFER_SIZE)):
+            if client.exhausted:
+                break
+            clean = client.read().copy()
+            clock.advance(BUFFER_SIZE / SAMPLE_RATE)
+            out = await analyser.analyse(clean.copy())
+            if not np.array_equal(out, clean):
+                clicked += 1
+                assert np.allclose(out - clean, analyser.click_sound, atol=1e-5), \
+                    'the buffer was modified, but not by the click'
+        return handler.notes, clicked
+
+    notes_on, clicked_on = await run(note_clicks=True)
+    notes_off, clicked_off = await run(note_clicks=False)
+
+    assert notes_on > 0, 'no beeps fired on 20 s of the bundled track'
+    assert clicked_on == notes_on, 'a beep fired without reaching the audio'
+    assert clicked_off == 0, 'audio was modified with -d off'
+
+
+# ---------------------------------------------------------------------------
+# A song reset leaves density UNMEASURED, not measured-zero
+# ---------------------------------------------------------------------------
+
+async def test_a_song_reset_reports_unknown_density_during_the_refill():
+    """_reset_state() empties the onset window, so for one window afterwards
+    there is nothing to measure. It was reporting a confident 0.0 instead --
+    fabricated data at every song start and every 15-minute reset, on the one
+    path that runs constantly on a quiet input.
+
+    The shed-restore path already got this right; the reset path swallowed its
+    own epoch bump by re-seeding `_onset_epoch_seen` from the freshly-bumped
+    counter, so the getter never saw an edge.
+    """
+    from lib.analyser.music_analyser import (DENSITY_UNKNOWN,
+                                             _ONSET_DENSITY_WINDOW_SEC)
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    clock.advance(2.0)                    # past the start-up refill window
+    analyser._onset_times.extend([clock.now()] * 6)
+    assert analyser.get_onset_density() > 0
+
+    analyser._reset_state()
+    assert analyser.get_onset_density() == DENSITY_UNKNOWN, \
+        'a reset fabricated a measured density of 0.0'
+
+    clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
+    assert analyser.get_onset_density() != DENSITY_UNKNOWN
+
+
+async def test_the_reset_refill_uses_the_same_semantics_as_shed_restore():
+    """Two paths, one rule -- an empty window is unmeasured until it has had a
+    window's worth of audio to fill."""
+    from lib.analyser.music_analyser import DENSITY_UNKNOWN
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+
+    analyser._reset_state()
+    after_reset = analyser.get_onset_density()
+    analyser._rhythm.set_onsets_enabled(False)
+    analyser._rhythm.set_onsets_enabled(True)
+    after_restore = analyser.get_onset_density()
+    assert after_reset == after_restore == DENSITY_UNKNOWN
+
+
+async def test_a_freshly_built_analyser_has_not_measured_density_yet():
+    """The same rule as reset and shed-restore, applied to the one case that
+    happens on every single start: an empty rolling window has nothing in it,
+    so a rate read off it is fabricated rather than sparse."""
+    from lib.analyser.music_analyser import (DENSITY_UNKNOWN,
+                                             _ONSET_DENSITY_WINDOW_SEC)
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    assert analyser.get_onset_density() == DENSITY_UNKNOWN
+    clock.advance(_ONSET_DENSITY_WINDOW_SEC + 0.01)
+    assert analyser.get_onset_density() == 0.0
