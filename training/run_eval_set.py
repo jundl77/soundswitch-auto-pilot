@@ -423,7 +423,8 @@ def simulate_report(mp3_path: str) -> tuple:
     Identical to what ``auto_pilot simulate file`` does and to what
     ``build_training_table`` does per corpus track -- the point of the benchmark
     is that there is no benchmark-only code path.  The DSP imports stay local so
-    the pure-logic half of this module (and its unit tests) never pay for aubio.
+    the pure-logic half of this module (and its unit tests) never pay to load
+    the analysis stack.
     """
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from simulate.fake_audio_client import FileAudioClient

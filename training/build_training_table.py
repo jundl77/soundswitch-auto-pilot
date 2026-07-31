@@ -62,7 +62,7 @@ Time bases
 Beat timestamps are song-position seconds.  Intent blocks are MOSTLY audience
 time -- one look-ahead delay later -- so they are shifted back by the report's
 own ``metrics.look_ahead_sec`` before being read at a beat.  Mel frames carry
-the same stamp convention as beats (see ``pooled_log_mel``).
+the same stamp convention as beats.
 
 "Mostly", because a block's base is not recorded in the report and has to be
 inferred.  Every intent commit now rides the delayed command queue, so every
@@ -222,10 +222,10 @@ CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro",
 MEL_BANDS = 40          # must equal MelFilterbank.BANDS
 POOL_BUFFERS = 8        # 8 x 256 samples @ 44.1 kHz ~= 46 ms per frame
 
-# Which exporter wrote a sidecar, recorded IN the sidecar.  Bump it whenever
-# `pooled_log_mel` produces different numbers for input it already handled -- a
-# different compression than log1p, a different pooling reduction, a filterbank
-# change.  Geometry cannot stand in for this: all three of those changes leave
+# Which exporter wrote a sidecar, recorded IN the sidecar.  Bump it whenever the
+# exporter produces different numbers for input it already handled -- a different
+# compression than log1p, a different pooling reduction, a filterbank change.
+# Geometry cannot stand in for this: all three of those changes leave
 # the frame rate and the band count exactly where they were, so a corpus rebuilt
 # on top of the old sidecars would train one model on two feature generations
 # and say nothing.  The stamp lives here and NOT in the cached report because
@@ -237,7 +237,7 @@ MEL_EXPORTER_KEY = "exporter_version"
 # `MusicAnalyser` throws its rolling state away every 15 minutes (`lib/main.py`)
 # to stop the windows growing without bound.  The simulation runs that code
 # unmodified, so a track that reaches the horizon has its beat stream restart
-# mid-song while `pooled_log_mel` -- which has no such reset -- keeps going.  The
+# mid-song while the mel exporter -- which had no such reset -- kept going.  The
 # two then describe the same audio from different states, and the training table
 # joins them anyway: wrong rows, no error, no counter.  The corpus tops out at
 # 899.889 s, i.e. 0.11 s of margin, so this is a live edge and not a hypothetical
@@ -590,83 +590,6 @@ def format_row(row: dict) -> list:
 # --------------------------------------------------------------------------- #
 
 
-class MelEnergyStream:
-    """The pipeline's per-buffer mel filterbank, rebuilt outside the pipeline.
-
-    ``lib/`` is read-only in this plan, so the exporter cannot borrow a live
-    ``MusicAnalyser``; it constructs the same aubio objects with the same
-    parameters as ``MusicAnalyser._reset_state`` instead.  The duplication is
-    pinned by a parity test that feeds both sides the same buffers and demands
-    bit-identical energies -- without it, the model could silently train on
-    features the runtime never produces.
-
-    Stateful: aubio's phase vocoder keeps an overlap window, so buffers must be
-    fed in order from the start of the track, exactly as the pipeline does.
-    """
-
-    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = BUFFER_SIZE):
-        import aubio  # local: keeps the label-join path free of the DSP import
-
-        self.sample_rate = sample_rate
-        self.win_s = buffer_size * 4
-        self.hop_s = buffer_size
-        self.mel_bands = MEL_BANDS
-        self._pvoc = aubio.pvoc(self.win_s, self.hop_s)
-        self._filterbank = aubio.filterbank(self.mel_bands, self.win_s)
-        self._filterbank.set_mel_coeffs_slaney(sample_rate)
-
-    def process(self, buffer: np.ndarray) -> np.ndarray:
-        """Mel band energies for one buffer (same call chain as the analyser)."""
-        return self._filterbank(self._pvoc(buffer))
-
-
-def pooled_log_mel(audio: np.ndarray, sample_rate: int = SAMPLE_RATE,
-                   buffer_size: int = BUFFER_SIZE,
-                   pool: int = POOL_BUFFERS) -> tuple:
-    """Decoded track -> ``(mel[n_frames, 40] float32, frame_sec, t0)``.
-
-    ``log1p`` compresses the energies (the spec's input transform) and pooling
-    ``pool`` consecutive buffers takes the frame rate from ~5.8 ms to ~46 ms,
-    which is the rate the CRNN reads.
-
-    Time base: the simulation advances its clock *before* analysing a buffer, so
-    an event in buffer ``i`` is stamped at ``(i+1) * buffer_sec``.  A pooled
-    frame therefore carries the song time of the END of its last buffer, putting
-    frame ``k`` at ``t0 + k * frame_sec`` with ``t0 == frame_sec`` -- mel frames
-    and beat rows land on one time base with no correction factor.
-
-    The trailing partial frame is dropped (it would be pooled over fewer buffers
-    and weighted unlike every other frame); the trailing partial *buffer* is
-    zero-padded, exactly as ``FileAudioClient`` pads it for the simulation.
-    """
-    stream = MelEnergyStream(sample_rate, buffer_size)
-    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
-    n_buffers = -(-len(samples) // buffer_size)  # ceil: the last one is padded
-    n_frames = n_buffers // pool
-
-    mel = np.zeros((n_frames, MEL_BANDS), dtype=np.float32)
-    accumulator = np.zeros(MEL_BANDS, dtype=np.float64)
-    frame = 0
-    for index in range(n_frames * pool):
-        start = index * buffer_size
-        chunk = samples[start:start + buffer_size]
-        if len(chunk) < buffer_size:
-            padded = np.zeros(buffer_size, dtype=np.float32)
-            padded[:len(chunk)] = chunk
-            chunk = padded
-        # maximum(): a mel filterbank over a magnitude spectrum is non-negative,
-        # but a negative would become NaN under log1p and poison training in
-        # silence rather than failing loudly.
-        accumulator += np.log1p(np.maximum(stream.process(chunk), 0.0))
-        if (index + 1) % pool == 0:
-            mel[frame] = accumulator / pool
-            accumulator[:] = 0.0
-            frame += 1
-
-    frame_sec = pool * buffer_size / sample_rate
-    return mel, frame_sec, frame_sec
-
-
 def write_feature_sidecar(path, mel: np.ndarray, frame_sec: float, t0: float) -> None:
     """Write one ``<youtube_id>.npz`` atomically."""
     path = Path(path)
@@ -812,7 +735,7 @@ def cache_is_fresh(envelope: dict, pipeline_sha_: str,
 
 
 def simulate_track(job: SimJob) -> SimResult:
-    """Run one track through the fast sim, export its sidecar, drop its cache.
+    """Run one track through the fast sim and drop its decode cache.
 
     Never raises: a bad track must not take the batch down with it.  The decode
     cache is removed in a ``finally`` so a failure cannot leak ~7.7x the mp3's
@@ -831,15 +754,12 @@ def simulate_track(job: SimJob) -> SimResult:
         report = event_buffer.to_report(command_queue.get_timing_log())
         _write_json_gz(Path(job.report_path), report_envelope(job, report))
 
-        # Same decoded samples the simulation just consumed -- parity by
-        # construction, and the cache is still warm.
-        audio = np.load(cache_path)
-        mel, frame_sec, t0 = pooled_log_mel(audio, SAMPLE_RATE, BUFFER_SIZE)
-        write_feature_sidecar(Path(job.sidecar_path), mel, frame_sec, t0)
-
+        # The mel exporter went with the analyser's filterbank, so a track
+        # simulated from here on gets a report and no features.  Existing
+        # sidecars are still read; new ones cannot be produced, which is the
+        # one-way door the integration plan discloses.
         return SimResult(job.track_id, True, "", len(report.get("beats", [])),
-                         len(mel), os.path.getsize(job.sidecar_path),
-                         time.monotonic() - started)
+                         0, 0, time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 -- one bad track, not a dead batch
         return SimResult(job.track_id, False, f"{type(exc).__name__}: {exc}"[:300],
                          0, 0, 0, time.monotonic() - started)

@@ -1,8 +1,6 @@
-"""Inspect a simulation report: per-10s feature/intent bins + intent timeline."""
+"""Inspect a simulation report: per-10s rms/beat/intent bins + intent timeline."""
 import argparse
 import json
-
-from lib.analyser.music_analyser import density_is_known
 
 
 def main() -> None:
@@ -30,20 +28,16 @@ def main() -> None:
                 best, best_overlap = block['intent'], overlap
         return best
 
-    print(f'{"bin":>12}  {"rms":>6}  {"density":>7}  {"kick":>5}  {"beats":>5}  intent')
+    print(f'{"bin":>12}  {"rms":>6}  {"beats":>5}  intent')
     t = 0.0
     while t < duration:
         t1 = min(t + args.bin_sec, duration)
         rows = [b for b in beats if t <= b['t'] < t1]
         if rows:
             rms = sum(b.get('rms', 0.0) for b in rows) / len(rows)
-            measured = [b['onset_density'] for b in rows
-                        if density_is_known(b['onset_density'])]
-            den = f'{sum(measured) / len(measured):>7.2f}' if measured else f'{"unmeas.":>7}'
-            kick = sum(b.get('kick_strength', 1.0) for b in rows) / len(rows)
-            print(f'{t:>5.0f}-{t1:<5.0f}  {rms:>6.3f}  {den}  {kick:>5.2f}  {len(rows):>5}  {dominant_intent_at(t, t1)}')
+            print(f'{t:>5.0f}-{t1:<5.0f}  {rms:>6.3f}  {len(rows):>5}  {dominant_intent_at(t, t1)}')
         else:
-            print(f'{t:>5.0f}-{t1:<5.0f}  {"-":>6}  {"-":>7}  {"-":>5}  {0:>5}  {dominant_intent_at(t, t1)}')
+            print(f'{t:>5.0f}-{t1:<5.0f}  {"-":>6}  {0:>5}  {dominant_intent_at(t, t1)}')
         t = t1
 
     print(f'\nIntent timeline — raw audience time '

@@ -1,4 +1,4 @@
-"""Per-buffer CPU cost of the analyser, old rhythm front-end against new."""
+"""Per-buffer CPU cost of the analyser front-end."""
 
 from __future__ import annotations
 
@@ -66,47 +66,28 @@ def main() -> None:
           f'({BUDGET_MS:.3f} ms budget), single thread\n')
     rows = []
 
-    import aubio
-
     from lib.analyser.madmom_rhythm import MadmomRhythm
-    from lib.analyser.music_analyser import MelFilterbank
-
-    mel = MelFilterbank(SR, BUFFER)
-    rows.append(_stats('aubio filterbank (STAYS)', _time_each(audio, mel)))
-
-    onset = aubio.onset('default', BUFFER * 2, BUFFER, SR)
-    tempo = aubio.tempo('default', BUFFER * 2, BUFFER, SR)
-    notes = aubio.notes('default', BUFFER * 2, BUFFER, SR)
-
-    def old_rhythm(buf):
-        onset(buf)
-        tempo(buf)
-        notes(buf)
-
-    rows.append(_stats('aubio rhythm (WAS)', _time_each(audio, old_rhythm)))
 
     rhythm = MadmomRhythm(SR)
     rhythm.process(audio[:BUFFER])            # exclude first-call model warm-up
-    rows.append(_stats('madmom rhythm (IS)', _time_each(audio, rhythm.process)))
+    rows.append(_stats('madmom rhythm', _time_each(audio, rhythm.process)))
 
-    fb, was, now = rows[0], rows[1], rows[2]
-    old_total = fb['mean_ms'] + was['mean_ms']
-    new_total = fb['mean_ms'] + now['mean_ms']
-    print(f'\nanalyser front-end total: {old_total:.3f} ms -> {new_total:.3f} ms '
-          f'({new_total/old_total:.1f}x)')
-    print(f'  as a share of one core : {100*old_total/BUDGET_MS:.1f}% -> '
-          f'{100*new_total/BUDGET_MS:.1f}%')
-    print(f'  headroom               : {BUDGET_MS/old_total:.0f}x -> '
-          f'{BUDGET_MS/new_total:.1f}x real time')
+    # The two rows this harness used to carry beside that one -- the mel
+    # filterbank and the rhythm stack it replaced -- measured code the NN
+    # integration deleted.  Their figures survive in docs/migration-evidence.md;
+    # the harness stays for the stages that take their place.
+    total = sum(row['mean_ms'] for row in rows)
+    print(f'\nanalyser front-end total: {total:.3f} ms')
+    print(f'  as a share of one core : {100 * total / BUDGET_MS:.1f}%')
+    print(f'  headroom               : {BUDGET_MS / total:.1f}x real time')
     bar = 20.0
-    verdict = 'PASS' if 100 * new_total / BUDGET_MS <= bar else 'OVER BAR'
+    verdict = 'PASS' if 100 * total / BUDGET_MS <= bar else 'OVER BAR'
     print(f'  decision #18 bar (<= {bar:.0f}% of a core): {verdict}')
 
     if args.out:
         Path(args.out).write_text(json.dumps(
             {'buffer_budget_ms': BUDGET_MS, 'rows': rows,
-             'old_total_ms': old_total, 'new_total_ms': new_total,
-             'verdict': verdict}, indent=2) + '\n')
+             'total_ms': total, 'verdict': verdict}, indent=2) + '\n')
         print(f'wrote {args.out}')
 
 

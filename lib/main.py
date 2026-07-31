@@ -26,7 +26,8 @@ class SoundSwitchAutoPilot:
                  enable_ui: bool = False,
                  ui_port: int = 8050,
                  report_path: str | None = None):
-        # Imported here, not at module scope: hoisting these makes `--help` pay the TensorFlow import.
+        # Imported here, not at module scope: hoisting these makes `--help` pay
+        # for the whole DSP and model stack.
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
