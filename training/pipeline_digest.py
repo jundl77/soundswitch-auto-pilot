@@ -1,23 +1,36 @@
 """Compact, diffable digest of one fast-sim run — the NN integration's golden fixture.
 
 Cut on the pipeline as it stands at the branch point, so the demolition can prove
-what it preserved rather than assert it.  Three blocks, and they are read
+what it preserved rather than assert it.  Four blocks, and they are read
 differently:
 
-``survives``    what the integration is not allowed to move — the beat stream, the
-                sound-start/stop instants, the OS2L beat wire, the MIDI ordering
-                relation, queue accuracy, and the report keys that outlive the
-                rule engine.  Compared for equality.
-``degradation`` the projection onto what NN_SHED and the branch's own intermediate
-                state may produce: beats, silence, one held intent, nothing else.
-                ``is_degradation_state`` is the predicate, and it is asserted from
-                both sides — False here, True after the demolition.
-``show``        intent and effect counts.  Recorded so the demolition's effect on
-                the show is visible; expected to move.
+``survives``      values the integration is not allowed to move — the beat stream,
+                  the sound-start/stop instants, the OS2L beat wire, the queue's
+                  own error, and the report keys that outlive the rule engine.
+                  Compared for equality.
+``relations``     properties, not values.  Everything the MIDI show is made of is a
+                  function of the classifier the demolition retires, so its
+                  transcript cannot be a survivor; what must still hold is that
+                  commands arrive in the order they were enqueued, that every lit
+                  channel comes from the pool its intent names, that the wire and
+                  the report agree, that the queue meets its own target, and that
+                  the overlay light bar is still being fed.  Every entry is a
+                  predicate and every one must be True.
+``informational`` the MIDI transcript itself and everything else the classifier
+                  decides.  Recorded and diffed, never gated.
+``degradation``   the projection onto what the branch's intermediate state may
+                  produce: beats, the surviving silence timer, one held intent and
+                  nothing else.  ``held_start_to_end`` is the predicate, and it is
+                  asserted from both sides — False here, True after the demolition.
 
 The aubio filterbank fingerprint that this file used to gate on is gone: the bank
 is deleted by the integration, so a fixed-grid fingerprint of it can only fail for
 the reason it was built to rule out.
+
+Nothing under ``lib/`` or ``simulate/`` is imported at module scope, and no doomed
+column or metric is read without checking that it is there.  The instrument has to
+run on both sides of the demolition, or the comparison it exists to make cannot be
+made in the commit that needs it.
 """
 
 from __future__ import annotations
@@ -28,8 +41,6 @@ import hashlib
 import json
 import time
 from pathlib import Path
-
-from lib.analyser.music_analyser import density_is_known
 
 # The beat row of a report, partitioned by what the NN integration does to it.
 SURVIVING_BEAT_COLUMNS = ('t', 'bpm', 'change', 'rms')
@@ -51,6 +62,9 @@ _EFFECT_MIDI_LABELS = ('set_autoloop', 'set_special_effect')
 _MIDI_LABEL_TO_EFFECT_TYPE = {'set_autoloop': 'AUTOLOOP',
                               'set_special_effect': 'SPECIAL_EFFECT'}
 
+_STREAM_NAMES = ('sound', 'os2l', 'midi', 'overlay')
+_OVERLAY_LIGHT_BAR = 'LIGHT_BAR_24'
+
 
 def _hash(values) -> str:
     canonical = json.dumps(values, sort_keys=True, default=str)
@@ -66,7 +80,21 @@ def _median(xs):
 
 def _normalise_streams(streams: dict | None) -> dict:
     streams = streams or {}
-    return {name: list(streams.get(name, ())) for name in ('sound', 'os2l', 'midi')}
+    return {name: list(streams.get(name, ())) for name in _STREAM_NAMES}
+
+
+def _non_decreasing(values) -> bool:
+    values = list(values)
+    return all(a <= b for a, b in zip(values, values[1:]))
+
+
+def _has_column(beats: list, column: str) -> bool:
+    return bool(beats) and column in beats[0]
+
+
+def _queue_errors_ms(report: dict) -> list:
+    return [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000
+            for e in report['timing_log']]
 
 
 def _sound_events(events: list) -> list:
@@ -86,27 +114,12 @@ def _os2l_digest(events: list) -> dict:
     }
 
 
-def _midi_digest(events: list, report_effects: list) -> dict:
-    times = [e['time'] for e in events]
-    applied = [(_MIDI_LABEL_TO_EFFECT_TYPE[e['label']], e['channel'])
-               for e in events if e['label'] in _EFFECT_MIDI_LABELS]
-    recorded = [(e['type'], e['channel']) for e in report_effects]
-    return {
-        'commands': len(events),
-        'labels': sorted({e['label'] for e in events}),
-        'ordering_hash': _hash([[e['label'], e['channel']] for e in events]),
-        'times_non_decreasing': all(a <= b for a, b in zip(times, times[1:])),
-        'effects_match_report': applied == recorded,
-    }
-
-
 def survives_digest(report: dict, streams: dict | None = None) -> dict:
     """Everything the NN integration must leave exactly where it found it."""
     beats = report['beats']
     metrics = report['metrics']
     streams = _normalise_streams(streams)
-    errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000
-                 for e in report['timing_log']]
+    errors_ms = _queue_errors_ms(report)
     return {
         'beats_detected': metrics['beats_detected'],
         'beat_times_hash': _hash([round(b['t'], 4) for b in beats]),
@@ -118,12 +131,7 @@ def survives_digest(report: dict, streams: dict | None = None) -> dict:
         'duration_sec': round(report['duration_sec'], 3),
         'sound_events': _sound_events(streams['sound']),
         'os2l': _os2l_digest(streams['os2l']),
-        'midi': _midi_digest(streams['midi'], report['effects']),
         'timing_accuracy': {
-            # The command count and the queue's target both move with the
-            # look-ahead; the error the queue makes against its own target does not.
-            'target_delta_sec': sorted({round(e['target_delta_sec'], 4)
-                                        for e in report['timing_log']}),
             'max_error_ms': round(max(errors_ms), 4) if errors_ms else 0.0,
         },
         'schema': {
@@ -135,55 +143,142 @@ def survives_digest(report: dict, streams: dict | None = None) -> dict:
     }
 
 
-def degradation_digest(report: dict, streams: dict | None = None) -> dict:
-    """The report seen through the degradation contract, and nothing else."""
-    beats = report['beats']
-    intents = report['intents']
+def _effects_match_report(midi: list, report_effects: list) -> bool:
+    applied = [(_MIDI_LABEL_TO_EFFECT_TYPE[e['label']], e['channel'])
+               for e in midi if e['label'] in _EFFECT_MIDI_LABELS]
+    return applied == [(e['type'], e['channel']) for e in report_effects]
+
+
+def _intent_at(intents: list, t: float) -> str | None:
+    current = None
+    for block in intents:
+        if block['t'] <= t + 1e-9:
+            current = block['intent']
+    return current
+
+
+def _channels_come_from_the_intents_pool(report: dict) -> bool:
+    """Every lit channel is one the intent current at that instant offers.
+
+    Survives the demolition where a transcript cannot: the classifier decides
+    which intent and the controller decides which channel within it, but the
+    containment is structural.  An effect lit with no intent committed is a
+    violation, not a pass -- that is the stage moving on nobody's decision.
+    """
+    from lib.engine.effect_definitions import INTENT_EFFECTS
+
+    pools = {intent.value: {effect.midi_channel.name for effect in effects}
+             for intent, effects in INTENT_EFFECTS.items()}
+    return all(effect['channel'] in pools.get(_intent_at(report['intents'],
+                                                         effect['t']), ())
+               for effect in report['effects'])
+
+
+def relations_digest(report: dict, streams: dict | None = None) -> dict:
+    """The properties that hold whatever the classifier decides."""
+    streams = _normalise_streams(streams)
+    light_bar = [e for e in streams['overlay'] if e['effect'] == _OVERLAY_LIGHT_BAR]
+    errors_ms = _queue_errors_ms(report)
     return {
-        'beats_detected': report['metrics']['beats_detected'],
-        'beat_times_hash': _hash([round(b['t'], 4) for b in beats]),
-        'sound_events': _sound_events(_normalise_streams(streams)['sound']),
-        'intent_blocks': len(intents),
-        'intents_held': sorted({e['intent'] for e in intents}),
-        'effect_changes': report['metrics']['effect_changes_count'],
+        'midi_arrives_in_enqueue_order': _non_decreasing(e['time']
+                                                         for e in streams['midi']),
+        'midi_matches_the_report_effects': _effects_match_report(streams['midi'],
+                                                                 report['effects']),
+        'midi_channels_come_from_the_intents_pool':
+            _channels_come_from_the_intents_pool(report),
+        'overlay_light_bar_fires': bool(light_bar),
+        'overlay_arrives_in_enqueue_order': _non_decreasing(e['time']
+                                                            for e in light_bar),
+        'queue_error_within_tolerance': max(errors_ms, default=0.0) < TIMING_ACCURACY_MAX_MS,
     }
 
 
-def is_degradation_state(degradation: dict) -> bool:
-    """Whether a digest describes a show that only ever held.
-
-    The branch's intermediate state between demolition and rewire, and NN_SHED
-    forever after, are the same contract: beats and the silence timer keep
-    running, at most one intent is ever current, and no effect change follows the
-    one that established it.
-    """
-    return (degradation['intent_blocks'] <= 1
-            and len(degradation['intents_held']) <= 1
-            and degradation['effect_changes'] <= 1)
-
-
-def show_digest(report: dict) -> dict:
+def informational_digest(report: dict, streams: dict | None = None) -> dict:
     """Evidence, never a gate: this is the half the demolition is meant to move."""
     metrics = report['metrics']
-    densities = sorted(b['onset_density'] for b in report['beats']
-                       if density_is_known(b['onset_density']))
-    return {
+    streams = _normalise_streams(streams)
+    midi = streams['midi']
+    digest = {
         'intent_changes_count': metrics['intent_changes_count'],
         'effect_changes_count': metrics['effect_changes_count'],
         'unique_intents_count': metrics['unique_intents_count'],
         'dominant_intent': metrics['dominant_intent'],
         'intent_distribution_sec': metrics['intent_distribution_sec'],
-        'onset_density_mean': round(metrics['onset_density_mean'], 6),
-        'onset_density_median': round(_median(densities), 6),
+        'midi': {
+            'commands': len(midi),
+            'labels': sorted({e['label'] for e in midi}),
+            'ordering_hash': _hash([[e['label'], e['channel']] for e in midi]),
+        },
+        'overlay': {
+            'light_bar_updates': sum(1 for e in streams['overlay']
+                                     if e['effect'] == _OVERLAY_LIGHT_BAR),
+        },
+        'timing': {
+            # Moves with the look-ahead, which the rewire raises to the decoder's
+            # budget. Recorded so the two time bases stay readable, never gated.
+            'target_delta_sec': sorted({round(e['target_delta_sec'], 4)
+                                        for e in report['timing_log']}),
+            'commands': len(report['timing_log']),
+        },
     }
+    if 'onset_density_mean' in metrics:
+        digest['onset_density_mean'] = round(metrics['onset_density_mean'], 6)
+    if _has_column(report['beats'], 'onset_density'):
+        from lib.analyser.music_analyser import density_is_known
+
+        measured = sorted(b['onset_density'] for b in report['beats']
+                          if density_is_known(b['onset_density']))
+        digest['onset_density_median'] = round(_median(measured), 6)
+    return digest
+
+
+def degradation_digest(report: dict, streams: dict | None = None) -> dict:
+    """The report seen through the degradation contract, and nothing else."""
+    from lib.engine.effect_definitions import LightIntent
+
+    beats = report['beats']
+    intents = report['intents']
+    classified = [e for e in intents
+                  if e['intent'] != LightIntent.ATMOSPHERIC.value]
+    return {
+        'beats_detected': report['metrics']['beats_detected'],
+        'beat_times_hash': _hash([round(b['t'], 4) for b in beats]),
+        'sound_events': _sound_events(_normalise_streams(streams)['sound']),
+        'intent_blocks': len(intents),
+        'classified_blocks': len(classified),
+        'atmospheric_blocks': len(intents) - len(classified),
+        'intents_held': sorted({e['intent'] for e in intents}),
+        'effect_changes': report['metrics']['effect_changes_count'],
+    }
+
+
+def held_start_to_end(degradation: dict) -> bool:
+    """Whether a whole run classified at most once and then held.
+
+    The branch's intermediate state between the demolition and the rewire: beats
+    and the beat-absence silence timer keep running, so ATMOSPHERIC still fires
+    and still re-rolls an effect from its own pool.  Counting those would demand
+    a stage that stays dark from the first beat to the last, which is not what
+    the plan describes.  So the count is of *classified* intents, and one effect
+    change per committed block is what the arithmetic allows.
+
+    This reads a whole run, and is not the mid-show shed check: a shed holds the
+    intent it had, so a real degradation report is a busy show followed by a held
+    one and reads False here.
+    """
+    return (degradation['classified_blocks'] <= 1
+            and len([i for i in degradation['intents_held']
+                     if i != 'atmospheric']) <= 1
+            and degradation['effect_changes'] <= degradation['atmospheric_blocks'] + 1)
 
 
 def digest_report(report: dict, streams: dict | None = None, *,
                   wall_elapsed: float | None = None) -> dict:
     digest = {
         'survives': survives_digest(report, streams),
+        'relations': relations_digest(report, streams),
+        'informational': informational_digest(report, streams),
         'degradation': degradation_digest(report, streams),
-        'show': show_digest(report),
     }
     if wall_elapsed is not None:
         digest['speed'] = {
@@ -193,12 +288,34 @@ def digest_report(report: dict, streams: dict | None = None, *,
     return digest
 
 
+def check_digest(name: str, digest: dict, fixture: dict) -> list:
+    """The whole gate, in one place, so the CLI and the suite cannot drift.
+
+    Survivors are compared for equality; relations are held to True rather than
+    to the fixture, because a relation that was already broken when the fixture
+    was cut is a defect the fixture should not be able to bless.
+    """
+    if name not in fixture:
+        return [f'{name}: not in the fixture']
+    failures = []
+    expected = fixture[name]['survives']
+    if digest['survives'] != expected:
+        moved = sorted(set(digest['survives']) | set(expected))
+        moved = [k for k in moved if expected.get(k) != digest['survives'].get(k)]
+        failures.append(f'{name}: survivors moved -> {", ".join(moved)}')
+    broken = sorted(k for k, v in digest['relations'].items() if v is not True)
+    if broken:
+        failures.append(f'{name}: relations broken -> {", ".join(broken)}')
+    return failures
+
+
 def capture_streams(components: dict) -> dict:
-    """The three wires a report does not carry, read off the stub clients."""
+    """The four wires a report does not carry, read off the stub clients."""
     return {
         'sound': components['event_buffer'].snapshot()['sound_events'],
         'os2l': components['os2l_client'].events,
         'midi': components['midi_client'].events,
+        'overlay': components['overlay_client'].events,
     }
 
 
@@ -247,8 +364,8 @@ def main() -> None:
     ap.add_argument('--write', metavar='PATH',
                     help='write the digests to PATH as a JSON object keyed by track name')
     ap.add_argument('--check', metavar='PATH',
-                    help='compare the survivors against a committed fixture and '
-                         'exit non-zero on any difference')
+                    help='compare the survivors and relations against a committed '
+                         'fixture and exit non-zero on any difference')
     args = ap.parse_args()
 
     digests = {}
@@ -270,14 +387,8 @@ def main() -> None:
 
     if args.check:
         fixture = json.loads(Path(args.check).read_text())
-        failures = []
-        for name, digest in digests.items():
-            if name not in fixture:
-                failures.append(f'{name}: not in {args.check}')
-            elif digest['survives'] != fixture[name]['survives']:
-                moved = sorted(k for k, v in digest['survives'].items()
-                               if fixture[name]['survives'].get(k) != v)
-                failures.append(f'{name}: survivors moved -> {", ".join(moved)}')
+        failures = [failure for name, digest in digests.items()
+                    for failure in check_digest(name, digest, fixture)]
         print('\n' + ('\n'.join(failures) if failures
                       else f'all {len(digests)} tracks match {args.check}'))
         raise SystemExit(1 if failures else 0)
