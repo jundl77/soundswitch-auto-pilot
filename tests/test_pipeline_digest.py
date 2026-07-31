@@ -540,6 +540,35 @@ async def test_the_anchor_tracks_overlay_light_bar_is_actually_fed(anchor_mp3):
     assert actual['informational']['overlay']['light_bar_updates'] > 0
 
 
+def _non_anchor_fixture_tracks() -> list:
+    import run_eval_set
+    from select_eval_set import EVAL_SET_FILE, load_eval_set
+
+    data_dir = run_eval_set.corpus_dir()
+    fixture = json.loads(BASELINE.read_text())
+    return [(name, str(run_eval_set.audio_path(data_dir, Path(name).stem)))
+            for name in sorted(fixture)
+            if Path(name).stem != ANCHOR_YOUTUBE_ID]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('name, mp3', _non_anchor_fixture_tracks())
+async def test_every_fixture_track_still_produces_its_committed_survivors(name, mp3):
+    """The `--check` command, run by the suite rather than by a human.
+
+    The anchor never stops making sound, so it cannot see a D5 threshold that
+    matches sound-START instants and mis-times the stops.  The stop instant that
+    exists lives on a non-anchor track, and until now the only thing that read
+    it was somebody remembering to run the CLI over all three.
+    """
+    from training.pipeline_digest import digest_track
+
+    if not Path(mp3).exists():
+        pytest.fail(f'committed fixture audio is missing: {mp3}')
+    actual = await digest_track(mp3)
+    assert check_digest(name, actual, json.loads(BASELINE.read_text())) == []
+
+
 @pytest.mark.integration
 async def test_the_rule_engine_is_not_yet_the_degradation_state(anchor_mp3):
     """The other half of the D13 contract, asserted from the wrong side.
