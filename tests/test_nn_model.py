@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch", reason="training extra not synced")
+torch = pytest.importorskip("torch", reason="torch is a base dependency -- the venv is not synced (uv sync --extra dev --extra visualizer)")
 import torch.nn.functional as F  # noqa: E402
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"

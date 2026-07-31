@@ -30,10 +30,12 @@ dependencies = [
     # The show. The section model is an ONNX graph, its encoder is a
     # transformers checkpoint, and torch is what loads and runs the encoder --
     # all three are on the live path now, not in an offline extra.
-    # Versions are the set validated together on this box; see
-    # .superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md.
     # torch stays at 2.11: the legacy TorchScript ONNX exporter is the only path
     # that keeps a dynamic time axis for a GRU, and it is deprecated from 2.9.
+    # torch and onnxruntime are the pair the CUDA preflight validated together.
+    # transformers has a separate provenance -- it predates that report, and its
+    # record is the run in which the MERT encoder was actually loaded. Both are
+    # written out in the PR body, which is where a fresh clone can read them.
     "torch>=2.11,<2.12",
     "transformers>=4.57,<5",
     "onnxruntime>=1.28,<2",

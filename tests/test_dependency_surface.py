@@ -11,6 +11,10 @@ still imports what it is about to stop importing, and the moment the demolition
 lands they XPASS, which pytest reports as a failure until the marker is
 removed.  A forgotten marker cannot quietly become a test that passes for no
 reason.
+
+What a strict xfail cannot do is tell two failures apart, so "does lib/ still
+import at all" is asked separately and unmarked.  Otherwise a demolition that
+left an import-time crash behind would keep reporting expected failure.
 """
 import ast
 import subprocess
@@ -94,20 +98,49 @@ def _live_modules() -> list:
                   if path.name != "__init__.py")
 
 
+_probe_result: list = []
+
+
+def _load_the_live_path():
+    """Import every module under lib/ in a fresh process, once.
+
+    Every module, not just the entry point: `lib.main` defers almost everything
+    it needs, so importing it alone would pass whether the front-end had been
+    removed or not.
+    """
+    if not _probe_result:
+        probe = (
+            "import sys, importlib;"
+            f"[importlib.import_module(name) for name in {_live_modules()!r}];"
+            f"print(','.join(sorted(m for m in {RETIRED!r} if m in sys.modules)))"
+        )
+        _probe_result.append(subprocess.run(
+            [sys.executable, "-c", probe], cwd=REPO_ROOT,
+            capture_output=True, text=True, timeout=600))
+    return _probe_result[0]
+
+
+def test_every_module_on_the_live_path_still_imports():
+    """Unmarked and unconditional, and separate from the reading below.
+
+    A strict xfail swallows every reason its assertion could fail, so folding
+    this into it would let an import-time crash Task 4 leaves behind read as
+    "expected failure" while lib/ was broken -- and the demolition-done signal
+    would arrive only via other tests failing for less obvious reasons.
+    """
+    result = _load_the_live_path()
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
 @pytest.mark.xfail(strict=True, reason="the demolition has not run yet")
 def test_loading_the_whole_live_path_pulls_in_neither_tensorflow_nor_aubio():
     """The static scan cannot see a transitive import; a real load can.
 
-    Every module under lib/, not just the entry point: `lib.main` defers almost
-    everything it needs, so importing it alone would pass whether the front-end
-    had been removed or not.
+    The return-code assertion is repeated here rather than left to the test
+    above: a crashed probe prints nothing, so without it the retired-module
+    claim would hold vacuously, XPASS, and announce a demolition that had not
+    happened.
     """
-    probe = (
-        "import sys, importlib;"
-        f"[importlib.import_module(name) for name in {_live_modules()!r}];"
-        f"print(','.join(sorted(m for m in {RETIRED!r} if m in sys.modules)))"
-    )
-    result = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT,
-                            capture_output=True, text=True, timeout=600)
+    result = _load_the_live_path()
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == ""
