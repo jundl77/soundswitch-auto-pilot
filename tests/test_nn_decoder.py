@@ -847,7 +847,7 @@ def test_the_shipping_config_loads_and_is_the_frontier_pick():
     assert params.floor_bars == (8, 8, 6, 9, 8)
     assert params.outro_escape == 0.02
     assert params.min_coverage == 1
-    assert params.lag_bars == 3
+    assert params.lag_bars == 2
 
 
 def test_a_floor_vector_off_disk_is_a_tuple_so_the_record_stays_hashable():
