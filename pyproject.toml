@@ -46,14 +46,6 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "jupyterlab",
-    # Retired, and alive here for exactly one task. Base no longer carries the
-    # rule engine's front-end; lib/ still imports it until the demolition, so
-    # the suite needs it installed and nothing else does. These three lines and
-    # the two build shims below go together, in the commit that deletes their
-    # importers.
-    "aubio",
-    "tensorflow>=2.16,<2.22",
-    "tensorflow-hub>=0.16,<0.17",
 ]
 visualizer = [
     "dash>=2.14",
@@ -82,18 +74,11 @@ explicit = true
 
 [tool.uv]
 link-mode = "copy"
-# Retired with the aubio entry in the dev extra above.
-extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
 # Resolve only for the environment this project actually runs in.  uv resolves
 # universally across `requires-python`, and on the py3.13 branch ml-dtypes
-# (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against the
-# numpy<2 pin TensorFlow needs.  Removing this line breaks `uv lock`.
+# (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against this
+# project's own numpy<2 pin.  Removing this line breaks `uv lock`.
 environments = ["sys_platform == 'win32' and python_full_version < '3.12'"]
-# tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on
-# Windows. Retired with the tensorflow entries in the dev extra above.
-override-dependencies = [
-    "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",
-]
 # madmom's last PyPI release (0.16.1, 2018) cannot be imported on Python >= 3.10
 # — `from collections import MutableSequence`. Git main fixed that and carries a
 # pyproject.toml, so it builds on py3.11/MSVC; there is no tagged release with
@@ -111,5 +96,5 @@ madmom = { git = "https://github.com/CPJKU/madmom.git", rev = "27f032e8947204902
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: full-pipeline simulation tests (slow, requires aubio and madmom)",
+    "integration: full-pipeline simulation tests (slow, requires madmom)",
 ]
