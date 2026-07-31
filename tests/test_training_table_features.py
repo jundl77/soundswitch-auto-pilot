@@ -1,12 +1,9 @@
-"""Parity tests for the NN mel-feature sidecar exporter.
+"""Tests for the NN mel-feature sidecar exporter.
 
-The neural section classifier is trained on the mel stream the LIVE pipeline
-computes (design spec: docs/superpowers/specs/2026-07-26-nn-section-classifier-design.md).
-The exporter cannot call into `MusicAnalyser` -- the pipeline under evaluation
-is read-only -- so it rebuilds the same aubio objects instead.  That duplication
-is only safe if it is pinned: if `MusicAnalyser._reset_state` ever changes an
-FFT size, a hop, or the filterbank scale, the model would silently train on
-features the runtime never produces.  These tests are the pin.
+The exporter's parity pin against the live analyser is gone with the analyser's
+aubio filterbank: the runtime no longer computes a mel stream, so there is
+nothing left for the exporter to be identical to.  What remains under test is
+the pooling arithmetic and the sidecar file format, which the NN dataset reads.
 """
 import sys
 from pathlib import Path
@@ -14,7 +11,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lib.analyser.music_analyser import MelFilterbank, MusicAnalyser
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -22,7 +18,6 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from build_training_table import (  # noqa: E402  (needs the path insert above)
-    KICK_MIN_RMS,
     MEL_BANDS,
     MEL_EXPORTER_KEY,
     MEL_EXPORTER_VERSION,
@@ -34,68 +29,9 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
 )
 
 
-class _StubHandler:
-    """Minimal IMusicAnalyserHandler -- the mel path never calls it."""
-    def on_sound_start(self): pass
-    def on_sound_stop(self): pass
-    async def on_cycle(self): pass
-    async def on_onset(self): pass
-    async def on_beat(self, beat_number, bpm, bpm_changed): pass
-    async def on_note(self): pass
-    async def on_section_change(self): pass
-
-
-@pytest.fixture
-def analyser():
-    return MusicAnalyser(sample_rate=SAMPLE_RATE, buffer_size=BUFFER_SIZE,
-                         handler=_StubHandler())
-
-
 def random_buffers(count: int, seed: int = 20260726) -> list:
     rng = np.random.default_rng(seed)
     return [rng.standard_normal(BUFFER_SIZE).astype(np.float32) for _ in range(count)]
-
-
-# --------------------------------------------------------------------------- #
-# Parity with the live analyser
-# --------------------------------------------------------------------------- #
-
-
-def test_exporter_energies_equal_the_analyser_energies_exactly(analyser):
-    """50 random buffers, bit-for-bit.  Both sides are stateful (pvoc keeps an
-    overlap window), so the whole sequence has to match, not just one frame."""
-    stream = MelEnergyStream(SAMPLE_RATE, BUFFER_SIZE)
-
-    for buffer in random_buffers(50):
-        expected = np.array(analyser._compute_mel_energies(buffer.copy()), copy=True)
-        actual = np.array(stream.process(buffer.copy()), copy=True)
-        assert np.array_equal(actual, expected)
-
-
-def test_exporter_constructor_parameters_match_the_analyser(analyser):
-    """Same pin as before the madmom migration; the bank moved to `analyser.mel`
-    when the rhythm objects it used to share constants with were removed."""
-    stream = MelEnergyStream(SAMPLE_RATE, BUFFER_SIZE)
-
-    assert stream.win_s == analyser.mel.win_s
-    assert stream.hop_s == analyser.mel.hop_s
-    assert stream.mel_bands == MelFilterbank.BANDS
-    assert MEL_BANDS == MelFilterbank.BANDS
-
-
-def test_kick_gate_matches_the_analysers_silence_threshold():
-    """`kick_known` is derived from RMS against the analyser's own gate.  The
-    table declares its own constant rather than importing a private name, so the
-    coupling is pinned here instead of hoped for."""
-    from lib.analyser.music_analyser import _KICK_MIN_RMS
-
-    assert KICK_MIN_RMS == _KICK_MIN_RMS
-
-
-def test_exporter_emits_one_vector_per_mel_band():
-    stream = MelEnergyStream(SAMPLE_RATE, BUFFER_SIZE)
-
-    assert stream.process(random_buffers(1)[0]).shape == (MEL_BANDS,)
 
 
 # --------------------------------------------------------------------------- #

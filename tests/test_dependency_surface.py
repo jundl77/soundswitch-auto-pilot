@@ -4,17 +4,14 @@ The NN integration inverts this project's dependency story.  torch,
 transformers and onnxruntime stop being offline research tools and become the
 things that run the lights, so they belong in base.  TensorFlow and aubio stop
 being the front-end and become nothing, so they leave -- and the two claims are
-independent: declaring the new stack is done here, deleting the old one's
-importers is the demolition's job.  The two tests that describe the end state
-are therefore strict xfails: they fail today for the honest reason that lib/
-still imports what it is about to stop importing, and the moment the demolition
-lands they XPASS, which pytest reports as a failure until the marker is
-removed.  A forgotten marker cannot quietly become a test that passes for no
-reason.
+independent: declaring the new stack was done first, deleting the old one's
+importers was the demolition.  The two tests that describe the end state were
+strict xfails until the demolition landed and they XPASSed; the markers came off
+in that commit, which is the only reason they are unmarked now.
 
-What a strict xfail cannot do is tell two failures apart, so "does lib/ still
-import at all" is asked separately and unmarked.  Otherwise a demolition that
-left an import-time crash behind would keep reporting expected failure.
+"Does lib/ still import at all" stays a separate, unmarked question.  Folding it
+into the retired-module reading would let an import-time crash satisfy the
+retired-module claim vacuously -- a crashed probe prints nothing.
 """
 import ast
 import subprocess
@@ -22,7 +19,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -82,7 +78,6 @@ def test_the_torch_index_is_bound_to_torch_alone():
     assert uv["sources"]["torch"] == [{"index": "pytorch-cu128"}]
 
 
-@pytest.mark.xfail(strict=True, reason="the demolition has not run yet")
 def test_the_live_path_imports_neither_tensorflow_nor_aubio():
     offenders = {}
     for path in sorted(LIVE_PATH.rglob("*.py")):
@@ -132,14 +127,12 @@ def test_every_module_on_the_live_path_still_imports():
     assert result.returncode == 0, result.stderr[-2000:]
 
 
-@pytest.mark.xfail(strict=True, reason="the demolition has not run yet")
 def test_loading_the_whole_live_path_pulls_in_neither_tensorflow_nor_aubio():
     """The static scan cannot see a transitive import; a real load can.
 
     The return-code assertion is repeated here rather than left to the test
     above: a crashed probe prints nothing, so without it the retired-module
-    claim would hold vacuously, XPASS, and announce a demolition that had not
-    happened.
+    claim would hold vacuously and announce a demolition that had not happened.
     """
     result = _load_the_live_path()
     assert result.returncode == 0, result.stderr[-2000:]

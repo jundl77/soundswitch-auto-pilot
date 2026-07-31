@@ -88,10 +88,6 @@ def _non_decreasing(values) -> bool:
     return all(a <= b for a, b in zip(values, values[1:]))
 
 
-def _has_column(beats: list, column: str) -> bool:
-    return bool(beats) and column in beats[0]
-
-
 def _queue_errors_ms(report: dict) -> list:
     return [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000
             for e in report['timing_log']]
@@ -221,14 +217,6 @@ def informational_digest(report: dict, streams: dict | None = None) -> dict:
             'commands': len(report['timing_log']),
         },
     }
-    if 'onset_density_mean' in metrics:
-        digest['onset_density_mean'] = round(metrics['onset_density_mean'], 6)
-    if _has_column(report['beats'], 'onset_density'):
-        from lib.analyser.music_analyser import density_is_known
-
-        measured = sorted(b['onset_density'] for b in report['beats']
-                          if density_is_known(b['onset_density']))
-        digest['onset_density_median'] = round(_median(measured), 6)
     return digest
 
 

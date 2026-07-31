@@ -3,7 +3,6 @@
 import threading
 from collections import deque
 
-from lib.analyser.music_analyser import KICK_UNKNOWN, density_is_known
 from lib.clock import Clock, SYSTEM_CLOCK
 
 
@@ -48,21 +47,15 @@ class EventBuffer:
             now = self._end_time
         return now - self._start_time
 
-    def add_beat(self, bpm: float, onset_density: float, change: bool,
-                 kick_strength: float = KICK_UNKNOWN, centroid_trend: float = 1.0,
-                 sub_bass_ratio: float = 0.0, rms: float = 0.0) -> None:
+    def add_beat(self, bpm: float, change: bool, rms: float = 0.0) -> None:
         with self._lock:
-            # Raw, so the row stays self-describing; only the display value is
-            # clamped, and the report metrics drop it rather than average it.
-            known = density_is_known(onset_density)
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                'onset_density': onset_density,
-                'strength': min(1.0, onset_density / 10.0) if known else 0.0,
+                # Onset density scaled the marker size; the density chain is
+                # gone and nothing has replaced it, so the channel is constant
+                # rather than carrying a number nobody measured.
+                'strength': 0.0,
                 'change': change,
-                'kick_strength': round(kick_strength, 4),
-                'centroid_trend': round(centroid_trend, 4),
-                'sub_bass_ratio': round(sub_bass_ratio, 4),
                 'rms': round(rms, 4),
             })
 
@@ -148,8 +141,6 @@ class EventBuffer:
             durations = [e['end'] - e['t'] for e in all_effects if 'end' in e]
             unique_channels = {e['channel'] for e in all_effects}
             all_beats = list(self._beats)
-            measured = [b['onset_density'] for b in all_beats
-                        if density_is_known(b['onset_density'])]
 
             intent_distribution: dict[str, float] = {}
             for entry in all_intents:
@@ -175,9 +166,6 @@ class EventBuffer:
                     'look_ahead_sec': self._look_ahead_sec,
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,
-                    'onset_density_mean': (
-                        sum(measured) / len(measured) if measured else 0.0
-                    ),
                     'timing_error_mean_ms': (
                         sum(errors_ms) / len(errors_ms) if errors_ms else 0.0
                     ),

@@ -36,8 +36,6 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
 
     music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, clock=clock)
     light_engine.set_analyser(music_analyser)
-    # Section detection off in simulation: music_analyser.start() would load YAMNet (slow, needs network).
-    music_analyser.yamnet_change_detector.detect_change = lambda *a, **kw: False
 
     return {
         'audio_client': audio_client,

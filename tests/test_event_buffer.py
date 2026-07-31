@@ -9,7 +9,7 @@ def test_timestamps_use_injected_clock():
     buf = EventBuffer(clock=clock)
     buf.start()
     clock.advance(12.5)
-    buf.add_beat(bpm=128.0, onset_density=4.0, change=False)
+    buf.add_beat(bpm=128.0, change=False)
     snap = buf.snapshot()
     assert snap['now'] == 12.5
     assert snap['beats'][0]['t'] == 12.5
@@ -48,7 +48,7 @@ def test_infinite_window_beats_are_unbounded():
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
     for _ in range(3005):
-        buf.add_beat(bpm=128.0, onset_density=4.0, change=False)
+        buf.add_beat(bpm=128.0, change=False)
     assert buf.to_report()['metrics']['beats_detected'] == 3005
 
 
@@ -67,36 +67,31 @@ def test_default_window_prunes_old_effects():
     assert 'CH_B' in channels and 'CH_C' in channels
 
 
-def test_add_beat_records_feature_columns():
+def test_a_beat_row_carries_only_what_the_pipeline_still_measures():
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
-    buf.add_beat(128.0, 4.2, False, kick_strength=2.61, centroid_trend=1.05,
-                 sub_bass_ratio=0.31, rms=0.42)
+    buf.add_beat(128.0, False, rms=0.42)
     beat = buf.to_report()['beats'][0]
-    assert beat['kick_strength'] == pytest.approx(2.61)
-    assert beat['centroid_trend'] == pytest.approx(1.05)
-    assert beat['sub_bass_ratio'] == pytest.approx(0.31)
+    assert set(beat) == {'t', 'bpm', 'strength', 'change', 'rms'}
     assert beat['rms'] == pytest.approx(0.42)
 
 
 def test_add_beat_defaults_are_neutral():
-    from lib.analyser.music_analyser import KICK_UNKNOWN
-
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
-    buf.add_beat(128.0, 4.2, False)
+    buf.add_beat(128.0, False)
     beat = buf.to_report()['beats'][0]
-    assert beat['kick_strength'] == KICK_UNKNOWN
     assert beat['rms'] == 0.0
+    assert beat['strength'] == 0.0
 
 
 def test_report_records_look_ahead_offset():
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=2.5)
     buf.start()
-    buf.add_beat(128.0, 4.2, False)
+    buf.add_beat(128.0, False)
     assert buf.to_report()['metrics']['look_ahead_sec'] == pytest.approx(2.5)
 
 

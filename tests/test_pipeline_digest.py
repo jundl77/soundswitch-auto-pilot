@@ -84,18 +84,25 @@ def test_the_three_beat_column_sets_do_not_overlap():
     assert not set(RESCALED_BEAT_COLUMNS) & set(DOOMED_BEAT_COLUMNS)
 
 
-def test_every_beat_column_is_classified():
+def test_the_live_beat_row_is_exactly_the_columns_that_survived():
+    """The partition was cut before the demolition; this is it settling.
+
+    A live row now carries the survivors and the rescaled one and nothing else,
+    so the doomed set is a statement about the past rather than about a column
+    still being produced.
+    """
     from lib.engine.event_buffer import EventBuffer
 
     buffer = EventBuffer(window_sec=float('inf'))
     buffer.start()
-    buffer.add_beat(bpm=128.0, onset_density=4.0, change=False)
+    buffer.add_beat(bpm=128.0, change=False)
     columns = set(buffer.to_report()['beats'][0].keys())
-    classified = (set(SURVIVING_BEAT_COLUMNS) | set(RESCALED_BEAT_COLUMNS)
-                  | set(DOOMED_BEAT_COLUMNS))
-    assert columns == classified, (
-        f'unclassified beat columns: {columns ^ classified}')
-    assert set(_beat(0.0).keys()) == columns
+    assert columns == set(SURVIVING_BEAT_COLUMNS) | set(RESCALED_BEAT_COLUMNS)
+    assert not columns & set(DOOMED_BEAT_COLUMNS)
+    # The synthetic row the rest of this module builds still carries the doomed
+    # columns, so the instrument keeps being exercised against a pre-demolition
+    # report shape as well as a post-demolition one.
+    assert set(_beat(0.0).keys()) - set(DOOMED_BEAT_COLUMNS) == columns
 
 
 def test_a_moved_beat_time_moves_the_beat_stream_hash():
@@ -447,15 +454,6 @@ def test_digest_survives_a_report_with_no_beats():
     assert held_start_to_end(d['degradation'])
 
 
-def test_density_aggregates_are_evidence_and_ignore_the_unmeasured_sentinel():
-    from lib.analyser.music_analyser import DENSITY_UNKNOWN
-
-    measured = [_beat(float(i), onset_density=6.0) for i in range(4)]
-    shed = [_beat(float(i + 4), onset_density=DENSITY_UNKNOWN) for i in range(4)]
-    d = digest_report(_report(measured + shed))
-    assert d['informational']['onset_density_median'] == 6.0
-
-
 # --------------------------------------------------------------------------- #
 # The committed fixture, and the comparison the CLI and the suite share
 # --------------------------------------------------------------------------- #
@@ -570,13 +568,15 @@ async def test_every_fixture_track_still_produces_its_committed_survivors(name, 
 
 
 @pytest.mark.integration
-async def test_the_rule_engine_is_not_yet_the_degradation_state(anchor_mp3):
-    """The other half of the D13 contract, asserted from the wrong side.
+async def test_the_demolished_pipeline_is_the_degradation_state(anchor_mp3):
+    """The D13 contract, on real audio and from the side that now holds.
 
-    A predicate that only ever returns True proves nothing.  Master's show
-    switches intent dozens of times, so it must read False here; the demolition
-    is what flips it, and this test is what says the flip was real.
+    Its predecessor asserted the opposite on master's show and was deleted in
+    the demolition commit, which is what makes this reading evidence of a flip
+    rather than of a predicate that was always going to be True.
     """
     actual = await _anchor_digest(anchor_mp3)
-    assert not held_start_to_end(actual['degradation'])
-    assert actual['degradation']['classified_blocks'] > 1
+    assert held_start_to_end(actual['degradation'])
+    assert actual['degradation']['classified_blocks'] == 0
+    assert actual['degradation']['beats_detected'] > 0,         'beats must survive the demolition; only the classifier goes'
+
