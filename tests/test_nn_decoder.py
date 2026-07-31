@@ -31,6 +31,7 @@ corpus lives in a gitignored data directory that CI does not have, so nothing
 in this file reads it -- the corpus-fitting entry point is a thin I/O wrapper
 around ``fit_runs``, which is pure and tested directly.
 """
+import dataclasses
 import json
 import subprocess
 import sys
@@ -841,13 +842,37 @@ def test_a_config_of_known_knobs_round_trips(tmp_path):
 
 
 def test_the_shipping_config_loads_and_is_the_frontier_pick():
+    """Every knob, not the memorable ones.
+
+    A half-pinned config is a config a merge resolution can quietly move: the
+    five that used to be checked here left prior_strength, drop_miss_cost, the
+    two boundary knobs and temperature free to become any other sweep row's
+    values while the suite stayed green.  These are the lag-2 row of
+    task1a_lag_sweep, which is what the file's own provenance block claims.
+    """
     params = load_decoder_config(SHIPPING_DECODER_CONFIG)
     document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
     assert document["name"] == "reduced_plus_floors_x0.75"
-    assert params.floor_bars == (8, 8, 6, 9, 8)
-    assert params.outro_escape == 0.02
-    assert params.min_coverage == 1
-    assert params.lag_bars == 2
+    assert dataclasses.asdict(params) == {
+        "lag_bars": 2,
+        "class_prior_division": True,
+        "prior_strength": -0.25,
+        "drop_miss_cost": 0.4642,
+        "boundary_weight": 4.0,
+        "boundary_ref": 0.2,
+        "boundary_tolerance_sec": 0.5,
+        "min_coverage": 1,
+        "floor_scale": 1.25,
+        "floor_bars": (8, 8, 6, 9, 8),
+        "outro_escape": 0.02,
+        "temperature": 1.0,
+    }
+
+
+def test_the_shipping_config_names_every_knob_the_decoder_has():
+    """The other half: a knob added to the record and forgotten in the file."""
+    chosen = json.loads(SHIPPING_DECODER_CONFIG.read_text())["chosen"]
+    assert set(chosen) == {f.name for f in dataclasses.fields(DecodeParams)}
 
 
 def test_a_floor_vector_off_disk_is_a_tuple_so_the_record_stays_hashable():
@@ -984,3 +1009,78 @@ def test_decode_track_carries_every_knob_the_config_names(tmp_path):
                      decode_track(npz, beats, short_floors, priors=priors)]
     assert decoded_long.count("drop") != decoded_short.count("drop")
     assert decoded_short.count("drop") == 2
+
+
+def rows_npz(path, rows, *, frame_sec, label_pool, label_t0, thin_frames=0):
+    """A sidecar from explicit posterior rows, for the knobs that read them.
+
+    ``synthetic_npz`` writes one-hot rows, and tempering cannot change what a
+    one-hot bar averages to -- which is exactly why a temperature the end-to-end
+    path drops is invisible to every test built on it.
+    """
+    label_post = np.asarray(rows, dtype=np.float32)
+    frames = len(rows) * label_pool
+    coverage = np.full(frames, 32, dtype=np.uint16)
+    if thin_frames:
+        coverage[:thin_frames] = 1
+        coverage[-thin_frames:] = 1
+    np.savez(
+        path,
+        label_post=label_post,
+        boundary=np.full(frames, 0.05, dtype=np.float32),
+        coverage=coverage,
+        frame_sec=np.float64(frame_sec),
+        t0=np.float64(frame_sec),
+        label_frame_sec=np.float64(frame_sec * label_pool),
+        label_t0=np.float64(label_t0),
+        label_pool=np.int32(label_pool),
+    )
+
+
+def graded_bars(bars):
+    """Bars of one loud DROP frame against three quiet BREAKDOWN ones.
+
+    The arithmetic mean of the bar reads DROP; the geometric mean reads
+    BREAKDOWN, because DROP is nearly absent in three frames out of four.
+    Temperature is what moves between those two readings, so this is a sidecar
+    whose decoded labels depend on it.
+    """
+    loud = np.full(5, 0.01)
+    loud[DROP] = 0.96
+    quiet = np.full(5, (1.0 - 0.02 - 0.25) / 3.0)
+    quiet[DROP], quiet[BREAKDOWN] = 0.02, 0.25
+    return [row for _ in range(bars) for row in (loud, quiet, quiet, quiet)]
+
+
+def test_decode_track_forwards_the_temperature_to_the_bar_average(tmp_path):
+    """Reverting decode_track's ``temperature=`` argument turns this red.
+
+    Nothing else pinned it: the knob only bites where a bar's frames disagree,
+    and every other end-to-end fixture is one-hot.
+    """
+    npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
+    rows_npz(npz, graded_bars(16), frame_sec=0.25, label_pool=2, label_t0=0.5)
+    write_beat_csv(beats, bars=16, bar_sec=2.0, t0=0.5)
+    priors = toy_priors(floor=2, hazard=0.3)
+
+    neutral = DecodeParams(lag_bars=0, boundary_weight=0.0, min_coverage=1)
+    hot = dataclasses.replace(neutral, temperature=8.0)
+    assert (set(label for _, label in decode_track(npz, beats, neutral, priors=priors))
+            == {"drop"})
+    assert (set(label for _, label in decode_track(npz, beats, hot, priors=priors))
+            == {"breakdown"})
+
+
+def test_decode_track_forwards_the_outro_escape_to_the_trellis(tmp_path):
+    """Reverting decode_track's ``outro_escape=`` argument turns this red."""
+    npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
+    synthetic_npz(npz, [OUTRO] * 80 + [DROP] * 240, thin_frames=4)
+    write_beat_csv(beats, bars=16, bar_sec=2.0, t0=0.0)
+    priors = toy_priors(floor=2, hazard=0.3)
+
+    terminal = DecodeParams(lag_bars=0, boundary_weight=0.0, min_coverage=1)
+    escaping = dataclasses.replace(terminal, outro_escape=0.2)
+    assert (set(label for _, label in decode_track(npz, beats, terminal, priors=priors))
+            == {"outro"})
+    assert "drop" in [label for _, label in
+                      decode_track(npz, beats, escaping, priors=priors)]

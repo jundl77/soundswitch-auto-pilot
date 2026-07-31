@@ -51,10 +51,12 @@ from evaluate_against_labels import (  # noqa: E402
     aggregate,
 )
 from nn.decoder import (  # noqa: E402
+    SHIPPING_DECODER_CONFIG,
     DecodeParams,
     bar_grid,
     bar_observations,
     decode_track,
+    load_decoder_config,
 )
 from nn.evaluate_v1 import (  # noqa: E402
     EVAL_FILE,
@@ -81,6 +83,8 @@ from nn.sweep import (  # noqa: E402
     sensitivity,
 )
 from tests.test_nn_decoder import (  # noqa: E402
+    graded_bars,
+    rows_npz,
     synthetic_npz,
     toy_priors,
     write_beat_csv,
@@ -280,7 +284,8 @@ def inputs_from(npz, beats, params, labels=("drop",), intents=(NO_INTENT,),
     edges = bar_grid(beats)
     posteriors, boundary = bar_observations(
         npz, edges, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec)
+        boundary_tolerance_sec=params.boundary_tolerance_sec,
+        temperature=params.temperature)
     return TrackInputs(
         track_id="t", youtube_id="t", edges=edges, posteriors=posteriors,
         boundary=boundary, times=tuple(times),
@@ -298,6 +303,42 @@ def test_the_cached_fast_path_decodes_exactly_like_decode_track(tmp_path):
 
     inputs = inputs_from(npz, beats, params)
     assert list(decode_bars(inputs, build_decoder(priors, params))) == reference
+
+
+def test_the_cached_fast_path_decodes_like_decode_track_at_the_shipped_knobs(tmp_path):
+    """Parity at defaults is parity of the three knobs nobody set.
+
+    The shipping config carries floor_bars=(8, 8, 6, 9, 8) and
+    outro_escape=0.02, and this equivalence is what says the sweep tuned the
+    decoder the runtime runs.  Measured at the defaults it says nothing about
+    either, because both sides are then reading the same absent value.
+    """
+    npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
+    rows_npz(npz, graded_bars(24), frame_sec=0.25, label_pool=2, label_t0=0.5)
+    write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
+
+    priors = toy_priors(floor=3)
+    shipped = load_decoder_config(SHIPPING_DECODER_CONFIG)
+    for params in (shipped, dataclasses.replace(shipped, temperature=8.0)):
+        reference = [label for _, label
+                     in decode_track(npz, beats, params, priors=priors)]
+        inputs = inputs_from(npz, beats, params)
+        assert list(decode_bars(inputs, build_decoder(priors, params))) == reference
+
+
+def test_the_two_paths_disagree_when_one_of_them_drops_a_knob(tmp_path):
+    """The parity assertion above can only speak if the knobs move the decode."""
+    npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
+    rows_npz(npz, graded_bars(24), frame_sec=0.25, label_pool=2, label_t0=0.5)
+    write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
+
+    priors = toy_priors(floor=3)
+    shipped = load_decoder_config(SHIPPING_DECODER_CONFIG)
+    hot = dataclasses.replace(shipped, temperature=8.0)
+    assert (inputs_from(npz, beats, hot).posteriors.tolist()
+            != inputs_from(npz, beats, shipped).posteriors.tolist())
+    assert ([label for _, label in decode_track(npz, beats, hot, priors=priors)]
+            != [label for _, label in decode_track(npz, beats, shipped, priors=priors)])
 
 
 def test_one_decoder_instance_carries_nothing_between_tracks(tmp_path):
