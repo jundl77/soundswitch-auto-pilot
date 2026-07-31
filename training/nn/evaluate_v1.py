@@ -77,7 +77,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .decoder import DecodeParams, FixedLagViterbi, bar_grid, bar_observations
+from .decoder import (DecodeParams, FixedLagViterbi, bar_grid, bar_observations,
+                      load_decoder_config)
 from .priors import MODEL_VERSION, MODELS_DIR, PRIORS_FILE, Priors
 
 from build_training_table import NO_INTENT, TABLE_FILE  # noqa: E402  (nn/__init__ sets the path)
@@ -395,7 +396,9 @@ def build_decoder(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
         prior_strength=params.prior_strength,
         boundary_weight=params.boundary_weight,
         boundary_ref=params.boundary_ref,
-        floor_scale=params.floor_scale)
+        floor_scale=params.floor_scale,
+        floor_bars=params.floor_bars,
+        outro_escape=params.outro_escape)
 
 
 def decode_bars(inputs: TrackInputs, decoder: FixedLagViterbi) -> tuple:
@@ -483,6 +486,7 @@ def sidecar_model_sha(path) -> str | None:
 
 def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
                 boundary_tolerance_sec: float = DecodeParams().boundary_tolerance_sec,
+                temperature: float = DecodeParams().temperature,
                 table_path: Path | None = None,
                 posteriors_dir: Path | None = None,
                 model_sha: str | None = None,
@@ -543,7 +547,8 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
             continue
         posteriors, boundary = bar_observations(
             sidecar, edges, min_coverage=min_coverage,
-            boundary_tolerance_sec=boundary_tolerance_sec)
+            boundary_tolerance_sec=boundary_tolerance_sec,
+            temperature=temperature)
         inputs.append(TrackInputs(
             track_id=track.track_id, youtube_id=youtube_id, edges=edges,
             posteriors=posteriors, boundary=boundary, times=track.times,
@@ -965,13 +970,6 @@ def render(report: dict) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def load_decoder_config(path: Path) -> DecodeParams:
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
-    chosen = document.get("chosen", document)
-    fields = {field.name for field in dataclasses.fields(DecodeParams)}
-    return DecodeParams(**{k: v for k, v in chosen.items() if k in fields})
-
-
 def write_json(path: Path, payload: dict) -> None:
     """The eval pipeline's atomic writer, plus the parent directory."""
     path = Path(path)
@@ -1068,6 +1066,7 @@ def main(argv: list | None = None) -> int:
     inputs, skipped = load_inputs(
         args.data_dir, ids, min_coverage=params.min_coverage,
         boundary_tolerance_sec=params.boundary_tolerance_sec,
+        temperature=params.temperature,
         posteriors_dir=args.posteriors_dir, model_sha=model_sha)
     if not inputs:
         print(f"no usable tracks in split {args.split!r}", file=sys.stderr)

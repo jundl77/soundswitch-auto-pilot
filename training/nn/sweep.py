@@ -159,8 +159,15 @@ def enumerate_configs(base: DecodeParams, axes: dict) -> list:
 
 
 def observation_key(params: DecodeParams) -> tuple:
-    """The part of a config that invalidates the cached bar observations."""
-    return (int(params.min_coverage), float(params.boundary_tolerance_sec))
+    """The part of a config that invalidates the cached bar observations.
+
+    ``temperature`` belongs here and it is the one that bites: it is applied to
+    the frame posteriors INSIDE ``bar_observations``, so a cache keyed without it
+    would serve one temperature's bar averages to every other temperature in the
+    sweep and report the differences as noise.
+    """
+    return (int(params.min_coverage), float(params.boundary_tolerance_sec),
+            float(params.temperature))
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +198,8 @@ class InputCache:
         if key not in self._cache:
             inputs, skipped = load_inputs(
                 self.data_dir, self.ids, min_coverage=key[0],
-                boundary_tolerance_sec=key[1], table_path=self.table_path,
+                boundary_tolerance_sec=key[1], temperature=key[2],
+                table_path=self.table_path,
                 posteriors_dir=self.posteriors_dir, model_sha=self.model_sha)
             self._cache[key] = inputs
             if not self.skipped:

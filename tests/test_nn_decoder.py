@@ -47,12 +47,15 @@ if str(TRAINING_DIR) not in sys.path:
 from build_training_table import V1_ORDER  # noqa: E402
 from nn.decoder import (  # noqa: E402
     DEFAULT_BOUNDARY_REF,
+    SHIPPING_DECODER_CONFIG,
     DecodeParams,
     FixedLagViterbi,
     bar_grid,
     bar_observations,
     decode_track,
+    load_decoder_config,
     segments,
+    temper,
 )
 from nn.priors import (  # noqa: E402
     PRIORS_FILE,
@@ -807,3 +810,177 @@ def test_segments_run_length_encodes_a_decision_stream():
     posteriors = np.array([one_hot(BREAKDOWN)] * 6 + [one_hot(DROP)] * 6)
     spans = segments(FixedLagViterbi(priors, lag_bars=1).decode(posteriors))
     assert spans == [(0, 6, "breakdown"), (6, 12, "drop")]
+
+
+# --------------------------------------------------------------------------- #
+# The decoder generation the shipping config was measured on
+# --------------------------------------------------------------------------- #
+
+
+def test_a_config_naming_a_knob_the_decoder_lacks_is_refused(tmp_path):
+    """The defect this generation exists to close.
+
+    The loader used to filter unknown keys out against ``dataclasses.fields``.
+    A config carrying a knob the running decoder does not have then loaded
+    cleanly, decoded, and reported -- as a decoder nobody chose.
+    """
+    path = tmp_path / "decoder_config.json"
+    path.write_text(json.dumps({"chosen": {"lag_bars": 2, "tempurature": 0.5}}))
+    with pytest.raises(ValueError, match="tempurature"):
+        load_decoder_config(path)
+
+
+def test_a_config_of_known_knobs_round_trips(tmp_path):
+    path = tmp_path / "decoder_config.json"
+    path.write_text(json.dumps({"chosen": {"lag_bars": 2, "temperature": 0.5,
+                                           "floor_bars": [1, 2, 3, 4, 5]}}))
+    params = load_decoder_config(path)
+    assert params.lag_bars == 2
+    assert params.temperature == 0.5
+    assert params.floor_bars == (1, 2, 3, 4, 5)
+
+
+def test_the_shipping_config_loads_and_is_the_frontier_pick():
+    params = load_decoder_config(SHIPPING_DECODER_CONFIG)
+    document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
+    assert document["name"] == "reduced_plus_floors_x0.75"
+    assert params.floor_bars == (8, 8, 6, 9, 8)
+    assert params.outro_escape == 0.02
+    assert params.min_coverage == 1
+    assert params.lag_bars == 3
+
+
+def test_a_floor_vector_off_disk_is_a_tuple_so_the_record_stays_hashable():
+    params = DecodeParams(floor_bars=[8, 8, 6, 9, 8])
+    assert params.floor_bars == (8, 8, 6, 9, 8)
+    assert hash(params)
+    assert DecodeParams(floor_bars=[8, 8, 6, 9, 8]) == params
+
+
+def test_a_floor_vector_overrides_the_scalar_class_by_class():
+    priors = toy_priors(floor=4)
+    scaled = FixedLagViterbi(priors, floor_scale=2.0)
+    vector = FixedLagViterbi(priors, floor_scale=2.0, floor_bars=(1, 2, 3, 4, 5))
+    assert scaled._floors.tolist() == [8] * 5
+    assert vector._floors.tolist() == [1, 2, 3, 4, 5]
+
+
+def test_a_floor_vector_of_the_wrong_length_is_refused():
+    with pytest.raises(ValueError, match="floor_bars has 4 entries"):
+        FixedLagViterbi(toy_priors(), floor_bars=(1, 2, 3, 4))
+
+
+def test_the_floor_vector_sets_the_minimum_run_length_class_by_class():
+    """What shortening the floors buys, as behaviour rather than as a number.
+
+    Both decoders enter the drop on the same evidence.  The floor decides how
+    long they are then committed to it, and a run that outlives its evidence by
+    six bars is exactly the crispness the shipped config bought back.
+    """
+    priors = toy_priors(floor=8, hazard=0.3)
+    posteriors = np.array([one_hot(BREAKDOWN)] * 8 + [one_hot(DROP)] * 2
+                          + [one_hot(BREAKDOWN)] * 10)
+
+    long_floors = FixedLagViterbi(priors, lag_bars=0, boundary_weight=0.0)
+    short_floors = FixedLagViterbi(priors, lag_bars=0, boundary_weight=0.0,
+                                   floor_bars=(2, 2, 2, 2, 2))
+    assert labels_of(long_floors.decode(posteriors)).count("drop") == 8
+    assert labels_of(short_floors.decode(posteriors)).count("drop") == 2
+
+
+def test_outro_is_terminal_until_an_escape_is_opened():
+    priors = toy_priors(floor=2, hazard=0.3)
+    posteriors = np.array([one_hot(OUTRO)] * 4 + [one_hot(DROP)] * 12)
+
+    terminal = FixedLagViterbi(priors, lag_bars=0, boundary_weight=0.0)
+    escaping = FixedLagViterbi(priors, lag_bars=0, boundary_weight=0.0,
+                               outro_escape=0.2)
+    assert set(labels_of(terminal.decode(posteriors))) == {"outro"}
+    assert "drop" in labels_of(escaping.decode(posteriors))
+
+
+def test_a_zero_escape_reproduces_the_terminal_decoder_exactly():
+    priors = toy_priors(floor=2, hazard=0.3)
+    posteriors = np.array([one_hot(OUTRO)] * 4 + [one_hot(DROP)] * 12)
+    assert (labels_of(FixedLagViterbi(priors, lag_bars=0, outro_escape=0.0)
+                      .decode(posteriors))
+            == labels_of(FixedLagViterbi(priors, lag_bars=0).decode(posteriors)))
+
+
+@pytest.mark.parametrize("escape", [0.5, 0.6, -0.01])
+def test_an_escape_that_leaves_no_probability_to_stay_is_refused(escape):
+    with pytest.raises(ValueError, match="outro_escape must lie"):
+        FixedLagViterbi(toy_priors(), outro_escape=escape)
+
+
+def test_the_escape_only_opens_the_two_classes_a_track_can_resume_into():
+    decoder = FixedLagViterbi(toy_priors(floor=2), outro_escape=0.2)
+    source = int(decoder._final_state[decoder.classes.index("outro")])
+    reachable = {decoder.classes[int(decoder._state_class[target])]
+                 for target in np.flatnonzero(np.isfinite(decoder._transition[source]))}
+    assert reachable == {"outro", "breakdown", "drop"}
+
+
+def test_temper_is_the_identity_at_one_and_returns_the_same_array():
+    post = np.array([[0.7, 0.1, 0.1, 0.05, 0.05]])
+    assert temper(post, 1.0) is post
+
+
+def test_a_cold_temperature_sharpens_and_a_hot_one_flattens():
+    post = np.array([[0.6, 0.1, 0.1, 0.1, 0.1]])
+    assert temper(post, 0.5)[0, 0] > post[0, 0]
+    assert temper(post, 2.0)[0, 0] < post[0, 0]
+    for temperature in (0.5, 2.0):
+        assert temper(post, temperature).sum() == pytest.approx(1.0)
+
+
+def test_tempering_never_moves_the_argmax():
+    rng = np.random.default_rng(7)
+    post = rng.dirichlet(np.ones(5), size=64)
+    for temperature in (0.25, 0.5, 2.0, 4.0):
+        assert (temper(post, temperature).argmax(axis=1) == post.argmax(axis=1)).all()
+
+
+@pytest.mark.parametrize("temperature", [0.0, -1.0])
+def test_a_non_positive_temperature_is_refused(temperature):
+    with pytest.raises(ValueError, match="temperature must be > 0"):
+        temper(np.array([[0.2] * 5]), temperature)
+
+
+def test_temperature_reaches_the_bar_average_through_bar_observations(tmp_path):
+    npz = tmp_path / "t.npz"
+    synthetic_npz(npz, [BREAKDOWN] * 100 + [DROP] * 100, thin_frames=4)
+    edges = np.arange(0.0, 20.1, 2.0)
+    neutral, _ = bar_observations(npz, edges, min_coverage=2)
+    hot, _ = bar_observations(npz, edges, min_coverage=2, temperature=8.0)
+    assert hot[0, BREAKDOWN] < neutral[0, BREAKDOWN]
+
+
+def test_a_sidecar_no_frame_of_which_clears_the_threshold_raises(tmp_path):
+    """A config that discards every frame decodes the priors and looks fine."""
+    npz = tmp_path / "t.npz"
+    synthetic_npz(npz, [DROP] * 20, thin_frames=40)
+    edges = np.arange(0.0, 4.1, 2.0)
+    with pytest.raises(RuntimeError, match="no frame has coverage"):
+        bar_observations(npz, edges, min_coverage=2)
+    assert not np.isnan(bar_observations(npz, edges, min_coverage=1)[0]).all()
+
+
+def test_decode_track_carries_every_knob_the_config_names(tmp_path):
+    """A param the end-to-end path drops is the loader defect one layer down."""
+    npz = tmp_path / "t.npz"
+    beats = tmp_path / "t.beat.csv"
+    synthetic_npz(npz, [BREAKDOWN] * 80 + [DROP] * 40 + [BREAKDOWN] * 80,
+                  thin_frames=4)
+    write_beat_csv(beats, bars=10, bar_sec=2.0, t0=0.0)
+    priors = toy_priors(floor=8, hazard=0.3)
+
+    long_floors = DecodeParams(lag_bars=0, boundary_weight=0.0)
+    short_floors = DecodeParams(lag_bars=0, boundary_weight=0.0,
+                                floor_bars=(2, 2, 2, 2, 2))
+    decoded_long = [label for _, label in
+                    decode_track(npz, beats, long_floors, priors=priors)]
+    decoded_short = [label for _, label in
+                     decode_track(npz, beats, short_floors, priors=priors)]
+    assert decoded_long.count("drop") != decoded_short.count("drop")
+    assert decoded_short.count("drop") == 2

@@ -51,6 +51,9 @@ else left gets a flat emission, so the duration prior -- which prefers staying
 from __future__ import annotations
 
 import csv
+import dataclasses
+import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -98,6 +101,29 @@ DEFAULT_BOUNDARY_TOLERANCE_SEC = 0.5
 # rather than evidence.  2 == "more than the one window that donated it".
 DEFAULT_MIN_COVERAGE = 2
 
+# Outro is TERMINAL in the fitted graph, and that is a true statement about the
+# annotation: 0 of 525 train outros have a successor, so `transition_allowed`
+# refuses `outro -> X` and the corpus never contradicts it.  It is nonetheless
+# the single most expensive decision the decoder makes, because it is
+# irrevocable and the decoder is not always right about when a track has ended.
+# Measured on val-215: 11 100.6 s of exposure follows the first outro commit, of
+# which 6 359.3 s (57.3 %) is NOT outro -- 21.3 % of all decoded error, across
+# 73 of 215 tracks, from one absorbing state.
+#
+# So the escape is deliberately NOT fitted and NOT a refit: the data has nothing
+# to fit it from, and making `outro -> X` merely *legal* would hand it the
+# Jeffreys smoothing mass -- with zero observed outgoing counts that is 0.5 to
+# each legal target, three orders of magnitude too much.  It is a decoder
+# POLICY: an explicit per-bar probability of discovering the track was not over,
+# swept like any other knob.  0.0 reproduces the terminal behaviour exactly.
+DEFAULT_OUTRO_ESCAPE = 0.0
+
+# Emission temperature on the frame posteriors before bar-averaging.  Distinct
+# from `prior_strength`, which adds a class-constant offset AFTER the log: this
+# scales the data term itself, so it changes how strongly a confident frame
+# outvotes an unconfident one within the same bar.
+DEFAULT_TEMPERATURE = 1.0
+
 # Guards log(0) on a one-hot posterior without perturbing a real one.
 EPS = 1e-12
 
@@ -127,6 +153,61 @@ class DecodeParams:
     boundary_tolerance_sec: float = DEFAULT_BOUNDARY_TOLERANCE_SEC
     min_coverage: int = DEFAULT_MIN_COVERAGE
     floor_scale: float = 1.0
+    # Absolute per-class floors, overriding ``floor_scale`` when given.  A tuple
+    # so the record stays hashable and a sweep can key on it.  The scalar cannot
+    # express what the corpus asks for: breakdown's truth p25 run is 8 bars while
+    # drop's is 16, so one multiplier cannot be right for both.
+    floor_bars: tuple | None = None
+    # Per-bar probability of leaving a committed ``outro`` for breakdown or drop
+    # (each), 0.0 keeping outro terminal.  See ``_apply_outro_escape``.
+    outro_escape: float = DEFAULT_OUTRO_ESCAPE
+    # Softmax temperature applied to the frame posteriors before they are
+    # averaged onto the bar grid.  >1 flattens, <1 sharpens; 1.0 is the
+    # posterior as written.
+    temperature: float = DEFAULT_TEMPERATURE
+
+    def __post_init__(self) -> None:
+        """Normalise ``floor_bars`` to a tuple.
+
+        JSON has no tuples, so a config read back off disk arrives holding a
+        list -- which makes the record unhashable, and the sweep keys ``seen``
+        on it.  The failure would land hours into a search rather than at the
+        read, and only for the configs that carry a floor vector.  Coerced here
+        rather than in the loader so every construction path shares the
+        invariant.
+        """
+        if self.floor_bars is not None and not isinstance(self.floor_bars, tuple):
+            object.__setattr__(self, "floor_bars", tuple(self.floor_bars))
+
+
+# The config the show is meant to run on, committed rather than synthesised: a
+# runtime that rebuilt `floors x 0.75` from a multiplier would be reconstructing
+# the swept vector from a name, and the two have already diverged once (the
+# scalar is inert once the vector is present). A sweep's own output lands beside
+# its generation in the gitignored data directory; this is the one that ships.
+SHIPPING_DECODER_CONFIG = Path(__file__).with_name("decoder_config.json")
+
+
+def load_decoder_config(path) -> DecodeParams:
+    """Read a sweep's ``decoder_config.json`` into the record it describes.
+
+    An unknown key RAISES.  It used to be filtered out against
+    ``dataclasses.fields``, which meant a config naming a knob this generation
+    of the decoder does not have decoded silently with that knob absent -- and
+    the shipped pick carries three that master did not have, so the whole file
+    would have loaded, run, and reported a decoder nobody chose.
+    """
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    chosen = document.get("chosen", document)
+    known = {field.name for field in dataclasses.fields(DecodeParams)}
+    unknown = sorted(set(chosen) - known)
+    if unknown:
+        raise ValueError(
+            f"{path}: decoder config names {', '.join(unknown)}, which "
+            f"DecodeParams does not have -- dropping them would decode with a "
+            f"different decoder than the one this config was measured on. "
+            f"Known knobs: {', '.join(sorted(known))}")
+    return DecodeParams(**chosen)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,13 +230,23 @@ class FixedLagViterbi:
                  prior_strength: float = DEFAULT_PRIOR_STRENGTH,
                  boundary_weight: float = DEFAULT_BOUNDARY_WEIGHT,
                  boundary_ref: float = DEFAULT_BOUNDARY_REF,
-                 floor_scale: float = 1.0) -> None:
+                 floor_scale: float = 1.0,
+                 floor_bars=None,
+                 outro_escape: float = DEFAULT_OUTRO_ESCAPE) -> None:
         if int(lag_bars) < 0:
             raise ValueError(f"lag_bars must be >= 0, got {lag_bars}")
         if float(floor_scale) <= 0.0:
             raise ValueError(f"floor_scale must be > 0, got {floor_scale}")
         if float(drop_miss_cost) <= 0.0:
             raise ValueError(f"drop_miss_cost must be > 0, got {drop_miss_cost}")
+        # Two escapes at 0.5 would leave no probability to stay, and anything
+        # above that is a negative stay probability -- nonsense rather than an
+        # aggressive setting, so it is refused rather than clipped.
+        if not 0.0 <= float(outro_escape) < 0.5:
+            raise ValueError(
+                f"outro_escape must lie in [0, 0.5) -- got {outro_escape}; it is "
+                f"a per-bar probability and TWO targets are opened, so the stay "
+                f"probability is 1 - 2 * escape")
 
         self.priors = priors
         self.classes = tuple(priors.classes)
@@ -166,6 +257,8 @@ class FixedLagViterbi:
         self.boundary_weight = float(boundary_weight)
         self.boundary_ref = float(boundary_ref)
         self.floor_scale = float(floor_scale)
+        self.outro_escape = float(outro_escape)
+        self.floor_bars = tuple(floor_bars) if floor_bars is not None else None
 
         hazard = np.asarray(priors.hazard, dtype=np.float64)
         if not np.all((hazard > 0.0) & (hazard < 1.0)):
@@ -173,9 +266,19 @@ class FixedLagViterbi:
                 f"every class hazard must lie in (0, 1) -- got {hazard.tolist()}; "
                 f"0 makes a class unleavable and 1 caps every run at its floor")
 
-        self._floors = np.maximum(
-            1, np.rint(np.asarray(priors.floor_bars, dtype=np.float64)
-                       * self.floor_scale).astype(np.int64))
+        if self.floor_bars is not None:
+            if len(self.floor_bars) != len(self.classes):
+                raise ValueError(
+                    f"floor_bars has {len(self.floor_bars)} entries for "
+                    f"{len(self.classes)} classes {self.classes} -- a floor "
+                    f"vector silently misaligned by one would apply drop's floor "
+                    f"to breakdown and never raise")
+            self._floors = np.maximum(
+                1, np.asarray(self.floor_bars, dtype=np.int64))
+        else:
+            self._floors = np.maximum(
+                1, np.rint(np.asarray(priors.floor_bars, dtype=np.float64)
+                           * self.floor_scale).astype(np.int64))
         self._emission_bonus = self._class_bonus()
         self._entry_bonus = self._commit_bonus()
         self._build_states()
@@ -230,11 +333,51 @@ class FixedLagViterbi:
                                                  + self._entry_bonus[other])
                     switch[state, target] = True
 
+        self._apply_outro_escape(transition, switch)
+
         self._transition = transition
         self._switch = switch
         self._log_initial = np.full(n_states, -np.inf, dtype=np.float64)
         self._log_initial[self._entry_state] = (self.priors.log_initial
                                                 + self._entry_bonus)
+
+    # Where a track that was declared over can turn out not to be.  Only the two
+    # classes a track can plausibly resume into: an outro back into intro or
+    # buildup is not a mis-commit being repaired, it is a different track.
+    ESCAPE_TARGETS = ("breakdown", "drop")
+
+    def _apply_outro_escape(self, transition: np.ndarray, switch: np.ndarray) -> None:
+        """Open a bounded way out of a committed ``outro``.
+
+        The fitted graph makes outro absorbing and the corpus agrees with it, so
+        this does not touch ``priors`` at all -- it rewrites the trellis arc that
+        the absorbing state is made of.  The escape probability is stated
+        DIRECTLY as a per-bar rate rather than routed through the fitted hazard,
+        because ``hazard[outro]`` is fitted from runs that never end and means
+        nothing here; going through it would make the knob's real value depend on
+        a number nobody calibrated.
+
+        Deliberately not symmetric with the other classes: leaving outro costs
+        ``log(escape)`` flat, with no ``log_transition`` term, because there is no
+        fitted distribution over outro's successors to consult.  The entry bonus
+        still applies, so a drop-biased config biases the escape too.
+        """
+        if self.outro_escape <= 0.0 or "outro" not in self.classes:
+            return
+        source_class = self.classes.index("outro")
+        source = int(self._final_state[source_class])
+        targets = [self.classes.index(name) for name in self.ESCAPE_TARGETS
+                   if name in self.classes]
+        if not targets:
+            return
+
+        stay = 1.0 - self.outro_escape * len(targets)
+        transition[source, source] = math.log(stay) if stay > 0.0 else -np.inf
+        for other in targets:
+            entry = int(self._entry_state[other])
+            transition[source, entry] = (math.log(self.outro_escape)
+                                         + self._entry_bonus[other])
+            switch[source, entry] = True
 
     def _class_bonus(self) -> np.ndarray:
         """Per-class additive log-score applied to every bar's **emission**.
@@ -469,9 +612,31 @@ def bar_grid(beat_csv_path) -> np.ndarray:
     return np.append(edges, edges[-1] + float(np.median(np.diff(edges))))
 
 
+def temper(label_post: np.ndarray, temperature: float) -> np.ndarray:
+    """Re-sharpen or flatten frame posteriors: ``p ** (1/T)``, renormalised.
+
+    Applied per FRAME, before the bar average, and the order is the whole point.
+    Tempering after the mean would only rescale a number the averaging has
+    already decided; tempering before it changes how much a confident frame
+    outvotes an unconfident one *within* the bar, which is where a 16-bar drop
+    with two ambiguous bars at its edge is won or lost.
+
+    Distinct from ``prior_strength``, which is a class-constant offset added
+    after the log and therefore cannot change the relative weight of two frames
+    of the same class.
+    """
+    temperature = float(temperature)
+    if temperature <= 0.0:
+        raise ValueError(f"temperature must be > 0, got {temperature}")
+    if temperature == 1.0:
+        return label_post
+    powered = np.power(np.clip(label_post, EPS, None), 1.0 / temperature)
+    return powered / powered.sum(axis=-1, keepdims=True)
+
+
 def bar_observations(posterior_npz, edges, *, min_coverage: int = DEFAULT_MIN_COVERAGE,
-                     boundary_tolerance_sec: float = DEFAULT_BOUNDARY_TOLERANCE_SEC
-                     ) -> tuple:
+                     boundary_tolerance_sec: float = DEFAULT_BOUNDARY_TOLERANCE_SEC,
+                     temperature: float = DEFAULT_TEMPERATURE) -> tuple:
     """Aggregate a posterior sidecar onto a bar grid.
 
     Returns ``(posteriors [B, C], boundary [B])``.  A bar with no frame that
@@ -494,6 +659,8 @@ def bar_observations(posterior_npz, edges, *, min_coverage: int = DEFAULT_MIN_CO
         label_pool = int(archive["label_pool"])
         t0 = float(archive["t0"])
 
+    label_post = temper(label_post, temperature)
+
     edges = np.asarray(edges, dtype=np.float64)
     if edges.size < 2:
         raise ValueError("need at least two bar edges to define one bar")
@@ -503,6 +670,22 @@ def bar_observations(posterior_npz, edges, *, min_coverage: int = DEFAULT_MIN_CO
     label_ok = coverage[::label_pool][:len(label_post)] >= int(min_coverage)
     frame_times = t0 + np.arange(len(boundary)) * frame_sec
     frame_ok = coverage[:len(boundary)] >= int(min_coverage)
+
+    # A track where NOTHING clears the threshold is not a thin-evidence track,
+    # it is a mispaired config -- and it decodes *silently*, because every bar
+    # falls back to the duration prior and the result still looks like a show.
+    # The case that motivated this: a whole-track model writes coverage 1
+    # everywhere (it has no windows to average), and the shipped configs ask for
+    # 2, so 100% of the label evidence is discarded and the reported macro-F1
+    # measures the priors.  Nothing downstream can tell that apart from a bad
+    # model.
+    if not label_ok.any():
+        raise RuntimeError(
+            f"{posterior_npz}: no frame has coverage >= {min_coverage} "
+            f"(max is {int(coverage.max()) if coverage.size else 0}) -- every "
+            f"bar would decode from the duration prior alone. Either these "
+            f"sidecars were written by a single-pass model (coverage 1) and the "
+            f"config wants overlap-averaged ones, or the two were mispaired")
 
     posteriors = np.full((n_bars, label_post.shape[1]), np.nan, dtype=np.float64)
     scores = np.full(n_bars, np.nan, dtype=np.float64)
@@ -544,7 +727,8 @@ def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
     edges = bar_grid(beat_csv)
     posteriors, boundary = bar_observations(
         posterior_npz, edges, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec)
+        boundary_tolerance_sec=params.boundary_tolerance_sec,
+        temperature=params.temperature)
 
     decoder = FixedLagViterbi(
         priors, params.lag_bars,
@@ -553,6 +737,8 @@ def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
         prior_strength=params.prior_strength,
         boundary_weight=params.boundary_weight,
         boundary_ref=params.boundary_ref,
-        floor_scale=params.floor_scale)
+        floor_scale=params.floor_scale,
+        floor_bars=params.floor_bars,
+        outro_escape=params.outro_escape)
     decisions = decoder.decode(posteriors, boundary)
     return [(float(edges[d.bar]), d.label) for d in decisions]

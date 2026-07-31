@@ -1,0 +1,39 @@
+{
+  "chosen": {
+    "lag_bars": 3,
+    "class_prior_division": true,
+    "prior_strength": -0.25,
+    "drop_miss_cost": 0.4642,
+    "boundary_weight": 4.0,
+    "boundary_ref": 0.2,
+    "boundary_tolerance_sec": 0.5,
+    "min_coverage": 1,
+    "floor_scale": 1.25,
+    "floor_bars": [8, 8, 6, 9, 8],
+    "outro_escape": 0.02,
+    "temperature": 1.0
+  },
+  "name": "reduced_plus_floors_x0.75",
+  "generated_at": "2026-07-31T20:40:48.257125+00:00",
+  "provenance": {
+    "source": "training/data/raveform/models/phase_b/student_kd_t2_w05_s1234/frontier.json",
+    "field": "pick",
+    "model_version": "phase_b_student_kd_t2_w05_s1234",
+    "model_onnx_sha256": "f1fe6ef7c3cc0dede24a7d572841b3eb2c381f123868f67dcf0e1d0298aa33b4",
+    "split": "val",
+    "tracks": 215,
+    "audience_minutes": 1417.35
+  },
+  "measured": {
+    "boundary_f1": {"0.5": 0.677911, "2.0": 0.714239, "4.0": 0.740837},
+    "macro_f1_all": 0.70657,
+    "macro_f1_contested": 0.709891,
+    "flicker_per_audience_minute": {"0.5": 0.360097, "2.0": 0.320634, "4.0": 0.291742},
+    "switches_per_audience_minute": 1.097823,
+    "false_drop_entries_per_audience_minute": 0.043038
+  },
+  "notes": [
+    "floor_scale is inert while floor_bars is present: the vector overrides the scalar. Kept at the swept value because this file is the record of what was measured, not a tidied restatement of it.",
+    "lag_bars 3 is the value the frontier was swept at, on expert downbeats. The look-ahead gate may amend it; nothing else in this file depends on that number."
+  ]
+}
