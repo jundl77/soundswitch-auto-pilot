@@ -59,7 +59,19 @@ async def _sample_run() -> dict:
 
 
 @pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason="D13: the demolished branch commits no "
+                                        "intent, so the plumbing verdict's four "
+                                        "show criteria cannot pass until Task 9 "
+                                        "rewires the decoder")
 async def test_sample_song_evaluation_passes():
+    """The plumbing verdict -- "did anything happen at all".
+
+    Between the demolition and the rewire the answer is deliberately no: beats,
+    silence and a held intent are the whole show (D13), and this asks for two
+    intent changes, two distinct intents, two channels and one effect change.
+    Strict, so it fails the moment Task 9 makes it true again and the marker
+    cannot be left behind.
+    """
     from simulate.evaluator import evaluate
     run = await _sample_run()
     result = evaluate(run['report'])
@@ -111,6 +123,10 @@ async def test_simulation_is_deterministic():
 
 
 @pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason="the demolition moved all three report "
+                                        "checksums and zeroed the label-aligned "
+                                        "scores; Task 15 re-cuts the committed "
+                                        "baseline, once")
 def test_eval_set_head_matches_the_committed_baseline():
     """Three eval-set tracks through the benchmark runner, compare mode.
 
@@ -121,6 +137,14 @@ def test_eval_set_head_matches_the_committed_baseline():
 
     Read the printed table on failure: it names the track, the metric, and the
     direction, and says whether re-cutting the baseline is the right answer.
+
+    Marked xfail through the demolition, and strict on purpose.  The report
+    schema lost four beat columns and one metric, so every checksum moved; the
+    engine commits nothing, so every label-aligned score is 0.  Re-cutting the
+    baseline here would bless the intermediate state as the benchmark, which is
+    why the plan gives that job to Task 15 and gives it once.  When the rewire
+    lands and the baseline is re-cut this XPASSes, which pytest reports as a
+    failure until the marker comes off.
     """
     _require_audio(BENCH_TRACK_IDS)
     exit_code = run_eval_set.main([

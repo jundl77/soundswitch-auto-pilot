@@ -54,7 +54,8 @@ visualizer = [
 # Offline NN work only (training/nn/): never imported by lib/ or simulate/.
 # torch and onnxruntime are base dependencies now and are deliberately not
 # repeated here -- two pins for one package is two answers to which one ships.
-# tensorboard is deliberately loose because TensorFlow pins it to its own version.
+# tensorboard is a floor rather than a range: nothing else in the tree pins it
+# any more, and the trainer uses only its SummaryWriter surface.
 training = [
     "onnx>=1.22,<2",
     "tensorboard>=2.16",
