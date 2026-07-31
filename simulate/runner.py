@@ -51,8 +51,14 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     }, command_queue
 
 
-async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
-                              seed: int = FAST_SIM_RANDOM_SEED):
+async def run_fast_simulation_components(audio_client, duration_sec: float = float('inf'),
+                                         seed: int = FAST_SIM_RANDOM_SEED):
+    """The fast sim, handing back every client it built.
+
+    The stub MIDI and OS2L clients hold wires the report does not carry, and the
+    golden fixture pins those. One code path so a fixture cut here describes the
+    same run the benchmark scores.
+    """
     from lib.engine.event_buffer import EventBuffer
 
     random.seed(seed)
@@ -62,7 +68,14 @@ async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
     event_buffer.start()
     await run_simulation(components, duration_sec, clock=clock)
-    return audio_client, event_buffer, command_queue
+    return components, command_queue
+
+
+async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
+                              seed: int = FAST_SIM_RANDOM_SEED):
+    components, command_queue = await run_fast_simulation_components(
+        audio_client, duration_sec, seed)
+    return components['audio_client'], components['event_buffer'], command_queue
 
 
 async def run_simulation(components: dict, duration_sec: float,
