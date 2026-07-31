@@ -507,17 +507,23 @@ def test_the_shipped_geometry_fits_the_eight_second_budget():
     assert 8.0 - total < head.label_frame_sec
 
 
-@pytest.mark.integration
-def test_the_real_encoder_streams_the_same_cells_twice_in_one_process():
+@pytest.fixture(scope="module")
+def real_stack():
     from lib.analyser import section_model as S
 
     affine, onnx = _require_artifacts()
     head = S.load_head_geometry(onnx)
     geometry = M.load_stream_geometry(affine,
                                       label_frame_sec=head.label_frame_sec)
-    encoder = M.load_encoder(geometry, device=M.best_device(), fp16=True)
+    return M.load_encoder(geometry, device=M.best_device(), fp16=True), geometry, head
 
-    audio = _source_audio(anchor_mp3_path())[:int(20.0 * M.SOURCE_SAMPLE_RATE)]
+
+@pytest.mark.integration
+def test_the_real_encoder_streams_the_same_cells_twice_in_one_process(
+        real_stack, anchor_mp3):
+    encoder, geometry, head = real_stack
+
+    audio = _source_audio(anchor_mp3)[:int(20.0 * M.SOURCE_SAMPLE_RATE)]
     runs = [_run_stream(encoder, geometry, audio) for _ in range(2)]
 
     assert len(runs[0]) == len(runs[1]) > 0
@@ -528,44 +534,73 @@ def test_the_real_encoder_streams_the_same_cells_twice_in_one_process():
 
 
 @pytest.mark.integration
-def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(capsys):
+def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
+        real_stack, anchor_mp3, capsys):
     """D4: the offline features came out of ffmpeg's resampler, the live ones
     out of a polyphase one. Nothing fails loudly if these disagree -- the
-    posteriors just get quietly worse -- so the delta is measured and printed."""
-    from lib.analyser import section_model as S
+    posteriors just get quietly worse -- so it is measured.
 
-    affine, onnx = _require_artifacts()
-    head = S.load_head_geometry(onnx)
-    geometry = M.load_stream_geometry(affine,
-                                      label_frame_sec=head.label_frame_sec)
-    encoder = M.load_encoder(geometry, device=M.best_device(), fp16=True)
+    Two arms, because a naive live-versus-offline comparison measures the mp3
+    DECODER as well and the decoder is the larger term. The gated arm feeds both
+    sides ffmpeg's own bytes and differs only in the resampler, which is the
+    question D4 actually asks and the only one the show can answer -- live audio
+    arrives from PyAudio and no mp3 decoder is involved. The ungated arm is the
+    simulation path and is reported for Task 12.
+
+    The unit is the model's own: a delta divided by the input affine's std is a
+    delta in the space the network reads. The reference for "is that a lot" is
+    how far apart two ADJACENT cells of the same track already are.
+    """
+    encoder, geometry, _head = real_stack
+    affine, _onnx = _require_artifacts()
+    _mean, std = M.load_input_affine(affine)
 
     seconds = 60.0
-    path = anchor_mp3_path()
-    live = _run_stream(encoder, geometry,
-                       _source_audio(path)[:int(seconds * M.SOURCE_SAMPLE_RATE)])
-    offline = _run_stream(
-        encoder, geometry,
-        _ffmpeg_audio(path, M.ENCODER_SAMPLE_RATE)[
-            :int(seconds * M.ENCODER_SAMPLE_RATE)],
+    take24 = int(seconds * M.ENCODER_SAMPLE_RATE)
+    take441 = int(seconds * M.SOURCE_SAMPLE_RATE)
+    reference = _run_stream(
+        encoder, geometry, _ffmpeg_audio(anchor_mp3, M.ENCODER_SAMPLE_RATE)[:take24],
         source_rate=M.ENCODER_SAMPLE_RATE)
+    resampled = _run_stream(
+        encoder, geometry,
+        _ffmpeg_audio(anchor_mp3, M.SOURCE_SAMPLE_RATE)[:take441])
+    simulated = _run_stream(encoder, geometry, _source_audio(anchor_mp3)[:take441])
 
-    shared = min(len(live), len(offline))
-    assert shared > 400
-    a = np.stack([cell.features for cell in live[:shared]])
-    b = np.stack([cell.features for cell in offline[:shared]])
-    delta = np.abs(a - b)
-    report = {
-        "cells": shared,
-        "max_cell_delta": float(delta.max()),
-        "median_cell_delta": float(np.median(delta)),
-        "max_abs_offline_feature": float(np.abs(b).max()),
-        "argmax_disagreements": int((a.argmax(axis=1) != b.argmax(axis=1)).sum()),
-        "relative_max": float(delta.max() / max(np.abs(b).max(), 1e-9)),
-    }
+    baseline = np.stack([cell.features for cell in reference])
+    adjacent = np.median(np.abs(np.diff(baseline, axis=0)) / std[None, :])
+    arms = {name: _cell_delta(np.stack([cell.features for cell in cells]),
+                              baseline, std, adjacent)
+            for name, cells in (("resampler_only_ffmpeg_44k1", resampled),
+                                ("simulation_path_librosa_44k1", simulated))}
     with capsys.disabled():
-        print(f"\nD4 resampler parity: {json.dumps(report)}")
-    assert report["relative_max"] < 0.05, report
+        print(f"\nD4 parity ({len(baseline)} cells, median adjacent-cell "
+              f"distance {adjacent:.4f} affine std):\n{json.dumps(arms, indent=2)}")
+
+    resampler = arms["resampler_only_ffmpeg_44k1"]
+    assert resampler["argmax_disagreements"] == 0, resampler
+    assert resampler["median_delta_in_affine_std"] < 0.10, resampler
+    assert resampler["share_of_adjacent_cell_distance"] < 0.20, resampler
+
+
+def _cell_delta(a, b, std, adjacent):
+    shared = min(len(a), len(b))
+    assert shared > 400
+    delta = np.abs(a[:shared] - b[:shared])
+    normalised = delta / std[None, :]
+    median = float(np.median(normalised))
+    return {
+        "cells": shared,
+        "median_delta_in_affine_std": median,
+        "p99_delta_in_affine_std": float(np.percentile(normalised, 99)),
+        "max_delta_in_affine_std": float(normalised.max()),
+        "share_of_adjacent_cell_distance": float(median / adjacent),
+        "argmax_disagreements": int(
+            (a[:shared].argmax(axis=1) != b[:shared].argmax(axis=1)).sum()),
+        "min_cosine": float(np.min(
+            (a[:shared] * b[:shared]).sum(1)
+            / (np.linalg.norm(a[:shared], axis=1)
+               * np.linalg.norm(b[:shared], axis=1) + 1e-12))),
+    }
 
 
 def _run_stream(encoder, geometry, audio, *, source_rate=M.SOURCE_SAMPLE_RATE):
@@ -577,12 +612,6 @@ def _run_stream(encoder, geometry, audio, *, source_rate=M.SOURCE_SAMPLE_RATE):
             cells.extend(stream.run_pass())
     cells.extend(stream.flush())
     return cells
-
-
-def anchor_mp3_path() -> str:
-    from conftest import anchor_mp3_path as resolve
-
-    return resolve()
 
 
 def _source_audio(path: str) -> np.ndarray:
