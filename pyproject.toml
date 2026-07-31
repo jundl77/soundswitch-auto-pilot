@@ -15,13 +15,10 @@ requires-python = ">=3.11"
 dependencies = [
     "python-rtmidi>=1.5,<2",
     "cython",
-    "aubio",
     "madmom",
     "numpy>=1.26,<2",
     "pyaudio",
     "pandas",
-    "tensorflow>=2.16,<2.22",
-    "tensorflow-hub>=0.16,<0.17",
     "scipy",
     "python-osc",
     "scikit-learn",
@@ -30,6 +27,16 @@ dependencies = [
     "zeroconf",
     "netifaces",
     "setuptools<71",
+    # The show. The section model is an ONNX graph, its encoder is a
+    # transformers checkpoint, and torch is what loads and runs the encoder --
+    # all three are on the live path now, not in an offline extra.
+    # Versions are the set validated together on this box; see
+    # .superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md.
+    # torch stays at 2.11: the legacy TorchScript ONNX exporter is the only path
+    # that keeps a dynamic time axis for a GRU, and it is deprecated from 2.9.
+    "torch>=2.11,<2.12",
+    "transformers>=4.57,<5",
+    "onnxruntime>=1.28,<2",
 ]
 
 [project.optional-dependencies]
@@ -37,21 +44,25 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "jupyterlab",
+    # Retired, and alive here for exactly one task. Base no longer carries the
+    # rule engine's front-end; lib/ still imports it until the demolition, so
+    # the suite needs it installed and nothing else does. These three lines and
+    # the two build shims below go together, in the commit that deletes their
+    # importers.
+    "aubio",
+    "tensorflow>=2.16,<2.22",
+    "tensorflow-hub>=0.16,<0.17",
 ]
 visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
 # Offline NN work only (training/nn/): never imported by lib/ or simulate/.
-# Versions validated end-to-end on the RTX 3070 -- see
-# .superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md.
-# torch is pinned to 2.11 because the legacy TorchScript ONNX exporter (the only
-# path that keeps a dynamic time axis for a GRU) is deprecated from 2.9 onward;
+# torch and onnxruntime are base dependencies now and are deliberately not
+# repeated here -- two pins for one package is two answers to which one ships.
 # tensorboard is deliberately loose because TensorFlow pins it to its own version.
 training = [
-    "torch>=2.11,<2.12",
     "onnx>=1.22,<2",
-    "onnxruntime>=1.28,<2",
     "tensorboard>=2.16",
     # tensorboard's image summaries encode through PIL and it is not a hard
     # dependency of tensorboard itself; without it the per-epoch confusion
@@ -69,13 +80,15 @@ explicit = true
 
 [tool.uv]
 link-mode = "copy"
+# Retired with the aubio entry in the dev extra above.
 extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
 # Resolve only for the environment this project actually runs in.  uv resolves
 # universally across `requires-python`, and on the py3.13 branch ml-dtypes
 # (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against the
 # numpy<2 pin TensorFlow needs.  Removing this line breaks `uv lock`.
 environments = ["sys_platform == 'win32' and python_full_version < '3.12'"]
-# tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on Windows
+# tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on
+# Windows. Retired with the tensorflow entries in the dev extra above.
 override-dependencies = [
     "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",
 ]
