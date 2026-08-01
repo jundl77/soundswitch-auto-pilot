@@ -206,7 +206,11 @@ CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro",
 # Mel sidecar (NN features)
 # --------------------------------------------------------------------------- #
 
-MEL_BANDS = 40          # must equal MelFilterbank.BANDS
+# The geometry every sidecar on disk was written on.  It used to be a coupling
+# to the analyser's aubio filterbank; that bank is deleted and no new sidecar can
+# be produced, so these two are now a record of the corpus's mel grid and the
+# thing `load_sidecar` refuses a mismatch against.
+MEL_BANDS = 40
 POOL_BUFFERS = 8        # 8 x 256 samples @ 44.1 kHz ~= 46 ms per frame
 
 # Which exporter wrote a sidecar, recorded IN the sidecar.  Bump it whenever the

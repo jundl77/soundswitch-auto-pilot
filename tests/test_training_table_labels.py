@@ -821,11 +821,13 @@ def test_the_job_carries_the_stamp_the_cache_will_be_checked_against(tmp_path):
 # Mel-sidecar generation
 # --------------------------------------------------------------------------- #
 #
-# The sidecar's freshness used to be "the file exists".  A change to
-# `pooled_log_mel` that keeps the frame rate and the band count -- a different
-# compression, a different pooling reduction -- writes a sidecar of exactly the
-# right shape and entirely different numbers, and the corpus would then carry
-# two feature generations under one training table with nothing to say so.
+# The sidecar's freshness used to be "the file exists".  An exporter change that
+# keeps the frame rate and the band count -- a different compression, a different
+# pooling reduction -- writes a sidecar of exactly the right shape and entirely
+# different numbers, and the corpus would then carry two feature generations
+# under one training table with nothing to say so.  The exporter itself is gone
+# with the analyser's filterbank; the stamp still has to be read, because the
+# sidecars it wrote are the only ones the corpus will ever have.
 
 
 def stamp_sidecar(path: Path, version=MEL_EXPORTER_VERSION) -> None:

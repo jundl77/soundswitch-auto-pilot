@@ -30,10 +30,11 @@ statement about section identity, not necessarily an audible event, so the
 target there is *deleted* rather than taught as a negative.
 
 Time base: mel frame ``k`` carries song time ``t0 + k * frame_sec`` with
-``t0 == frame_sec`` (the frame is stamped at the END of its last buffer -- see
-``build_training_table.pooled_log_mel``).  Beats, intents and mel frames all
-share that base, so targets are read at the frame's own timestamp with no
-correction factor.
+``t0 == frame_sec`` -- the frame is stamped at the END of its last buffer.  The
+exporter that established that is deleted with the analyser's filterbank; every
+sidecar records both numbers, and ``load_sidecar`` refuses one that disagrees.
+Beats, intents and mel frames all share that base, so targets are read at the
+frame's own timestamp with no correction factor.
 
 Nothing here imports torch at module level: the dataset is plain numpy plus an
 optional ``torch.utils.data.Dataset`` base, so the target/mask logic stays
