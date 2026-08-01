@@ -177,14 +177,14 @@ def test_a_show_that_changed_nothing_but_its_intents_keeps_every_survivor():
     beats = [_beat(1.0), _beat(2.0)]
     streams = _streams(sound=[{'t': 0.3, 'playing': True}], os2l=[_os2l(1)],
                        overlay=[_overlay(1.0)])
-    busy_effects = [{'t': 1.0, 'channel': _pool_channel('groove'),
+    busy_effects = [{'t': 1.0, 'channel': _pool_channel('breakdown'),
                      'type': 'AUTOLOOP', 'end': 2.0},
                     {'t': 2.0, 'channel': _pool_channel('drop'),
                      'type': 'AUTOLOOP', 'end': 3.0}]
-    busy_intents = [{'t': 1.0, 'intent': 'groove', 'end': 2.0},
+    busy_intents = [{'t': 1.0, 'intent': 'breakdown', 'end': 2.0},
                     {'t': 2.0, 'intent': 'drop', 'end': 3.0}]
     busy_midi = [{'label': 'set_autoloop', 'time': 1.0,
-                  'channel': _pool_channel('groove')},
+                  'channel': _pool_channel('breakdown')},
                  {'label': 'set_autoloop', 'time': 2.0,
                   'channel': _pool_channel('drop')}]
 
@@ -192,9 +192,9 @@ def test_a_show_that_changed_nothing_but_its_intents_keeps_every_survivor():
                          {**streams, 'midi': busy_midi})
     held = digest_report(
         _report(beats,
-                effects=[{'t': 1.0, 'channel': _pool_channel('groove'),
+                effects=[{'t': 1.0, 'channel': _pool_channel('breakdown'),
                           'type': 'AUTOLOOP', 'end': 3.0}],
-                intents=[{'t': 1.0, 'intent': 'groove', 'end': 3.0}]),
+                intents=[{'t': 1.0, 'intent': 'breakdown', 'end': 3.0}]),
         {**streams, 'midi': busy_midi[:1]})
 
     assert busy['survives'] == held['survives']
@@ -230,15 +230,15 @@ def test_midi_time_running_backwards_is_caught():
 
 
 def test_every_lit_channel_comes_from_the_pool_its_intent_names():
-    intents = [{'t': 1.0, 'intent': 'groove', 'end': 5.0}]
-    effects = [{'t': 1.0, 'channel': _pool_channel('groove'), 'type': 'AUTOLOOP',
+    intents = [{'t': 1.0, 'intent': 'breakdown', 'end': 5.0}]
+    effects = [{'t': 1.0, 'channel': _pool_channel('breakdown'), 'type': 'AUTOLOOP',
                 'end': 5.0}]
     d = relations_digest(_report([], effects=effects, intents=intents))
     assert d['midi_channels_come_from_the_intents_pool'] is True
 
 
 def test_a_channel_from_another_intents_pool_is_caught():
-    intents = [{'t': 1.0, 'intent': 'groove', 'end': 5.0}]
+    intents = [{'t': 1.0, 'intent': 'breakdown', 'end': 5.0}]
     effects = [{'t': 1.0, 'channel': _pool_channel('drop'), 'type': 'AUTOLOOP',
                 'end': 5.0}]
     d = relations_digest(_report([], effects=effects, intents=intents))
@@ -246,7 +246,7 @@ def test_a_channel_from_another_intents_pool_is_caught():
 
 
 def test_an_effect_lit_before_any_intent_was_committed_is_caught():
-    effects = [{'t': 1.0, 'channel': _pool_channel('groove'), 'type': 'AUTOLOOP',
+    effects = [{'t': 1.0, 'channel': _pool_channel('breakdown'), 'type': 'AUTOLOOP',
                 'end': 5.0}]
     d = relations_digest(_report([], effects=effects))
     assert d['midi_channels_come_from_the_intents_pool'] is False
@@ -388,7 +388,7 @@ def test_the_surviving_silence_timer_does_not_disqualify_the_degradation_state()
     stays dark from first beat to last, which the plan never asks for.
     """
     report = _report([_beat(1.0)],
-                     intents=[{'t': 3.5, 'intent': 'groove', 'end': 300.0},
+                     intents=[{'t': 3.5, 'intent': 'breakdown', 'end': 300.0},
                               {'t': 300.0, 'intent': 'atmospheric', 'end': 310.0}])
     report['metrics']['effect_changes_count'] = 2
     d = degradation_digest(report)

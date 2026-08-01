@@ -18,10 +18,37 @@ class EffectType(Enum):
 class LightIntent(Enum):
     ATMOSPHERIC = 'atmospheric'
     BREAKDOWN   = 'breakdown'
-    GROOVE      = 'groove'
     BUILDUP     = 'buildup'
     DROP        = 'drop'
     PEAK        = 'peak'
+
+
+# The decoder's class space -> what the rig does about it (D7).  ATMOSPHERIC
+# takes both quiet classes because an intent cannot know where in the track it
+# is; PEAK is absent because it is a run length, not a class.
+SECTION_CLASS_INTENTS: Dict[str, 'LightIntent'] = {
+    'intro':     LightIntent.ATMOSPHERIC,
+    'outro':     LightIntent.ATMOSPHERIC,
+    'buildup':   LightIntent.BUILDUP,
+    'breakdown': LightIntent.BREAKDOWN,
+    'drop':      LightIntent.DROP,
+}
+
+
+def intent_for_class(label: str) -> 'LightIntent':
+    """Raises on an unmapped class rather than defaulting to a plausible look.
+
+    The class space is whatever the priors file names, so a retrained model with
+    a class nobody wired must stop the show's construction, not light breakdown
+    for it and let the mistake read as a taste question.
+    """
+    try:
+        return SECTION_CLASS_INTENTS[label]
+    except KeyError:
+        raise KeyError(
+            f"the decoder committed {label!r}, which no LightIntent claims; "
+            f"known classes are {', '.join(sorted(SECTION_CLASS_INTENTS))}"
+        ) from None
 
 
 class Effect:
@@ -79,12 +106,12 @@ INTENT_EFFECTS: Dict[LightIntent, List[Effect]] = {
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2B),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2C),
     ],
+    # Six banks, because GROOVE's three moved here rather than going dark when
+    # the class space lost the intent that owned them (D7).
     LightIntent.BREAKDOWN: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2C),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2D),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2E),
-    ],
-    LightIntent.GROOVE: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2F),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2G),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_2H),

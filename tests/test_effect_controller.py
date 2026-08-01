@@ -16,7 +16,7 @@ def test_select_new_random_effect_avoids_previous(effect_controller):
 
 
 def test_select_new_random_effect_returns_item_from_pool(effect_controller):
-    pool = INTENT_EFFECTS[LightIntent.GROOVE]
+    pool = INTENT_EFFECTS[LightIntent.BREAKDOWN]
     previous = pool[0]
     result = effect_controller._select_new_random_effect(pool, previous)
     assert result in pool
@@ -30,8 +30,8 @@ async def test_change_effect_atmospheric_uses_bank2(effect_controller):
 
 
 @pytest.mark.asyncio
-async def test_change_effect_groove_uses_bank2(effect_controller):
-    await effect_controller.change_effect(LightIntent.GROOVE)
+async def test_change_effect_breakdown_uses_bank2(effect_controller):
+    await effect_controller.change_effect(LightIntent.BREAKDOWN)
     channel = effect_controller.last_effect.midi_channel.name
     assert 'BANK_2' in channel
 
