@@ -543,11 +543,22 @@ def test_the_stream_emits_every_cell_once_in_order():
     assert len(cells) == pytest.approx(25.0 / CELL, abs=2)
 
 
-def test_a_cell_is_stamped_at_the_start_of_its_own_span():
+def test_a_cell_is_stamped_at_the_end_of_its_own_span():
+    """The sidecars' convention (`label_t0 == label_frame_sec`), so anything
+    joining on time -- Task 8's bar grid first -- reads one grid, not two."""
     stream = _stream(FakeEncoder())
     cells = _feed(stream, 12.0)
     for cell in cells:
-        assert cell.time_sec == pytest.approx(cell.index * CELL)
+        assert cell.time_sec == pytest.approx((cell.index + 1) * CELL)
+
+
+def test_an_encoder_that_does_not_speak_the_geometrys_rate_is_refused():
+    """The ring, the hop and the margin are sized in 24 kHz samples while frame
+    times come from the extractor -- silent geometry corruption if they part."""
+    encoder = FakeEncoder()
+    encoder.sample_rate = 16000
+    with pytest.raises(ValueError, match="16000"):
+        _stream(encoder)
 
 
 def test_no_emitted_cell_saw_audio_beyond_the_margin_plus_hop():
@@ -556,7 +567,7 @@ def test_no_emitted_cell_saw_audio_beyond_the_margin_plus_hop():
     cells = _feed(stream, 45.0)
     assert cells
     for cell in cells:
-        future = cell.audio_seen_sec - (cell.time_sec + CELL)
+        future = cell.audio_seen_sec - cell.time_sec
         assert future <= 3.0 + 1.0 + 1e-9, (cell.index, future)
 
 

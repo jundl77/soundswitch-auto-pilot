@@ -12,16 +12,28 @@ L - F seconds of past. Start-up uses the short buffer it has; the flush at a
 song boundary emits the tail, which is what any real stream does at
 end-of-input.
 
-Two things differ from the offline extractor, both because it knows the track
+Four things differ from the offline extractor, all because it knows the track
 length up front and a show does not:
 
 * **The schedule is re-derived incrementally.** `pass_schedule` is kept as the
-  offline generator it was, and the live driver is asserted against it rather
-  than trusted to agree.
+  offline generator it was, and the live driver is asserted against it -- whole
+  spans, not just pass boundaries -- rather than trusted to agree.
 * **Cells are emitted as they complete**, not pooled into a track-wide array at
   the end. A cell is complete once no later pass can reach it; gaps still
   forward-fill from the last cell reached, because a zero row is not "no
   information" to a network, it is a confident out-of-distribution input.
+* **A track ending exactly on a hop boundary costs one extra encoder pass.**
+  The driver has already run that pass as a regular one before it learns the
+  stream stopped, so the flush re-encodes the same buffer to emit the residual
+  margin. Saving it means holding a whole pass's output for a case that happens
+  once per song; the emitted cells are identical either way.
+* **The flush tail ends at the last cell an encoder frame reached**, where the
+  offline extractor truncates and forward-fills to the mel-derived grid it knows
+  the length of. Mid-stream cells are bit-identical; a flushed track can end a
+  cell short or long of its offline sidecar.
+
+Cells are stamped at the END of their span, which is the convention every
+offline artifact uses (`label_t0 == label_frame_sec` in the sidecars).
 
 The 44.1 kHz -> 24 kHz resample is part of train==deploy and is measured, not
 assumed (D4): the offline features were extracted from ffmpeg's resampler. The
@@ -594,6 +606,10 @@ class MertStream:
 
     def __init__(self, encoder, *, geometry: StreamGeometry,
                  source_rate: int = SOURCE_SAMPLE_RATE) -> None:
+        if int(encoder.sample_rate) != ENCODER_SAMPLE_RATE:
+            raise ValueError(f"the encoder speaks {encoder.sample_rate} Hz "
+                             f"while the geometry sizes the ring, the hop and "
+                             f"the margin at {ENCODER_SAMPLE_RATE}")
         self.geometry = geometry
         self._encoder = encoder
         self._resampler = StreamingResampler(source_rate, encoder.sample_rate)
@@ -694,5 +710,5 @@ class MertStream:
         # trained on; handing it float32 precision is feeding it inputs it has
         # never seen.
         features = row.reshape(-1).astype(np.float16).astype(np.float32)
-        return Cell(index, index * self.geometry.label_frame_sec, features,
-                    seen_sec)
+        return Cell(index, (index + 1) * self.geometry.label_frame_sec,
+                    features, seen_sec)

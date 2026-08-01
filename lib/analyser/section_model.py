@@ -241,7 +241,7 @@ class SectionModel:
         label, boundary, self._state = self._session.run(
             [LABEL_OUTPUT, BOUNDARY_OUTPUT, STATE_OUTPUT],
             {FRAMES_INPUT: frames, STATE_INPUT: self._state})
-        return Posterior(index, index * self.geometry.label_frame_sec,
+        return Posterior(index, (index + 1) * self.geometry.label_frame_sec,
                          _softmax(label[0]),
                          _sigmoid(boundary.reshape(-1)[0]))
 

@@ -238,10 +238,12 @@ def test_reset_returns_the_model_to_its_cold_state(tiny, mean):
         assert a.boundary == b.boundary
 
 
-def test_posteriors_are_stamped_on_the_label_grid(tiny, geometry, mean):
+def test_posteriors_are_stamped_at_the_end_of_their_cell(tiny, geometry, mean):
+    """The sidecars' convention (`label_t0 == label_frame_sec`), the same one
+    MertStream stamps cells with -- one grid across the pipeline, not two."""
     live = _stream(_model(tiny, mean), _cells(25))
     for item in live:
-        assert item.time_sec == pytest.approx(item.index
+        assert item.time_sec == pytest.approx((item.index + 1)
                                               * geometry.label_frame_sec)
 
 
