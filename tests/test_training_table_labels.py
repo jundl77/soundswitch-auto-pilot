@@ -441,7 +441,7 @@ def test_realignment_of_nothing_is_nothing():
     spans, alignment = realign_intents([], LOOK_AHEAD, [1.0], duration_sec=30.0)
 
     assert spans == []
-    assert alignment == (0, 0, 0, 0)
+    assert alignment == (0, 0, 0, 0, 0)
 
 
 def test_a_report_without_beats_is_left_uniformly_shifted():
@@ -1120,3 +1120,38 @@ def test_timeline_on_overlap_prefers_the_later_span():
 
 def test_empty_timeline_returns_none():
     assert Timeline([]).at(1.0) is None
+
+
+def test_the_clamped_tail_tripwire_still_sees_a_recorded_block():
+    """It counted only on the inferred branch, and the engine now records
+    `song_t` on every block -- so the tripwire read zero on every report, which
+    looks exactly like "nothing was clamped"."""
+    blocks = [{"t": 10.0, "song_t": 5.0, "intent": "DROP", "end": 30.0},
+              {"t": 30.0, "song_t": 20.0, "intent": "BREAKDOWN", "end": 30.0}]
+
+    _, alignment = realign_intents(blocks, LOOK_AHEAD, [5.0, 20.0],
+                                   duration_sec=30.0)
+
+    assert alignment.song_recorded == 2
+    assert alignment.clamped_tail == 1
+
+
+def test_a_block_committed_past_the_budget_is_counted():
+    """#154's accepted lateness, as a number rather than as a log line: a block
+    whose stamp is more than one look-ahead after the audio it names was
+    committed late because the chain was older than the playback delay."""
+    blocks = [{"t": 10.0, "song_t": 6.0, "intent": "DROP", "end": 40.0},
+              {"t": 26.5, "song_t": 24.0, "intent": "BREAKDOWN", "end": 60.0}]
+
+    _, alignment = realign_intents(blocks, LOOK_AHEAD, [6.0, 24.0],
+                                   duration_sec=60.0)
+
+    assert alignment.late == 1
+
+
+def test_a_block_inside_the_budget_is_not_late():
+    blocks = [{"t": 8.5, "song_t": 6.0, "intent": "DROP", "end": 40.0}]
+
+    _, alignment = realign_intents(blocks, LOOK_AHEAD, [6.0], duration_sec=60.0)
+
+    assert alignment.late == 0

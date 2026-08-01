@@ -356,6 +356,7 @@ class IntentAlignment(NamedTuple):
     song_stamped: int      # committed immediately -- already in song time
     clamped_tail: int      # queue commit frozen at the report's end by mark_end
     song_recorded: int = 0  # the block carried the instant it describes
+    late: int = 0          # fired more than a look-ahead after the audio it names
 
 
 def _nearest_gap(sorted_times: list, value: float) -> float:
@@ -424,13 +425,18 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
     song_stamped = clamped_tail = song_recorded = 0
     for block in blocks:
         t = float(block["t"])
+        # Counted for every block, not only the inferred ones: once the engine
+        # started recording `song_t` the inferred branch stopped running, and
+        # this tripwire read zero on every report -- which looks exactly like
+        # "no block was clamped".
+        is_clamped = (duration_sec is not None
+                      and abs(t - float(duration_sec)) <= _STAMP_EPS)
         if block.get("song_t") is not None:
             starts.append(float(block["song_t"]))
             song_recorded += 1
+            clamped_tail += 1 if is_clamped else 0
             shifts.append(t - starts[-1])
             continue
-        is_clamped = (duration_sec is not None
-                      and abs(t - float(duration_sec)) <= _STAMP_EPS)
         explained_by_queue = (
             look_ahead_sec <= 0
             or not beat_times
@@ -461,8 +467,13 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
             end = (float("inf") if raw_end is None
                    else float(raw_end) - shifts[index])
         spans.append((starts[index], max(starts[index], end), str(block["intent"])))
+    # #154's accepted lateness, counted rather than inferred from a log: a block
+    # whose stamp is more than one look-ahead after the audio it names was
+    # committed late because the chain was older than the playback delay.  The
+    # engine warns once per transition; this is how many blocks it cost.
+    late = sum(1 for shift in shifts if shift > look_ahead_sec + tolerance)
     return spans, IntentAlignment(len(blocks), song_stamped, clamped_tail,
-                                  song_recorded)
+                                  song_recorded, late)
 
 
 def zscores(values: list) -> list:
@@ -501,6 +512,7 @@ class JoinStats(NamedTuple):
     dropped_in_dropped_section: int
     beats_without_intent: int
     intent_blocks_song_stamped: int   # blocks the engine committed immediately
+    intent_blocks_late: int           # blocks the chain committed past the budget
     intent_reattributed: int          # rows whose intent the realignment moved
 
 
@@ -572,6 +584,7 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
         dropped_in_dropped_section=in_dropped,
         beats_without_intent=without_intent,
         intent_blocks_song_stamped=alignment.song_stamped,
+        intent_blocks_late=alignment.late,
         intent_reattributed=reattributed,
     )
     return rows, stats
@@ -1059,6 +1072,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 dropped["in_dropped_section"] += stats.dropped_in_dropped_section
                 dropped["without_intent"] += stats.beats_without_intent
                 dropped["intent_blocks_song_stamped"] += stats.intent_blocks_song_stamped
+                dropped["intent_blocks_late"] += stats.intent_blocks_late
                 dropped["intent_reattributed"] += stats.intent_reattributed
                 for joined_row in joined:
                     canonical[joined_row["label_canonical"]] += 1
@@ -1239,6 +1253,9 @@ def print_report(stats: TableStats, results: list, table_path: Path,
     print(f"  song-stamped intent blocks realigned: "
           f"{dropped['intent_blocks_song_stamped']}  "
           f"(rows re-attributed: {dropped['intent_reattributed']})")
+    print(f"  intent blocks committed late: {dropped['intent_blocks_late']}  "
+          f"(#154's accepted lateness -- the chain was older than the "
+          f"playback delay)")
     print(f"  tracks with no cached report : {len(stats.missing_reports)}"
           + (f"  {stats.missing_reports[:10]}" if stats.missing_reports else ""))
     print(f"  tracks skipped, no sidecar   : {len(stats.missing_sidecars)}"
