@@ -145,6 +145,10 @@ from raveform_manifest import CANONICAL_DROP, CANONICAL_MAP, canonical_runs  # n
 
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
 
+# Re-exported: `corpus_root` is the stdlib-only module that owns where the
+# corpus lives, so a show can ask without importing this file.
+from corpus_root import default_data_dir  # noqa: E402,F401
+
 TABLE_FILE = "training_table.csv.gz"
 META_FILE = "training_table.meta.json"
 REPORTS_DIR = "reports"
@@ -1288,10 +1292,6 @@ def _print_histogram(counter: collections.Counter, total: int) -> None:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-
-
-def default_data_dir() -> Path:
-    return REPO_ROOT / "training" / "data" / "raveform"
 
 
 def main(argv: list | None = None) -> int:

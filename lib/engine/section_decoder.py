@@ -33,12 +33,22 @@ config asking for more is refused rather than silently decoding from the
 duration prior), and the sidecar's boundary duplication onto a half-rate frame
 grid (the head emits one score per cell either way).
 
-**Nothing here grows with the length of a set.**  The trellis backtrace is a
-ring of ``lag_bars + 1`` in the decoder itself; the cells waiting for a bar are
-pruned to what the next bar's own boundary window can still reach.
+**Nothing here grows with the length of a set, and that is now true of every
+part of it.**  The trellis backtrace is a ring of ``lag_bars + 1`` in the
+decoder itself; the bar grid keeps only the recent edges (which is also the
+window its tempo is read over); and the cells waiting for a bar are pruned to
+what the next bar's own boundary window can still reach -- with a hard cap
+under that, because the pruning floor stops moving whenever beats do.
+
+**Beats can stop while audio keeps arriving**, which is not a song boundary and
+is not silence: heavy sidechain compression, a beatless passage, crowd noise
+between sets.  The grid re-anchors at the next beat rather than closing a bar
+across the gap, because averaging minutes of audio into one bar produces a
+confident decision about a section that was never played.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from collections import deque
 from pathlib import Path
@@ -66,12 +76,32 @@ BEATS_PER_BAR = 4
 # provenance beats a guess.
 NOMINAL_BAR_SEC = 1.8898
 
-# How long a cell may sit unattached to any bar.  Only reachable before the
-# first beat: the feature chain runs seconds BEHIND the beat stream, so once a
-# grid exists its next bar line is always ahead of the newest cell.  A track
-# that never produces a beat would otherwise accumulate cells for its whole
-# length.
+# How long a cell may sit unattached to any bar, before the first beat and
+# whenever the beat stream stops: the pruning floor is the next bar's opening
+# line, which stops moving exactly when beats do.
 _ORPHAN_CELL_WINDOW_SEC = 10.0
+
+# The last resort under both: ~24 s of cells at the shipped rate.  A window in
+# seconds is the right rule and a count is what makes "nothing grows" a property
+# of the code rather than of the tempo.
+_MAX_PENDING_CELLS = 256
+
+# A beat stream that goes quiet for longer than this is a gap, not a slow bar.
+# Above the engine's 2.5 s beat-absence timer, so a re-anchor accompanies an
+# ATMOSPHERIC rather than pre-empting one, and far above any single-beat dropout
+# (a 60 BPM track is one beat a second).
+_BEAT_GAP_SEC = 4.0
+
+# Bar lines kept.  A decision's stamp reaches back as far as the beat stream
+# runs ahead of the cell stream (a whole chain latency) plus the commit lag, so
+# this is sized for a very fast grid rather than for the corpus median -- 64
+# bars is 16 s even at a quarter-second bar, and it is 512 bytes.
+_EDGE_RETAIN_BARS = 64
+
+# The window the tempo is read over.  A median over the whole set stops moving
+# after a tempo change -- the new tempo would have to own more than half of
+# everything played, which in one continuous mix never happens.
+_BAR_MEDIAN_BARS = 25
 
 
 class BarDecision(NamedTuple):
@@ -125,8 +155,14 @@ class SectionDecoder:
     def reset(self) -> None:
         """Forget the song.  A reset decoder decodes like a fresh one."""
         self._decoder.reset()
-        self._edges: list = []
+        self._edges: deque = deque(maxlen=max(_EDGE_RETAIN_BARS,
+                                              self.params.lag_bars + 4))
+        self._edge_base: int = 0
+        # Trellis bar + offset = grid bar.  Non-zero only after a skip, which is
+        # the one thing that restarts the committer without restarting the grid.
+        self._bar_offset: int = 0
         self._beats: int = 0
+        self._last_beat_sec: float | None = None
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf
         self._next_bar: int = 0
@@ -134,7 +170,28 @@ class SectionDecoder:
 
     @property
     def bar_edges(self) -> list:
+        """The edges still held -- the recent window, not the whole set."""
         return list(self._edges)
+
+    def _edge(self, bar: int) -> float:
+        """A bar line, by absolute bar number.
+
+        Raises on an evicted one rather than returning a neighbour: the ring is
+        sized so this cannot happen, and if it ever does, every stamp after it
+        would be quietly wrong.  Same rule the trellis ring already follows.
+        """
+        if not self._have_edge(bar):
+            raise KeyError(f"bar {bar}'s line is no longer held; the grid keeps "
+                           f"{self._edges.maxlen} and is at {self._edge_base}")
+        return self._edges[bar - self._edge_base]
+
+    def _have_edge(self, bar: int) -> bool:
+        return 0 <= bar - self._edge_base < len(self._edges)
+
+    def _append_edge(self, at_sec: float) -> None:
+        if len(self._edges) == self._edges.maxlen:
+            self._edge_base += 1
+        self._edges.append(float(at_sec))
 
     @property
     def bars_pushed(self) -> int:
@@ -150,10 +207,18 @@ class SectionDecoder:
 
     @property
     def bar_sec(self) -> float:
-        """The track's own median bar, or the corpus median until it has one."""
+        """The recent median bar, or the corpus median until there is one.
+
+        Recent, not cumulative: a set is one continuous mix with no song
+        boundary to reset anything, so a median over the whole history stops
+        tracking the tempo the moment the DJ changes it -- the new tempo has to
+        own more than half of everything played.  The window is the same edges
+        the grid keeps.
+        """
         if len(self._edges) < 2:
             return NOMINAL_BAR_SEC
-        return float(np.median(np.diff(np.asarray(self._edges))))
+        recent = list(self._edges)[-_BAR_MEDIAN_BARS:]
+        return float(np.median(np.diff(np.asarray(recent))))
 
     @property
     def chain_latency_sec(self) -> float:
@@ -172,10 +237,38 @@ class SectionDecoder:
 
     def push_beat(self, at_sec: float) -> list:
         """One detected beat, in the same time base the cells are stamped in."""
-        if self._beats % BEATS_PER_BAR == 0:
-            self._edges.append(float(at_sec))
+        at_sec = float(at_sec)
+        if self._re_anchoring(at_sec):
+            self._re_anchor(at_sec)
+        elif self._beats % BEATS_PER_BAR == 0:
+            self._append_edge(at_sec)
         self._beats += 1
+        self._last_beat_sec = at_sec
         return self._advance()
+
+    def _re_anchoring(self, at_sec: float) -> bool:
+        return (self._last_beat_sec is not None
+                and at_sec - self._last_beat_sec > _BEAT_GAP_SEC)
+
+    def _re_anchor(self, at_sec: float) -> None:
+        """Start a bar here rather than close one across the gap (#157's rule
+        for the first beat, applied to the first beat after a silence).
+
+        The open bar is dropped rather than stretched: its span would cover
+        every cell of the gap, and one averaged observation over minutes of
+        audio is a confident decision about a section nobody played.  It cannot
+        have been observed yet -- a bar needs its closing edge -- so nothing
+        already committed is disturbed.
+        """
+        logging.warning(
+            f'[decoder] {at_sec - self._last_beat_sec:.1f}s without a beat — '
+            f're-anchoring the bar grid at {at_sec:.2f}s and dropping '
+            f'{len(self._cells)} pending cells')
+        if self._edges and self._edge_base + len(self._edges) - 1 >= self._next_bar:
+            self._edges.pop()
+        self._append_edge(at_sec)
+        self._beats = 0
+        self._cells.clear()
 
     def push_posterior(self, at_sec: float, posterior, boundary: float) -> list:
         """One label cell: its END stamp, its class distribution, its hazard."""
@@ -190,6 +283,7 @@ class SectionDecoder:
     # -- internals ---------------------------------------------------------- #
 
     def _advance(self) -> list:
+        self._skip_bars_the_grid_no_longer_holds()
         decisions: list = []
         while self._observable(self._next_bar):
             observation = self._observe(self._next_bar)
@@ -197,10 +291,32 @@ class SectionDecoder:
             self._next_bar += 1
             for decision in self._decoder.push(observation.posterior,
                                                observation.boundary):
-                decisions.append(BarDecision(decision.bar, decision.label,
-                                             self._edges[decision.bar]))
+                bar = decision.bar + self._bar_offset
+                decisions.append(BarDecision(bar, decision.label,
+                                             self._edge(bar)))
         self._prune()
         return decisions
+
+    def _skip_bars_the_grid_no_longer_holds(self) -> None:
+        """Bars whose opening line has aged out can never be assembled.
+
+        Beats arrive as the audio does and cells a whole chain latency behind
+        them, so the grid is sized for that -- but if the feature stage stops
+        while beats keep coming (a shed that outlasts the window), the grid runs
+        away from the decode cursor and the bars in between have lost their
+        cells as well as their lines.  Skipping them is the only honest answer,
+        and the committer restarts because a trellis cannot span a hole.
+        """
+        if self._next_bar >= self._edge_base:
+            return
+        logging.warning(
+            f'[decoder] the cell stream is {self._edge_base - self._next_bar} '
+            f'bars behind the beat grid — bars {self._next_bar}..'
+            f'{self._edge_base - 1} lost their lines and are skipped')
+        self._next_bar = self._edge_base
+        self._bar_offset = self._edge_base
+        self._decoder.reset()
+        self.recent_observations.clear()
 
     def _observable(self, bar: int) -> bool:
         """Both bar lines known, and every cell either of them can read seen.
@@ -209,14 +325,14 @@ class SectionDecoder:
         a tolerance of the OPENING line, and at a fast enough tempo that window
         reaches past the bar's own end.
         """
-        if len(self._edges) < bar + 2:
+        if not self._have_edge(bar + 1):
             return False
-        reach = max(self._edges[bar + 1],
-                    self._edges[bar] + self.params.boundary_tolerance_sec)
+        reach = max(self._edge(bar + 1),
+                    self._edge(bar) + self.params.boundary_tolerance_sec)
         return self._newest_cell_sec >= reach
 
     def _observe(self, bar: int) -> BarObservation:
-        lo, hi = self._edges[bar], self._edges[bar + 1]
+        lo, hi = self._edge(bar), self._edge(bar + 1)
         tolerance = self.params.boundary_tolerance_sec
         rows = [row for when, row, _ in self._cells if lo <= when < hi]
         scores = [score for when, _, score in self._cells
@@ -231,14 +347,17 @@ class SectionDecoder:
     def _prune(self) -> None:
         """Drop every cell no future bar can still read.
 
-        A bar only advances once its closing edge exists, so the next bar's
-        opening line is always a known edge -- except before the first beat,
-        where nothing is attached to a grid yet and the window is what keeps a
-        track that never produces a beat from accumulating cells for its length.
+        The floor is the next bar's opening line, which exists as soon as one
+        beat has landed -- and which stops moving exactly when the beat stream
+        does, so the seconds window and the hard cap under it are not the
+        before-the-first-beat corner they look like.  Both are live paths on a
+        stream that can lose beats while audio keeps arriving.
         """
-        if self._next_bar < len(self._edges):
-            floor = self._edges[self._next_bar] - self.params.boundary_tolerance_sec
+        if self._have_edge(self._next_bar):
+            floor = self._edge(self._next_bar) - self.params.boundary_tolerance_sec
         else:
             floor = self._newest_cell_sec - _ORPHAN_CELL_WINDOW_SEC
         while self._cells and self._cells[0][0] < floor:
+            self._cells.popleft()
+        while len(self._cells) > _MAX_PENDING_CELLS:
             self._cells.popleft()

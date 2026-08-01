@@ -45,6 +45,17 @@ class DelayedCommandQueue:
 
     async def enqueue(self, label: str, factory: CommandFactory,
                       delay_sec: float | None = None) -> None:
+        self.schedule(label, factory, delay_sec)
+
+    def schedule(self, label: str, factory: CommandFactory,
+                 delay_sec: float | None = None) -> None:
+        """The same thing from a synchronous caller.
+
+        Nothing in here awaits, and the sound-boundary handlers the analyser
+        calls are not coroutines; scheduling a task from them instead would put
+        the enqueue at whatever await point came next, which is a report that
+        depends on the loop's shape.
+        """
         enqueue_time = self._clock.monotonic()
         delay = self._delay_sec if delay_sec is None else float(delay_sec)
         # A stream's delay tracks a measurement that moves, so a later command

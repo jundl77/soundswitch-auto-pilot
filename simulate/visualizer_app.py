@@ -25,14 +25,9 @@ INTENT_CONFIG = {
         'glow_mult':  1.6,
         'label':      'BREAKDOWN',
     },
-    'groove': {
-        'primary':    '#00897b',
-        'accent':     '#0277bd',
-        'slots':      [1, 2, 3, 4, 5],
-        'decay':      0.35,
-        'glow_mult':  1.9,
-        'label':      'GROOVE',
-    },
+    # No `groove`: the model's class space has none and `LightIntent.GROOVE` is
+    # retired (D7).  A legend entry for an intent the show cannot enter is the
+    # exact lie D7 removed the enum member over.
     'buildup': {
         'primary':    '#e65100',
         'accent':     '#f9a825',

@@ -498,15 +498,44 @@ def test_the_backtrace_is_a_ring_of_the_only_bars_it_can_read(lag):
 
 
 def test_the_ring_decodes_exactly_as_an_unbounded_backtrace_did():
-    """Bounding the ring is a memory change, not a decoding change."""
+    """Bounding the ring is a memory change, not a decoding change.
+
+    Asserted rather than assumed: the same posteriors are decoded against a
+    trellis whose backtrace is never evicted, and the two decision streams must
+    be identical bar for bar.  Without the second arm this test could not tell a
+    ring that reads the wrong predecessor row from one that reads the right one
+    -- bars come out in order either way.
+    """
     priors = toy_priors(floor=3)
     rng = np.random.default_rng(13)
     posteriors = rng.dirichlet(np.full(5, 0.4), size=120)
     boundary = rng.random(120)
-    decoder = FixedLagViterbi(priors, lag_bars=2)
-    decisions = decoder.decode(posteriors, boundary)
+
+    bounded = FixedLagViterbi(priors, lag_bars=2)
+    decisions = bounded.decode(posteriors, boundary)
+
+    unbounded = _UnboundedBacktrace(priors, lag_bars=2)
+    reference = unbounded.decode(posteriors, boundary)
+
     assert [d.bar for d in decisions] == list(range(120))
     assert len(set(labels_of(decisions))) > 1
+    assert decisions == reference
+    assert bounded.backtrace_rows == 3
+    assert len(unbounded._kept) == 120, 'the reference arm bounded itself'
+
+
+class _UnboundedBacktrace(FixedLagViterbi):
+    """The decoder as it was before the ring: every row kept, none evicted."""
+
+    def reset(self):
+        super().reset()
+        self._kept: dict = {}
+
+    def _remember(self, bar, back):
+        self._kept[int(bar)] = back
+
+    def _recall(self, bar):
+        return self._kept[int(bar)]
 
 
 def test_flush_is_idempotent_and_a_decoder_can_be_reset_and_reused():

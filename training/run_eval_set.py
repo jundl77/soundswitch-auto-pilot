@@ -178,31 +178,9 @@ DATA_DIR_ENV = "RAVEFORM_DATA_DIR"
 # --------------------------------------------------------------------------- #
 
 
-def corpus_dir() -> Path:
-    """The corpus root: ``$RAVEFORM_DATA_DIR``, else the repo's, else the main
-    worktree's.
-
-    The corpus is gitignored, so there is exactly ONE copy of it on a machine and
-    it does not follow ``git worktree add``: branch work in a linked worktree
-    still has to reach the audio sitting in the main checkout.  Resolving that
-    here -- rather than making every caller pass ``--data-dir`` -- is what lets
-    the integration suite run green from any worktree.  The environment variable
-    wins for the case this cannot guess (a corpus on another drive).
-    """
-    override = os.environ.get(DATA_DIR_ENV)
-    if override:
-        return Path(override).resolve()
-    local = default_data_dir()
-    if local.exists():
-        return local
-    # `--git-common-dir` is the main checkout's .git even from a linked worktree.
-    common = _git(REPO_ROOT, "rev-parse", "--path-format=absolute",
-                  "--git-common-dir")
-    if common:
-        shared = Path(common).parent / local.relative_to(REPO_ROOT)
-        if shared.exists():
-            return shared
-    return local
+# One definition, in a stdlib-only module a show can import without pulling this
+# harness in behind it (`lib/section_chain.py` asks the same question).
+from corpus_root import corpus_dir  # noqa: E402,F401
 
 
 def audio_path(data_dir: Path, youtube_id: str) -> Path:

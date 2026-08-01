@@ -349,6 +349,71 @@ def test_pending_cells_do_not_grow_with_the_set():
     assert section.pending_cells <= 32
 
 
+def test_the_bar_grid_does_not_grow_with_the_set():
+    """The other half of the same claim, which the docstring made and the code
+    did not keep: a two-hour set appended one float per bar, forever, and the
+    tempo median was recomputed over all of it on every commit."""
+    section = decoder(lag_bars=2)
+    bar_sec = 0.5 * BEATS_PER_BAR
+    for bar in range(400):
+        for beat in beats(BEATS_PER_BAR, period=0.5, start=bar * bar_sec):
+            section.push_beat(beat)
+        for cell in range(8):
+            section.push_posterior(bar * bar_sec + (cell + 1) * bar_sec / 8,
+                                   one_hot(3 if bar % 20 else 0), 0.0)
+    assert len(section.bar_edges) <= 64
+    assert section.bars_pushed > 350, 'the grid stopped advancing'
+
+
+def test_the_tempo_follows_a_change_instead_of_being_outvoted_by_history():
+    """A set is one continuous mix with no sound stop, so a cumulative median
+    never moves again: the new tempo has to own more than half of everything
+    played.  The intent delay is computed from this, so the error lands
+    directly on when the room sees a section change."""
+    section = decoder(lag_bars=2, feature_latency_sec=0.0)
+    for beat in beats(60 * BEATS_PER_BAR, period=0.5):
+        section.push_beat(beat)
+    assert section.bar_sec == pytest.approx(2.0)
+
+    start = 60 * BEATS_PER_BAR * 0.5
+    for beat in beats(60 * BEATS_PER_BAR, period=0.345, start=start):
+        section.push_beat(beat)
+    assert section.bar_sec == pytest.approx(1.38, abs=0.02)
+
+
+def test_a_beat_gap_re_anchors_the_grid_instead_of_closing_a_bar_across_it():
+    """Beats can stop while audio keeps arriving -- sidechain dropout, a
+    beatless passage, crowd noise between sets.  Closing the open bar across
+    the gap would average minutes of audio into one observation and commit a
+    confident decision about a section nobody played, stamped at a bar line
+    minutes in the past."""
+    section = decoder(lag_bars=2)
+    for beat in beats(8, period=0.5):
+        section.push_beat(beat)
+    for index in range(40):
+        section.push_posterior(4.0 + index * 0.25, one_hot(3), 0.0)
+    stalled = section.pending_cells
+    assert stalled > 0
+
+    section.push_beat(60.0)
+    assert section.pending_cells == 0, 'the stall was carried into the new bar'
+    assert section.bar_edges[-1] == pytest.approx(60.0)
+    section.push_beat(60.5)
+    assert section.bar_edges[-1] == pytest.approx(60.0), \
+        'the beat after the gap did not open the bar'
+
+
+def test_pending_cells_are_capped_even_while_the_beat_stream_is_gone():
+    """The pruning floor is the next bar's opening line, and it stops moving
+    exactly when beats do -- so the seconds window is not a corner case."""
+    section = decoder(lag_bars=2)
+    for beat in beats(8, period=0.5):
+        section.push_beat(beat)
+    for index in range(4000):
+        section.push_posterior(4.0 + index * 0.09, one_hot(3), 0.0)
+    assert section.pending_cells <= 256
+
+
 def test_reset_makes_the_decoder_indistinguishable_from_a_fresh_one():
     labels = [0] * 6 + [3] * 10
     used = decoder(lag_bars=2)

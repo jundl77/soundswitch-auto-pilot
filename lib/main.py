@@ -201,8 +201,17 @@ async def run_cmd(args: argparse.Namespace):
 
 
 async def list_cmd(args: argparse.Namespace):
-    app = SoundSwitchAutoPilot(0)
-    app.list_devices()
+    """Device indices, and nothing else built to print them.
+
+    Constructing the whole app for this loaded the 1.3 GB encoder onto the GPU
+    on any machine that has it -- and `list` is the documented first step of
+    every run, on the venue box, where the GPU may be busy enough to fail.
+    """
+    from lib.clients.pyaudio_client import PyAudioClient
+    from lib.clients.midi_client import MidiClient
+
+    PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, None, None).list_devices()
+    MidiClient(0).list_devices()
 
 
 def death_handler(signum, frame):

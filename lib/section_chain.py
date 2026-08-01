@@ -50,17 +50,19 @@ class SectionChain(NamedTuple):
 def corpus_dir() -> Path:
     """The gitignored corpus root, resolved the way every other reader does.
 
-    Imported late: `run_eval_set` is the benchmark harness and pulls the whole
-    eval pipeline with it, which a show has no reason to pay for at import.
+    `training/corpus_root.py` is stdlib-only and exists for this call: asking
+    the benchmark harness where the corpus is pulled the whole eval pipeline --
+    the table builder, the label evaluator, the raveform scripts and a git
+    subprocess -- into a show's startup, for a path.
     """
     import sys
 
     training = str(Path(__file__).resolve().parents[1] / "training")
     if training not in sys.path:
         sys.path.insert(0, training)
-    import run_eval_set
+    import corpus_root
 
-    return Path(run_eval_set.corpus_dir())
+    return corpus_root.corpus_dir()
 
 
 def artifacts(data_dir=None) -> Artifacts:
@@ -73,10 +75,34 @@ def artifacts(data_dir=None) -> Artifacts:
 
 
 def artifacts_present(data_dir=None) -> bool:
+    """Whether the show can be built -- a question about files, not imports.
+
+    Narrow on purpose.  Swallowing everything meant any failure anywhere in the
+    resolution reported "no NN artifacts on this machine": prod would play one
+    held intent all night on a box that HAS the model, and the three tests that
+    would catch it would skip citing artifacts sitting on disk.
+    """
     try:
         return not artifacts(data_dir).missing()
-    except Exception:
+    except (OSError, ValueError) as error:
+        logging.warning(f'[chain] cannot resolve the corpus directory '
+                        f'({error!r}) — treating the model as absent')
         return False
+
+
+def _check_class_space(priors) -> None:
+    """Every class the model can decode has to light something, at startup.
+
+    `intent_for_class` raises on an unknown class, and it is called from inside
+    the commit path -- so a retrained model naming a sixth class builds fine,
+    runs fine, and kills the show at the first bar of that class, possibly an
+    hour into a set.  D7 says a wrong look must stop the show being BUILT; this
+    is where that becomes true.
+    """
+    from lib.engine.effect_definitions import intent_for_class
+
+    for name in priors.classes:
+        intent_for_class(name)
 
 
 def build_section_chain(data_dir=None, *, device: str | None = None,
@@ -112,7 +138,9 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
     # proportional to bar length, so the decoder measures its own.
     feature_latency_sec = (geometry.margin_sec + geometry.hop_sec
                            + head.future_sec)
-    decoder = SectionDecoder(Priors.load(found.priors),
+    priors = Priors.load(found.priors)
+    _check_class_space(priors)
+    decoder = SectionDecoder(priors,
                              load_decoder_config(SHIPPING_DECODER_CONFIG),
                              feature_latency_sec=feature_latency_sec)
     logging.info(f'[chain] {MODEL_VERSION} on {encoder.device} | '

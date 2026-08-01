@@ -110,21 +110,47 @@ class LightEngine(IMusicAnalyserHandler):
         return self._intent_commits
 
     def on_sound_start(self):
+        """A boundary the engine hears 14 s before the room does.
+
+        So the two halves part company: the engine's own bookkeeping and the
+        OS2L wire (which talks to a DJ's software, not to the audience) happen
+        now, and everything the room can SEE waits until the room hears what
+        caused it.  Before this split the stage blacked out while the last
+        fourteen seconds of a track were still playing -- inaudible in every
+        report, unmissable in the venue.
+        """
         logging.info('[engine] sound start')
-        self.midi_client.on_sound_start()
-        self.overlay_client.deactivate_all()
         self.os2l_client.on_sound_start(0, 0, 20000, 120)
         if self.event_buffer:
             self.event_buffer.set_playing(True)
+        self._at_the_room('sound', self._show_sound_start)
 
     def on_sound_stop(self):
         logging.info('[engine] sound stop')
-        self.midi_client.on_sound_stop()
         self.os2l_client.on_sound_stop()
         self.effect_controller.reset_state()
-        self.overlay_client.deactivate_all()
         if self.event_buffer:
             self.event_buffer.set_playing(False)
+        self._at_the_room('sound', self._show_sound_stop)
+
+    def _show_sound_start(self) -> None:
+        self.midi_client.on_sound_start()
+        self.overlay_client.deactivate_all()
+
+    def _show_sound_stop(self) -> None:
+        self.midi_client.on_sound_stop()
+        self.overlay_client.deactivate_all()
+
+    def _at_the_room(self, label: str, action) -> None:
+        """Fire when the audience hears the audio that caused it."""
+        if not self.command_queue:
+            action()
+            return
+
+        async def command():
+            action()
+
+        self.command_queue.schedule(label, command)
         self._atmospheric_sent = False
         self._current_intent = None
         self._bars_in_current_intent = 0
@@ -243,8 +269,11 @@ class LightEngine(IMusicAnalyserHandler):
         logging.info(
             f'[engine] chain latency {latency:.2f}s = '
             f'{decoder.feature_latency_sec:.2f}s features + '
+            # lag + 1, because bar b's observation needs bar b to finish before
+            # the commit lands lag bars later.  Printed as it is computed: this
+            # is the line an operator reconciles against dmx-enttec-node.
             f'{latency - decoder.feature_latency_sec:.2f}s decoder '
-            f'(lag {decoder.params.lag_bars} × {decoder.bar_sec:.3f}s bars) | '
+            f'({decoder.params.lag_bars} + 1 lag × {decoder.bar_sec:.3f}s bars) | '
             f'playback delay {self._playback_delay_sec:.2f}s → queue delay '
             f'{max(0.0, self._playback_delay_sec - latency):.2f}s — ensure '
             f'dmx-enttec-node playback_delay_seconds matches')
@@ -324,11 +353,28 @@ class LightEngine(IMusicAnalyserHandler):
         await self.effect_controller.change_effect(intent)
 
     async def on_note(self):
+        """The overlay's 24-channel chase, one step per beat.
+
+        Room-aligned like everything else the audience can see: it is driven by
+        a beat, which the engine detects as the audio arrives, so it waits the
+        whole playback delay.  Un-queued it advanced fourteen seconds ahead of
+        the music -- visibly uncorrelated with it, and invisible in a report.
+        """
         dmx_data = [0] * 24
         self._note_counter = (self._note_counter + 3) % 24
         dmx_data[self._note_counter] = 100
-        self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24, dmx_data)
+        if self.command_queue:
+            await self.command_queue.enqueue(
+                'overlay',
+                lambda: self._show_light_bar(dmx_data))
+        else:
+            self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24,
+                                                    dmx_data)
         logging.info('[engine] note detected')
+
+    async def _show_light_bar(self, dmx_data: list) -> None:
+        self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24,
+                                                dmx_data)
 
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():

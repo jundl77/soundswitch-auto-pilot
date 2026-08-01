@@ -478,6 +478,53 @@ async def test_the_stream_is_deduplicated_against_what_it_will_show():
     assert len(queued_intents(queue)) == 1
 
 
+async def test_the_stage_does_not_go_dark_while_the_room_is_still_hearing_music():
+    """The engine hears the song end fourteen seconds before the audience does.
+
+    Blacking out MIDI and the overlay at detection time therefore killed the
+    stage over the last fourteen seconds of every track -- and then in-flight
+    intents re-lit it.  Inaudible in every report, unmissable in the venue.
+    """
+    light, queue, clock, midi = engine(decoder=FakeDecoder())
+    blackout = []
+    midi.on_sound_stop = lambda: blackout.append(clock.monotonic())
+    await elapse(light, clock, 5.0)
+    light.on_sound_stop()
+
+    await elapse(light, clock, 13.0)
+    await queue.drain()
+    assert blackout == [], 'the stage went dark before the room heard the end'
+
+    await elapse(light, clock, 2.0)
+    await queue.drain()
+    assert blackout == [pytest.approx(20.0, abs=1.1)], \
+        'the blackout did not land a playback delay after the boundary'
+
+
+async def test_the_engines_own_bookkeeping_at_a_boundary_is_not_delayed():
+    """The other half: the chain, the decoder and the OS2L wire are not things
+    the audience looks at, and holding them back would feed the next song's
+    audio into the last song's state for fourteen seconds."""
+    chain, decoder = FakeChain(), FakeDecoder()
+    light, _queue, clock, _ = engine(decoder=decoder, chain=chain)
+    await elapse(light, clock, 5.0)
+    light.on_sound_stop()
+    assert (chain.resets, decoder.resets) == (1, 1)
+
+
+async def test_the_overlay_light_bar_is_room_aligned_like_everything_seen():
+    light, queue, clock, _ = engine(decoder=FakeDecoder())
+    chase = [e for e in light.overlay_client.events
+             if e['label'] == 'overlay_update']
+    await light.on_note()
+    assert chase == [], 'the chase ran fourteen seconds early'
+
+    await elapse(light, clock, 14.1)
+    await queue.drain()
+    assert len([e for e in light.overlay_client.events
+                if e['label'] == 'overlay_update']) == 1
+
+
 async def test_a_block_records_the_song_instant_it_describes():
     """The report's two time bases, both written down.
 
