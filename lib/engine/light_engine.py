@@ -229,6 +229,10 @@ class LightEngine(IMusicAnalyserHandler):
         self._current_intent = None
         self._bars_in_current_intent = 0
         self._floor_armed = True
+        # Cell time restarts with the chain, so a refresh instant from the last
+        # track is a number in the FUTURE of this one: left in place it holds
+        # the cooldown shut for the whole of the next song.
+        self._last_refresh_sec = float('-inf')
         # D10: everything the stages hold describes audio from before the gap,
         # and the audio counter is the time base the grid and the cells share.
         self._audio_sec = 0.0

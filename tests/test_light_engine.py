@@ -992,3 +992,26 @@ async def test_the_refresh_threshold_sits_inside_the_score_the_head_emits():
     from lib.engine.light_engine import BOUNDARY_REFRESH_SCORE
 
     assert 0.0 < BOUNDARY_REFRESH_SCORE < 1.0
+
+
+async def test_a_song_boundary_clears_the_refresh_cooldown():
+    """The chain restarts cell time at a boundary, so a refresh instant from
+    the last track is a number in the FUTURE of this one -- and left in place
+    it holds the cooldown shut for the whole of the next song."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    light.on_sound_stop()
+    light.on_sound_start()
+    await settle(light, clock, queue)
+    await bars(light, decoder, clock, 'drop')
+    await settle(light, clock, queue)
+    before = len(autoloops(midi))
+
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    assert len(autoloops(midi)) == before + 1
