@@ -36,6 +36,12 @@ _ENTER_SEC = 0.15
 # negative drift to recover leaves the watchdog latched for the whole show.
 _EXIT_SEC = 0.05
 
+# A flapping stage crosses this door twice per pass, so the transition log is
+# on a per-direction rate limit for the same reason every other WARNING here is.
+# What is suppressed is COUNTED and carried into the next line: a quiet log and
+# a healthy rig have to stay distinguishable.
+_LOG_INTERVAL_SEC = 30.0
+
 
 class ShedLevel(IntEnum):
     NONE = 0
@@ -69,6 +75,8 @@ class DriftWatchdog:
         self.total_drift_sec = 0.0
         self._first_wall: float | None = None
         self._calm_since: float | None = None
+        self._said: dict = {}
+        self._suppressed: dict = {}
 
     @property
     def level(self) -> ShedLevel:
@@ -159,7 +167,16 @@ class DriftWatchdog:
                       else ShedLevel.NONE)
             if target is self._level:
                 return
-            logging.warning(
-                f'[drift] {"degrading" if target > self._level else "recovering"}: '
-                f'{self._level.name} -> {target.name} ({reason})')
+            direction = 'degrading' if target > self._level else 'recovering'
+            message = (f'[drift] {direction}: {self._level.name} -> '
+                       f'{target.name} ({reason})')
             self._level = target
+            now = self._clock.monotonic()
+            last = self._said.get(direction)
+            if last is not None and now - last < _LOG_INTERVAL_SEC:
+                self._suppressed[direction] = self._suppressed.get(direction, 0) + 1
+                return
+            self._said[direction] = now
+            more = self._suppressed.pop(direction, 0)
+            logging.warning(message + (f' [+{more} more since the last line]'
+                                       if more else ''))

@@ -390,3 +390,93 @@ async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
     assert report['metrics']['beats_detected'] > 10, 'beats stopped'
     assert held_start_to_end(degradation_digest(report)), \
         'a dead GPU produced something other than a held show'
+
+
+# --------------------------------------------------------------------------- #
+# The fifth mode: a card that works every other time
+# --------------------------------------------------------------------------- #
+
+
+class FlappingEncoder(SlowEncoder):
+    """Fails every other pass.  Not one of #143's four -- it is what those four
+    look like when the fault is intermittent, and it is the shape that disarmed
+    both of the mechanisms built for them."""
+
+    def __init__(self, error, **kwargs):
+        super().__init__(**kwargs)
+        self.flap = error
+        self.calls = 0
+
+    def encode(self, segment, **kwargs):
+        self.calls += 1
+        if self.calls % 2 == 1:
+            raise self.flap
+        return super().encode(segment, **kwargs)
+
+
+def flapping(tiny, mean, error):  # noqa: F811
+    clock = FakeClock()
+    encoder = FlappingEncoder(error, )
+    watchdog = DriftWatchdog(BUFFER_SEC)
+    worker = GpuStage(chain(encoder, tiny, mean, margin=1.0, hop=0.5,
+                            buffer=20.0),
+                      watchdog, clock=clock, reinit=None, pass_timeout_sec=1.0)
+    worker.start()
+    return worker, encoder
+
+
+def test_a_flapping_gpu_does_not_disarm_the_backoff(tiny, mean, caplog):  # noqa: F811
+    """`_attempts` used to reset on ANY pass that returned, and a card failing
+    every other pass returns one every other pass.  The backoff then restarted
+    from its immediate rung forever: 38 faults, 38 decoder resets and 76
+    watchdog transitions inside three seconds of a clock that never moved,
+    while both the backoff and the rate limit read as working."""
+    caplog.set_level(logging.WARNING)
+    worker, encoder = flapping(tiny, mean, CUDA_ERROR)
+    try:
+        feed(worker, seconds=6.0)
+        drain(worker, ticks=250)
+    finally:
+        worker.stop()
+
+    assert worker.faults <= 4, f'{worker.faults} faults on a held backoff'
+    assert worker.resyncs <= 2, f'{worker.resyncs} decoder resets'
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) <= 8, f'{len(warnings)} WARNING lines'
+
+
+def test_one_good_pass_is_not_a_recovery(tiny, mean):  # noqa: F811
+    """What "the GPU came back" has to mean, stated where it is decided."""
+    from lib.analyser.gpu_stage import _HEALTHY_PASSES
+
+    assert _HEALTHY_PASSES > 1
+    worker, encoder = flapping(tiny, mean, CUDA_ERROR)
+    try:
+        feed(worker, seconds=6.0)
+        drain(worker, ticks=250)
+        assert worker.passes >= 1, 'the flap never let a pass through'
+        assert worker._attempts >= 1, 'a single pass cleared the backoff'
+    finally:
+        worker.stop()
+
+
+def test_a_sustained_run_of_passes_does_clear_the_backoff(tiny, mean):  # noqa: F811
+    """The other side of it: a card that genuinely recovers must not stay on a
+    half-minute retry for the rest of the night."""
+    from lib.analyser.gpu_stage import _HEALTHY_PASSES
+
+    clock = FakeClock()
+    encoder = SlowEncoder()
+    watchdog = DriftWatchdog(BUFFER_SEC)
+    worker = GpuStage(chain(encoder, tiny, mean, margin=1.0, hop=0.5,
+                            buffer=20.0),
+                      watchdog, clock=clock, reinit=None, pass_timeout_sec=1.0)
+    worker._attempts = 5
+    worker.start()
+    try:
+        feed(worker, seconds=float(_HEALTHY_PASSES) + 4.0)
+        drain(worker, ticks=250)
+        assert worker.passes >= _HEALTHY_PASSES
+        assert worker._attempts == 0
+    finally:
+        worker.stop()

@@ -70,8 +70,18 @@ _PASS_TIMEOUT_SEC = 5.0
 # already fixed by the resync the restore performs. After that a GPU that is not
 # coming back must cost one attempt per half minute, forever, and no more.
 _BACKOFF_SEC = (0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
-_FAULT_LOG_INTERVAL_SEC = 30.0
+_LOG_INTERVAL_SEC = 30.0
 _STATUS_INTERVAL_SEC = 30.0
+
+# What "the GPU came back" means, and it is not one pass.  A card that faults
+# every other pass returned a pass every other pass -- which reset the backoff
+# to its immediate rung and the fault log to unseen, so an intermittent GPU
+# produced 60 WARNINGs a second, a decoder reset every ~80 ms and no posteriors
+# at all, forever, while the backoff and the rate limit both read as working.
+# Ten consecutive clean passes is ~10 s of audio at the shipped 1 s hop: an
+# order of magnitude longer than any flap period the fault path can produce,
+# and ten hops for a card that genuinely recovered.
+_HEALTHY_PASSES = 10
 _PASS_SAMPLES = 64
 _STOP_JOIN_SEC = 2.0
 
@@ -124,9 +134,10 @@ class GpuStage:
         self._pass_started_at: float | None = None
         self._shed = False
         self._attempts = 0
+        self._clean = 0
         self._retry_at: float | None = None
-        self._logged_fault: str | None = None
-        self._logged_fault_at: float | None = None
+        self._said: dict = {}
+        self._suppressed: dict = {}
         self._status_at: float | None = None
         self._pass_sec: deque = deque(maxlen=_PASS_SAMPLES)
 
@@ -256,6 +267,7 @@ class GpuStage:
             self._queue.clear()
             self._gap = False
         self._attempts = 0
+        self._clean = 0
         self._retry_at = None
         self._reset_requested = False
 
@@ -264,9 +276,9 @@ class GpuStage:
         with self._lock:
             self._queue.clear()
             self._gap = True
-        logging.warning(f'[gpu] shed: holding the intent, the hand-off queue is '
-                        f'dropped and the decoder is reset '
-                        f'({self.passes} passes so far)')
+        self._say('shed', f'[gpu] shed: holding the intent, the hand-off queue '
+                          f'is dropped and the decoder is reset '
+                          f'({self.passes} passes so far)')
 
     def _leave_shed(self) -> None:
         self._shed = False
@@ -279,10 +291,12 @@ class GpuStage:
         # through to TRY, not evidence that it works.  Clearing it here made
         # every retry of a permanently dead GPU start from the immediate rung,
         # so the backoff never grew and a fault became its own outage.  Only a
-        # pass that returned resets it.
-        logging.warning(f'[gpu] restored at the live edge: skipped '
-                        f'{record.lost_sec:.2f}s / {record.cells_lost} cells, '
-                        f'resuming at cell {record.first_cell_index}')
+        # SUSTAINED run of passes resets it -- one pass is what a flapping card
+        # gives you between faults.
+        self._say('restored', f'[gpu] restored at the live edge: skipped '
+                              f'{record.lost_sec:.2f}s / {record.cells_lost} '
+                              f'cells, resuming at cell '
+                              f'{record.first_cell_index}')
 
     def _one_pass(self) -> None:
         self._pass_started_at = self._clock.monotonic()
@@ -299,9 +313,12 @@ class GpuStage:
             self._pass_started_at = None
         self._pass_sec.append(took)
         self.passes += 1
-        self._attempts = 0
+        self._clean += 1
         self._retry_at = None
-        self._logged_fault = None
+        if self._clean >= _HEALTHY_PASSES:
+            self._attempts = 0
+            self._said.clear()
+            self._suppressed.clear()
         self._offer(produced)
         self._watchdog.report_healthy()
         self._status()
@@ -323,7 +340,10 @@ class GpuStage:
 
     def _fault(self, kind: str, detail) -> None:
         self.faults += 1
-        self._log_fault(kind, detail)
+        self._clean = 0
+        self._say(kind, f'[gpu] {kind}: {detail} — the show holds its intent '
+                        f'and keeps beats (fault #{self.faults}, '
+                        f'{self.reinits} reinit(s))')
         self._retry_at = self._clock.monotonic() + self._backoff()
         self._watchdog.report_fault(kind)
 
@@ -357,21 +377,34 @@ class GpuStage:
         try:
             self.posteriors.set_encoder(self._reinit())
         except Exception as error:
-            self._log_fault('reinit_failed', error)
+            self._say('reinit_failed',
+                      f'[gpu] reinit_failed: {error} — the show holds its '
+                      f'intent and keeps beats (fault #{self.faults}, '
+                      f'{self.reinits} reinit(s))')
             return False
-        logging.warning(f'[gpu] extractor reinitialised (attempt '
-                        f'{self._attempts}, {self.reinits} so far)')
+        self._say('reinit', f'[gpu] extractor reinitialised (attempt '
+                            f'{self._attempts}, {self.reinits} so far)')
         return True
 
-    def _log_fault(self, kind: str, detail) -> None:
+    def _say(self, kind: str, message: str) -> None:
+        """One line per kind per half minute, and the suppressed count with it.
+
+        A persistent fault must not become its own outage (D11) and neither
+        must a persistent flap: every WARNING here is on a path a broken GPU
+        reaches once per pass, so an unlimited one is 60 lines a second for as
+        long as the card is bad.  The count is carried into the next line
+        rather than dropped, because silence and "nothing happened" have to
+        stay distinguishable.
+        """
         now = self._clock.monotonic()
-        if (kind == self._logged_fault and self._logged_fault_at is not None
-                and now - self._logged_fault_at < _FAULT_LOG_INTERVAL_SEC):
+        last = self._said.get(kind)
+        if last is not None and now - last < _LOG_INTERVAL_SEC:
+            self._suppressed[kind] = self._suppressed.get(kind, 0) + 1
             return
-        self._logged_fault, self._logged_fault_at = kind, now
-        logging.warning(f'[gpu] {kind}: {detail} — the show holds its intent '
-                        f'and keeps beats (fault #{self.faults}, '
-                        f'{self.reinits} reinit(s))')
+        self._said[kind] = now
+        more = self._suppressed.pop(kind, 0)
+        logging.warning(message + (f' [+{more} more since the last line]'
+                                   if more else ''))
 
     def _status(self) -> None:
         now = self._clock.monotonic()
