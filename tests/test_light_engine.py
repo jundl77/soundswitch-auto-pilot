@@ -645,3 +645,61 @@ async def test_the_settle_is_forgiven_from_the_queue_not_from_the_handler():
     clock.advance(14.1)
     await queue.drain()
     assert len(watchdog.forgiven) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The clamp path, where two song instants become one wall instant
+# --------------------------------------------------------------------------- #
+
+
+async def test_two_clamped_decisions_both_reach_the_stage():
+    """A chain older than the playback delay clamps every decision to `now`,
+    and the supersede filter then read two consecutive bars as one restatement
+    and deleted the first.  It costs a real intent block on every
+    slower-than-120-BPM track -- exactly where the clamp is not hypothetical --
+    and `intent_changes_count` under-reads by however many it swallowed."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 40.0)
+
+    decoder._script.append([BarDecision(10, 'drop', light.audio_sec - 15.6),
+                            BarDecision(11, 'breakdown', light.audio_sec - 15.2)])
+    await light.on_beat(1, 128.0, False)
+    await settle(light, clock, queue)
+
+    assert [block['intent'] for block
+            in light.event_buffer.snapshot()['intents']] == ['drop', 'breakdown']
+
+
+async def test_a_clamped_pair_is_delivered_in_commit_order():
+    """The later bar has to be the one the stage ends on."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 40.0)
+
+    decoder._script.append([BarDecision(10, 'drop', light.audio_sec - 15.6),
+                            BarDecision(11, 'breakdown', light.audio_sec - 15.2)])
+    await light.on_beat(1, 128.0, False)
+    await settle(light, clock, queue)
+
+    assert light.current_intent is LightIntent.BREAKDOWN
+
+
+async def test_a_statement_about_later_audio_still_supersedes():
+    """The supersede rule the clamp fix must not undo: the beat-absence timer
+    describes NOW and waits the whole delay, so a decision landing sooner has
+    to be able to delete it."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 40.0)
+    await bars(light, decoder, clock, 'drop')
+    await settle(light, clock, queue)
+
+    light.analyser.since_beat = 3.0
+    await light.on_100ms_callback()
+    assert light.decided_intent is LightIntent.ATMOSPHERIC
+
+    light.analyser.since_beat = 0.0
+    await bars(light, decoder, clock, 'breakdown')
+    await settle(light, clock, queue)
+    assert light.current_intent is LightIntent.BREAKDOWN

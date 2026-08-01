@@ -249,10 +249,9 @@ async def test_streams_are_clamped_independently():
     assert fired == ['intent']
 
 
-async def test_dropping_pending_commands_takes_only_the_ones_at_or_after():
-    """The supersede primitive: a newer statement about a song instant replaces
-    what was queued for that instant or later, and leaves everything about
-    earlier audio alone."""
+async def test_dropping_pending_commands_takes_only_the_ones_after():
+    """The supersede primitive: a newer statement replaces what was queued for
+    later audio, and leaves everything about earlier audio alone."""
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -263,7 +262,7 @@ async def test_dropping_pending_commands_takes_only_the_ones_at_or_after():
     await q.enqueue('intent', _record(fired, 'late'), delay_sec=5.0)
     await q.enqueue('beat', _record(fired, 'beat'), delay_sec=5.0)
 
-    assert q.drop_pending('intent', clock.monotonic() + 5.0) == 1
+    assert q.drop_pending('intent', clock.monotonic() + 4.9) == 1
     clock.advance(20.0)
     await q.drain()
     assert fired == ['early', 'beat']
@@ -291,3 +290,29 @@ def _record(sink, name):
     async def command():
         sink.append(name)
     return command
+
+
+async def test_a_command_at_exactly_the_same_fire_time_is_a_predecessor_not_a_restatement():
+    """Equal fire times mean the clamp collapsed two different song instants,
+    not that two statements describe one.
+
+    A chain older than the playback delay clamps every decision to `now`.  In
+    production two `now` reads are microseconds apart and both decisions
+    survive; in virtual time they are the same float, so an "at or after" drop
+    deleted the predecessor and the simulation reported a show the venue would
+    never have played.  Both are kept, and the queue's own (fire time,
+    sequence) ordering delivers them in commit order.
+    """
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('intent', _record(fired, 'bar10'), delay_sec=0.0)
+    assert q.drop_pending('intent', clock.monotonic()) == 0
+    await q.enqueue('intent', _record(fired, 'bar11'), delay_sec=0.0)
+
+    clock.advance(1.0)
+    await q.drain()
+    assert fired == ['bar10', 'bar11']

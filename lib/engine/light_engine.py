@@ -328,7 +328,7 @@ class LightEngine(IMusicAnalyserHandler):
         if self.command_queue:
             self.command_queue.drop_pending('intent', fire_at)
         self._pending_intents = [item for item in self._pending_intents
-                                 if item[0] < fire_at]
+                                 if item[0] <= fire_at]
         if intent is self.decided_intent:
             return
 

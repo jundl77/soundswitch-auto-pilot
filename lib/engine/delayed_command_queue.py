@@ -71,22 +71,32 @@ class DelayedCommandQueue:
             (fire_at, self._sequence, enqueue_time, delay, label, factory),
             key=lambda item: (item[0], item[1]))
 
-    def drop_pending(self, label: str, from_fire_at: float) -> int:
-        """Cancel this label's undelivered commands firing at or after a time.
+    def drop_pending(self, label: str, later_than: float) -> int:
+        """Cancel this label's undelivered commands firing after a time.
 
         The supersede half of a single serialized stream: a command's fire time
         is the song instant it describes plus the playback delay, so a newer
-        statement about that instant or later replaces whatever was queued for
-        it.  Without this, a beat-dropout ATMOSPHERIC enqueued for song instant
-        N still lands after the committer has already said what N was -- and,
+        statement about later audio replaces whatever was queued for it.
+        Without this, a beat-dropout ATMOSPHERIC enqueued for song instant N
+        still lands after the committer has already said what N was -- and,
         being what the engine last decided, suppresses every repair.
+
+        **Strictly after, because an equal fire time is not a restatement.**
+        A chain older than the playback delay clamps every decision to `now`,
+        so two consecutive bars arrive carrying one wall instant between them.
+        In production the two reads are microseconds apart and both survive; in
+        virtual time they are the same float, and dropping "at or after" then
+        deleted the predecessor -- a real intent block lost on every
+        slower-than-120-BPM track, in the simulation only.  Equal fire times
+        keep their order through the queue's (fire time, sequence) sort, which
+        is commit order.
 
         The clamp goes with them: a cancelled command's fire time was the floor
         every later one in its stream was held to, and leaving it in place lets
         it order the stream from the grave.
         """
         keep = [item for item in self._queue
-                if not (item[4] == label and item[0] >= from_fire_at)]
+                if not (item[4] == label and item[0] > later_than)]
         dropped = len(self._queue) - len(keep)
         if not dropped:
             return 0
