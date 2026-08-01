@@ -259,21 +259,24 @@ class SectionDecoder:
         """Start a bar here rather than close one across the gap (#157's rule
         for the first beat, applied to the first beat after a silence).
 
-        The open bar is dropped rather than stretched: its span would cover
-        every cell of the gap, and one averaged observation over minutes of
-        audio is a confident decision about a section nobody played.  It cannot
-        have been observed yet -- a bar needs its closing edge -- so nothing
-        already committed is disturbed.
+        The bar the silence falls in is *skipped*, not stretched and not
+        deleted.  Deleting it means dropping the newest line, and that line is
+        two at once: the open bar's opening line and the previous bar's closing
+        one.  Cells run a whole chain latency behind beats, so a fully-formed
+        unobserved bar behind the newest line is the steady state -- dropping
+        the line stretched THAT bar across the gap and then decoded it from
+        whatever cells were still in flight, which is the confident decision
+        about audio nobody played that this exists to prevent.  Skipping
+        restarts the committer, because a trellis cannot span a hole.
         """
         logging.warning(
             f'[decoder] {at_sec - self._last_beat_sec:.1f}s without a beat — '
             f're-anchoring the bar grid at {at_sec:.2f}s and dropping '
             f'{len(self._cells)} pending cells')
-        if self._edges and self._edge_base + len(self._edges) - 1 >= self._next_bar:
-            self._edges.pop()
         self._append_edge(at_sec)
         self._beats = 0
         self._cells.clear()
+        self._restart_committer_at(self._edge_base + len(self._edges) - 1)
 
     def push_posterior(self, at_sec: float, posterior, boundary: float) -> list:
         """One label cell: its END stamp, its class distribution, its hazard."""
@@ -311,15 +314,31 @@ class SectionDecoder:
         away from the decode cursor and the bars in between have lost their
         cells as well as their lines.  Skipping them is the only honest answer,
         and the committer restarts because a trellis cannot span a hole.
+
+        **The cursor is not the thing that has to be protected.**  A decision
+        is stamped on the line of a bar ``lag_bars + 1`` behind the cursor, so
+        guarding the cursor alone leaves a window exactly that wide in which
+        the grid has already dropped the line the next commit will name, and
+        ``_edge`` raises into the audio thread.
         """
-        if self._next_bar >= self._edge_base:
+        oldest = max(0, self._next_bar - self.params.lag_bars - 1)
+        if oldest >= self._edge_base:
             return
         logging.warning(
-            f'[decoder] the cell stream is {self._edge_base - self._next_bar} '
-            f'bars behind the beat grid — bars {self._next_bar}..'
-            f'{self._edge_base - 1} lost their lines and are skipped')
-        self._next_bar = self._edge_base
-        self._bar_offset = self._edge_base
+            f'[decoder] the beat grid has run {self._edge_base - oldest} bars '
+            f'past the oldest line the committer can still name (cursor '
+            f'{self._next_bar}, grid holds from {self._edge_base}) — '
+            f'restarting the committer')
+        self._restart_committer_at(max(self._next_bar, self._edge_base))
+
+    def _restart_committer_at(self, bar: int) -> None:
+        """Resume decoding at ``bar`` with an empty trellis.
+
+        The offset is what keeps the trellis's own bar numbers -- which restart
+        at zero -- pointing at the grid lines the decisions are stamped on.
+        """
+        self._next_bar = bar
+        self._bar_offset = bar
         self._decoder.reset()
         self.recent_observations.clear()
 

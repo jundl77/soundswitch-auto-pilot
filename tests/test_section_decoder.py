@@ -403,6 +403,95 @@ def test_a_beat_gap_re_anchors_the_grid_instead_of_closing_a_bar_across_it():
         'the beat after the gap did not open the bar'
 
 
+def test_a_re_anchor_leaves_the_bar_it_had_already_closed_alone():
+    """The newest edge is two lines at once: the open bar's opening line and
+    the previous bar's closing one.
+
+    Dropping it to abandon the open bar stretched the CLOSED bar across the
+    whole gap instead -- so the bar the re-anchor exists to prevent was created
+    by the re-anchor itself, one bar lower down, and stamped at a line minutes
+    in the past.  Cells run a chain latency behind beats, so a fully-formed
+    unobserved bar behind the newest line is the steady state, not a corner.
+    """
+    section = decoder(lag_bars=2)
+    for beat in beats(8, period=0.5):
+        section.push_beat(beat)
+    assert section.bar_edges == [pytest.approx(0.0), pytest.approx(2.0)]
+
+    section.push_beat(60.0)
+    assert section.bar_edges[1] == pytest.approx(2.0), \
+        'the closed bar lost the line that closed it'
+    assert 60.0 - 2.0 not in [pytest.approx(hi - lo) for lo, hi
+                              in zip(section.bar_edges, section.bar_edges[1:])
+                              if lo == pytest.approx(0.0)], \
+        'bar 0 was stretched across the gap'
+
+
+def test_the_bar_the_gap_falls_in_is_never_decoded():
+    """A re-anchor leaves one bar spanning the silence, and cells still in
+    flight from before it land inside that span.  Averaging them into it
+    commits a confident decision about audio nobody played."""
+    section = decoder(lag_bars=2)
+    seen: list = []
+
+    def absorb():
+        for observation in section.recent_observations:
+            if observation not in seen:
+                seen.append(observation)
+
+    for beat in beats(8, period=0.5):
+        section.push_beat(beat)
+    section.push_beat(60.0)
+    for beat in beats(12, period=0.5, start=60.0):
+        section.push_beat(beat)
+    absorb()
+
+    # Cells still in flight from before the gap, then the stream rejoining.
+    for when in [2.2, 2.5, 2.8]:
+        section.push_posterior(when, one_hot(3), 0.9)
+        absorb()
+    for index in range(24):
+        section.push_posterior(60.5 + index * 0.25, one_hot(0), 0.0)
+        absorb()
+
+    stretched = [obs for obs in seen
+                 if obs.end_sec - obs.start_sec > 4.0 and obs.posterior is not None]
+    assert stretched == [], \
+        f'a bar spanning the gap was decoded from stale cells: {stretched}'
+
+
+def test_a_commit_can_never_name_a_bar_line_the_grid_has_dropped():
+    """A decision reaches ``lag_bars + 1`` bars further back than the decode
+    cursor, so the skip guard has to protect the line the decision will be
+    STAMPED on and not merely the cursor's own.
+
+    Guarding the cursor alone left a window the width of the commit lag: the
+    beat grid evicts an edge, the guard sees the cursor still ahead of the base
+    and returns, and the next commit asks for a line that is gone.  ``_edge``
+    raises rather than returning a neighbour, so the KeyError came out of
+    ``push_posterior`` -- into ``LightEngine.on_audio``, on the audio thread,
+    which is the outage the degradation contract forbids.
+    """
+    section = decoder(lag_bars=2)
+    period, bar = 0.5, 0.5 * BEATS_PER_BAR
+    beat = 0.0
+    # The feature stage is shed: beats run the grid past its retention while
+    # the decode cursor stays at bar zero.
+    while beat < 200 * bar:
+        section.push_beat(beat)
+        beat += period
+    base = section.bar_edges[0]
+
+    # The stream rejoins one bar at a time, and a single bar of beats lands
+    # between the first two -- one eviction, which is all it takes.
+    section.push_posterior(base + bar, one_hot(3), 0.0)
+    for _ in range(BEATS_PER_BAR):
+        section.push_beat(beat)
+        beat += period
+    for step in range(2, 8):
+        section.push_posterior(base + step * bar, one_hot(3), 0.0)
+
+
 def test_pending_cells_are_capped_even_while_the_beat_stream_is_gone():
     """The pruning floor is the next bar's opening line, and it stops moving
     exactly when beats do -- so the seconds window is not a corner case."""
