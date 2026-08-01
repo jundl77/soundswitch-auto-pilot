@@ -328,22 +328,36 @@ class GpuStage:
             self._attempts = 0
             self._said.clear()
             self._suppressed.clear()
-        self._offer(produced)
-        self._watchdog.report_healthy()
+        if self._offer(produced):
+            self._watchdog.report_healthy()
         self._status()
 
-    def _offer(self, produced) -> None:
+    def _offer(self, produced) -> bool:
+        """Whether the pass reached the consumer.
+
+        The answer is the caller's health signal rather than a courtesy.
+        Reporting healthy unconditionally on the next line cancelled the fault
+        an overflow had just raised, so the level went NN_SHED -> NONE before
+        `_tick` could ever see it: `_enter_shed` never ran, the queue was never
+        dropped, `_gap` was never raised and the consumer never reset its
+        decoder.  It received the stale groups as current and then, once it
+        resumed draining, cells from an arbitrarily later part of the song --
+        with `gap=False` saying nothing had happened, which is the one thing
+        both edges of a gap exist to prevent.
+        """
         if not produced:
-            return
+            return True
         with self._lock:
             room = len(self._queue) < self._queue_passes
             if room:
                 self._queue.append(produced)
-        if not room:
-            self.overflows += 1
-            self._fault('queue_overflow',
-                        f'{self._queue_passes} passes are waiting for a '
-                        f'consumer that has stopped draining')
+        if room:
+            return True
+        self.overflows += 1
+        self._fault('queue_overflow',
+                    f'{self._queue_passes} passes are waiting for a '
+                    f'consumer that has stopped draining')
+        return False
 
     # -- degradation -------------------------------------------------------- #
 

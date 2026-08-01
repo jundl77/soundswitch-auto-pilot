@@ -137,7 +137,10 @@ def test_a_cuda_error_mid_pass_holds_logs_and_comes_back(tiny, mean, caplog):  #
         with caplog.at_level(logging.WARNING):
             feed(worker, 4.0)
             settle(lambda: worker.faults > 0, why='the fault never surfaced')
-            assert watchdog.level is ShedLevel.NN_SHED or worker.faults > 0
+            # `worker.faults > 0` is what `settle` just waited for, so the old
+            # disjunct could not fail and the shed itself went unchecked.
+            settle(lambda: watchdog.level is ShedLevel.NN_SHED,
+                   why='the fault never reached the ladder')
             drain(worker, 50, clock=clock, step=0.05)
             feed(worker, 4.0, seed=1)
             settle(lambda: worker.passes > 0, why='the stage never came back')

@@ -208,7 +208,23 @@ def test_the_hand_off_queue_is_bounded_and_overflow_is_a_shed(stage):
 
     settle(lambda: worker.overflows > 0, why='the queue never overflowed')
     assert worker.queued <= 1
-    assert watchdog.level is ShedLevel.NN_SHED or worker.faults > 0
+
+    # Not `or worker.faults > 0`: `_fault` increments that counter on its way to
+    # raising the shed, so the old disjunct was true whatever the ladder did --
+    # and the ladder did nothing.  Reporting healthy on the line after the offer
+    # cancelled the fault before `_tick` could act on it, so the stage never
+    # shed, never dropped the queue and never raised `gap`; the consumer got the
+    # stale groups as current and then cells from much later in the song with
+    # nothing saying a hole had opened.  A resync happens only on the way OUT of
+    # a shed, so it is durable evidence the whole cycle ran.
+    gaps: list = []
+
+    def cycled() -> bool:
+        gaps.append(worker.push_audio(np.zeros(0, dtype=np.float32)).gap)
+        return worker.resyncs > 0
+
+    settle(cycled, why='the overflow never became a shed')
+    assert any(gaps), 'the consumer was never told about the hole'
 
 
 # --------------------------------------------------------------------------- #
