@@ -194,6 +194,11 @@ class SectionDecoder:
         self._edges.append(float(at_sec))
 
     @property
+    def classes(self) -> tuple:
+        """The committer's own class order -- never a second copy of it."""
+        return tuple(self._decoder.classes)
+
+    @property
     def bars_pushed(self) -> int:
         return self._next_bar
 

@@ -124,6 +124,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._committing_late: bool = False
         self._floor_armed: bool = True
         self._last_refresh_sec: float = float('-inf')
+        self._committed = None
         self._log_chain_latency()
 
     def set_analyser(self, analyser: MusicAnalyser):
@@ -229,6 +230,9 @@ class LightEngine(IMusicAnalyserHandler):
         self._current_intent = None
         self._bars_in_current_intent = 0
         self._floor_armed = True
+        # Bar numbers restart with the grid, so last track's cursor would read
+        # as a lag of thousands of bars.
+        self._committed = None
         # Cell time restarts with the chain, so a refresh instant from the last
         # track is a number in the FUTURE of this one: left in place it holds
         # the cooldown shut for the whole of the next song.
@@ -316,6 +320,7 @@ class LightEngine(IMusicAnalyserHandler):
         backtrace pruning replaces the vote buffer.  What remains is PEAK, and
         it is deliberately the same device it always was.
         """
+        self._publish_decoder_state(decisions[-1] if decisions else None)
         for decision in decisions:
             intent = intent_for_class(decision.label)
             self._bars_in_current_intent += 1
@@ -336,6 +341,35 @@ class LightEngine(IMusicAnalyserHandler):
                 f'{decision.label} → {intent.name}')
             await self._commit_intent(
                 intent, max(0.0, self._audio_sec - decision.start_sec))
+
+    def _publish_decoder_state(self, decision) -> None:
+        """D14: the thing driving the show, where Dash can see it.
+
+        Pushed from the audio loop into the one object the two threads share,
+        rather than let the view reach into a decoder that is being written to.
+        A stuck decoder and a quiet passage are the same picture from the stage
+        alone, so "no evidence at this bar" has to be sayable.
+        """
+        if self.event_buffer is None or self.section_decoder is None:
+            return
+        decoder = self.section_decoder
+        if decision is not None:
+            self._committed = decision
+        observed = decoder.recent_observations[-1] \
+            if decoder.recent_observations else None
+        committed = self._committed
+        self.event_buffer.set_decoder_state(
+            classes=list(decoder.classes),
+            posterior=(None if observed is None or observed.posterior is None
+                       else [round(float(p), 6) for p in observed.posterior]),
+            boundary=(None if observed is None else float(observed.boundary)),
+            observed_bar=(None if observed is None else observed.bar),
+            committed_bar=(None if committed is None else committed.bar),
+            committed_label=(None if committed is None else committed.label),
+            lag_bars=(None if observed is None or committed is None
+                      else observed.bar - committed.bar),
+            chain_latency_sec=decoder.chain_latency_sec,
+        )
 
     def _log_chain_latency(self) -> None:
         """Both halves, because only one of them can move."""

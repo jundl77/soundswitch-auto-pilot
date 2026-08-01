@@ -2,11 +2,23 @@ import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 
+from simulate.runner import TIMING_TOLERANCE_SEC
+
+TITLE = 'SoundSwitch Visualizer'
 SLOT_LABELS = list('ABCDEFGH')
 TIMELINE_WINDOW_SEC = 30.0
 DARK_BG   = '#0d1117'
 CARD_BG   = '#111827'
 BORDER    = '#1e2937'
+OK_COLOR   = '#3fb950'
+WARN_COLOR = '#f0883e'
+MUTED      = '#6e7681'
+POSTERIOR_FILL = '#58a6ff'
+
+# Onset density used to scale this; the density chain left with the rule engine
+# and the freed channel is deliberately not re-purposed (D14).  Constant, not
+# derived from a field that is now always zero.
+BEAT_MARKER_SIZE = 16
 
 INTENT_CONFIG = {
     'atmospheric': {
@@ -119,13 +131,9 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             xanchor='left',
         ))
 
-    beat_x, beat_y, beat_size = [], [], []
-    for b in snapshot['beats']:
-        if b['t'] < x0:
-            continue
-        beat_x.append(b['t'])
-        beat_y.append(0.25)
-        beat_size.append(max(16, b['strength'] * 40))
+    beat_x = [b['t'] for b in snapshot['beats'] if b['t'] >= x0]
+    beat_y = [0.25] * len(beat_x)
+    beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
 
     shapes.append(dict(
         type='line', xref='x', yref='paper',
@@ -212,6 +220,62 @@ def _build_stage(snapshot: dict) -> list:
     return slots
 
 
+def _build_decoder(snapshot: dict) -> list:
+    """D14's one new panel: what the committer is looking at.
+
+    The show is driven by the decoder now, and from the stage view alone a
+    stuck one and a quiet passage are the same picture -- so the class
+    posteriors and the commit cursor are the only things worth adding.
+    """
+    state = snapshot.get('decoder') or {}
+    classes = state.get('classes') or []
+    if not classes:
+        return [html.Span('decoder: no decoder on this run',
+                          style={'color': MUTED})]
+
+    posterior = state.get('posterior')
+    bars = []
+    for index, name in enumerate(classes):
+        value = 0.0 if posterior is None else float(posterior[index])
+        bars.append(html.Div([
+            html.Div(name, style={
+                'color': MUTED, 'fontSize': '11px', 'marginBottom': '4px'}),
+            html.Div(html.Div(style={
+                'width': f'{value * 100:.1f}%', 'height': '100%',
+                'background': POSTERIOR_FILL, 'borderRadius': '3px',
+                'transition': 'width 0.15s ease',
+            }), style={'height': '10px', 'background': '#161d27',
+                       'borderRadius': '3px', 'overflow': 'hidden'}),
+        ], style={'flex': '1'}))
+
+    committed = state.get('committed_bar')
+    cursor = 'no bar committed yet' if committed is None else (
+        f'bar {state.get("observed_bar")} observed  →  committed '
+        f'{committed} {state.get("committed_label")}  ·  '
+        f'lag {state.get("lag_bars")} bars')
+    if posterior is None:
+        cursor += '  ·  no evidence at this bar'
+    latency = state.get('chain_latency_sec')
+    if latency is not None:
+        cursor += f'  ·  chain {latency:.1f}s'
+
+    return [
+        html.Div(bars, style={'display': 'flex', 'gap': '10px'}),
+        html.Div(cursor, style={'color': MUTED, 'fontSize': '12px',
+                                'marginTop': '8px'}),
+    ]
+
+
+def _build_legend() -> list:
+    items = [html.Span(TITLE, style={'fontWeight': 'bold', 'color': '#e6edf3',
+                                     'marginRight': '28px'})]
+    for cfg in INTENT_CONFIG.values():
+        items.append(html.Span(f'■ {cfg["label"]}',
+                               style={'color': cfg['primary'],
+                                      'marginRight': '14px', 'fontSize': '12px'}))
+    return items
+
+
 def _build_metrics(snapshot: dict) -> list:
     bpm         = snapshot.get('bpm', 0.0)
     beats       = snapshot.get('beats_detected', 0)
@@ -224,46 +288,44 @@ def _build_metrics(snapshot: dict) -> list:
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
-    ts          = snapshot.get('timing_stats', {})
-    mean_delta  = ts.get('mean_delta_sec')
-    max_err     = ts.get('max_error_ms')
-    n_samples   = ts.get('samples', 0)
-    if mean_delta is not None and n_samples > 0:
-        delay_str   = f'cmd delay: {mean_delta:.3f}s'
-        delay_col   = '#3fb950' if abs(mean_delta - 2.5) < 0.05 else '#f0883e'
-        err_str     = f'max err: {max_err:.1f}ms'
-    else:
-        delay_str  = 'cmd delay: —'
-        delay_col  = '#6e7681'
-        err_str    = ''
+    timing_str, timing_col = _timing_health(snapshot.get('timing_stats', {}))
 
     items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'{elapsed:.1f}s', style={'color': '#6e7681', 'marginRight': '20px'}),
+        html.Span(f'{elapsed:.1f}s', style={'color': MUTED, 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
-        html.Span(f'{beats} beats',   style={'color': '#3fb950', 'marginRight': '20px'}),
+        html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
         html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
-        html.Span(delay_str, style={'color': delay_col, 'marginRight': '12px'}),
+        html.Span(timing_str, style={'color': timing_col}),
     ]
-    if err_str:
-        items.append(html.Span(err_str, style={'color': '#6e7681'}))
     return items
 
 
-def build_app(event_buffer) -> dash.Dash:
-    legend_items = [
-        html.Span('SoundSwitch Visualizer',
-                  style={'fontWeight': 'bold', 'color': '#e6edf3', 'marginRight': '28px'}),
-    ]
-    for key, cfg in INTENT_CONFIG.items():
-        legend_items.append(
-            html.Span(f'■ {cfg["label"]}',
-                      style={'color': cfg['primary'], 'marginRight': '14px', 'fontSize': '12px'})
-        )
+def _timing_health(stats: dict) -> tuple:
+    """Each stream against its OWN target, never against a written-down delay.
 
-    app = dash.Dash(__name__, title='SoundSwitch Visualizer')
+    The four streams wait four different amounts (B1) and the numbers move with
+    the measured chain, so the only durable question is whether the queue is
+    hitting what it aimed at.  A literal here read amber for entire shows.
+    """
+    by_label = stats.get('by_label') or {}
+    if not by_label:
+        return 'cmd timing: —', MUTED
+    tolerance_ms = TIMING_TOLERANCE_SEC * 1000
+    worst = max(by_label, key=lambda label: by_label[label]['mean_error_ms'])
+    late = by_label[worst]['mean_error_ms'] > tolerance_ms
+    streams = ' '.join(f'{label} {s["mean_delta_sec"]:.2f}s±{s["mean_error_ms"]:.0f}ms'
+                       for label, s in by_label.items())
+    if late:
+        return (f'cmd timing: {worst} misses its target by '
+                f'{by_label[worst]["mean_error_ms"]:.0f}ms  │  {streams}'), WARN_COLOR
+    return f'cmd timing: on target  │  {streams}', OK_COLOR
+
+
+def build_app(event_buffer) -> dash.Dash:
+    app = dash.Dash(__name__, title=TITLE)
     app.layout = html.Div([
-        html.Div(legend_items, style={
+        html.Div(_build_legend(), style={
             'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '14px',
         }),
@@ -272,6 +334,10 @@ def build_app(event_buffer) -> dash.Dash:
         html.Div(id='stage', style={
             'display': 'grid', 'gridTemplateColumns': 'repeat(8, 1fr)',
             'gap': '10px', 'padding': '20px 20px 16px',
+        }),
+        html.Div(id='decoder', style={
+            'padding': '12px 20px 16px', 'borderTop': f'1px solid {BORDER}',
+            'fontFamily': 'monospace', 'fontSize': '13px',
         }),
         html.Div(id='metrics', style={
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
@@ -283,12 +349,14 @@ def build_app(event_buffer) -> dash.Dash:
     @app.callback(
         [Output('timeline', 'figure'),
          Output('stage', 'children'),
+         Output('decoder', 'children'),
          Output('metrics', 'children')],
         Input('tick', 'n_intervals'),
     )
     def refresh(_):
         snap = event_buffer.snapshot()
-        return _build_timeline(snap), _build_stage(snap), _build_metrics(snap)
+        return (_build_timeline(snap), _build_stage(snap),
+                _build_decoder(snap), _build_metrics(snap))
 
     return app
 

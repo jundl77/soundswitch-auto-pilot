@@ -13,6 +13,7 @@ the engine is exactly three things this file pins:
   stage with a committer that speaks about audio 13.7 s old.
 """
 import logging
+from collections import deque
 
 import numpy as np
 import pytest
@@ -22,7 +23,7 @@ from lib.engine.effect_definitions import LightIntent
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_controller import EffectController
 from lib.engine.light_engine import PEAK_PROMOTION_BARS, LightEngine
-from lib.engine.section_decoder import BarDecision
+from lib.engine.section_decoder import BarDecision, BarObservation
 from lib.clock import VirtualClock
 from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
 
@@ -79,6 +80,7 @@ class FakeDecoder:
     chain_latency_sec = 13.66
     feature_latency_sec = 7.9938
     bar_sec = 1.8898
+    classes = ('intro', 'buildup', 'breakdown', 'drop', 'outro')
 
     class params:
         lag_bars = 2
@@ -87,6 +89,7 @@ class FakeDecoder:
         self.beats: list = []
         self.cells: list = []
         self.resets = 0
+        self.recent_observations = deque(maxlen=4)
         self._script = list(script or [])
 
     def push_beat(self, at_sec):
@@ -1049,3 +1052,72 @@ def test_the_refresh_threshold_was_priced_against_the_retired_ceiling():
     for track in record['tracks'].values():
         rate = track['refreshes_per_minute'][str(BOUNDARY_REFRESH_SCORE)]
         assert 0.0 < rate < ceiling
+
+
+# -- D14: the committer's own state, where the live view can see it ------------- #
+
+async def test_the_decoder_state_reaches_the_event_buffer():
+    """The audio loop pushes it into the one object Dash shares, because a view
+    that reached into the decoder would be reading it mid-write."""
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    decoder.recent_observations.append(
+        BarObservation(7, 13.2, 15.1, np.array([0.05, 0.1, 0.1, 0.7, 0.05]), 0.62))
+
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', bar=5)
+
+    state = light.event_buffer.snapshot()['decoder']
+    assert state['classes'] == list(FakeDecoder.classes)
+    assert state['posterior'] == [0.05, 0.1, 0.1, 0.7, 0.05]
+    assert (state['observed_bar'], state['committed_bar']) == (7, 5)
+    assert state['committed_label'] == 'drop'
+    assert state['lag_bars'] == 2
+    assert state['chain_latency_sec'] == FakeDecoder.chain_latency_sec
+
+
+async def test_a_bar_with_no_evidence_says_so_rather_than_reading_as_silence():
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    decoder.recent_observations.append(
+        BarObservation(7, 13.2, 15.1, None, float('nan')))
+
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', bar=5)
+
+    assert light.event_buffer.snapshot()['decoder']['posterior'] is None
+
+
+async def test_the_decoder_state_stays_out_of_the_report():
+    """A report is scored beat by beat against labels; the decoder's cursor is
+    a fact about the instant the view asked, and would move every checksum."""
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    decoder.recent_observations.append(
+        BarObservation(7, 13.2, 15.1, np.array([0.2] * 5), 0.1))
+
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', bar=5)
+
+    report = light.event_buffer.to_report()
+    assert 'decoder' not in report
+    assert 'decoder' not in report['metrics']
+
+
+async def test_a_song_boundary_forgets_the_commit_cursor():
+    """Bar numbers restart with the grid, so a carried-over cursor would read
+    as a lag of thousands of bars."""
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    decoder.recent_observations.append(
+        BarObservation(7, 13.2, 15.1, np.array([0.2] * 5), 0.1))
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', bar=5)
+
+    light.on_sound_start()
+    decoder.recent_observations.clear()
+    await light.on_beat(1, 128.0, False)
+
+    state = light.event_buffer.snapshot()['decoder']
+    assert state['committed_bar'] is None
+    assert state['lag_bars'] is None

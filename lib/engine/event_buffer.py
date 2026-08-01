@@ -25,6 +25,7 @@ class EventBuffer:
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
         self._sound_events: list[dict] = []
+        self._decoder_state: dict = {}
 
     def start(self) -> None:
         with self._lock:
@@ -104,20 +105,47 @@ class EventBuffer:
         with self._lock:
             self._timing_log = list(log)
 
+    def set_decoder_state(self, **state) -> None:
+        """What the committer is looking at -- for the live view only.
+
+        Deliberately absent from ``to_report``: a report is scored against
+        labels beat by beat, and the decoder's own cursor is a fact about the
+        instant Dash asked rather than about the show.
+        """
+        with self._lock:
+            self._decoder_state = dict(state)
+
+    @staticmethod
+    def _delivery(log: list[dict]) -> dict:
+        errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000 for e in log]
+        deltas = [e['actual_delta_sec'] for e in log]
+        return {
+            'samples': len(log),
+            'mean_delta_sec': sum(deltas) / len(deltas) if deltas else None,
+            'mean_error_ms': sum(errors_ms) / len(errors_ms) if errors_ms else None,
+            'max_error_ms': max(errors_ms) if errors_ms else None,
+        }
+
+    @classmethod
+    def _timing_stats(cls, log: list[dict]) -> dict:
+        """Per stream, because the streams wait different amounts (B1).
+
+        A mean delay pooled over four streams is a number no command ever
+        targeted, so health is each entry's distance from *its own* target.
+        """
+        labels: dict = {}
+        for entry in log:
+            labels.setdefault(entry['label'], []).append(entry)
+        return dict(cls._delivery(log),
+                    by_label={label: cls._delivery(entries)
+                              for label, entries in sorted(labels.items())})
+
     def snapshot(self) -> dict:
         """Thread-safe copy of recent state — called from Dash every 100 ms."""
         with self._lock:
             now = self._now()
             cutoff = now - self._window_sec
-            tlog = self._timing_log
-            errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000 for e in tlog]
-            deltas = [e['actual_delta_sec'] for e in tlog]
-            timing_stats = {
-                'samples': len(tlog),
-                'mean_delta_sec': sum(deltas) / len(deltas) if deltas else None,
-                'mean_error_ms': sum(errors_ms) / len(errors_ms) if errors_ms else None,
-                'max_error_ms': max(errors_ms) if errors_ms else None,
-            }
+            timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
                 'is_playing': self._is_playing,
@@ -130,6 +158,7 @@ class EventBuffer:
                 'intent': self._current_intent,
                 'sound_events': [e for e in self._sound_events if e['t'] >= cutoff],
                 'timing_stats': timing_stats,
+                'decoder': dict(self._decoder_state),
             }
 
     def to_report(self, timing_log: list[dict] | None = None) -> dict:
