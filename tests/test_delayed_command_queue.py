@@ -145,3 +145,111 @@ async def test_pending_counts_unfired_commands():
     clock.advance(2.5)
     await q.drain()
     assert q.pending == 0
+
+
+# --------------------------------------------------------------------------- #
+# B1: one queue, one delay per STREAM
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_command_may_carry_its_own_delay():
+    """The queue holds a command until the audience hears the audio that caused
+    it, and the two streams reach it at different ages.
+
+    A beat is detected as the audio arrives; a decoder decision is ~13.7 s
+    behind it.  Delaying both by the playback delay would put the OS2L wire a
+    whole chain-latency ahead of the room, so the delay is
+    ``playback_delay - chain_latency`` PER STREAM rather than per queue.
+    """
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    async def beat():
+        fired.append('beat')
+
+    async def intent():
+        fired.append('intent')
+
+    await q.enqueue('beat', beat)
+    await q.enqueue('intent', intent, delay_sec=0.34)
+
+    clock.advance(0.4)
+    await q.drain()
+    assert fired == ['intent']
+
+    clock.advance(14.0)
+    await q.drain()
+    assert fired == ['intent', 'beat']
+
+
+async def test_the_timing_log_records_the_delay_each_command_asked_for():
+    """A single queue-wide target would report every intent as 13.7 s late."""
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+
+    async def noop():
+        pass
+
+    await q.enqueue('beat', noop)
+    await q.enqueue('intent', noop, delay_sec=0.34)
+    clock.advance(0.34)
+    await q.drain()
+    clock.advance(14.0 - 0.34)
+    await q.drain()
+
+    log = q.get_timing_log()
+    assert {e['label']: e['target_delta_sec'] for e in log} == {'beat': 14.0,
+                                                                'intent': 0.34}
+    for entry in log:
+        assert entry['actual_delta_sec'] == pytest.approx(
+            entry['target_delta_sec'], abs=1e-9)
+
+
+async def test_a_shrinking_delay_cannot_reorder_a_stream():
+    """The intent delay tracks the measured chain latency, so it moves.
+
+    If it shrinks by more than the gap between two commits, the later decision
+    would otherwise overtake the earlier one and the show would run backwards
+    for one change.  Order within a stream is preserved by clamping, which is
+    cheaper than being sorry.
+    """
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('intent', _record(fired, 'first'), delay_sec=5.0)
+    clock.advance(0.5)
+    await q.enqueue('intent', _record(fired, 'second'), delay_sec=0.1)
+
+    clock.advance(20.0)
+    await q.drain()
+    assert fired == ['first', 'second']
+
+
+async def test_streams_are_clamped_independently():
+    """A beat enqueued long ago must not drag the next intent out to its own
+    fire time -- that is the whole point of the per-stream delay."""
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('beat', _record(fired, 'beat'))
+    await q.enqueue('intent', _record(fired, 'intent'), delay_sec=0.2)
+    clock.advance(0.3)
+    await q.drain()
+    assert fired == ['intent']
+
+
+def _record(sink, name):
+    async def command():
+        sink.append(name)
+    return command
