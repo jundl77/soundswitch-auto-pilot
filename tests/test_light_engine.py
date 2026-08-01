@@ -556,3 +556,92 @@ def _posterior(time_sec, boundary):
     p.posterior = np.full(5, 0.2)
     p.boundary = boundary
     return p
+
+
+# --------------------------------------------------------------------------- #
+# The MIDI settle, forgiven where it runs
+# --------------------------------------------------------------------------- #
+
+
+class SettlingMidi(StubMidiClient):
+    """A MIDI client that really blocks, the way the real one does."""
+
+    SETTLE_SEC = 0.2
+
+    def on_sound_stop(self):
+        import time
+        time.sleep(self.SETTLE_SEC)
+        super().on_sound_stop()
+
+
+class ForgivingWatchdog:
+    def __init__(self):
+        self.forgiven: list = []
+
+    def forgive(self, sec):
+        self.forgiven.append(sec)
+
+
+async def test_the_midi_settle_is_forgiven_where_it_actually_runs():
+    """On the SYSTEM clock, because that is the only one that can see it.
+
+    The settle used to sit inside the analyser's forgive bracket; making the
+    boundary room-aligned moved it into the drain loop a playback delay later,
+    and 0.2 s is over the watchdog's 0.15 s door -- a spurious NN_SHED at every
+    track change.  A virtual clock does not advance while a thread sleeps, so
+    no fast simulation can ever show this.
+    """
+    from lib.clock import SYSTEM_CLOCK
+
+    watchdog = ForgivingWatchdog()
+    midi = SettlingMidi(clock=SYSTEM_CLOCK)
+    light = LightEngine(midi, StubOs2lClient(clock=SYSTEM_CLOCK),
+                        StubOverlayClient(clock=SYSTEM_CLOCK),
+                        EffectController(midi, clock=SYSTEM_CLOCK),
+                        None, playback_delay_sec=0.0, watchdog=watchdog,
+                        clock=SYSTEM_CLOCK)
+    light.set_analyser(FakeAnalyser())
+
+    light.on_sound_stop()
+
+    assert watchdog.forgiven, 'the settle reached the watchdog as lost lead'
+    assert max(watchdog.forgiven) >= SettlingMidi.SETTLE_SEC
+
+
+async def test_the_sound_start_settle_is_forgiven_too():
+    """Same call, same block, same door -- and it runs at every track change."""
+    from lib.clock import SYSTEM_CLOCK
+
+    watchdog = ForgivingWatchdog()
+    midi = SettlingMidi(clock=SYSTEM_CLOCK)
+    light = LightEngine(midi, StubOs2lClient(clock=SYSTEM_CLOCK),
+                        StubOverlayClient(clock=SYSTEM_CLOCK),
+                        EffectController(midi, clock=SYSTEM_CLOCK),
+                        None, playback_delay_sec=0.0, watchdog=watchdog,
+                        clock=SYSTEM_CLOCK)
+    light.set_analyser(FakeAnalyser())
+
+    light.on_sound_start()
+
+    assert watchdog.forgiven == [pytest.approx(0.0, abs=0.05)]
+
+
+async def test_the_settle_is_forgiven_from_the_queue_not_from_the_handler():
+    """The point of the fix: the forgive has to happen when the command fires,
+    a whole playback delay after the handler returned."""
+    clock = VirtualClock()
+    watchdog = ForgivingWatchdog()
+    midi = StubMidiClient(clock=clock)
+    queue = DelayedCommandQueue(14.0, clock=clock)
+    light = LightEngine(midi, StubOs2lClient(clock=clock),
+                        StubOverlayClient(clock=clock),
+                        EffectController(midi, clock=clock), queue,
+                        playback_delay_sec=14.0, watchdog=watchdog, clock=clock)
+    light.set_analyser(FakeAnalyser())
+
+    light.on_sound_stop()
+    assert watchdog.forgiven == []
+
+    clock.advance(14.1)
+    await queue.drain()
+    assert len(watchdog.forgiven) == 1

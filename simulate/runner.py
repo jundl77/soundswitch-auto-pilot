@@ -58,6 +58,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
         playback_delay_sec=PLAYBACK_DELAY_SEC,
         section_chain=None if section is None else section.stream,
         section_decoder=None if section is None else section.decoder,
+        watchdog=watchdog,
         clock=clock,
     )
 

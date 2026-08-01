@@ -165,6 +165,25 @@ def test_a_deliberate_stall_sheds_unless_forgiven():
     assert dog.level is ShedLevel.NN_SHED
 
 
+def test_an_unforgiven_stall_costs_about_ten_seconds_of_shed():
+    """What makes a missed forgive a venue blocker rather than a nit: the exit
+    needs a whole calm window under the exit threshold, so one 0.2 s settle
+    buys ten seconds of held intent -- at every track change, all night."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 2000, BUF)
+    clock.advance(0.2)
+    dog.observe()
+
+    shed_sec = 0.0
+    for _ in range(int(30.0 / BUF)):
+        clock.advance(BUF)
+        dog.observe()
+        if dog.level is not ShedLevel.NONE:
+            shed_sec += BUF
+    assert 9.0 < shed_sec < 11.0
+
+
 def test_forgiving_a_deliberate_stall_prevents_the_shed():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)

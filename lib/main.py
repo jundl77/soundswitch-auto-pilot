@@ -81,7 +81,8 @@ class SoundSwitchAutoPilot:
                                                      self.command_queue, event_buffer=self.event_buffer,
                                                      playback_delay_sec=PLAYBACK_DELAY_SEC,
                                                      section_chain=None if self.section is None else self.section.stream,
-                                                     section_decoder=None if self.section is None else self.section.decoder)
+                                                     section_decoder=None if self.section is None else self.section.decoder,
+                                                     watchdog=self.drift_watchdog)
 
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
                                                            note_clicks=debug_mode,

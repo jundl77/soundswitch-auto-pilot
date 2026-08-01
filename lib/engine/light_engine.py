@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 from lib.audio_config import SAMPLE_RATE
@@ -54,6 +55,7 @@ class LightEngine(IMusicAnalyserHandler):
                  playback_delay_sec: float = 0.0,
                  section_chain=None,
                  section_decoder=None,
+                 watchdog=None,
                  clock: Clock = SYSTEM_CLOCK):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
@@ -64,6 +66,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.analyser: MusicAnalyser = None
         self.section_chain = section_chain
         self.section_decoder = section_decoder
+        self._watchdog = watchdog
         self._playback_delay_sec: float = playback_delay_sec
         self._clock: Clock = clock
         self._note_counter: int = 0
@@ -134,12 +137,34 @@ class LightEngine(IMusicAnalyserHandler):
         self._at_the_room('sound', self._show_sound_stop)
 
     def _show_sound_start(self) -> None:
-        self.midi_client.on_sound_start()
-        self.overlay_client.deactivate_all()
+        with self._deliberate_stall():
+            self.midi_client.on_sound_start()
+            self.overlay_client.deactivate_all()
 
     def _show_sound_stop(self) -> None:
-        self.midi_client.on_sound_stop()
-        self.overlay_client.deactivate_all()
+        with self._deliberate_stall():
+            self.midi_client.on_sound_stop()
+            self.overlay_client.deactivate_all()
+
+    @contextlib.contextmanager
+    def _deliberate_stall(self):
+        """A stall the show chose is not lost lead.
+
+        `MidiClient.on_sound_stop` blocks for 0.2 s giving the rig time to
+        settle.  It used to run inside `MusicAnalyser._on_sound_stop`, which
+        forgave it; making the boundary room-aligned moved it into the drain
+        loop a playback delay later, where nothing did -- and 0.2 s is over the
+        watchdog's 0.15 s door, so every track change shed the GPU stage for
+        ~10 s and re-warmed the decoder for another 14.  All night, and
+        invisible to a virtual clock, which does not advance while a real thread
+        sleeps.  So the forgive follows the stall to where it actually runs.
+        """
+        started = self._clock.monotonic()
+        try:
+            yield
+        finally:
+            if self._watchdog is not None:
+                self._watchdog.forgive(self._clock.monotonic() - started)
 
     def _at_the_room(self, label: str, action) -> None:
         """Fire when the audience hears the audio that caused it."""
