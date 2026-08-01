@@ -106,6 +106,9 @@ class SoundSwitchAutoPilot:
             self.os2l_client.start()
         if self.event_buffer is not None:
             self.event_buffer.start()
+        # The buffer is also what `--report` fills, so it is not the flag that
+        # decides whether a web server opens.
+        if self.enable_ui:
             import threading
             from simulate.visualizer_app import run_app
             ui_thread = threading.Thread(
