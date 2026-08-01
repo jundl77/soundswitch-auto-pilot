@@ -1098,10 +1098,22 @@ def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
     The unit is the model's own: a delta divided by the input affine's std is a
     delta in the space the network reads. The reference for "is that a lot" is
     how far apart two ADJACENT cells of the same track already are.
+
+    Disagreements are counted where the show reads them -- the argmax of the
+    student's posterior, the class the decoder is handed. An argmax over the
+    2048 raw feature dimensions is not a decision, and measuring it instead is
+    not conservative: over this track's 646 cells it reported ZERO flips on both
+    arms, while the decisions those cells produce flip once on the gated arm and
+    85 times on the simulation one. The gated flip sits on a cell whose top two
+    classes are 0.002 apart -- a tie breaking the other way, which is what the
+    resampler being small looks like. The simulation arm's flips do not: many
+    sit on gaps of 0.1 to 0.2, so the mp3 decoder, not the resampler, moves real
+    decisions. That belongs to Task 12's sim=prod question and is reported, not
+    gated, here.
     """
     encoder, geometry, _head = real_stack
-    affine, _onnx = _require_artifacts()
-    _mean, std = M.load_input_affine(affine)
+    affine, onnx = _require_artifacts()
+    mean, std = M.load_input_affine(affine)
 
     seconds = 60.0
     take24 = int(seconds * M.ENCODER_SAMPLE_RATE)
@@ -1116,18 +1128,55 @@ def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
 
     baseline = np.stack([cell.features for cell in reference])
     adjacent = np.median(np.abs(np.diff(baseline, axis=0)) / std[None, :])
-    arms = {name: _cell_delta(np.stack([cell.features for cell in cells]),
-                              baseline, std, adjacent)
-            for name, cells in (("resampler_only_ffmpeg_44k1", resampled),
-                                ("simulation_path_librosa_44k1", simulated))}
+    decided = _decisions(onnx, mean, reference)
+    arms = {}
+    for name, cells in (("resampler_only_ffmpeg_44k1", resampled),
+                        ("simulation_path_librosa_44k1", simulated)):
+        arms[name] = _cell_delta(np.stack([cell.features for cell in cells]),
+                                 baseline, std, adjacent)
+        arms[name].update(_decision_delta(_decisions(onnx, mean, cells), decided))
     with capsys.disabled():
         print(f"\nD4 parity ({len(baseline)} cells, median adjacent-cell "
               f"distance {adjacent:.4f} affine std):\n{json.dumps(arms, indent=2)}")
 
     resampler = arms["resampler_only_ffmpeg_44k1"]
-    assert resampler["argmax_disagreements"] == 0, resampler
+    assert resampler["class_argmax_disagreements"] <= 0.01 * resampler["class_cells"], \
+        resampler
+    assert max(resampler["flip_reference_top_two_gap"], default=0.0) < 0.01, resampler
     assert resampler["median_delta_in_affine_std"] < 0.10, resampler
     assert resampler["share_of_adjacent_cell_distance"] < 0.20, resampler
+
+
+def _decisions(onnx, mean, cells) -> dict:
+    """The cells put through the deployed student -- the decision, not the input."""
+    from lib.analyser import section_model as S
+
+    model = S.SectionModel(onnx, mean=mean)
+    out = [model.push(cell.features) for cell in cells]
+    out.extend(model.flush())
+    return {item.index: item for item in out if item is not None}
+
+
+def _decision_delta(arm: dict, reference: dict) -> dict:
+    shared = sorted(set(arm) & set(reference))
+    assert shared
+    flipped = [i for i in shared
+               if np.argmax(arm[i].posterior) != np.argmax(reference[i].posterior)]
+    return {
+        "class_cells": len(shared),
+        "class_argmax_disagreements": len(flipped),
+        # How decided the flipped cells were on the reference side. A flip on a
+        # cell whose top two classes are a hair apart is the tie breaking the
+        # other way, not the resampler changing the model's mind.
+        "flip_reference_top_two_gap": [
+            round(float(np.diff(np.sort(reference[i].posterior)[-2:])[0]), 5)
+            for i in flipped],
+        "max_abs_posterior_delta": max(
+            float(np.abs(arm[i].posterior - reference[i].posterior).max())
+            for i in shared),
+        "max_abs_boundary_delta": max(
+            abs(arm[i].boundary - reference[i].boundary) for i in shared),
+    }
 
 
 def _cell_delta(a, b, std, adjacent):
@@ -1142,7 +1191,7 @@ def _cell_delta(a, b, std, adjacent):
         "p99_delta_in_affine_std": float(np.percentile(normalised, 99)),
         "max_delta_in_affine_std": float(normalised.max()),
         "share_of_adjacent_cell_distance": float(median / adjacent),
-        "argmax_disagreements": int(
+        "feature_argmax_disagreements": int(
             (a[:shared].argmax(axis=1) != b[:shared].argmax(axis=1)).sum()),
         "min_cosine": float(np.min(
             (a[:shared] * b[:shared]).sum(1)
