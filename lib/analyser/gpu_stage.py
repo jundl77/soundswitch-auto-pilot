@@ -275,8 +275,11 @@ class GpuStage:
         with self._lock:
             self._queue.clear()
             self._gap = True
-        self._attempts = 0
-        self._retry_at = None
+        # `_attempts` deliberately survives: a restore is the stage being let
+        # through to TRY, not evidence that it works.  Clearing it here made
+        # every retry of a permanently dead GPU start from the immediate rung,
+        # so the backoff never grew and a fault became its own outage.  Only a
+        # pass that returned resets it.
         logging.warning(f'[gpu] restored at the live edge: skipped '
                         f'{record.lost_sec:.2f}s / {record.cells_lost} cells, '
                         f'resuming at cell {record.first_cell_index}')
