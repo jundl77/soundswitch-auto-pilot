@@ -140,10 +140,6 @@ async def test_simulation_is_deterministic():
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="the demolition moved all three report "
-                                        "checksums and zeroed the label-aligned "
-                                        "scores; Task 15 re-cuts the committed "
-                                        "baseline, once")
 def test_eval_set_head_matches_the_committed_baseline():
     """Three eval-set tracks through the benchmark runner, compare mode.
 
@@ -155,13 +151,13 @@ def test_eval_set_head_matches_the_committed_baseline():
     Read the printed table on failure: it names the track, the metric, and the
     direction, and says whether re-cutting the baseline is the right answer.
 
-    Marked xfail through the demolition, and strict on purpose.  The report
-    schema lost four beat columns and one metric, so every checksum moved; the
-    engine commits nothing, so every label-aligned score is 0.  Re-cutting the
-    baseline here would bless the intermediate state as the benchmark, which is
-    why the plan gives that job to Task 15 and gives it once.  When the rewire
-    lands and the baseline is re-cut this XPASSes, which pytest reports as a
-    failure until the marker comes off.
+    It went strict-xfail through the demolition -- the report schema lost four
+    beat columns and one metric, so every checksum moved, and the engine
+    committed nothing, so every label-aligned score was 0.  Re-cutting there
+    would have blessed the intermediate state as the benchmark, which is why the
+    plan gave that job to Task 15 and gave it once.  The strictness is what
+    stopped the marker outliving the cut: it XPASSed the moment the baseline was
+    re-cut against the neural show, and came off in the same commit.
     """
     _require_audio(BENCH_TRACK_IDS)
     exit_code = run_eval_set.main([

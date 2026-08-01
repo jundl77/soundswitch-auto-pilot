@@ -132,11 +132,21 @@ SPACE = "v1"                    # the space the NN trains on -- the primary one
 STREAM = "intent"               # every lighting change: the show as the room sees it
 BOUNDARY_TOLERANCE_SEC = PRIMARY_TOLERANCE_SEC
 
+# #141(a).  Boundary-F1 at the tightest tolerance the scorer computes: does the
+# change land ON the section change, not merely near it.  It is a headline
+# number rather than a diagnostic because it is the axis the shipped decoder was
+# SELECTED on -- the frontier re-rank that chose `reduced_plus_floors_x0.75`
+# ranked on exactly this, and the 2.0 s lens it replaced hid most of the spread
+# it found (post-decoder dwell scored 0.68 at 2.0 s and 0.01 here).  A benchmark
+# that cannot see the axis the model was chosen on cannot defend that choice.
+CRISPNESS_TOLERANCE_SEC = 0.5
+
 # metric -> the direction that is a REGRESSION.
 GUARDED_METRICS = {
     "macro_f1": "down",
     "accuracy": "down",
     "boundary_f1": "down",
+    "crispness": "down",
     "flicker_per_min": "up",
 }
 
@@ -425,7 +435,7 @@ def score_report(track_id: str, youtube_id: str, report: dict, sections: list):
     apart.  Re-deriving that here would give the benchmark a different notion of
     when the lights changed than the training table has.
     """
-    rows, _stats = join_track(track_id, youtube_id, report, sections)
+    rows, stats = join_track(track_id, youtube_id, report, sections)
     track = TrackBeats(
         track_id=track_id,
         times=tuple(row["t_song"] for row in rows),
@@ -433,29 +443,38 @@ def score_report(track_id: str, youtube_id: str, report: dict, sections: list):
         labels={name: tuple(row[spec.column] for row in rows)
                 for name, spec in SPACES.items()},
     )
-    return score_track(track, SPACE), len(rows)
+    return score_track(track, SPACE), len(rows), stats
 
 
 def track_metrics(score) -> dict:
-    """The four gated numbers, read off a ``Score``."""
+    """The five gated numbers, read off a ``Score``."""
     return {
         "macro_f1": round(score.macro_f1, 6),
         "accuracy": round(score.accuracy, 6),
         "boundary_f1": round(
             score.boundary_prf(STREAM, BOUNDARY_TOLERANCE_SEC)[2], 6),
+        "crispness": round(
+            score.boundary_prf(STREAM, CRISPNESS_TOLERANCE_SEC)[2], 6),
         "flicker_per_min": round(
             score.flicker_per_minute[STREAM][BOUNDARY_TOLERANCE_SEC], 6),
     }
 
 
 def track_entry(report: dict, score, rows: int, youtube_id: str,
-                song_sec: float) -> dict:
+                song_sec: float, stats=None) -> dict:
     """One track's row of the baseline: identity, size, speed-free facts, scores.
 
     Wall time and x-realtime are deliberately NOT in here.  They are printed on
     every run and they are the whole reason the caches are kept, but they are a
     property of the machine, and a committed file that changes with the CPU load
     of the laptop that wrote it is a file nobody can diff.
+
+    ``late`` is recorded and NOT gated.  It is #154's accepted lateness -- on a
+    track slow enough that the chain is older than the playback delay, a
+    decision commits as soon as it can rather than on time -- so it is a
+    property of the music the benchmark should SHOW, not a regression to stop a
+    commit for.  It ships with its denominator for the reason the batch summary
+    does: only a block that recorded its own instant can be measured at all.
     """
     from simulate.evaluator import report_checksum
 
@@ -473,6 +492,9 @@ def track_entry(report: dict, score, rows: int, youtube_id: str,
         "label_boundaries":
             score.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_truth"],
     }
+    if stats is not None:
+        entry["late"] = int(stats.intent_blocks_late)
+        entry["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
     entry.update(track_metrics(score))
     return entry
 
@@ -495,9 +517,9 @@ def run_job(job: Job) -> TrackRun:
     track_id, youtube_id = job.track["track_id"], job.track["youtube_id"]
     report, song_sec, wall_sec = simulate_report(
         audio_path(Path(job.data_dir), youtube_id))
-    score, rows = score_report(track_id, youtube_id, report, job.sections)
+    score, rows, stats = score_report(track_id, youtube_id, report, job.sections)
     return TrackRun(track_id, youtube_id,
-                    track_entry(report, score, rows, youtube_id, song_sec),
+                    track_entry(report, score, rows, youtube_id, song_sec, stats),
                     score, wall_sec)
 
 
@@ -523,6 +545,7 @@ def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
         "space": SPACE,
         "stream": STREAM,
         "boundary_tolerance_sec": BOUNDARY_TOLERANCE_SEC,
+        "crispness_tolerance_sec": CRISPNESS_TOLERANCE_SEC,
         "gate": {"score_tolerance": score_tolerance,
                  "flicker_tolerance": flicker_tolerance,
                  "metrics": dict(GUARDED_METRICS)},
@@ -690,7 +713,7 @@ def compare(baseline: dict, current: dict,
 # Report
 # --------------------------------------------------------------------------- #
 
-WIDTH = 100
+WIDTH = 116
 
 
 def render_table(runs: list, aggregate_entry: dict, total_song: float,
@@ -698,20 +721,22 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
     """The per-track table every run prints, baseline or not."""
     lines = [
         f'  {"track_id":<20}{"song":>7}{"wall":>7}{"x-rt":>7}{"beats":>7}'
-        f'{"rows":>7}{"macroF1":>9}{"acc":>7}{"bF1":>7}{"flick/m":>9}'
-        f'{"chg i/c":>10}  checksum',
+        f'{"rows":>7}{"macroF1":>9}{"acc":>7}{"bF1":>7}{"crisp":>7}'
+        f'{"flick/m":>9}{"chg i/c":>10}{"late":>8}  checksum',
         "  " + "-" * (WIDTH - 2),
     ]
     for run in runs:
         entry = run.entry
         speed = entry["song_sec"] / run.wall_sec if run.wall_sec > 0 else 0.0
         changes = f'{entry["changes_intent"]}/{entry["changes_class"]}'
+        late = f'{entry.get("late", "-")}/{entry.get("blocks_measurable", "-")}'
         lines.append(
             f'  {run.track_id:<20}{entry["song_sec"] / 60.0:>6.1f}m'
             f'{run.wall_sec:>6.1f}s{speed:>6.0f}x{entry["beats"]:>7}'
             f'{entry["rows"]:>7}{entry["macro_f1"]:>9.3f}{entry["accuracy"]:>7.3f}'
-            f'{entry["boundary_f1"]:>7.3f}{entry["flicker_per_min"]:>9.2f}'
-            f'{changes:>10}  {entry["checksum"][:12]}'
+            f'{entry["boundary_f1"]:>7.3f}{entry["crispness"]:>7.3f}'
+            f'{entry["flicker_per_min"]:>9.2f}{changes:>10}{late:>8}  '
+            f'{entry["checksum"][:12]}'
         )
     lines.append("  " + "-" * (WIDTH - 2))
     speed = total_song / total_wall if total_wall > 0 else 0.0
@@ -719,11 +744,17 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
         f'  {"(aggregate)":<20}{total_song / 60.0:>6.1f}m{total_wall:>6.1f}s'
         f'{speed:>6.0f}x{"":>7}{"":>7}{aggregate_entry["macro_f1"]:>9.3f}'
         f'{aggregate_entry["accuracy"]:>7.3f}{aggregate_entry["boundary_f1"]:>7.3f}'
+        f'{aggregate_entry["crispness"]:>7.3f}'
         f'{aggregate_entry["flicker_per_min"]:>9.2f}'
     )
     lines.append(
         f'  macro-F1 and accuracy in the {SPACE} space; boundary-F1 and flicker on '
-        f'the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s'
+        f'the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s, crispness at '
+        f'+/-{CRISPNESS_TOLERANCE_SEC}s'
+    )
+    lines.append(
+        f'  late = intent blocks committed more than the playback delay after '
+        f'the audio they name, of those that can be measured (#154, accepted)'
     )
     if workers > 1 and len(runs) > 1:
         lines.append(

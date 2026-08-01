@@ -31,6 +31,7 @@ from eval_assets import EVAL_LABELS_FILE, committed_audio_path  # noqa: E402
 from run_eval_set import (  # noqa: E402  (needs the path insert above)
     AUDIO_MISSING_HINT,
     BASELINE_FILE,
+    BOUNDARY_TOLERANCE_SEC,
     COUNT_FACTS,
     DATA_DIR_ENV,
     DEFAULT_FLICKER_TOLERANCE,
@@ -81,11 +82,13 @@ def eval_document(*specs) -> dict:
     }
 
 
-def metrics(macro_f1=0.5, accuracy=0.5, boundary_f1=0.5, flicker_per_min=1.0) -> dict:
+def metrics(macro_f1=0.5, accuracy=0.5, boundary_f1=0.5, crispness=0.5,
+            flicker_per_min=1.0) -> dict:
     return {
         "macro_f1": macro_f1,
         "accuracy": accuracy,
         "boundary_f1": boundary_f1,
+        "crispness": crispness,
         "flicker_per_min": flicker_per_min,
     }
 
@@ -720,8 +723,8 @@ def test_a_report_matching_the_annotation_scores_one():
     sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
     blocks = [(0.0, 20.0, "atmospheric"), (20.0, 40.0, "drop"),
               (40.0, 60.5, "atmospheric")]
-    score, rows = score_report("t.1", "1", perfect_report(beat_times, blocks, 63.0),
-                               sections)
+    score, rows, _stats = score_report(
+        "t.1", "1", perfect_report(beat_times, blocks, 63.0), sections)
     assert rows == len(beat_times)
     result = track_metrics(score)
     assert result["macro_f1"] == pytest.approx(1.0)
@@ -736,8 +739,8 @@ def test_a_constant_intent_scores_far_below_one():
     beat_times = [0.5 * index for index in range(1, 121)]
     sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
     blocks = [(0.0, 60.5, "drop")]
-    score, _rows = score_report("t.1", "1", perfect_report(beat_times, blocks, 63.0),
-                                sections)
+    score, _rows, _stats = score_report(
+        "t.1", "1", perfect_report(beat_times, blocks, 63.0), sections)
     assert track_metrics(score)["macro_f1"] < 0.5
 
 
@@ -778,3 +781,54 @@ def test_corpus_dir_falls_back_to_the_repo_or_the_main_worktree(monkeypatch):
     resolved = corpus_dir()
     assert resolved.name == "raveform"
     assert resolved.exists() or resolved == default_data_dir()
+
+
+# --------------------------------------------------------------------------- #
+# Crispness (#141a)
+# --------------------------------------------------------------------------- #
+
+
+def test_crispness_is_gated_downward_like_the_other_scores():
+    """The axis the shipped decoder was SELECTED on.  The 2.0 s lens it
+    replaced hid most of the spread the frontier re-rank found -- post-decoder
+    dwell scored 0.68 there and 0.01 here -- so a benchmark without it cannot
+    see a change that mis-times every decision while keeping them all."""
+    from run_eval_set import CRISPNESS_TOLERANCE_SEC
+
+    assert CRISPNESS_TOLERANCE_SEC < BOUNDARY_TOLERANCE_SEC
+    baseline = result_document({"a.1": entry(crispness=0.60)})
+    current = result_document({"a.1": entry(crispness=0.30)})
+    outcome = compare(baseline, current)
+    assert outcome.failed
+    assert any("crispness" in line for line in outcome.regressions)
+
+
+def test_a_baseline_without_crispness_is_not_gated_rather_than_skipped():
+    """The same tripwire every other guarded metric has: an old-schema
+    baseline must fail loudly, not quietly stop protecting a number."""
+    stale = entry()
+    stale.pop("crispness")
+    outcome = compare(result_document({"a.1": stale}),
+                      result_document({"a.1": entry()}))
+    assert outcome.failed
+    assert any("crispness" in line and "NOT being gated" in line
+               for line in outcome.ungated)
+
+
+def test_the_committed_baseline_records_the_crispness_tolerance():
+    """Scores are only comparable against the tolerance they were cut at."""
+    from run_eval_set import CRISPNESS_TOLERANCE_SEC
+
+    assert committed_baseline()["crispness_tolerance_sec"] == CRISPNESS_TOLERANCE_SEC
+
+
+def test_lateness_is_disclosed_and_deliberately_not_gated():
+    """#154's accepted lateness is a property of the music -- a track slow
+    enough that the chain is older than the playback delay -- so the benchmark
+    shows it and does not stop a commit for it."""
+    from run_eval_set import COUNT_FACTS, GUARDED_METRICS
+
+    assert "late" not in GUARDED_METRICS and "late" not in COUNT_FACTS
+    for track_id, row in committed_baseline()["tracks"].items():
+        assert "late" in row and "blocks_measurable" in row, track_id
+        assert row["late"] <= row["blocks_measurable"], track_id
