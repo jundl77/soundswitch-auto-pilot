@@ -333,6 +333,11 @@ async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
     demolition, False once the decoder drove the show.  This is the fourth, and
     the one it will keep meaning after the branch lands: it is what a live
     NN_SHED looks like from the outside.
+
+    **The loop's 100 ms callback is part of the drill**, not scaffolding.  Both
+    of the engine's non-decoder producers live there, and without it this run
+    committed nothing at all -- an unlit rig that the predicate then blessed,
+    which is exactly the report shape the degradation contract must refuse.
     """
     import sys
     from pathlib import Path
@@ -381,6 +386,8 @@ async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
             clock.advance(256 / SAMPLE_RATE)
             if tick % 80 == 0:
                 await engine.on_beat(tick // 80 + 1, 128.0, False)
+            if tick % 17 == 0:
+                await engine.on_100ms_callback()
             await queue.drain()
     finally:
         worker.stop()
@@ -388,7 +395,9 @@ async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
     events.mark_end()
     report = events.to_report(queue.get_timing_log())
     assert report['metrics']['beats_detected'] > 10, 'beats stopped'
-    assert held_start_to_end(degradation_digest(report)), \
+    digest = degradation_digest(report)
+    assert digest['effect_changes'] >= 1, 'the rig was dark for the whole run'
+    assert held_start_to_end(digest), \
         'a dead GPU produced something other than a held show'
 
 

@@ -457,8 +457,11 @@ def test_a_mid_show_shed_is_not_this_predicate():
     assert not held_start_to_end(degradation_digest(report))
 
 
-def test_a_silent_show_that_never_committed_is_the_degradation_state():
-    assert held_start_to_end(degradation_digest(_report([])))
+def test_a_show_that_never_committed_is_dark_rather_than_held():
+    """The one report shape the degradation contract must refuse to bless: a
+    GPU dead at boot commits nothing, and "held" then described an unlit rig
+    all night."""
+    assert not held_start_to_end(degradation_digest(_report([])))
 
 
 def test_the_degradation_digest_carries_beats_silence_and_the_held_intent_only():
@@ -479,7 +482,7 @@ def test_digest_survives_a_report_with_no_beats():
     d = digest_report(_report([]))
     assert d['survives']['beats_detected'] == 0
     assert d['survives']['schema']['beat_keys'] == []
-    assert held_start_to_end(d['degradation'])
+    assert d['degradation']['intent_blocks'] == 0
 
 
 # --------------------------------------------------------------------------- #

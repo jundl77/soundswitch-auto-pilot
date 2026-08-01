@@ -274,8 +274,15 @@ def held_start_to_end(degradation: dict) -> bool:
     This reads a whole run, and is not the mid-show shed check: a shed holds the
     intent it had, so a real degradation report is a busy show followed by a held
     one and reads False here.
+
+    **Zero blocks is not held, it is dark.**  The predicate used to be satisfied
+    by a run that committed nothing at all, which is the one report shape the
+    degradation contract must never bless: a dead-at-boot GPU produced exactly
+    that, and the drill built to prove the show survives one was asserting an
+    unlit rig.
     """
-    return (degradation['classified_blocks'] <= 1
+    return (degradation['intent_blocks'] >= 1
+            and degradation['classified_blocks'] <= 1
             and len([i for i in degradation['intents_held']
                      if i != 'atmospheric']) <= 1
             and degradation['effect_changes'] <= degradation['atmospheric_blocks'] + 1)

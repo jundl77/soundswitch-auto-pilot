@@ -32,8 +32,9 @@ already played the wrong lights.
 The session is built through an injectable factory. `session` is the only
 definition of the pinned options and is the default; the seam exists because
 building a synthetic ONNX graph for a unit test needs the `onnx` package, which
-is not a dependency of the show, and because Task 11 has to inject a session
-that faults.
+is not a dependency of the show. It is not what the degradation drills use --
+those fault the encoder, because that is where a GPU fault actually lands; the
+student runs on CPU.
 """
 from __future__ import annotations
 

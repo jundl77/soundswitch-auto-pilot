@@ -703,3 +703,97 @@ async def test_a_statement_about_later_audio_still_supersedes():
     await bars(light, decoder, clock, 'breakdown')
     await settle(light, clock, queue)
     assert light.current_intent is LightIntent.BREAKDOWN
+
+
+# --------------------------------------------------------------------------- #
+# The cold-start floor: "hold the intent" is only a show if there is one
+# --------------------------------------------------------------------------- #
+
+
+async def tick_100ms(light, clock, sec, step=0.1):
+    for _ in range(int(sec / step)):
+        await elapse(light, clock, step)
+        await light.on_100ms_callback()
+
+
+async def test_a_committer_that_never_speaks_still_lights_the_rig():
+    """A GPU dead at boot commits nothing, so the rig was dark for the whole
+    night while every log line said the show was holding its intent."""
+    from lib.engine.light_engine import COLD_START_FLOOR_MARGIN_SEC
+
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await tick_100ms(light, clock,
+                     decoder.chain_latency_sec + COLD_START_FLOOR_MARGIN_SEC + 1.0)
+    await settle(light, clock, queue)
+
+    assert light.current_intent is LightIntent.ATMOSPHERIC
+    assert [e['label'] for e in midi.events
+            if e['label'] == 'set_autoloop'], 'the rig stayed dark'
+
+
+async def test_the_floor_fires_once_and_not_once_per_callback():
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await tick_100ms(light, clock, decoder.chain_latency_sec + 20.0)
+    await settle(light, clock, queue)
+
+    assert len(light.event_buffer.snapshot()['intents']) == 1
+
+
+async def test_a_decision_that_arrives_in_time_beats_the_floor():
+    """The cost of the floor being wrong is one extra effect change at the top
+    of a set; the healthy path must not pay it."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await tick_100ms(light, clock, 2.0)
+    await bars(light, decoder, clock, 'drop')
+    await tick_100ms(light, clock, decoder.chain_latency_sec + 20.0)
+    await settle(light, clock, queue)
+
+    assert [b['intent'] for b in light.event_buffer.snapshot()['intents']] == ['drop']
+
+
+async def test_the_floor_describes_the_audio_the_room_is_hearing_now():
+    """One playback delay of age, so it fires on the next drain rather than
+    waiting a second delay for an instant it cannot name."""
+    from lib.engine.light_engine import COLD_START_FLOOR_MARGIN_SEC
+
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await tick_100ms(light, clock,
+                     decoder.chain_latency_sec + COLD_START_FLOOR_MARGIN_SEC + 0.5)
+
+    pending = queued_intents(queue)
+    assert len(pending) == 1
+    assert pending[0][3] == pytest.approx(0.0, abs=1e-9)
+
+
+async def test_a_new_song_re_arms_the_floor():
+    """Counted in commits rather than in timeline blocks: the room saw one
+    continuous ATMOSPHERIC across both songs, which is what the timeline
+    records, but the stage was blacked out and re-lit in between."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder, events=True)
+    await tick_100ms(light, clock, decoder.chain_latency_sec + 10.0)
+    await settle(light, clock, queue)
+    commits = light.intent_commits
+    assert commits == 1
+
+    light.on_sound_stop()
+    light.on_sound_start()
+    await tick_100ms(light, clock, decoder.chain_latency_sec + 10.0)
+    await settle(light, clock, queue)
+
+    assert light.intent_commits == commits + 1
+
+
+async def test_a_machine_with_no_committer_at_all_lights_the_floor_too():
+    """The degradation state a fresh clone runs in is a show, not an outage."""
+    from lib.engine.light_engine import COLD_START_FLOOR_MARGIN_SEC
+
+    light, queue, clock, midi = engine(events=True)
+    await tick_100ms(light, clock, COLD_START_FLOOR_MARGIN_SEC + 1.0)
+    await settle(light, clock, queue)
+
+    assert light.current_intent is LightIntent.ATMOSPHERIC

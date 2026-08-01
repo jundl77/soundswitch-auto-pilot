@@ -181,8 +181,14 @@ class GpuStage:
 
         The ring cannot be zeroed under a snapshot in flight, so the request is
         handed over and the audio thread stops feeding until it has been taken.
-        That costs at most one pass of audio -- which, at a boundary defined by
-        0.3 s of silence, is silence.
+        That costs at most one pass of audio.
+
+        At a sound STOP that audio is silence, by the definition of the
+        boundary (0.3 s under the silence floor).  At a sound START it is not:
+        it is up to one hop of the new track's opening, dropped while the
+        engine's own `_audio_sec` keeps counting it, so the extractor rejoins a
+        hop late against the beat grid.  Bounded and one-off per track, and the
+        alternative is a torn snapshot; recorded here rather than implied.
         """
         if self._thread is None or not self._thread.is_alive():
             self._take_reset()
@@ -272,16 +278,18 @@ class GpuStage:
         self._reset_requested = False
 
     def _enter_shed(self) -> None:
-        self._shed = True
+        # The flag flips LAST, because it is what a waiter watches: flipping it
+        # first means the evidence a test (or an operator tailing the log) came
+        # for does not exist yet when the wait returns.
         with self._lock:
             self._queue.clear()
             self._gap = True
         self._say('shed', f'[gpu] shed: holding the intent, the hand-off queue '
                           f'is dropped and the decoder is reset '
                           f'({self.passes} passes so far)')
+        self._shed = True
 
     def _leave_shed(self) -> None:
-        self._shed = False
         self.resyncs += 1
         record = self.posteriors.resync()
         with self._lock:
@@ -297,6 +305,7 @@ class GpuStage:
                               f'{record.lost_sec:.2f}s / {record.cells_lost} '
                               f'cells, resuming at cell '
                               f'{record.first_cell_index}')
+        self._shed = False
 
     def _one_pass(self) -> None:
         self._pass_started_at = self._clock.monotonic()
@@ -341,9 +350,12 @@ class GpuStage:
     def _fault(self, kind: str, detail) -> None:
         self.faults += 1
         self._clean = 0
-        self._say(kind, f'[gpu] {kind}: {detail} — the show holds its intent '
-                        f'and keeps beats (fault #{self.faults}, '
-                        f'{self.reinits} reinit(s))')
+        # Not "holds its intent": at boot there is no intent to hold, and a log
+        # line claiming one is what let a dead-at-boot GPU read as a working
+        # show.  The engine's cold-start floor is what makes the rig lit.
+        self._say(kind, f'[gpu] {kind}: {detail} — the show holds whatever '
+                        f'intent it has (a quiet floor at start-up) and keeps '
+                        f'beats (fault #{self.faults}, {self.reinits} reinit(s))')
         self._retry_at = self._clock.monotonic() + self._backoff()
         self._watchdog.report_fault(kind)
 

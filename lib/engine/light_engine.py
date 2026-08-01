@@ -29,6 +29,19 @@ PEAK_PROMOTION_BARS = 8
 # would say the same number every ten seconds with the last digit twitching.
 _LATENCY_LOG_STEP_SEC = 0.25
 
+# How long past the chain's own latency the engine waits for a first decision
+# before lighting something itself.  "Hold the intent" is only a show if there
+# IS one: a GPU that is dead at boot commits nothing, so the rig stays dark for
+# the whole night while the log says the show is holding.  Two nominal bars of
+# slack past the measured chain, which the healthy path beats on every fixture
+# track -- and the cost of being wrong is one extra effect change at the top of
+# a set, against a dark stage.
+#
+# ATMOSPHERIC because the owner's error asymmetry says so: a quiet default that
+# turns out to be wrong reads as a slow start, and a guessed high-energy look
+# that turns out to be wrong reads as a broken rig.
+COLD_START_FLOOR_MARGIN_SEC = 4.0
+
 
 class LightEngine(IMusicAnalyserHandler):
     """Decoder decisions in, a show out.
@@ -82,6 +95,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._audio_sec: float = 0.0
         self._latency_logged_at: float | None = None
         self._committing_late: bool = False
+        self._floor_armed: bool = True
         self._log_chain_latency()
 
     def set_analyser(self, analyser: MusicAnalyser):
@@ -167,18 +181,26 @@ class LightEngine(IMusicAnalyserHandler):
                 self._watchdog.forgive(self._clock.monotonic() - started)
 
     def _at_the_room(self, label: str, action) -> None:
-        """Fire when the audience hears the audio that caused it."""
-        if not self.command_queue:
-            action()
-            return
+        """Fire when the audience hears the audio that caused it, then forget.
 
-        async def command():
+        The engine's own bookkeeping is NOT part of what waits: it describes
+        the boundary the engine just heard, not the one the room is about to.
+        It used to sit behind the early return, so an un-queued engine skipped
+        every reset here -- including the two stages' -- and carried the last
+        song's ring, GRU state and bar grid into the next one.
+        """
+        if self.command_queue:
+            async def command():
+                action()
+
+            self.command_queue.schedule(label, command)
+        else:
             action()
 
-        self.command_queue.schedule(label, command)
         self._atmospheric_sent = False
         self._current_intent = None
         self._bars_in_current_intent = 0
+        self._floor_armed = True
         # D10: everything the stages hold describes audio from before the gap,
         # and the audio counter is the time base the grid and the cells share.
         self._audio_sec = 0.0
@@ -320,6 +342,7 @@ class LightEngine(IMusicAnalyserHandler):
         superseding by arrival order would delete every intent block but the
         last one whenever the chain sits near its budget.
         """
+        self._floor_armed = False
         now = self._clock.monotonic()
         fire_at = now - age_sec + self._playback_delay_sec
         self._note_lateness(now - fire_at)
@@ -401,9 +424,37 @@ class LightEngine(IMusicAnalyserHandler):
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24,
                                                 dmx_data)
 
+    async def _floor_if_nothing_arrived(self) -> None:
+        """Light something once, if the committer never spoke at all.
+
+        "Hold the intent" is only a show if there IS one.  A GPU that is dead
+        at boot -- or a machine with no artifacts -- commits nothing, so the
+        first decision never comes and the rig is dark for the whole night
+        while every log line says the show is holding.
+
+        It describes the audio the room is hearing NOW, because that is the
+        only instant it has any claim about, and that is exactly one playback
+        delay of age -- so it fires on the next drain rather than waiting a
+        second delay for an instant it cannot name.
+        """
+        if not self._floor_armed:
+            return
+        chain = (0.0 if self.section_decoder is None
+                 else self.section_decoder.chain_latency_sec)
+        if self._audio_sec < chain + COLD_START_FLOOR_MARGIN_SEC:
+            return
+        self._floor_armed = False
+        logging.warning(
+            f'[engine] no decision after {self._audio_sec:.1f}s of audio '
+            f'(chain {chain:.1f}s) — lighting ATMOSPHERIC as the floor rather '
+            f'than leaving the rig dark')
+        await self._commit_intent(LightIntent.ATMOSPHERIC,
+                                  self._playback_delay_sec)
+
     async def on_100ms_callback(self):
         if not self.analyser.is_song_playing():
             return
+        await self._floor_if_nothing_arrived()
         if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True

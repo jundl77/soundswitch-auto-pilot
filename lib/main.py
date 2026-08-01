@@ -73,7 +73,8 @@ class SoundSwitchAutoPilot:
                         if section_chain.artifacts_present() else None)
         if self.section is None:
             logging.warning('[main] no NN artifacts on this machine — the show '
-                            'will hold one intent (beats and silence still run)')
+                            'will light the quiet cold-start floor and hold it '
+                            '(beats and silence still run)')
 
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
