@@ -285,7 +285,14 @@ def test_a_final_drain_emits_the_partial_tail_cell():
 
 
 class FakeEncoder:
-    """A pure function of absolute sample position, so a cell is predictable."""
+    """Predictable from sample position, and dependent on the audio it was given.
+
+    The position term makes a cell's identity checkable; the content terms make
+    it a function of the samples the pass actually consumed. A transformer
+    attends over its whole input, so the whole-buffer digest is the honest
+    model: a frame that moves to a later pass is a frame computed from a
+    different buffer, and only a content-dependent fake can see that.
+    """
 
     sample_rate = SR
     do_normalize = False
@@ -306,12 +313,27 @@ class FakeEncoder:
         times, keep = M.frame_selection(n, offset_samples=offset_samples,
                                         lo_sec=lo_sec, hi_sec=hi_sec,
                                         sample_rate=self.sample_rate)
-        self.passes.append((offset_samples, offset_samples + len(segment)))
-        starts = (offset_samples + keep * M.ENCODER_SAMPLES_PER_FRAME) / 1e5
-        stacked = (starts[:, None, None]
+        rate = self.sample_rate
+        self.passes.append((offset_samples, offset_samples + len(segment),
+                            round(lo_sec * rate), round(hi_sec * rate)))
+        return self.frames(segment, offset_samples, keep), times
+
+    def frames(self, segment, offset_samples, keep):
+        """The rows for `keep`, with no span filtering of its own -- the offline
+        extractor selects frames with its own mask, so the fixture comparison is
+        only independent if this side does not repeat that arithmetic."""
+        step = M.ENCODER_SAMPLES_PER_FRAME
+        segment = np.asarray(segment, dtype=np.float64)
+        keep = np.asarray(keep, dtype=np.int64)
+        starts = (offset_samples + keep * step) / 1e5
+        digest = float(np.abs(segment).mean()) if len(segment) else 0.0
+        local = np.array([segment[i * step:i * step + M.ENCODER_RECEPTIVE_FIELD]
+                          .mean() for i in keep], dtype=np.float64) \
+            if len(keep) else np.zeros(0)
+        stacked = (starts[:, None, None] + digest + local[:, None, None]
                    + np.arange(self.n_layers)[None, :, None] * 0.5
                    + np.arange(self.dim)[None, None, :] * 0.25)
-        return stacked.astype(np.float32), times
+        return stacked.astype(np.float32)
 
 
 def _stream(encoder, *, margin=3.0, hop=1.0, buffer=30.0, cell=CELL,
@@ -331,16 +353,103 @@ def _feed(stream, seconds, *, block=256):
     return cells
 
 
-def test_the_live_driver_reproduces_the_offline_pass_schedule():
-    """The rule is not re-derived, it is checked against the offline generator."""
+def _live_form(offline, *, n_samples, hop, margin):
+    """The offline schedule as a driver that cannot see the end must run it.
+
+    One stated divergence: when the track ends exactly on a hop boundary the
+    driver has already run that pass as a regular one, so the flush re-encodes
+    the same buffer to emit the residual margin. Removing it needs the whole
+    pass output kept in memory to save a pass that only ever happens once per
+    song, so it is pinned rather than fixed -- the emitted cells are identical
+    either way.
+    """
+    flat = [(start, end, lo, hi) for start, end, (lo, hi) in offline]
+    if n_samples % hop:
+        return flat
+    start, end, lo, hi = flat[-1]
+    return flat[:-1] + [(start, end, lo, hi - margin),
+                        (start, end, hi - margin, hi)]
+
+
+@pytest.mark.parametrize("track_sec", [40.0, 40.3, 45.0, 9.5])
+def test_the_live_driver_reproduces_the_offline_pass_schedule(track_sec):
+    """The rule is not re-derived, it is checked against the offline generator.
+
+    Whole spans, not just pass boundaries: `hi` is where the future budget is
+    spent, and a driver that shifts it emits cells under a geometry the affine
+    was never fitted to while every boundary still lines up.
+    """
     encoder = FakeEncoder()
-    stream = _stream(encoder)
-    _feed(stream, 40.3)
+    stream = _stream(encoder, rate=SR)
+    _drive(stream, track_sec)
     stream.flush()
-    offline = [(start, end) for start, end, _span in M.pass_schedule(
-        stream.samples_seen, length=_samples(30.0), hop=_samples(1.0),
-        margin=_samples(3.0))]
-    assert encoder.passes == offline
+    offline = list(M.pass_schedule(stream.samples_seen, length=_samples(30.0),
+                                   hop=_samples(1.0), margin=_samples(3.0)))
+    assert encoder.passes == _live_form(
+        offline, n_samples=stream.samples_seen, hop=_samples(1.0),
+        margin=_samples(3.0))
+
+
+def _cell_horizons(n_samples, *, margin=3.0, hop=1.0, buffer=30.0, cell=CELL):
+    """The last sample each cell's own passes were allowed to consume.
+
+    Read off the offline schedule: a pass ending at `end` encodes `audio[:end]`,
+    so every cell its emission span touches depends on the audio up to there and
+    on nothing later. The declared `margin + hop` budget is deliberately NOT
+    used -- it is a claim about the schedule, and a driver whose spans have
+    drifted still satisfies it while consuming different audio.
+    """
+    horizons: dict = {}
+    for _start, end, (lo, hi) in M.pass_schedule(
+            n_samples, length=_samples(buffer), hop=_samples(hop),
+            margin=_samples(margin)):
+        for index in range(int(math.floor(lo / SR / cell)),
+                           int(math.ceil(hi / SR / cell))):
+            horizons[index] = max(horizons.get(index, 0), end)
+    return horizons
+
+
+def _poisoned_run(audio, poison_from):
+    audio = np.array(audio, dtype=np.float32)
+    audio[poison_from:] = 7.0
+    return _run_cells(audio)
+
+
+def _run_cells(audio):
+    stream = _stream(FakeEncoder(), rate=SR)
+    cells = []
+    for start in range(0, len(audio), SR // 10):
+        stream.push_audio(audio[start:start + SR // 10])
+        while stream.due():
+            cells.extend(stream.run_pass())
+    cells.extend(stream.flush())
+    return cells
+
+
+@pytest.mark.parametrize("poison_sec", [8.0, 14.0, 25.0])
+def test_no_emitted_cell_is_moved_by_audio_its_own_passes_never_saw(poison_sec):
+    """The causality budget, as a property of the emitted values.
+
+    Every earlier form of this asserted against `audio_seen_sec`, which the
+    module computes -- so a driver that shifted its spans shifted the claim with
+    them and the test agreed. Here the audio past a cell's horizon is replaced
+    outright and the cell's bytes must not move.
+    """
+    audio = _noise(30 * SR, seed=4)
+    horizon = _cell_horizons(len(audio))
+    clean = _run_cells(audio)
+    dirty = _poisoned_run(audio, int(poison_sec * SR))
+
+    checked = moved = 0
+    for before, after in zip(clean, dirty):
+        assert before.index == after.index
+        if horizon[before.index] <= poison_sec * SR:
+            assert np.array_equal(before.features, after.features), before.index
+            checked += 1
+        elif not np.array_equal(before.features, after.features):
+            moved += 1
+    assert checked > 20
+    assert moved > 20
 
 
 def test_the_stream_emits_every_cell_once_in_order():
