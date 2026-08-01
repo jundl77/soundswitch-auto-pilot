@@ -90,6 +90,16 @@ _CONTEXT_BLOCKS = 2
 _WORK_BLOCKS = 20
 
 
+class Flushed(RuntimeError):
+    """The stage was drained at a song boundary; `reset` before reusing it.
+
+    Terminal rather than idempotent, and the same on both halves of the
+    pipeline: a consumer that flushes at the next song boundary without an
+    intervening reset is about to lose that song's tail, and returning an empty
+    list would let it.
+    """
+
+
 class StreamingResampler:
     """Polyphase resample with carried context, exact against one whole call.
 
@@ -120,7 +130,7 @@ class StreamingResampler:
 
     def push(self, samples) -> np.ndarray:
         if self._flushed:
-            raise RuntimeError("the resampler has been flushed; reset it first")
+            raise Flushed("the resampler has been flushed; reset it first")
         block = np.asarray(samples, dtype=np.float32).reshape(-1)
         if self.identity:
             return np.ascontiguousarray(block)
@@ -611,6 +621,9 @@ class MertStream:
         self._flushed = False
 
     def push_audio(self, samples) -> None:
+        if self._flushed:
+            raise Flushed("the stage was flushed at a song boundary; reset it "
+                          "before pushing the next song's audio")
         self._ring.write(self._resampler.push(samples))
 
     def due(self) -> bool:
@@ -635,6 +648,9 @@ class MertStream:
         cost is returned rather than logged, because only the caller knows what
         a shed event means to the show.
         """
+        if self._flushed:
+            raise Flushed("the stage was flushed; there is no live edge to "
+                          "rejoin until it is reset")
         hop = self.geometry.hop_samples
         passes = max(0, self._ring.written // hop - 1)
         end = (passes + 1) * hop
@@ -649,7 +665,7 @@ class MertStream:
 
     def flush(self) -> list:
         if self._flushed:
-            return []
+            raise Flushed("the stage has already been flushed; reset it first")
         self._ring.write(self._resampler.flush())
         end = self._ring.written
         self._flushed = True

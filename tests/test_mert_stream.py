@@ -607,7 +607,21 @@ def test_the_stream_flushes_the_tail_at_a_song_boundary():
     assert tail
     assert [cell.index for cell in tail] == list(
         range(len(cells), len(cells) + len(tail)))
-    assert stream.flush() == []
+
+
+def test_a_flush_is_terminal_until_the_stream_is_reset():
+    stream = _stream(FakeEncoder())
+    _feed(stream, 9.5)
+    stream.flush()
+    with pytest.raises(M.Flushed):
+        stream.push_audio(np.zeros(256, dtype=np.float32))
+    with pytest.raises(M.Flushed):
+        stream.flush()
+    with pytest.raises(M.Flushed):
+        stream.resync()
+    assert stream.run_pass() == []
+    stream.reset()
+    stream.push_audio(np.zeros(256, dtype=np.float32))
 
 
 # --------------------------------------------------------------------------- #

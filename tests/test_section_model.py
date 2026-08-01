@@ -41,6 +41,12 @@ def _sigmoid(x):
     return float(1.0 / (1.0 + np.exp(-float(x))))
 
 
+class _Port:
+    def __init__(self, name, shape):
+        self.name = name
+        self.shape = shape
+
+
 class FakeSession:
     """The deployed signature, as a pure function of (window, state).
 
@@ -60,6 +66,15 @@ class FakeSession:
         self.weights = np.linspace(0.1, 1.0, WINDOW,
                                    dtype=np.float32).reshape(1, WINDOW, 1)
         self.calls = 0
+
+    def get_inputs(self):
+        return [_Port(S.FRAMES_INPUT, ["batch", WINDOW, DIM]),
+                _Port(S.STATE_INPUT, [1, "batch", HIDDEN])]
+
+    def get_outputs(self):
+        return [_Port(S.LABEL_OUTPUT, ["batch", CLASSES]),
+                _Port(S.BOUNDARY_OUTPUT, ["batch", 1]),
+                _Port(S.STATE_OUTPUT, [1, "batch", HIDDEN])]
 
     def run(self, names, feeds):
         assert names == [S.LABEL_OUTPUT, S.BOUNDARY_OUTPUT, S.STATE_OUTPUT]
@@ -192,7 +207,23 @@ def test_flush_drains_the_tail_cells(tiny, mean):
     seen = len([item for item in live if item is not None])
     tail = model.flush()
     assert [item.index for item in tail] == list(range(seen, 20))
-    assert model.flush() == []
+
+
+def test_a_flush_is_terminal_until_the_model_is_reset(tiny, mean):
+    """Pushes after a flush kept emitting -- from a ring holding the padding
+    rows the flush put there, at indices that carried straight on -- and the
+    next song's flush returned nothing, dropping its last four seconds. Two
+    silent failures where MertStream, the other half of the same pipeline,
+    raises.
+    """
+    model = _model(tiny, mean)
+    _stream(model, _cells(20))
+    with pytest.raises(S.Flushed):
+        model.push(_cells(1)[0])
+    with pytest.raises(S.Flushed):
+        model.flush()
+    model.reset()
+    assert model.push(_cells(1)[0]) is None
 
 
 def test_reset_returns_the_model_to_its_cold_state(tiny, mean):
@@ -265,6 +296,61 @@ def test_a_json_missing_a_geometry_field_is_refused(tmp_path, tiny):
     Path(str(copy) + ".json").write_text(json.dumps(meta), encoding="utf-8")
     with pytest.raises(ValueError, match="future_cells"):
         S.load_head_geometry(copy)
+
+
+def _retyped(tmp_path, tiny, **changes):
+    """The same graph bytes with an edited sidecar -- the sha covers only the
+    .onnx, so this is what a wrong-geometry model looks like from outside."""
+    copy = tmp_path / "regeometried.onnx"
+    copy.write_bytes(Path(tiny).read_bytes())
+    meta = json.loads(Path(str(tiny) + ".json").read_text(encoding="utf-8"))
+    meta.update(changes)
+    meta["sha256"] = S.sha256_file(copy)
+    Path(str(copy) + ".json").write_text(json.dumps(meta), encoding="utf-8")
+    return copy
+
+
+def test_a_window_the_graph_does_not_declare_is_refused_at_startup(
+        tmp_path, tiny, mean):
+    """Reproduced against the shipped graph: window_cells 46 -> 45 constructed
+    cleanly and raised inside onnxruntime at push #44 -- mid-show, which is
+    exactly what verifying at construction is supposed to prevent."""
+    with pytest.raises(ValueError, match="window_cells"):
+        _model(_retyped(tmp_path, tiny, window_cells=WINDOW - 1), mean)
+
+
+def test_a_state_width_the_graph_does_not_declare_is_refused_at_startup(
+        tmp_path, tiny, mean):
+    with pytest.raises(ValueError, match="rnn_hidden"):
+        _model(_retyped(tmp_path, tiny, rnn_hidden=HIDDEN + 1), mean)
+
+
+def test_a_future_window_that_contradicts_its_own_seconds_is_refused(
+        tmp_path, tiny, mean):
+    """The graph shape cannot see this one: future_cells 43 -> 41 on the shipped
+    model constructed AND ran, stamping every posterior two cells early and
+    moving probabilities by up to 0.155, with nothing raising anywhere."""
+    with pytest.raises(ValueError, match="future_sec"):
+        _model(_retyped(tmp_path, tiny, future_cells=FUTURE - 2), mean)
+
+
+def test_a_window_that_cannot_hold_its_own_future_is_refused(
+        tmp_path, tiny, mean):
+    with pytest.raises(ValueError, match="conv reach"):
+        _model(_retyped(tmp_path, tiny, window_cells=FUTURE,
+                        future_cells=FUTURE), mean)
+
+
+def test_a_session_that_cannot_describe_itself_is_a_failure_not_a_skip(
+        tiny, mean):
+    """The seam the reviewer used to demonstrate the hole is the one place the
+    check must not quietly turn itself off."""
+    class _Mute(FakeSession):
+        get_inputs = None
+        get_outputs = None
+
+    with pytest.raises(ValueError, match="declare"):
+        S.SectionModel(tiny, mean=mean, session_factory=lambda _p: _Mute())
 
 
 def test_an_affine_of_the_wrong_width_is_refused(tiny):
