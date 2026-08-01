@@ -142,7 +142,17 @@ class DelayedCommandQueue:
                 'actual_fire_time': actual_fire_time,
                 'actual_delta_sec': actual_delta,
             })
-            await factory()
+            try:
+                await factory()
+            except Exception as error:
+                # The batch was sliced off the queue before the first await, so
+                # a raise here used to take every command behind it with it AND
+                # propagate into the loop, which has no handler -- one transient
+                # rtmidi or socket error killed the process with the rig lit.
+                # Each command is its own statement about one instant; a wire
+                # that refuses one of them is not a reason to drop the rest.
+                log.exception(f'[cmd_queue] {label!r} failed ({error!r}) — '
+                              f'dropping it and delivering the rest')
 
     def get_timing_log(self) -> list[dict]:
         return list(self._timing_log)

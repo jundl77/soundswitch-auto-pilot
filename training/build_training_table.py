@@ -685,7 +685,7 @@ class SimJob(NamedTuple):
     mp3_path: str
     report_path: str
     sidecar_path: str
-    keep_cache: bool     # the cache predates this batch -- leave it behind
+    preexisting: tuple   # caches that predate this batch -- leave those behind
     pipeline_sha: str    # stamped into the cached report
     mp3_size: int
     mp3_mtime: float
@@ -817,12 +817,19 @@ def simulate_track(job: SimJob) -> SimResult:
         return SimResult(job.track_id, False, f"{type(exc).__name__}: {exc}"[:300],
                          0, 0, 0, time.monotonic() - started)
     finally:
-        if not job.keep_cache:
-            for path in derived_cache_paths(job.mp3_path):
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+        # Per file, not one flag for both.  "Only after itself" is a statement
+        # about each cache separately: a decode cache that predated the run made
+        # the batch keep the ~25 MB cell sidecar it had just written (~35 GiB
+        # over the corpus, which is what tidying the sidecar was added to
+        # prevent), and a pre-existing cell sidecar with no decode cache beside
+        # it was deleted by a run that did not create it.
+        for path in derived_cache_paths(job.mp3_path):
+            if path in job.preexisting:
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 # --------------------------------------------------------------------------- #
@@ -927,7 +934,8 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
         jobs.append(SimJob(
             row["track_id"], row["youtube_id"], str(mp3),
             str(cached), str(sidecar),
-            keep_cache=decode_cache_path(str(mp3)) in preexisting_caches,
+            preexisting=tuple(path for path in derived_cache_paths(str(mp3))
+                              if path in preexisting_caches),
             pipeline_sha=sha, mp3_size=stat.st_size, mp3_mtime=stat.st_mtime,
         ))
     jobs.sort(key=lambda job: job.track_id)
@@ -939,10 +947,13 @@ def _cache_miss_reason(cached: Path, sidecar: Path, sha: str,
     """``None`` when the cache may be used, else the counter name for the miss."""
     if not cached.exists():
         return "miss_new"
-    if not sidecar.exists():
-        return "miss_no_sidecar"
-    if sidecar_generation(sidecar) != MEL_EXPORTER_VERSION:
-        return "miss_sidecar_generation"
+    # The mel sidecar is deliberately NOT a freshness condition any more.  It
+    # went with the aubio filterbank, so a simulation cannot produce one -- and
+    # a rule demanding one made every newly simulated track a permanent miss:
+    # re-simulated on every run, at a full GPU pass each, and then dropped from
+    # the table anyway.  Whether a track has usable mel features is a question
+    # for `build_table`, which excludes it there; it is not a statement about
+    # whether this report describes the current pipeline.
     try:
         envelope = _read_json_gz(cached)
     except (OSError, ValueError, EOFError):
@@ -1072,7 +1083,9 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                     # that is silently absent looks the same as one that passed.
                     missing_reports.append(track_id)
                     continue
-                if not (data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz").exists():
+                mel = data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz"
+                if (not mel.exists()
+                        or sidecar_generation(mel) != MEL_EXPORTER_VERSION):
                     # Skip rather than assert: a half-built corpus must still
                     # produce a usable table.  But emitting rows whose track has
                     # no mel features would hand the NN dataset builder inputs

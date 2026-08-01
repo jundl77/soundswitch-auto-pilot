@@ -436,7 +436,9 @@ def _shipped():
     import run_eval_set
 
     directory = (Path(run_eval_set.corpus_dir()) / "models" / "phase_b")
-    onnx = directory / "student_kd_t2_w05_s1234" / "online_step.onnx"
+    from lib.section_chain import MODEL_VERSION
+
+    onnx = directory / MODEL_VERSION / "online_step.onnx"
     affine = directory / "input_affine_F3.npz"
     if not onnx.exists() or not affine.exists():
         pytest.skip(f"shipping artifacts absent under {directory} -- "

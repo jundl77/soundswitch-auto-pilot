@@ -60,9 +60,20 @@ def test_a_shed_after_a_boundary_counts_for_longer_than_the_stall():
 
 def test_a_run_with_no_boundaries_cannot_pass_by_having_nothing_to_fail():
     """Five tracks back to back is the methodology; a capture that recorded no
-    boundary at all proves nothing and must be visible as such."""
+    boundary at all proves nothing and must be visible as such.
+
+    This used to assert only `outcome["boundaries"] == 0`, which is `len([])`
+    against the list the test itself passed in -- true for every possible
+    implementation, including the one that returned PASS here.  The claim in
+    the name was never the claim in the body.
+    """
     outcome = boundary_verdict([], [shed(10.0)])
     assert outcome["boundaries"] == 0
+    assert outcome["passed"] is False
+    assert "nothing was tested" in outcome["why"]
+
+    quiet = boundary_verdict([], [])
+    assert quiet["passed"] is False, 'a capture with no events at all passed'
 
 
 def test_the_per_minute_tail_splits_where_the_minutes_do():

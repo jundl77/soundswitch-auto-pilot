@@ -795,15 +795,22 @@ def test_replacing_the_audio_invalidates_its_report(tmp_path):
     assert counts["miss_audio_changed"] == 1
 
 
-def test_a_missing_sidecar_forces_the_track_back_through_the_decode(tmp_path):
-    """The sidecar can only be built from decoded audio, so a report alone is
-    not enough to call the track done."""
+def test_a_missing_sidecar_is_not_a_reason_to_re_simulate(tmp_path):
+    """The mel exporter went with the aubio filterbank, so a simulation cannot
+    produce a sidecar any more.
+
+    Demanding one as a freshness condition therefore made every newly simulated
+    track a PERMANENT miss: a full GPU pass on every run, forever, for a track
+    `build_table` then excluded anyway.  Whether a track has usable mel features
+    is a question about the table, not about whether the cached report describes
+    the current pipeline.
+    """
     rows = stage_track(tmp_path, sidecar=False)
 
     jobs, counts = select(tmp_path, rows)
 
-    assert len(jobs) == 1
-    assert counts["miss_no_sidecar"] == 1
+    assert jobs == []
+    assert counts["hit"] == 1
 
 
 def test_an_unreadable_cache_is_a_miss_not_a_crash(tmp_path):
@@ -879,14 +886,17 @@ def stamp_sidecar(path: Path, version=MEL_EXPORTER_VERSION) -> None:
     np.savez_compressed(path, **payload)
 
 
-def test_a_sidecar_from_another_exporter_generation_is_re_simulated(tmp_path):
+def test_a_sidecar_from_another_exporter_generation_is_excluded_not_re_simulated(tmp_path):
+    """Same one-way door: re-simulating cannot produce a newer sidecar, so the
+    stale generation is a reason to leave the track OUT of the table rather
+    than a reason to pay for its GPU pass again."""
     rows = stage_track(tmp_path)
     stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz", MEL_EXPORTER_VERSION + 1)
 
     jobs, counts = select(tmp_path, rows)
 
-    assert len(jobs) == 1
-    assert counts["miss_sidecar_generation"] == 1
+    assert jobs == []
+    assert counts["hit"] == 1
 
 
 def test_a_sidecar_from_this_exporter_generation_is_a_hit(tmp_path):
@@ -1210,3 +1220,37 @@ def test_pre_existing_caches_of_both_kinds_are_seen(tmp_path):
     (audio / "b.mp3.librosa.mertcells.npz").write_bytes(b"")
 
     assert len(find_caches(tmp_path)) == 2
+
+
+def test_the_batch_deletes_the_cell_sidecar_it_wrote_even_beside_an_old_decode_cache(tmp_path):
+    """One boolean used to govern two independent files.
+
+    A decode cache that predated the run set `keep_cache`, and the `finally`
+    then skipped BOTH deletions -- so the ~25 MB cell sidecar this run had just
+    written was left behind, which over the corpus is the ~35 GiB that tidying
+    the sidecar was added to prevent.  The mirror image was worse: a
+    pre-existing cell sidecar with no decode cache beside it made `keep_cache`
+    False, and the batch deleted a file it did not create.
+    """
+    from build_training_table import derived_cache_paths
+
+    mp3 = tmp_path / "0001.abc.mp3"
+    decode, cells = derived_cache_paths(str(mp3))
+
+    job = _job_with(preexisting=(decode,))
+    assert decode in job.preexisting
+    assert cells not in job.preexisting
+
+    job = _job_with(preexisting=(cells,))
+    assert cells in job.preexisting
+    assert decode not in job.preexisting
+
+
+def _job_with(**over):
+    from build_training_table import SimJob
+
+    fields = dict(track_id="0001", youtube_id="abc", mp3_path="a.mp3",
+                  report_path="c", sidecar_path="s", preexisting=(),
+                  pipeline_sha="sha", mp3_size=1, mp3_mtime=1.0)
+    fields.update(over)
+    return SimJob(**fields)

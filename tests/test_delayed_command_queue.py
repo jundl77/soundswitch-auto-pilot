@@ -340,3 +340,30 @@ async def test_an_inclusive_drop_takes_the_equal_fire_time_the_default_keeps():
     clock.advance(1.0)
     await q.drain()
     assert fired == []
+
+
+async def test_one_failing_command_does_not_take_the_batch_or_the_show_with_it():
+    """The due batch is sliced off the queue before the first await, so a raise
+    used to lose every command behind it -- permanently, since they were
+    already gone from the queue -- and then propagate into `run`'s loop, which
+    has no handler.  A transient rtmidi or socket error is not a reason to end
+    the night."""
+    clock = VirtualClock()
+    queue = DelayedCommandQueue(0.0, clock=clock)
+    fired: list = []
+
+    async def boom():
+        raise RuntimeError('the midi port went away')
+
+    async def note(which):
+        fired.append(which)
+
+    queue.schedule('intent', lambda: note('before'))
+    queue.schedule('intent', boom)
+    queue.schedule('overlay', lambda: note('after'))
+    clock.advance(1.0)
+
+    await queue.drain()
+
+    assert fired == ['before', 'after']
+    assert queue.pending == 0

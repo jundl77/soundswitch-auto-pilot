@@ -962,7 +962,11 @@ def _phase_b_dir() -> Path:
 def _require_artifacts():
     directory = _phase_b_dir()
     affine = directory / "input_affine_F3.npz"
-    onnx = (directory / "student_kd_t2_w05_s1234" / "online_step.onnx")
+    # The shipped version, imported rather than retyped: a model bump used to
+    # turn every one of these integration checks into a silent skip.
+    from lib.section_chain import MODEL_VERSION
+
+    onnx = (directory / MODEL_VERSION / "online_step.onnx")
     if not affine.exists() or not onnx.exists():
         pytest.skip(f"shipping artifacts absent under {directory} -- "
                     f"they live in the gitignored corpus data directory")

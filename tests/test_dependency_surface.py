@@ -137,3 +137,15 @@ def test_loading_the_whole_live_path_pulls_in_neither_tensorflow_nor_aubio():
     result = _load_the_live_path()
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == ""
+
+
+def test_the_two_playback_delays_are_one_number():
+    """`lib/main.py` and `simulate/runner.py` each carry their own literal,
+    joined only by a comment -- and the whole sim=prod contract, the eval-set
+    baseline and every report's `look_ahead_sec` rest on them agreeing.  A
+    change to one silently re-scores the benchmark against a pipeline
+    production is not running."""
+    import lib.main
+    import simulate.runner
+
+    assert lib.main.PLAYBACK_DELAY_SEC == simulate.runner.PLAYBACK_DELAY_SEC

@@ -18,7 +18,6 @@ dependencies = [
     "madmom",
     "numpy>=1.26,<2",
     "pyaudio",
-    "pandas",
     "scipy",
     "python-osc",
     "scikit-learn",
@@ -51,7 +50,11 @@ visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
-# Offline NN work only (training/nn/): never imported by lib/ or simulate/.
+# Offline NN work only.  `training/nn/` itself is no longer offline-only: the
+# show imports its decoder and its priors (`lib/engine/section_decoder.py`
+# inserts `training/` on the path and imports `nn.decoder`), deliberately, so
+# that an offline sweep and the runtime cannot disagree by a line.  What stays
+# offline is the TRAINING of the acoustic model, which is what this extra is.
 # torch and onnxruntime are base dependencies now and are deliberately not
 # repeated here -- two pins for one package is two answers to which one ships.
 # tensorboard is a floor rather than a range: nothing else in the tree pins it

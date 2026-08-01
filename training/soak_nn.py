@@ -284,10 +284,23 @@ def boundary_verdict(boundaries: list, transitions: list,
     are in the playlist at all.  A shed inside `window_sec` of a boundary is
     attributed to it -- the watchdog needs a full calm window to restore, so
     the cost of one is visible for far longer than the stall that caused it.
+
+    **A capture with no boundary in it fails.**  The methodology is five tracks
+    back to back; a run whose playlist never started, whose cable was never
+    silent, or that simply never saw a track change has not tested the thing
+    this predicate is about.  Short-circuiting on an empty list left `near`
+    empty and `passed` True, so exactly that run reported PASS -- and one did:
+    the branch's own soak counted three "boundaries" that were 15-minute
+    self-resets.  `held_start_to_end` was hardened on the same reasoning
+    (zero blocks is not a held show, it is a dark one).
     """
     near = []
+    if not boundaries:
+        return {"boundaries": 0, "sheds_near_a_boundary": 0, "detail": [],
+                "passed": False,
+                "why": "no track boundary was recorded, so nothing was tested"}
     for transition in transitions:
-        if transition["to"] == "NONE" or not boundaries:
+        if transition["to"] == "NONE":
             continue
         closest = min(boundaries, key=lambda b: abs(transition["t"] - b["t"]))
         gap = abs(transition["t"] - closest["t"])
