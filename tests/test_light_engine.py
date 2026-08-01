@@ -1015,3 +1015,37 @@ async def test_a_song_boundary_clears_the_refresh_cooldown():
     await settle(light, clock, queue)
 
     assert len(autoloops(midi)) == before + 1
+
+
+def test_the_refresh_threshold_was_priced_against_the_retired_ceiling():
+    """D9's threshold evidence, held to the file that measured it.
+
+    The rate YAMNet produced was never measured and cannot be recovered -- the
+    simulation stubbed its detector out before any report was ever written --
+    so what transfers is the mechanism's own governor, its ten-second floor,
+    and the threshold is chosen so the realised rate lands well inside that
+    bracket rather than at its ceiling.  Re-price with
+    `training/nn_boundary_refresh_rate.py` if either constant moves; this is
+    what stops one moving without the other.
+    """
+    import json
+    from pathlib import Path
+
+    from lib.engine.light_engine import (BOUNDARY_REFRESH_SCORE,
+                                         REFRESH_COOLDOWN_SEC)
+
+    record = json.loads(
+        (Path(__file__).resolve().parents[1] / 'training'
+         / 'nn_boundary_refresh_rate.json').read_text(encoding='utf-8'))
+
+    assert record['chosen_threshold'] == BOUNDARY_REFRESH_SCORE
+    assert record['cooldown_sec'] == REFRESH_COOLDOWN_SEC
+    # The retired mechanism's cooldown, as a rate.  Nothing may exceed it, and
+    # the point of the threshold is to sit well under it.
+    ceiling = record['retired_ceiling_per_minute']
+    assert ceiling == 60.0 / REFRESH_COOLDOWN_SEC
+    assert 0.0 < record['realised_per_minute']['max'] < ceiling / 2.0
+    assert record['tracks'], 'the record was cut against no tracks'
+    for track in record['tracks'].values():
+        rate = track['refreshes_per_minute'][str(BOUNDARY_REFRESH_SCORE)]
+        assert 0.0 < rate < ceiling
