@@ -420,9 +420,26 @@ class FixedLagViterbi:
     def reset(self) -> None:
         """Forget the track.  A reset decoder decodes exactly like a fresh one."""
         self._delta = None
-        self._psi: list = []
+        self._psi: list = [None] * (self.lag_bars + 1)
         self._bars = 0
         self._next_commit = 0
+
+    @property
+    def backtrace_rows(self) -> int:
+        return sum(1 for entry in self._psi if entry is not None)
+
+    def _remember(self, bar: int, back: np.ndarray) -> None:
+        self._psi[bar % len(self._psi)] = (bar, back)
+
+    def _recall(self, bar: int) -> np.ndarray:
+        entry = self._psi[bar % len(self._psi)]
+        if entry is None or entry[0] != bar:
+            raise RuntimeError(
+                f"bar {bar}'s backtrace has been evicted from a ring of "
+                f"{len(self._psi)} -- the commit rule reached further back than "
+                f"the fixed lag allows, which means a decision was about to be "
+                f"read off whatever the modulo landed on")
+        return entry[1]
 
     def push(self, posterior, boundary=None) -> list:
         """Advance one bar; return the decisions that became final.
@@ -439,7 +456,7 @@ class FixedLagViterbi:
 
         if bar == 0:
             self._delta = self._log_initial + emission
-            self._psi.append(np.full(len(emission), -1, dtype=np.int64))
+            self._remember(bar, np.full(len(emission), -1, dtype=np.int64))
         else:
             step = self._transition
             bonus = self._switch_bonus(boundary)
@@ -448,7 +465,7 @@ class FixedLagViterbi:
             scored = self._delta[:, None] + step
             back = scored.argmax(axis=0)
             self._delta = scored[back, np.arange(scored.shape[1])] + emission
-            self._psi.append(back)
+            self._remember(bar, back)
 
         self._bars += 1
         return self._commit_due()
@@ -562,15 +579,15 @@ class FixedLagViterbi:
         One vectorised hop per bar: ``psi`` maps a state at bar k to its
         predecessor at k-1, so walking it backwards for all states at once costs
         an array index per bar rather than a loop per state.  Only the last
-        ``lag_bars + 1`` entries are ever read (nothing before a commit can be
-        revisited), so a live decoder can hold ``_psi`` in a ring buffer of that
-        size; offline the whole history is a few hundred kilobytes per track and
-        keeping it makes the indexing bar-absolute and obvious.
+        ``lag_bars + 1`` entries are ever read -- nothing before a commit can be
+        revisited -- and ``_psi`` is exactly that ring, because the same object
+        runs a DJ set live.  Indexing stays bar-absolute: the ring stores the
+        bar alongside its row and refuses an evicted one.
         """
         index = np.arange(len(self._state_class), dtype=np.int64)
         chain = [index]
         for bar in range(frm, to, -1):
-            index = self._psi[bar][index]
+            index = self._recall(bar)[index]
             chain.append(index)
         return chain[::-1]
 

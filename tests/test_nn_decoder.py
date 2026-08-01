@@ -477,6 +477,38 @@ def test_every_bar_is_decided_exactly_once_and_in_order():
     assert [d.bar for d in decisions] == list(range(len(posteriors)))
 
 
+@pytest.mark.parametrize("lag", [0, 1, 3, 5])
+def test_the_backtrace_is_a_ring_of_the_only_bars_it_can_read(lag):
+    """A set is hours long and the decoder is never allowed to stall.
+
+    ``_ancestors`` walks back at most from the frontier to the last commit,
+    which the fixed lag pins at ``lag_bars`` rows; keeping the whole history was
+    an offline convenience (bar-absolute indexing, a few hundred kB per track)
+    and is an unbounded live allocation.  Bounding it is only safe because the
+    ring RAISES on an evicted bar rather than returning a stale row, so a commit
+    rule that ever reached further would fail loudly instead of decoding from
+    whatever the modulo landed on.
+    """
+    priors = toy_priors(floor=3)
+    rng = np.random.default_rng(11)
+    posteriors = rng.dirichlet(np.full(5, 0.5), size=400)
+    decoder = FixedLagViterbi(priors, lag_bars=lag)
+    decoder.decode(posteriors)
+    assert decoder.backtrace_rows == lag + 1
+
+
+def test_the_ring_decodes_exactly_as_an_unbounded_backtrace_did():
+    """Bounding the ring is a memory change, not a decoding change."""
+    priors = toy_priors(floor=3)
+    rng = np.random.default_rng(13)
+    posteriors = rng.dirichlet(np.full(5, 0.4), size=120)
+    boundary = rng.random(120)
+    decoder = FixedLagViterbi(priors, lag_bars=2)
+    decisions = decoder.decode(posteriors, boundary)
+    assert [d.bar for d in decisions] == list(range(120))
+    assert len(set(labels_of(decisions))) > 1
+
+
 def test_flush_is_idempotent_and_a_decoder_can_be_reset_and_reused():
     priors = toy_priors(floor=3)
     posteriors = np.array([one_hot(DROP)] * 12)
