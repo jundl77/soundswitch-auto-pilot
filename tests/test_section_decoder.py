@@ -398,3 +398,27 @@ def test_the_nominal_bar_is_the_corpus_median_until_bars_are_measured():
     """
     assert NOMINAL_BAR_SEC == pytest.approx(1.8898)
     assert decoder().bar_sec == pytest.approx(NOMINAL_BAR_SEC)
+
+
+def test_a_reused_chain_is_handed_out_reset():
+    """The sim shares one chain across simulations to avoid reloading 1.3 GB of
+    encoder, so the hand-out is the only place a song boundary can happen.
+
+    Without it a report is a function of whatever ran before it in the same
+    process -- which is how the determinism gate found this, and is exactly the
+    class of bug that gate exists for.
+    """
+    from simulate import runner
+
+    used = decoder(lag_bars=2)
+    feed(used, bars=8, labels=[0] * 8)
+    chain = type('Chain', (), {})()
+    chain.stream = type('Stream', (), {'reset': lambda self: None})()
+    chain.decoder = used
+    runner._SECTION_CHAIN = chain
+    try:
+        handed = runner.load_section_chain()
+        assert handed.decoder.bar_edges == []
+        assert handed.decoder.bars_pushed == 0
+    finally:
+        runner._SECTION_CHAIN = runner._UNBUILT

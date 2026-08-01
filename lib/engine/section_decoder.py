@@ -229,11 +229,15 @@ class SectionDecoder:
                               max(scores) if scores else float("nan"))
 
     def _prune(self) -> None:
-        """Drop every cell no future bar can still read."""
+        """Drop every cell no future bar can still read.
+
+        A bar only advances once its closing edge exists, so the next bar's
+        opening line is always a known edge -- except before the first beat,
+        where nothing is attached to a grid yet and the window is what keeps a
+        track that never produces a beat from accumulating cells for its length.
+        """
         if self._next_bar < len(self._edges):
             floor = self._edges[self._next_bar] - self.params.boundary_tolerance_sec
-        elif self._edges:
-            floor = self._edges[-1] - self.params.boundary_tolerance_sec
         else:
             floor = self._newest_cell_sec - _ORPHAN_CELL_WINDOW_SEC
         while self._cells and self._cells[0][0] < floor:

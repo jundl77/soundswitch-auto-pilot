@@ -143,12 +143,17 @@ async def test_a_decision_commits_the_intent_its_class_maps_to(label, intent):
 
 
 async def test_the_same_class_twice_does_not_re_roll_the_effect():
+    """Counted across both effect labels: DROP's pool holds a strobe as well as
+    two autoloops, so which MIDI call it is depends on the draw."""
     decoder = FakeDecoder([decisions('drop', 'drop', 'drop')])
     light, queue, clock, midi = engine(decoder=decoder)
     await light.on_beat(1, 128.0, False)
     clock.advance(14.0)
     await queue.drain()
-    assert len([e for e in midi.events if e['label'] == 'set_autoloop']) == 1
+    lit = [e for e in midi.events
+           if e['label'] in ('set_autoloop', 'set_special_effect')]
+    assert len(lit) == 1
+    assert light.intent_commits == 1
 
 
 async def test_a_sustained_drop_is_promoted_to_peak_after_the_converted_run():

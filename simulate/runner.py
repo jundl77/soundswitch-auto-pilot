@@ -67,12 +67,14 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
 
 
 def load_section_chain():
-    """The shipped chain, or None on a machine that does not have it.
+    """The shipped chain, reset, or None on a machine that does not have it.
 
-    Built once per process and reused: the encoder is 1.3 GB of weights, and a
-    fresh one per simulation would dominate a suite that runs several.  Sharing
-    it is safe because a chain is reset at every song boundary and a simulation
-    is one song.
+    Built once per process and reused, because the encoder is 1.3 GB of weights
+    and a fresh one per simulation would dominate a suite that runs several.
+    **Reset on every hand-out**, because sharing it otherwise carries the last
+    track's ring, GRU state and bar grid into the next simulation -- which makes
+    a report a function of what ran before it in the same process, and there is
+    no song boundary between two simulations to do the job.
     """
     global _SECTION_CHAIN
     if _SECTION_CHAIN is _UNBUILT:
@@ -84,6 +86,9 @@ def load_section_chain():
             _SECTION_CHAIN = None
         else:
             _SECTION_CHAIN = section_chain.build_section_chain()
+    if _SECTION_CHAIN is not None:
+        _SECTION_CHAIN.stream.reset()
+        _SECTION_CHAIN.decoder.reset()
     return _SECTION_CHAIN
 
 
