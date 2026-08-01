@@ -22,6 +22,7 @@ import pytest
 from scipy.signal import resample_poly
 
 from lib.analyser import mert_stream as M
+from tests.fixtures import offline_stream_extract as OFFLINE
 
 SR = M.ENCODER_SAMPLE_RATE
 
@@ -525,6 +526,71 @@ def test_the_stream_flushes_the_tail_at_a_song_boundary():
     assert [cell.index for cell in tail] == list(
         range(len(cells), len(cells) + len(tail)))
     assert stream.flush() == []
+
+
+# --------------------------------------------------------------------------- #
+# The port is checked against the offline extractor, not against itself
+# --------------------------------------------------------------------------- #
+
+_SWEEP = [(track, margin, hop, buffer)
+          for track in (0.4, 3.0, 9.5, 30.0, 40.0, 47.3)
+          for margin in (0.0, 2.0, 3.0, 5.0)
+          for hop, buffer in ((1.0, 30.0), (2.5, 5.0))]
+
+
+def test_the_schedule_generator_is_the_offline_one(
+        ):
+    """The port kept `pass_schedule` as the generator it was; this says so.
+
+    Every other geometry claim on the branch -- including each cell's causal
+    horizon -- is read off this generator, so it is the one place the port and
+    the original have to be shown to agree rather than assumed to.
+    """
+    for n_samples in (9600, 228000, 720000, 967200, 1135040):
+        for margin in (0.0, 3.0, 5.0):
+            mine = list(M.pass_schedule(n_samples, length=_samples(30.0),
+                                        hop=_samples(1.0),
+                                        margin=_samples(margin)))
+            theirs = [(start, end, spans[float(margin)]) for start, end, spans
+                      in OFFLINE.pass_schedule(
+                          n_samples, length=OFFLINE.chunk_samples(30.0),
+                          hop=OFFLINE.chunk_samples(1.0),
+                          margin_samples={float(margin):
+                                          OFFLINE.chunk_samples(margin)})]
+            assert mine == theirs, (n_samples, margin)
+
+
+@pytest.mark.parametrize("track_sec,margin,hop,buffer", _SWEEP)
+def test_the_live_stage_pools_the_cells_the_offline_extractor_pools(
+        track_sec, margin, hop, buffer):
+    """Bit-identical against a frozen copy of the offline extractor.
+
+    The acceptance for this port used to run the port on both arms, so an
+    off-by-one -- introduced or already latent -- was shared by every arm and
+    stayed green while the live features drifted from the ones the student was
+    trained on. The reference here is `tests/fixtures/offline_stream_extract.py`,
+    which is phase-b's own schedule and pooling, copied and never refactored.
+    """
+    cell = OFFLINE.LABEL_FRAME_SEC
+    audio = _noise(int(track_sec * SR), seed=int(track_sec * 10 + margin))
+    stream = _stream(FakeEncoder(), margin=margin, hop=hop, buffer=buffer,
+                     cell=cell, rate=SR)
+    cells = []
+    for start in range(0, len(audio), SR // 10):
+        stream.push_audio(audio[start:start + SR // 10])
+        while stream.due():
+            cells.extend(stream.run_pass())
+    cells.extend(stream.flush())
+
+    pooled = OFFLINE.extract(
+        FakeEncoder(), audio, margin_sec=margin, hop_sec=hop,
+        buffer_sec=buffer,
+        n_pooled=int(math.ceil(len(audio) / SR / cell)) + 4)
+    assert cells
+    for item in cells:
+        expected = pooled[item.index].reshape(-1) \
+            .astype(np.float16).astype(np.float32)
+        assert np.array_equal(item.features, expected), item.index
 
 
 # --------------------------------------------------------------------------- #
