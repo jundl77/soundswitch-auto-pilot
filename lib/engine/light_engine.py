@@ -133,7 +133,13 @@ class LightEngine(IMusicAnalyserHandler):
         self._audio_sec += len(audio_signal) / SAMPLE_RATE
         if self.section_chain is None or self.section_decoder is None:
             return
-        for posterior in self.section_chain.push_audio(audio_signal):
+        drained = self.section_chain.push_audio(audio_signal)
+        if drained.gap:
+            # The feature stage stopped and rejoined the live edge, so every
+            # cell the decoder is holding, and the bar it was assembling them
+            # into, describe audio from the other side of a discontinuity.
+            self.section_decoder.reset()
+        for posterior in drained.posteriors:
             await self._commit(self.section_decoder.push_posterior(
                 posterior.time_sec, posterior.posterior, posterior.boundary))
 

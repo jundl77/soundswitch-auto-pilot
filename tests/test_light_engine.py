@@ -53,15 +53,20 @@ class FakeAnalyser:
 class FakeChain:
     """Audio in, posteriors out -- the two NN stages, without the GPU."""
 
-    def __init__(self, posteriors=()):
+    def __init__(self, posteriors=(), gap=False):
+        from lib.analyser.section_model import Drained
+
+        self._drained = Drained
         self.pending = list(posteriors)
+        self.gap = gap
         self.samples = 0
         self.resets = 0
 
     def push_audio(self, samples):
         self.samples += len(samples)
         out, self.pending = self.pending, []
-        return out
+        gap, self.gap = self.gap, False
+        return self._drained(gap, out)
 
     def reset(self):
         self.resets += 1
@@ -238,6 +243,18 @@ async def test_on_audio_drives_the_chain_into_the_decoder():
     light, _, _, _ = engine(decoder=decoder, chain=chain)
     await light.on_audio(np.zeros(256, dtype=np.float32))
     assert decoder.cells == [(0.9288, 0.3), (1.0217, 0.4)]
+
+
+async def test_a_gap_from_the_feature_stage_clears_the_decoder_before_it_is_fed():
+    """A shed and its restore are discontinuities, not pauses: the cells the
+    decoder is holding and the bar it was assembling them into describe audio
+    from the other side of one."""
+    chain = FakeChain([_posterior(0.9288, 0.3)], gap=True)
+    decoder = FakeDecoder()
+    light, _, _, _ = engine(decoder=decoder, chain=chain)
+    await light.on_audio(np.zeros(256, dtype=np.float32))
+    assert decoder.resets == 1
+    assert decoder.cells == [(0.9288, 0.3)]
 
 
 async def test_a_missing_chain_is_the_degradation_state_rather_than_a_crash():

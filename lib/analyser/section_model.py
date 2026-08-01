@@ -264,13 +264,29 @@ class SectionModel:
                          _sigmoid(boundary.reshape(-1)[0]))
 
 
+class Drained(NamedTuple):
+    """What one call handed the consumer.
+
+    ``gap`` means everything the consumer holds describes audio from before a
+    discontinuity, so the decoder's cells, its bar grid and its trellis all have
+    to go: a bar assembled across a gap is assembled out of two different parts
+    of the song.  Nothing but a threaded stage can produce one, and the type is
+    shared so the engine has one consumer path rather than two.
+    """
+
+    gap: bool
+    posteriors: list
+
+
 class PosteriorStream:
     """Audio in, posteriors out -- the two stages joined and nothing else.
 
     The composition sits here rather than in a module of its own because a cell
     is the only thing the two stages exchange, and nothing above them should
-    have to know a cell exists.  It starts no thread and holds no lock; Task 10
-    wraps this object, it does not replace it.
+    have to know a cell exists.  It starts no thread and holds no lock; the GPU
+    stage wraps this object, it does not replace it, and the split between
+    ``feed`` (the audio thread's half) and ``run_pass`` (the GPU thread's) is
+    what lets it.
 
     ``run_pass`` is drained rather than called once: one buffer can complete
     more than one pass after a stall, and a pass left un-run is a hop of audio
@@ -281,15 +297,38 @@ class PosteriorStream:
         self.stream = stream
         self.model = model
 
-    def push_audio(self, samples) -> list:
-        self.stream.push_audio(samples)
+    def push_audio(self, samples) -> Drained:
+        self.feed(samples)
         posteriors = []
-        while self.stream.due():
-            for cell in self.stream.run_pass():
-                posterior = self.model.push(cell.features, cell.index)
-                if posterior is not None:
-                    posteriors.append(posterior)
-        return posteriors
+        while self.due():
+            posteriors.extend(self.run_pass())
+        return Drained(False, posteriors)
+
+    def feed(self, samples) -> None:
+        self.stream.push_audio(samples)
+
+    def due(self) -> bool:
+        return self.stream.due()
+
+    def run_pass(self) -> list:
+        """One encoder pass, stepped through the student: the unit of work."""
+        out = [self.model.push(cell.features, cell.index)
+               for cell in self.stream.run_pass()]
+        return [item for item in out if item is not None]
+
+    def resync(self):
+        """Rejoin the live edge after a gap, on both halves.
+
+        The extractor abandons what the ring can no longer serve and keeps its
+        sample index, which is song time; the student starts cold, because its
+        window and its carried state describe audio from before the gap.
+        """
+        record = self.stream.resync()
+        self.model.reset()
+        return record
+
+    def set_encoder(self, encoder) -> None:
+        self.stream.set_encoder(encoder)
 
     def reset(self) -> None:
         self.stream.reset()

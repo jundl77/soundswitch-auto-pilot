@@ -558,9 +558,10 @@ def test_the_posterior_stream_runs_every_due_pass_before_it_returns():
     stream = _FakeStream([[_cell(0, 'a'), _cell(1, 'b')], [_cell(2, 'c')]])
     stream._due = 2
     model = _FakeModel(['p0', 'p1', 'p2'])
-    posteriors = PosteriorStream(stream, model).push_audio([0.0] * 8)
+    drained = PosteriorStream(stream, model).push_audio([0.0] * 8)
     assert model.pushed == ['a', 'b', 'c']
-    assert posteriors == ['p0', 'p1', 'p2']
+    assert drained.posteriors == ['p0', 'p1', 'p2']
+    assert drained.gap is False, 'only a threaded stage can gap'
 
 
 def test_cells_still_inside_the_future_window_produce_nothing_yet():
@@ -568,7 +569,7 @@ def test_cells_still_inside_the_future_window_produce_nothing_yet():
 
     stream = _FakeStream([[_cell(0, 'a'), _cell(1, 'b')]])
     model = _FakeModel([None, None])
-    assert PosteriorStream(stream, model).push_audio([0.0] * 8) == []
+    assert PosteriorStream(stream, model).push_audio([0.0] * 8).posteriors == []
 
 
 def test_resetting_the_pair_resets_both_halves():

@@ -577,6 +577,14 @@ def load_encoder(geometry: StreamGeometry, *, device: str, fp16: bool = True,
 # --------------------------------------------------------------------------- #
 
 
+def _checked_encoder(encoder):
+    if int(encoder.sample_rate) != ENCODER_SAMPLE_RATE:
+        raise ValueError(f"the encoder speaks {encoder.sample_rate} Hz while "
+                         f"the geometry sizes the ring, the hop and the margin "
+                         f"at {ENCODER_SAMPLE_RATE}")
+    return encoder
+
+
 class Cell(NamedTuple):
     index: int
     time_sec: float
@@ -606,12 +614,8 @@ class MertStream:
 
     def __init__(self, encoder, *, geometry: StreamGeometry,
                  source_rate: int = SOURCE_SAMPLE_RATE) -> None:
-        if int(encoder.sample_rate) != ENCODER_SAMPLE_RATE:
-            raise ValueError(f"the encoder speaks {encoder.sample_rate} Hz "
-                             f"while the geometry sizes the ring, the hop and "
-                             f"the margin at {ENCODER_SAMPLE_RATE}")
         self.geometry = geometry
-        self._encoder = encoder
+        self._encoder = _checked_encoder(encoder)
         self._resampler = StreamingResampler(source_rate, encoder.sample_rate)
         self._ring = SampleRing(geometry.buffer_samples + geometry.hop_samples)
         self._cells = CellAccumulator(encoder.n_layers, encoder.dim,
@@ -619,6 +623,24 @@ class MertStream:
         self._passes = 0
         self._lo = 0
         self._flushed = False
+
+    def set_encoder(self, encoder) -> None:
+        """Swap in a rebuilt encoder and keep everything else.
+
+        A dead CUDA context -- a driver reset, a sleep/resume -- invalidates the
+        torch objects and nothing else.  The ring, the schedule and the sample
+        index are numpy and are still true, and the sample index is the clock
+        every cell in the show is stamped against, so a fresh stream would
+        restart song time in the middle of a set.
+        """
+        encoder = _checked_encoder(encoder)
+        if (encoder.n_layers, encoder.dim) != (self._encoder.n_layers,
+                                               self._encoder.dim):
+            raise ValueError(f"the replacement encoder emits "
+                             f"{encoder.n_layers}x{encoder.dim} features, not "
+                             f"the {self._encoder.n_layers}x{self._encoder.dim} "
+                             f"the accumulator and the student were built for")
+        self._encoder = encoder
 
     @property
     def samples_seen(self) -> int:
