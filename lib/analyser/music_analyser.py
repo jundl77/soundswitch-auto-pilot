@@ -161,13 +161,15 @@ class MusicAnalyser:
             f'({self._beats_since_log / window:.2f}/s) '
             f'over {window:.1f}s | bpm={self.get_bpm():.1f} '
             f'| last beat activation={self._last_beat_activation:.3f} '
-            f'| drift={drift["drift_sec"]:+.3f}s shed={drift["shed_level"]} '
+            f'| drift={drift["drift_sec"]:+.3f}s shed={drift["shed_level"]}'
+            f'{"" if drift["fault"] is None else "/" + drift["fault"]} '
             f'| adapter lag={drift["adapter_latency_sec"] * 1000:.1f}ms')
         self._beats_since_log = 0
 
     def get_drift_status(self) -> dict:
         return {
             'shed_level': self._drift.level.name,
+            'fault': self._drift.fault,
             'drift_sec': round(self._drift.drift_sec, 4),
             'peak_drift_sec': round(self._drift.peak_drift_sec, 4),
             'total_drift_sec': round(self._drift.total_drift_sec, 4),

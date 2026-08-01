@@ -1,3 +1,11 @@
+"""The ladder after the demolition: one rung, and two inputs to it.
+
+`SECTION_DETECTION` and `ONSET_DETECTION` are both deleted work, so the ladder
+is rebuilt around its one remaining tenant -- the GPU feature stage -- and gains
+the input drift never had. A CUDA fault, a hung pass or a ring overrun costs the
+loop no wall time at all, so pacing is structurally blind to every failure mode
+#143 names; the stage reports those itself.
+"""
 import logging
 
 import pytest
@@ -40,17 +48,17 @@ def test_running_faster_than_real_time_never_sheds():
     assert dog.drift_sec <= 0.0
 
 
-def test_a_sustained_shortfall_sheds_section_detection_first():
+def test_a_sustained_shortfall_sheds_the_nn():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
-    assert _feed(dog, clock, 1200, BUF * 1.1) is ShedLevel.SECTION_DETECTION
+    assert _feed(dog, clock, 1200, BUF * 1.1) is ShedLevel.NN_SHED
 
 
-def test_a_worse_shortfall_sheds_onset_detection_but_never_beats():
+def test_the_worst_shortfall_there_is_still_never_sheds_beats():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     level = _feed(dog, clock, 800, BUF * 3.0)
-    assert level is ShedLevel.ONSET_DETECTION
+    assert level is ShedLevel.NN_SHED
     assert level is max(ShedLevel), 'beat tracking must never be shed'
 
 
@@ -69,7 +77,7 @@ def test_running_at_exactly_real_time_counts_as_recovered():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 1200, BUF * 1.1)
-    assert dog.level is ShedLevel.SECTION_DETECTION
+    assert dog.level is ShedLevel.NN_SHED
     _feed(dog, clock, 2000, BUF)
     assert dog.level is ShedLevel.NONE
 
@@ -78,9 +86,9 @@ def test_recovery_waits_out_a_full_window_before_restoring_work():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 1200, BUF * 1.1)
-    assert dog.level is ShedLevel.SECTION_DETECTION
+    assert dog.level is ShedLevel.NN_SHED
     _feed(dog, clock, 300, BUF)
-    assert dog.level is ShedLevel.SECTION_DETECTION
+    assert dog.level is ShedLevel.NN_SHED
 
 
 def test_a_dip_below_the_exit_threshold_does_not_bank_progress():
@@ -154,7 +162,7 @@ def test_a_deliberate_stall_sheds_unless_forgiven():
 
     clock.advance(0.2)
     dog.observe()
-    assert dog.level is ShedLevel.SECTION_DETECTION
+    assert dog.level is ShedLevel.NN_SHED
 
 
 def test_forgiving_a_deliberate_stall_prevents_the_shed():
@@ -167,3 +175,84 @@ def test_forgiving_a_deliberate_stall_prevents_the_shed():
     _feed(dog, clock, 200, BUF)
     assert dog.level is ShedLevel.NONE
     assert abs(dog.total_drift_sec) < 0.05
+
+
+# --------------------------------------------------------------------------- #
+# Health: the input pacing cannot see
+# --------------------------------------------------------------------------- #
+
+
+def test_a_stage_fault_sheds_while_the_loop_keeps_perfect_time():
+    """The whole reason the second input exists: a dead GPU costs the audio
+    loop nothing, so drift stays at zero through every failure #143 names."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 2000, BUF)
+    assert dog.report_fault('cuda_error') is ShedLevel.NN_SHED
+    assert _feed(dog, clock, 2000, BUF) is ShedLevel.NN_SHED
+    assert dog.drift_sec == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_fault_holds_the_shed_until_the_stage_says_it_is_back():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('hung_pass')
+    _feed(dog, clock, 5000, BUF * 0.2)
+    assert dog.level is ShedLevel.NN_SHED
+    assert dog.report_healthy() is ShedLevel.NONE
+
+
+def test_the_two_inputs_are_two_locks_on_one_door():
+    """Either alone holds it shut, and clearing one is not clearing both."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    _feed(dog, clock, 1200, BUF * 1.1)
+    dog.report_fault('ring_overrun')
+    assert dog.report_healthy() is ShedLevel.NN_SHED, 'drift still over'
+    _feed(dog, clock, 2000, BUF)
+    assert dog.level is ShedLevel.NONE
+
+    _feed(dog, clock, 1200, BUF * 1.1)
+    dog.report_fault('ring_overrun')
+    _feed(dog, clock, 2000, BUF)
+    assert dog.level is ShedLevel.NN_SHED, 'fault still latched'
+
+
+def test_the_fault_is_named_in_the_transition_log(caplog):
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    with caplog.at_level(logging.WARNING):
+        dog.report_fault('cuda_error')
+        dog.report_healthy()
+    messages = ' | '.join(r.message for r in caplog.records)
+    assert 'cuda_error' in messages
+    assert 'NN_SHED' in messages
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) >= 1
+
+
+def test_a_fault_reported_over_and_over_logs_one_transition(caplog):
+    """A persistent fault must not become its own outage in the log."""
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(500):
+            dog.report_fault('cuda_error')
+    assert len(caplog.records) == 1
+
+
+def test_a_different_fault_while_already_shed_is_still_recorded():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('cuda_error')
+    dog.report_fault('hung_pass')
+    assert dog.fault == 'hung_pass'
+    assert dog.level is ShedLevel.NN_SHED
+
+
+def test_reset_clears_a_latched_fault():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('vram')
+    dog.reset()
+    assert dog.level is ShedLevel.NONE
+    assert dog.fault is None

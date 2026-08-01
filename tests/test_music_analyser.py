@@ -227,10 +227,10 @@ async def test_the_overlay_note_event_follows_the_beat_stream():
 
 async def test_a_song_reset_does_not_clear_the_drift_watchdog(analyser):
     from lib.analyser.drift_watchdog import ShedLevel
-    analyser._drift._level = ShedLevel.SECTION_DETECTION
+    analyser._drift._level = ShedLevel.NN_SHED
     analyser._drift.total_drift_sec = 4.2
     analyser._reset_state()
-    assert analyser._drift.level is ShedLevel.SECTION_DETECTION
+    assert analyser._drift.level is ShedLevel.NN_SHED
     assert analyser._drift.total_drift_sec == 4.2
 
 
