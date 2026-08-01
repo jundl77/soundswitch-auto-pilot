@@ -288,6 +288,60 @@ threshold is chosen by matching sound-start/stop *instants* on the fixture track
 not by picking a plausible number — the same discipline that set the onset threshold
 in the madmom migration (D6 there).
 
+#### D5 as measured — `_SILENCE_RMS = 1.5e-4`, and the instant no RMS reading reproduces
+
+Executed in Task 4 (`3a2f099`). `_track_song_duration`'s state machine was replayed
+offline over the per-buffer RMS of all three fixture tracks, recorded through the
+*unmodified* pipeline. The replay is checked rather than asserted: driven by the
+recorded **mel** decisions it returns the committed instants exactly on all three.
+Nine readings of that RMS — instantaneous, plus mean/rms/max/min pooled over 4, 8 and
+26 buffers (26 being `get_rms_energy`'s own window, with `_reset_state`'s clear
+modelled) — were then each swept against a 240-point log grid from 1e-7 to 5e-2. A
+track's *feasible band* is the set of thresholds reproducing its committed
+sound-start/stop instants exactly:
+
+| reading | NyEKXA7_6z0 | PNpXKsge4xM | SBnxzXkc_qw | all three |
+|---|---|---|---|---|
+| instant | [2.445e-3, 2.445e-3] | [1e-7, 1.658e-4] | [9.03e-6, 2.583e-3] | **none** |
+| mean4 / rms4 | empty | [1e-7, 1.406e-4] | [8.55e-6, 2.074e-3] | none |
+| mean8 | empty | [1e-7, 1.406e-4] | [7.66e-6, 1.665e-3] | none |
+| mean26 / rms26 | empty | [1e-7, 1.331e-4] | [6.15e-6, 1.858e-3] | none |
+| max4 | empty | [1e-7, 1.658e-4] | [9.03e-6, 2.583e-3] | none |
+| max26 | empty | [1e-7, 1.752e-4] | [9.03e-6, 3.399e-3] | none |
+| min4 | empty | [1e-7, 1.331e-4] | [7.25e-6, 1.759e-3] | none |
+
+**The binding pair is a contradiction, not a near miss.** `NyEKXA7_6z0` needs its
+run-out called *silent* at a buffer RMS of ~1.6e-3; `PNpXKsge4xM` needs its fade-out
+called *sound* at ~1.0e-4, or a stop appears 1.9 s before the audio ends. Fourteen
+times apart, and no monotone reading of a waveform RMS can separate them, because the
+retired gate was not measuring the same quantity: a Slaney-normalised band energy
+under 1e-4 in *every one of 40 bands* is a statement about the spectrum, and a
+broadband noise floor satisfies it at an RMS a tonal reverb tail does not.
+
+**Chosen: 1.5e-4** — the middle of the flat part of the error curve ([1.4e-4, 1.66e-4]
+all cost 168 ms, and nothing below 1.4e-4 costs less), with ~10 % headroom under the
+constraint that binds it:
+
+| T | NyEKXA7_6z0 stop | error | PNpXKsge4xM exact |
+|---|---|---|---|
+| 1e-5 | 362.760 | +575 ms | yes |
+| 1e-4 | 362.446 | +261 ms | yes |
+| **1.5e-4** | **362.353** | **+168 ms** | **yes** |
+| 1.7e-4 | 362.353 | +168 ms | no — spurious stop at 255.71 |
+| 2.4e-3 | 362.185 | 0 ms | no — spurious stop at 255.71 |
+
+**The one survivor that moves.** `tests/fixtures/pipeline_digest_baseline.json` changes
+by exactly one value: `NyEKXA7_6z0.survives.sound_events[1].t`, 362.185 → 362.353.
+Everything else in `survives` on all three tracks is byte-identical, every beat-time
+hash included (701 / 729 / 1050 beats, unchanged). The movement is late, never early;
+it lands inside a run-out whose audio has already decayed past −70 dBFS, and the
+track's digital silence begins at 362.5 either way. The brief forbids survivor
+movement, so this was re-cut deliberately rather than absorbed: the alternative is
+holding the stop instant exactly and paying for it with `PNpXKsge4xM` losing 1.9 s of
+its outro to a *fabricated* song boundary. An inaudible 168 ms of lateness on one
+run-out is the smaller lie, and reverting it is a one-line change if the ruling goes
+the other way.
+
 **D6 — the overlay light bar moves from onsets to beats.** Its supplier is being
 deleted; beats are the ruling already taken for the `-d` click.
 
