@@ -17,6 +17,11 @@ a performance choice: a threaded reduction sums in whatever order the pool
 finishes in, and float addition is not associative. Throughput, when it is
 wanted, comes from running tracks in parallel over separate sessions.
 
+**Nothing here is thread-safe and nothing here needs to be.** The ring, the
+carried state and the cell counter are one object owned end to end by whichever
+thread consumes cells; `reset` is not an exception, and a sound-stop arriving on
+another thread (D10) has to be marshalled onto that one.
+
 **The graph is verified against its recorded sha at construction**, not at the
 first beat -- a show that discovers its model is the wrong one halfway through
 a set has already played the wrong lights.

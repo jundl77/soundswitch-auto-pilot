@@ -150,6 +150,86 @@ def test_reset_restarts_the_sample_index():
     assert ring.written == 0
 
 
+class _Probe(np.ndarray):
+    """A ring buffer that runs a hook the first time it is read, or written.
+
+    The two threads MertStream's docstring advertises, without threads: `write`
+    only ever assigns into the buffer and `snapshot` only ever reads it, so a
+    hook on one access kind fires exactly once, at a point inside the other
+    operation that no sleep could hit reliably.
+    """
+
+    def __new__(cls, source, hook, *, on_read: bool):
+        array = np.asarray(source).view(cls)
+        array.hook = hook
+        array.on_read = on_read
+        array.armed = True
+        return array
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self.hook = getattr(obj, "hook", None)
+        self.on_read = getattr(obj, "on_read", False)
+        self.armed = False
+
+    def _fire(self, kind: bool) -> None:
+        if self.armed and self.on_read is kind:
+            self.armed = False
+            self.hook()
+
+    def __getitem__(self, key):
+        self._fire(True)
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        self._fire(False)
+        super().__setitem__(key, value)
+
+
+def test_a_write_is_published_before_it_touches_the_buffer():
+    """The check-then-copy hole, at its root.
+
+    A reader that re-reads `written` after its own copy is asking the writer a
+    question the writer has not answered yet: the samples are copied in first
+    and the index advances afterwards, so a snapshot taken mid-write clears a
+    span whose head is already gone. The claim is published before any byte
+    moves, so the span is refused even though the bytes are still intact at the
+    moment it is read.
+    """
+    ring = M.SampleRing(1000)
+    ring.write(np.zeros(1000, dtype=np.float32))
+    caught = []
+
+    def read_mid_write():
+        with pytest.raises(M.RingOverrun):
+            ring.snapshot(0, 1000)
+        caught.append(True)
+
+    ring._buffer = _Probe(ring._buffer, read_mid_write, on_read=False)
+    ring.write(np.ones(600, dtype=np.float32))
+    assert caught == [True]
+
+
+def test_a_write_landing_inside_a_snapshot_copy_is_refused_not_returned_torn():
+    ring = M.SampleRing(1000)
+    ring.write(np.zeros(1000, dtype=np.float32))
+    ring._buffer = _Probe(ring._buffer,
+                          lambda: ring.write(np.ones(600, dtype=np.float32)),
+                          on_read=True)
+    with pytest.raises(M.RingOverrun):
+        ring.snapshot(0, 1000)
+
+
+def test_a_snapshot_the_concurrent_write_did_not_reach_still_returns():
+    ring = M.SampleRing(1000)
+    ring.write(np.arange(1000, dtype=np.float32))
+    ring._buffer = _Probe(ring._buffer,
+                          lambda: ring.write(np.ones(100, dtype=np.float32)),
+                          on_read=True)
+    assert np.array_equal(ring.snapshot(200, 1000), np.arange(200, 1000))
+
+
 # --------------------------------------------------------------------------- #
 # Future dependence -- the number the whole design is budgeted against
 # --------------------------------------------------------------------------- #

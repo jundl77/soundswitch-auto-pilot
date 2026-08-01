@@ -175,6 +175,7 @@ class SampleRing:
     def __init__(self, capacity: int) -> None:
         self._buffer = np.zeros(int(capacity), dtype=np.float32)
         self._written = 0
+        self._reserved = 0
 
     @property
     def written(self) -> int:
@@ -185,28 +186,40 @@ class SampleRing:
         return len(self._buffer)
 
     def reset(self) -> None:
+        self._reserved = 0
         self._buffer[:] = 0.0
         self._written = 0
 
     def write(self, samples) -> None:
+        """Claim the span first, then fill it.
+
+        The audio thread writes while the GPU thread reads. Advancing the index
+        after the copy -- the obvious order -- means a reader can validate a span
+        against an index the writer has not moved yet and walk away with the
+        samples it was mid-way through replacing. `_reserved` is the writer's
+        claim and is published before a single sample moves, so the reader's
+        check is asking about the write in flight and not the one before it.
+        """
         block = np.asarray(samples, dtype=np.float32).reshape(-1)
         count = len(block)
         if not count:
             return
         capacity = self.capacity
+        dropped = 0
         if count >= capacity:
-            self._written += count - capacity
+            dropped = count - capacity
             block = block[-capacity:]
             count = capacity
-        head = self._written % capacity
+        head = (self._written + dropped) % capacity
         end = head + count
+        self._reserved = self._written + dropped + count
         if end <= capacity:
             self._buffer[head:end] = block
         else:
             split = capacity - head
             self._buffer[head:] = block[:split]
             self._buffer[:end - capacity] = block[split:]
-        self._written += count
+        self._written = self._reserved
 
     def snapshot(self, start: int, end: int) -> np.ndarray:
         if end > self._written:
@@ -214,18 +227,24 @@ class SampleRing:
                              f"({self._written} so far)")
         if start < 0 or end < start:
             raise ValueError(f"bad span [{start}, {end})")
-        if self._written - start > self.capacity:
-            raise RingOverrun(f"samples from {start} have been overwritten; the "
-                              f"ring holds {self.capacity} and is at "
-                              f"{self._written}")
+        self._still_held(start)
         capacity = self.capacity
         head = start % capacity
         count = end - start
         if head + count <= capacity:
-            return np.array(self._buffer[head:head + count], dtype=np.float32)
-        split = capacity - head
-        return np.concatenate([self._buffer[head:],
-                               self._buffer[:count - split]]).astype(np.float32)
+            out = np.array(self._buffer[head:head + count], dtype=np.float32)
+        else:
+            split = capacity - head
+            out = np.concatenate([self._buffer[head:],
+                                  self._buffer[:count - split]]).astype(np.float32)
+        self._still_held(start)
+        return out
+
+    def _still_held(self, start: int) -> None:
+        if self._reserved - start > self.capacity:
+            raise RingOverrun(f"samples from {start} have been overwritten; the "
+                              f"ring holds {self.capacity} and is at "
+                              f"{self._reserved}")
 
 
 # --------------------------------------------------------------------------- #
@@ -553,8 +572,14 @@ class Resync(NamedTuple):
 class MertStream:
     """Audio in at 44.1 kHz, pooled label cells out, one pass per hop.
 
-    The audio thread calls `push_audio`; the GPU thread calls `due` and
-    `run_pass`. Nothing here starts a thread -- the hand-off is Task 10's.
+    The audio thread calls `push_audio` and nothing else. Everything else --
+    `due`, `run_pass`, `resync`, `flush`, `reset` -- belongs to the GPU thread,
+    because all of it mutates the pass counter, the emission cursor and the
+    accumulator, none of which are shared. So the ring is the only object two
+    threads touch, and only ever as one writer and one reader. A reset arriving
+    from the analyser thread on sound-stop (D10) has to be marshalled onto the
+    GPU thread; calling it across would zero the buffer under a snapshot in
+    flight. Nothing here starts a thread -- the hand-off is Task 10's.
     """
 
     def __init__(self, encoder, *, geometry: StreamGeometry,
