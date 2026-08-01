@@ -122,7 +122,7 @@ def test_the_ring_returns_the_samples_written_at_an_absolute_span():
 def test_a_span_the_ring_has_already_overwritten_is_refused():
     ring = M.SampleRing(1000)
     ring.write(np.arange(2500, dtype=np.float32))
-    with pytest.raises(ValueError, match="overwritten"):
+    with pytest.raises(M.RingOverrun, match="overwritten"):
         ring.snapshot(0, 100)
 
 
@@ -314,10 +314,11 @@ class FakeEncoder:
         return stacked.astype(np.float32), times
 
 
-def _stream(encoder, *, margin=3.0, hop=1.0, buffer=30.0, cell=CELL):
+def _stream(encoder, *, margin=3.0, hop=1.0, buffer=30.0, cell=CELL,
+            rate=M.SOURCE_SAMPLE_RATE):
     return M.MertStream(encoder, geometry=M.StreamGeometry(
         model_id="fake", layers=(6, 22), margin_sec=margin, hop_sec=hop,
-        buffer_sec=buffer, label_frame_sec=cell))
+        buffer_sec=buffer, label_frame_sec=cell), source_rate=rate)
 
 
 def _feed(stream, seconds, *, block=256):
@@ -415,6 +416,107 @@ def test_the_stream_flushes_the_tail_at_a_song_boundary():
     assert [cell.index for cell in tail] == list(
         range(len(cells), len(cells) + len(tail)))
     assert stream.flush() == []
+
+
+# --------------------------------------------------------------------------- #
+# Backpressure: a stalled pass outrun by the audio
+# --------------------------------------------------------------------------- #
+
+
+def _drive(stream, seconds, *, rate=SR, block=None):
+    audio = np.zeros(int(seconds * rate), dtype=np.float32)
+    block = block or rate // 10
+    cells = []
+    for start in range(0, len(audio), block):
+        stream.push_audio(audio[start:start + block])
+        while stream.due():
+            cells.extend(stream.run_pass())
+    return cells
+
+
+def _stalled(seconds=40.0):
+    """The Task 11 fault mode: the GPU thread hangs while the audio keeps coming."""
+    stream = _stream(FakeEncoder(), rate=SR)
+    stream.push_audio(np.zeros(int(seconds * SR), dtype=np.float32))
+    return stream
+
+
+def _pump(stream):
+    """Task 10's documented consume loop, verbatim."""
+    cells = []
+    while stream.due():
+        cells.extend(stream.run_pass())
+    return cells
+
+
+def test_a_pass_whose_audio_was_overwritten_raises_a_typed_overrun():
+    with pytest.raises(M.RingOverrun):
+        _pump(_stalled())
+
+
+def test_an_overrun_is_not_the_type_a_programming_error_raises():
+    """Task 10 sheds on one and must not swallow the other."""
+    assert not issubclass(M.RingOverrun, ValueError)
+    ring = M.SampleRing(1000)
+    ring.write(np.zeros(100, dtype=np.float32))
+    with pytest.raises(ValueError):
+        ring.snapshot(50, 200)
+    with pytest.raises(ValueError):
+        ring.snapshot(-1, 10)
+
+
+def test_an_overrun_pass_is_not_recorded_as_taken():
+    """35 raises consumed 35 passes before -- the counter walked the schedule
+    forward on work that never happened."""
+    stream = _stalled()
+    with pytest.raises(M.RingOverrun):
+        _pump(stream)
+    taken = stream.passes
+    for _ in range(35):
+        with pytest.raises(M.RingOverrun):
+            stream.run_pass()
+    assert stream.passes == taken
+    assert stream.due()
+
+
+def test_resync_skips_to_the_live_edge_and_reports_the_audio_lost():
+    stream = _stalled(40.0)
+    with pytest.raises(M.RingOverrun):
+        _pump(stream)
+    report = stream.resync()
+    assert report.lost_sec == pytest.approx(36.0)
+    assert report.cells_lost == report.first_cell_index > 0
+    assert stream.due()
+    recovered = stream.run_pass()
+    assert recovered
+    assert recovered[0].index == report.first_cell_index
+
+
+def test_the_gap_a_resync_skipped_is_never_filled_from_later_audio():
+    """The reviewer's failure: the first pass back after the stall back-filled
+    36 s of cells out of audio recorded after them."""
+    stalled = _stalled(40.0)
+    with pytest.raises(M.RingOverrun):
+        _pump(stalled)
+    stalled.resync()
+    recovered = stalled.run_pass()
+
+    healthy = {cell.index: cell for cell in _drive(_stream(FakeEncoder(), rate=SR),
+                                                   40.0)}
+    assert recovered[0].index > 300
+    for cell in recovered:
+        assert np.array_equal(cell.features, healthy[cell.index].features)
+
+
+def test_a_resync_leaves_the_stream_running_the_ordinary_schedule():
+    stream = _stalled(40.0)
+    with pytest.raises(M.RingOverrun):
+        _pump(stream)
+    stream.resync()
+    cells = stream.run_pass()
+    cells.extend(_drive(stream, 5.0))
+    assert [cell.index for cell in cells] == list(
+        range(cells[0].index, cells[0].index + len(cells)))
 
 
 # --------------------------------------------------------------------------- #

@@ -160,6 +160,15 @@ class StreamingResampler:
 # --------------------------------------------------------------------------- #
 
 
+class RingOverrun(RuntimeError):
+    """The audio a pass needs is already gone -- a shed event, not a bug.
+
+    Deliberately not a `ValueError`: the ring raises that for spans that are
+    wrong rather than late, and a consumer shedding on one must not swallow the
+    other.
+    """
+
+
 class SampleRing:
     """A fixed window of the most recent audio, addressed by absolute index."""
 
@@ -206,9 +215,9 @@ class SampleRing:
         if start < 0 or end < start:
             raise ValueError(f"bad span [{start}, {end})")
         if self._written - start > self.capacity:
-            raise ValueError(f"samples from {start} have been overwritten; the "
-                             f"ring holds {self.capacity} and is at "
-                             f"{self._written}")
+            raise RingOverrun(f"samples from {start} have been overwritten; the "
+                              f"ring holds {self.capacity} and is at "
+                              f"{self._written}")
         capacity = self.capacity
         head = start % capacity
         count = end - start
@@ -265,6 +274,28 @@ class CellAccumulator:
         self._counts: dict = {}
         self._next = 0
         self._last = None
+
+    @property
+    def next_index(self) -> int:
+        return self._next
+
+    def skip_to(self, index: int) -> int:
+        """Abandon every cell below ``index``; returns how many were abandoned.
+
+        `_last` goes with them: forward-filling across a gap would reconstruct
+        the missing cells out of the audio that arrived after them, which is the
+        failure the skip exists to prevent.
+        """
+        index = int(index)
+        if index <= self._next:
+            return 0
+        for key in [key for key in self._sums if key < index]:
+            del self._sums[key]
+            del self._counts[key]
+        skipped = index - self._next
+        self._next = index
+        self._last = None
+        return skipped
 
     def add(self, stacked: np.ndarray, times: np.ndarray, lo_sec: float,
             hi_sec: float) -> None:
@@ -493,6 +524,13 @@ class Cell(NamedTuple):
     audio_seen_sec: float
 
 
+class Resync(NamedTuple):
+    lost_samples: int
+    lost_sec: float
+    first_cell_index: int
+    cells_lost: int
+
+
 class MertStream:
     """Audio in at 44.1 kHz, pooled label cells out, one pass per hop.
 
@@ -516,6 +554,10 @@ class MertStream:
     def samples_seen(self) -> int:
         return self._ring.written
 
+    @property
+    def passes(self) -> int:
+        return self._passes
+
     def reset(self) -> None:
         self._resampler.reset()
         self._ring.reset()
@@ -535,8 +577,31 @@ class MertStream:
         end = self._next_end()
         if self._flushed or self._ring.written < end:
             return []
+        cells = self._encode_span(end, end - self.geometry.margin_samples)
         self._passes += 1
-        return self._encode_span(end, end - self.geometry.margin_samples)
+        return cells
+
+    def resync(self) -> Resync:
+        """Abandon the audio the ring no longer holds and restart at the edge.
+
+        The schedule is moved so the next pass is the one the arriving audio can
+        still serve, and its emission span is one ordinary hop -- recovering the
+        whole buffer instead would hand the student cells that saw thirty
+        seconds of future, a geometry it was never trained under. What the skip
+        cost is returned rather than logged, because only the caller knows what
+        a shed event means to the show.
+        """
+        hop = self.geometry.hop_samples
+        passes = max(0, self._ring.written // hop - 1)
+        end = (passes + 1) * hop
+        rate = float(self._encoder.sample_rate)
+        lo = max(self._lo, end - self.geometry.margin_samples - hop, 0)
+        lost = lo - self._lo
+        skipped = self._cells.skip_to(
+            math.ceil(lo / rate / self.geometry.label_frame_sec))
+        self._passes = passes
+        self._lo = lo
+        return Resync(lost, lost / rate, self._cells.next_index, skipped)
 
     def flush(self) -> list:
         if self._flushed:
