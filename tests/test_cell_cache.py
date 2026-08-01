@@ -189,6 +189,7 @@ def test_a_sidecar_cut_under_another_decode_is_a_named_miss(audio, key):
 
 @pytest.mark.parametrize("field,value,reason", [
     ("schema", "mert-cells/0", "miss_schema"),
+    ("extractor", "0000000000000000", "miss_extractor"),
     ("source_rate", 48000, "miss_source_rate"),
     ("audio_size", 999, "miss_audio_changed"),
     ("audio_mtime", 1.0, "miss_audio_changed"),
@@ -444,3 +445,27 @@ def test_an_archive_whose_arrays_disagree_is_a_named_miss(audio, key):
 
     replay, reason = cell_cache.open_replay(path, key)
     assert replay is None and reason == "miss_schema"
+
+
+def test_an_edit_to_the_extractor_moves_the_key():
+    """The mechanism, not a restatement of the field.
+
+    Every other part of the key describes the encoder's WEIGHTS and the
+    geometry they were pooled under; nothing described the code between them,
+    and the only lever was a schema string nothing coupled to the module.  So
+    an extractor edit that left the geometry alone replayed stale cells and the
+    benchmark's checksum gate printed MATCHES with the extractor never called.
+    """
+    import hashlib
+
+    sources = cell_cache._EXTRACTOR_SOURCES
+    assert any(path.name == "mert_stream.py" for path in sources),         'the module that turns audio into cells is not in the identity'
+    assert any(path.name == "cell_cache.py" for path in sources),         'the module that replays them is not in the identity'
+
+    before = cell_cache.extractor_sha()
+    edited = [path.read_bytes() for path in sources]
+    for index, path in enumerate(sources):
+        digest = hashlib.sha256()
+        for other in range(len(sources)):
+            digest.update(edited[other] + (b"# edit" if other == index else b""))
+        assert digest.hexdigest()[:16] != before,             f'an edit to {path.name} does not move the key'

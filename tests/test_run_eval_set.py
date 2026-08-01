@@ -832,3 +832,39 @@ def test_lateness_is_disclosed_and_deliberately_not_gated():
     for track_id, row in committed_baseline()["tracks"].items():
         assert "late" in row and "blocks_measurable" in row, track_id
         assert row["late"] <= row["blocks_measurable"], track_id
+
+
+def test_a_machine_without_the_model_is_refused_rather_than_scored(tmp_path, monkeypatch):
+    """The benchmark's third input is not committed and never will be.
+
+    Without the model the show degrades to a held cold-start floor, so every
+    checksum moves and every score falls to near zero.  Unguarded, that reads
+    as a pipeline regression -- and the failure message said "re-cut if the
+    change is intended", which on this machine writes ten tracks of dark show
+    over the benchmark.  A missing download must not be able to destroy it.
+    """
+    import run_eval_set
+    from lib import section_chain
+
+    monkeypatch.setattr(section_chain, 'artifacts_present', lambda *a, **k: False)
+    refusal = run_eval_set.missing_model(tmp_path)
+    assert refusal is not None
+    assert 'do not' in refusal and 're-cut' in refusal
+
+    monkeypatch.setattr(section_chain, 'artifacts_present', lambda *a, **k: True)
+    assert run_eval_set.missing_model(tmp_path) is None
+
+
+def test_the_refusal_happens_before_anything_is_simulated(tmp_path, monkeypatch, capsys):
+    import run_eval_set
+    from lib import section_chain
+
+    monkeypatch.setattr(section_chain, 'artifacts_present', lambda *a, **k: False)
+
+    def never(*args, **kwargs):
+        raise AssertionError('a track was simulated on a machine with no model')
+
+    monkeypatch.setattr(run_eval_set, 'run', never)
+    code = run_eval_set.main(['--data-dir', str(tmp_path), '--quiet'])
+    assert code == 2
+    assert 'shipped model is not on this machine' in capsys.readouterr().err

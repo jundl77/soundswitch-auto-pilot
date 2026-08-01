@@ -140,7 +140,7 @@ async def test_simulation_is_deterministic():
 
 
 @pytest.mark.integration
-def test_eval_set_head_matches_the_committed_baseline():
+def test_eval_set_head_matches_the_committed_baseline(nn_artifacts):
     """Three eval-set tracks through the benchmark runner, compare mode.
 
     This is the gate the old plumbing-PASS verdict used to be: it fails on a
@@ -158,6 +158,15 @@ def test_eval_set_head_matches_the_committed_baseline():
     plan gave that job to Task 15 and gave it once.  The strictness is what
     stopped the marker outliving the cut: it XPASSed the moment the baseline was
     re-cut against the neural show, and came off in the same commit.
+
+    **`nn_artifacts`, because the baseline describes a neural show.**  The
+    audio and the labels are committed, but the 1.3 GB model is not -- and
+    without it the runner degrades to a held cold-start floor, which moves every
+    checksum and drops every score to near zero.  That is a FAIL, and its
+    message used to say "re-cut if the change is intended": on a machine with no
+    model, following it re-cuts all ten tracks against the degradation state and
+    destroys the benchmark.  So the gate now says it needs the model rather than
+    reporting its absence as a regression.
     """
     _require_audio(BENCH_TRACK_IDS)
     exit_code = run_eval_set.main([
@@ -167,6 +176,9 @@ def test_eval_set_head_matches_the_committed_baseline():
     ])
     assert exit_code == 0, (
         f"eval-set benchmark failed on {', '.join(BENCH_TRACK_IDS)} -- see the "
-        f"table above; re-cut with 'uv run python training/run_eval_set.py "
-        f"--write-baseline' if the change is intended"
+        f"table above.  If the pipeline change is intended, re-cut with "
+        f"'uv run python training/run_eval_set.py --write-baseline' -- but only "
+        f"from a machine that HAS the shipped model, and read the table first: "
+        f"a run that degraded moves every checksum and zeroes every score, and "
+        f"re-cutting that blesses a dark show as the benchmark"
     )

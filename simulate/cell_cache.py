@@ -27,6 +27,7 @@ run the real GPU thread, and a replay there would prove nothing about it.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -49,7 +50,38 @@ SUFFIX = "mertcells.npz"
 # determinism claim resting on either is a claim about one machine.
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
+# The code that turns audio into cells.  `mert_stream` owns the resampler, the
+# ring, the pooling and the frame-time arithmetic; this module owns the
+# recording and the replay that has to reproduce them exactly.
+_EXTRACTOR_SOURCES = (
+    Path(__file__).resolve(),
+    Path(__file__).resolve().parents[1] / "lib" / "analyser" / "mert_stream.py",
+)
+
+
+def extractor_sha() -> str:
+    """Identity of the extractor itself, which the rest of the key never had.
+
+    Everything else describes the encoder's WEIGHTS and the geometry they were
+    pooled under -- nothing about the code between the two.  The only lever was
+    the hand-maintained `SCHEMA` string and nothing coupled it to the module, so
+    an extractor edit that left the geometry alone replayed stale cells: the
+    benchmark printed MATCHES BASELINE with the live extractor never called at
+    all, which is the one thing a checksum gate exists to make impossible.
+    Demonstrated by replacing `run_pass`, `push_audio` and `load_encoder` with
+    raisers and still reproducing the committed checksum exactly.
+
+    Source bytes rather than a git sha: this runs at a show's start-up, where
+    `training/`'s git machinery deliberately does not reach, and the reports it
+    protects are invalidated by an edit whether or not it has been committed.
+    """
+    digest = hashlib.sha256()
+    for path in _EXTRACTOR_SOURCES:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
 _TOP_LEVEL_MISSES = (("schema", "miss_schema"),
+                     ("extractor", "miss_extractor"),
                      ("decode", "miss_decode_path"),
                      ("source_rate", "miss_source_rate"),
                      ("audio_size", "miss_audio_changed"),
@@ -100,6 +132,7 @@ def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str,
     stat = Path(audio_path).stat()
     return {
         "schema": SCHEMA,
+        "extractor": extractor_sha(),
         "decode": str(decode_path),
         "encoder": {
             "model_id": geometry.model_id,

@@ -277,6 +277,10 @@ def missing_inputs(data_dir: Path, tracks: list, labels: Path | None = None) -> 
     Reported all at once rather than raising on the first: a machine missing
     both should learn it needs the annotations AND three mp3s from one run, not
     three.  On a fresh clone this is empty -- both are committed.
+
+    The model is the third input and is checked separately, by `missing_model`:
+    it is not committed and never will be, so it is a different kind of absence
+    from a benchmark asset that should be there.
     """
     problems = []
     segments, committed = labels_source(data_dir, labels)
@@ -290,6 +294,28 @@ def missing_inputs(data_dir: Path, tracks: list, labels: Path | None = None) -> 
         if not mp3.exists():
             problems.append(f"{AUDIO_MISSING_HINT}: {track['track_id']} ({mp3})")
     return problems
+
+
+def missing_model(data_dir: Path) -> str | None:
+    """Why this machine cannot run the benchmark, or ``None``.
+
+    The audio and the labels are committed; the 1.3 GB encoder and the student
+    are not.  Without them the show degrades to a held cold-start floor, which
+    moves every report checksum and drops every score to near zero -- so an
+    unguarded run reports a *download* as a pipeline regression, and an
+    unguarded `--write-baseline` writes ten tracks of dark show over the
+    benchmark and calls it the answer.  Refused rather than reported.
+    """
+    from lib import section_chain
+
+    if section_chain.artifacts_present(data_dir):
+        return None
+    return ("the shipped model is not on this machine: "
+            f"{', '.join(section_chain.artifacts(data_dir).missing())}\n"
+            "the benchmark scores a neural show; without the model every track "
+            "runs the degradation state, so its checksums and scores describe "
+            "nothing.  This is a missing download, not a regression -- do not "
+            "re-cut the baseline from here.")
 
 
 def verify_ground_truth(document: dict, data_dir: Path,
@@ -922,6 +948,10 @@ def main(argv: list | None = None) -> int:
             only = [item for item in args.only.split(",") if item.strip()]
         # Refused BEFORE the simulations run: a two-minute run that ends in a
         # refusal teaches the same lesson two minutes later.
+        absent = missing_model(Path(args.data_dir))
+        if absent:
+            print(absent, file=sys.stderr)
+            return 2
         if args.write_baseline:
             refusal = partial_baseline_refusal(
                 select_tracks(document, only), document, Path(args.baseline),
