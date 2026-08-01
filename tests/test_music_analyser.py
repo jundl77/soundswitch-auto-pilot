@@ -225,6 +225,49 @@ async def test_the_overlay_note_event_follows_the_beat_stream():
     assert handler.notes == handler.beats
 
 
+async def test_the_fifteen_minute_roll_is_not_a_song_boundary():
+    """A club feed never goes silent, so the periodic roll is the ONLY boundary
+    the engine would ever see -- and it used to read as a brand new song.
+
+    `_reset_state` cleared `is_playing`, so the next buffer of the same
+    uninterrupted audio re-issued `on_sound_start` with no stop before it.
+    Downstream that zeroes the ring, starts the student cold, throws the bar
+    grid away and drops every queued intent, then re-arms the cold-start floor
+    -- so the room can be dropped to ATMOSPHERIC in the middle of a peak, four
+    times an hour, on audio that never stopped.
+    """
+    class _Recorder(_StubHandler):
+        def __init__(self):
+            self.events: list[str] = []
+
+        def on_sound_start(self):
+            self.events.append('start')
+
+        def on_sound_stop(self):
+            self.events.append('stop')
+
+    clock = VirtualClock()
+    handler = _Recorder()
+    analyser = _make_analyser(clock, handler)
+
+    loud = np.full(256, 0.2, dtype=np.float32)
+    for _ in range(4):
+        clock.advance(0.1)
+        await analyser.analyse(loud.copy())
+    assert handler.events == ['start']
+
+    analyser.song_start_time = clock.now() - datetime.timedelta(minutes=16)
+    for _ in range(4):
+        clock.advance(0.1)
+        await analyser.analyse(loud.copy())
+
+    assert handler.events == ['start'], \
+        'the roll re-announced a song the room never stopped hearing'
+    assert analyser.is_song_playing() is True
+    assert analyser.get_song_current_duration() < datetime.timedelta(minutes=1), \
+        'the song clock was not rolled'
+
+
 async def test_a_song_reset_does_not_clear_the_drift_watchdog(analyser):
     from lib.analyser.drift_watchdog import ShedLevel
     analyser._drift._level = ShedLevel.NN_SHED

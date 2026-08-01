@@ -57,8 +57,16 @@ class SoundSwitchAutoPilot:
         self.overlay_client: OverlayClient = OverlayClient()
 
         from lib.engine.event_buffer import EventBuffer
+        # `--report` promises the whole session, so the rolling window comes off
+        # for it the way `simulate.cli._session_buffer` already takes it off:
+        # the default 60 s window prunes at 2x itself on every write, so a
+        # thirty-minute set reported six intent changes out of sixty and a beat
+        # count saturated at the deque cap.  The UI alone keeps the window --
+        # it draws 30 s and nothing reads back past it.
         self.event_buffer: EventBuffer | None = (
-            EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC) if (enable_ui or report_path) else None
+            EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC,
+                        window_sec=float('inf') if report_path else 60.0)
+            if (enable_ui or report_path) else None
         )
 
         from lib import section_chain
@@ -96,7 +104,25 @@ class SoundSwitchAutoPilot:
         self.midi_client.list_devices()
 
     async def run(self):
+        """Set up, run the loop, and shut down -- the last one unconditionally.
+
+        Every client is opened before the loop and every one of them holds
+        something that outlives this coroutine: a PyAudio stream, a lit rig, a
+        CUDA context on a worker thread, and `Os2lSender`'s NON-daemon thread.
+        With the teardown sitting after the loop, any exception in it skipped
+        all five: the venue rig stayed lit at whatever the last effect was, the
+        encoder stayed resident, and the interpreter then blocked at exit
+        forever on the OS2L thread while it went on driving VirtualDJ.  A
+        traceback that hangs the process with the lights on is the worst
+        available failure, and it was the default one.
+        """
         logging.info("[main] setting up auto pilot..")
+        try:
+            await self._run()
+        finally:
+            self._shut_down()
+
+    async def _run(self):
         self.audio_client.start_streams(start_stream_out=self._enable_playback)
         self.midi_client.start()
         self.overlay_client.start()
@@ -160,12 +186,30 @@ class SoundSwitchAutoPilot:
                 last_10sec_callback_execution = now
                 await self._do_10s_callback()
 
-        self.audio_client.close()
-        if self.section is not None:
-            self.section.stop()
-        self.os2l_client.stop()
-        self.midi_client.stop()
-        self.overlay_client.stop()
+    def _shut_down(self) -> None:
+        """Close everything, and let no one failure stop the rest.
+
+        Ordered by what the room can see: audio in first so nothing new
+        arrives, then the GPU thread, then the wires, then the rig -- and the
+        rig last because `MidiClient.stop` is what blanks it, so it must not be
+        skipped by something upstream of it raising.  The overlay's clear is
+        only queued by `stop`, so it is transmitted here rather than waiting
+        for an `on_cycle` the loop has already left.
+        """
+        self.is_running = False
+        for what, close in (('audio', self.audio_client.close),
+                            ('section chain',
+                             None if self.section is None else self.section.stop),
+                            ('os2l', self.os2l_client.stop),
+                            ('overlay', self.overlay_client.stop),
+                            ('overlay flush', self.overlay_client.flush_messages),
+                            ('midi', self.midi_client.stop)):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as error:
+                logging.exception(f'[main] {what} did not close cleanly ({error!r})')
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):

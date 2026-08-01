@@ -23,6 +23,11 @@ _ENERGY_WINDOW_BUFFERS = 26
 # sweep, including the one instant no RMS reading can reproduce and why.
 _SILENCE_RMS = 1.5e-4
 
+# How long the rolling state is allowed to run before it is rebuilt.  It bounds
+# what the analyser holds; it says nothing about the music, which is why it is
+# rolled rather than restarted (see `_roll_song_clock`).
+_SONG_CLOCK_HORIZON = datetime.timedelta(minutes=15)
+
 
 class MusicAnalyser:
     def __init__(self,
@@ -56,6 +61,23 @@ class MusicAnalyser:
         self._beats_since_log: int = 0
         self._last_beat_activation: float = 0.0
         self._reset_state()
+
+    def _roll_song_clock(self) -> None:
+        """Bound the rolling state without telling the show a new song started.
+
+        A venue feed is continuous, so the 0.3 s silence gate never trips and
+        this is the only boundary the engine ever sees.  Going through
+        `_reset_state` cleared `is_playing`, so the next buffer of the same
+        uninterrupted audio re-announced a sound START with no stop before it
+        -- and downstream that is a song boundary: the ring is zeroed, the
+        student starts cold, the bar grid goes, every queued intent is dropped
+        and the cold-start floor re-arms, which can put the room in ATMOSPHERIC
+        in the middle of a peak.  The rule engine cost about one beat here; the
+        chain costs a whole latency plus a grid warm-up, four times an hour.
+        """
+        playing = self.is_playing
+        self._reset_state()
+        self.is_playing = playing
 
     def _reset_state(self) -> None:
         self._rhythm.reset()
@@ -142,8 +164,8 @@ class MusicAnalyser:
         await self._track_note(rhythm.beats, now)
         self._log_rhythm_state(now)
 
-        if self.get_song_current_duration() > datetime.timedelta(minutes=15):
-            self._reset_state()
+        if self.get_song_current_duration() > _SONG_CLOCK_HORIZON:
+            self._roll_song_clock()
 
         if is_beat and self.note_clicks:
             # Owner preference: the -d click marks the BEAT, not every onset.
