@@ -126,6 +126,36 @@ def decisions(*labels, start=0):
             for i, label in enumerate(labels)]
 
 
+async def elapse(light, clock, sec: float) -> None:
+    """Move the audio counter and the clock together, as the loop does."""
+    await light.on_audio(np.zeros(int(sec * SAMPLE_RATE), dtype=np.float32))
+    clock.advance(sec)
+
+
+async def commit(light, decoder, clock, label, *, age_sec=13.7, bar=0):
+    """One decision describing audio ``age_sec`` old, delivered on a beat."""
+    decoder._script.append([BarDecision(bar, label, light.audio_sec - age_sec)])
+    await light.on_beat(1, 128.0, False)
+
+
+async def bars(light, decoder, clock, *labels, age_sec=13.7, bar_sec=1.9):
+    """A run of bars as the show really sees them: one decision per bar, with
+    the audio counter and the clock moving a bar between each."""
+    for index, label in enumerate(labels):
+        await elapse(light, clock, bar_sec)
+        await commit(light, decoder, clock, label, age_sec=age_sec, bar=index)
+
+
+def queued_intents(queue):
+    return [item for item in queue._queue if item[4] == 'intent']
+
+
+async def settle(light, clock, queue, sec=20.0, step=0.25):
+    for _ in range(int(sec / step)):
+        await elapse(light, clock, step)
+        await queue.drain()
+
+
 # --------------------------------------------------------------------------- #
 # The class map, and the one intent with no class behind it
 # --------------------------------------------------------------------------- #
@@ -139,22 +169,22 @@ def decisions(*labels, start=0):
     ('drop', LightIntent.DROP),
 ])
 async def test_a_decision_commits_the_intent_its_class_maps_to(label, intent):
-    decoder = FakeDecoder([decisions(label)])
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, label)
+    await settle(light, clock, queue)
     assert light.current_intent is intent
 
 
 async def test_the_same_class_twice_does_not_re_roll_the_effect():
     """Counted across both effect labels: DROP's pool holds a strobe as well as
     two autoloops, so which MIDI call it is depends on the draw."""
-    decoder = FakeDecoder([decisions('drop', 'drop', 'drop')])
+    decoder = FakeDecoder()
     light, queue, clock, midi = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, 'drop', 'drop', 'drop')
+    await settle(light, clock, queue)
     lit = [e for e in midi.events
            if e['label'] in ('set_autoloop', 'set_special_effect')]
     assert len(lit) == 1
@@ -169,47 +199,42 @@ async def test_a_sustained_drop_is_promoted_to_peak_after_the_converted_run():
     "a drop that has lasted" -- measured in the unit the committer now speaks.
     """
     assert PEAK_PROMOTION_BARS == 8
-    decoder = FakeDecoder([decisions(*(['drop'] * (PEAK_PROMOTION_BARS + 1)))])
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, *(['drop'] * (PEAK_PROMOTION_BARS + 1)))
+    await settle(light, clock, queue)
     assert light.current_intent is LightIntent.PEAK
 
 
 async def test_a_short_drop_is_not_promoted():
-    decoder = FakeDecoder([decisions(*(['drop'] * PEAK_PROMOTION_BARS))])
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, *(['drop'] * PEAK_PROMOTION_BARS))
+    await settle(light, clock, queue)
     assert light.current_intent is LightIntent.DROP
 
 
 async def test_peak_absorbs_further_drop_bars_so_the_pair_cannot_oscillate():
     """The old anti-oscillation contract, kept: while PEAK is current a DROP
     decision is swallowed, so the timeline keeps reading PEAK."""
-    script = [decisions(*(['drop'] * (PEAK_PROMOTION_BARS + 1))),
-              decisions('drop', 'drop', start=99)]
-    decoder = FakeDecoder(script)
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    await light.on_beat(2, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, *(['drop'] * (PEAK_PROMOTION_BARS + 3)))
+    await settle(light, clock, queue)
     assert light.current_intent is LightIntent.PEAK
     assert light.intent_commits == 2   # the drop, then the promotion
 
 
 async def test_any_other_class_leaves_peak_through_the_normal_path():
-    script = [decisions(*(['drop'] * (PEAK_PROMOTION_BARS + 1))),
-              decisions('breakdown', start=99)]
-    decoder = FakeDecoder(script)
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
-    await light.on_beat(2, 128.0, False)
-    clock.advance(14.0)
-    await queue.drain()
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock,
+               *(['drop'] * (PEAK_PROMOTION_BARS + 1) + ['breakdown']))
+    await settle(light, clock, queue)
     assert light.current_intent is LightIntent.BREAKDOWN
 
 
@@ -297,28 +322,36 @@ async def test_a_beat_waits_the_whole_playback_delay():
 
 
 async def test_an_intent_waits_only_what_the_chain_has_not_already_spent():
-    decoder = FakeDecoder([decisions('drop')])
+    """And what it has spent is measured, not modelled: the decision's own age
+    is `_audio_sec - start_sec` exactly, so every intent lands at the song
+    instant it describes plus the playback delay, whatever the tempo did."""
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
-    await light.on_beat(1, 128.0, False)
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', age_sec=13.7)
     intent = [e for e in queue._queue if e[4] == 'intent'][0]
-    assert intent[3] == pytest.approx(14.0 - 13.66)
+    assert intent[3] == pytest.approx(14.0 - 13.7)
+    assert intent[0] == pytest.approx(20.0 + 0.3)
 
 
-async def test_a_chain_slower_than_the_budget_clamps_to_zero_and_says_so(caplog):
+async def test_a_chain_slower_than_the_budget_fires_at_once_and_says_so(caplog):
     """#154 accepted lateness on slow tempos rather than growing the budget.
 
-    A 2.8 s bar puts the chain past 14 s; the intent then commits as soon as it
-    can, which is late but not wrong, and the operator is told once rather than
-    every bar.
+    A decision older than the whole playback delay commits as soon as it can,
+    which is late but not wrong, and the operator is told once rather than every
+    bar.
     """
-    decoder = FakeDecoder([decisions('drop')])
-    decoder.chain_latency_sec = 16.4
+    decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
+    await elapse(light, clock, 30.0)
     with caplog.at_level(logging.WARNING):
-        await light.on_beat(1, 128.0, False)
+        await commit(light, decoder, clock, 'drop', age_sec=16.4)
+        await commit(light, decoder, clock, 'breakdown', age_sec=16.4)
     intent = [e for e in queue._queue if e[4] == 'intent'][0]
     assert intent[3] == 0.0
-    assert 'chain latency' in caplog.text.lower()
+    assert 'late' in caplog.text.lower()
+    assert len([r for r in caplog.records if 'late' in r.message.lower()]) == 1, \
+        'one line per transition, not one per bar'
 
 
 def test_the_startup_line_names_both_halves_of_the_measured_chain(caplog):
@@ -364,6 +397,79 @@ async def test_a_decoder_decision_after_silence_takes_the_stage_back():
     clock.advance(14.0)
     await queue.drain()
     assert light.current_intent is LightIntent.DROP
+
+
+async def test_a_stale_silence_atmospheric_cannot_take_a_stage_the_decoder_owns():
+    """The blocker: two producers, two delays, and the older statement winning.
+
+    A beat dropout (documented, still live) trips the timer, which describes NOW
+    and so waits the whole playback delay.  A decision describes audio ~13.7 s
+    old and waits what is left of it, so it fires first -- and then the stale
+    ATMOSPHERIC landed on top of it and, being what the engine had last decided,
+    swallowed every decision that would have repaired it.  The stage sat on the
+    quiet look through a drop, for as long as the section lasted.
+
+    One stream fixes it by construction: a command's fire time is the song
+    instant it describes plus the playback delay, and a newer statement about
+    that instant or later replaces the one already queued.
+    """
+    decoder = FakeDecoder()
+    light, queue, clock, _ = engine(decoder=decoder)
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', age_sec=13.7)
+    await elapse(light, clock, 0.4)
+    await queue.drain()
+    assert light.current_intent is LightIntent.DROP
+
+    light.analyser.since_beat = 3.0
+    await light.on_100ms_callback()
+    light.analyser.since_beat = 0.0
+
+    await elapse(light, clock, 3.0)
+    await commit(light, decoder, clock, 'drop', age_sec=13.7)
+
+    for _ in range(40):
+        await elapse(light, clock, 0.5)
+        await queue.drain()
+    assert light.current_intent is LightIntent.DROP, \
+        'the timer clobbered the stage the committer owns'
+    assert queued_intents(queue) == []
+
+
+async def test_a_run_of_real_intent_changes_is_not_swallowed_by_superseding():
+    """The other half of the same rule: superseding is about audio, not about
+    arrival.  Cancelling whatever happened to be in flight would delete every
+    intent block but the last one whenever the chain sits near its budget."""
+    decoder = FakeDecoder()
+    light, queue, clock, midi = engine(decoder=decoder)
+    await elapse(light, clock, 30.0)
+    # Two bars out of one `_advance`, which is how a burst of posteriors
+    # arrives: both are in flight at once and neither may cancel the other.
+    decoder._script.append([BarDecision(0, 'breakdown', 30.0 - 13.9),
+                            BarDecision(1, 'drop', 30.0 - 12.0)])
+    await light.on_beat(1, 128.0, False)
+    assert len(queued_intents(queue)) == 2, 'a later bar cancelled an earlier one'
+
+    seen = []
+    for _ in range(30):
+        await elapse(light, clock, 0.25)
+        await queue.drain()
+        if light.current_intent is not None and (
+                not seen or seen[-1] is not light.current_intent):
+            seen.append(light.current_intent)
+    assert seen == [LightIntent.BREAKDOWN, LightIntent.DROP]
+
+
+async def test_the_stream_is_deduplicated_against_what_it_will_show():
+    """Not against what was last decided: an intent still in flight is what the
+    stage is about to be, and re-committing it would re-roll the effect."""
+    decoder = FakeDecoder()
+    light, queue, clock, _ = engine(decoder=decoder)
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', age_sec=13.0)
+    await elapse(light, clock, 0.2)
+    await commit(light, decoder, clock, 'drop', age_sec=13.2)
+    assert len(queued_intents(queue)) == 1
 
 
 def _posterior(time_sec, boundary):

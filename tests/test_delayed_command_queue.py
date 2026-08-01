@@ -249,6 +249,44 @@ async def test_streams_are_clamped_independently():
     assert fired == ['intent']
 
 
+async def test_dropping_pending_commands_takes_only_the_ones_at_or_after():
+    """The supersede primitive: a newer statement about a song instant replaces
+    what was queued for that instant or later, and leaves everything about
+    earlier audio alone."""
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('intent', _record(fired, 'early'), delay_sec=1.0)
+    await q.enqueue('intent', _record(fired, 'late'), delay_sec=5.0)
+    await q.enqueue('beat', _record(fired, 'beat'), delay_sec=5.0)
+
+    assert q.drop_pending('intent', clock.monotonic() + 5.0) == 1
+    clock.advance(20.0)
+    await q.drain()
+    assert fired == ['early', 'beat']
+
+
+async def test_dropping_pending_commands_releases_the_clamp_they_were_holding():
+    """A cancelled command must not go on ordering the stream from the grave:
+    its fire time was the floor every later one was clamped to."""
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('intent', _record(fired, 'stale'), delay_sec=9.0)
+    q.drop_pending('intent', clock.monotonic())
+    await q.enqueue('intent', _record(fired, 'fresh'), delay_sec=0.5)
+
+    clock.advance(1.0)
+    await q.drain()
+    assert fired == ['fresh']
+
+
 def _record(sink, name):
     async def command():
         sink.append(name)

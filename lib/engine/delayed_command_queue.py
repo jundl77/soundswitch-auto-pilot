@@ -60,6 +60,33 @@ class DelayedCommandQueue:
             (fire_at, self._sequence, enqueue_time, delay, label, factory),
             key=lambda item: (item[0], item[1]))
 
+    def drop_pending(self, label: str, from_fire_at: float) -> int:
+        """Cancel this label's undelivered commands firing at or after a time.
+
+        The supersede half of a single serialized stream: a command's fire time
+        is the song instant it describes plus the playback delay, so a newer
+        statement about that instant or later replaces whatever was queued for
+        it.  Without this, a beat-dropout ATMOSPHERIC enqueued for song instant
+        N still lands after the committer has already said what N was -- and,
+        being what the engine last decided, suppresses every repair.
+
+        The clamp goes with them: a cancelled command's fire time was the floor
+        every later one in its stream was held to, and leaving it in place lets
+        it order the stream from the grave.
+        """
+        keep = [item for item in self._queue
+                if not (item[4] == label and item[0] >= from_fire_at)]
+        dropped = len(self._queue) - len(keep)
+        if not dropped:
+            return 0
+        self._queue = keep
+        alive = [item[0] for item in keep if item[4] == label]
+        if alive:
+            self._last_fire_at[label] = max(alive)
+        else:
+            self._last_fire_at.pop(label, None)
+        return dropped
+
     async def drain(self) -> None:
         if not self._queue:
             return

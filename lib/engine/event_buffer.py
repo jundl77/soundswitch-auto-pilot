@@ -76,7 +76,16 @@ class EventBuffer:
             cutoff = now - self._window_sec * 2
             self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
-    def set_intent(self, intent: str) -> None:
+    def set_intent(self, intent: str, song_sec: float | None = None) -> None:
+        """``t`` is when the room sees it; ``song_t`` is the audio it describes.
+
+        Both, because they are two different facts and only one of them can be
+        recovered from the other.  A block's stamp is its fire time, and the
+        delay behind it moves per command (B1) -- so no constant de-shift
+        reaches song time, and a consumer that guesses one scores the show
+        against the wrong part of the track.  The engine knows the instant
+        exactly at commit time; this is where it says so.
+        """
         with self._lock:
             if intent == self._current_intent:
                 return
@@ -84,7 +93,10 @@ class EventBuffer:
             now = self._now()
             if self._intents and 'end' not in self._intents[-1]:
                 self._intents[-1]['end'] = now
-            self._intents.append({'t': now, 'intent': intent})
+            block = {'t': now, 'intent': intent}
+            if song_sec is not None:
+                block['song_t'] = round(float(song_sec), 6)
+            self._intents.append(block)
             cutoff = now - self._window_sec * 2
             self._intents = [e for e in self._intents if e.get('end', now) >= cutoff]
 

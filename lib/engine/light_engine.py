@@ -69,15 +69,16 @@ class LightEngine(IMusicAnalyserHandler):
         self._note_counter: int = 0
         self._atmospheric_sent: bool = False
         self._current_intent: LightIntent | None = None
-        # What the committer has decided, which runs a queue delay ahead of what
-        # the stage is showing.
-        self._decided_intent: LightIntent | None = None
+        # The intent commands enqueued and not yet delivered, in fire order.
+        # With `_current_intent` they are the whole stream: what the stage shows
+        # now, and what it is going to show.
+        self._pending_intents: list = []
         self._published_bpm: dict = {}
         self._bars_in_current_intent: int = 0
         self._intent_commits: int = 0
         self._audio_sec: float = 0.0
         self._latency_logged_at: float | None = None
-        self._latency_clamped: bool = False
+        self._committing_late: bool = False
         self._log_chain_latency()
 
     def set_analyser(self, analyser: MusicAnalyser):
@@ -86,6 +87,23 @@ class LightEngine(IMusicAnalyserHandler):
     @property
     def current_intent(self) -> LightIntent | None:
         return self._current_intent
+
+    @property
+    def decided_intent(self) -> LightIntent | None:
+        """What the stream ends on: the last command still in flight, or what
+        the stage is showing when nothing is.
+
+        Deduplicating against "what was last decided" instead was the shape of
+        the latch: a command that had been superseded still counted as the
+        engine's opinion, so the decision that would have repaired it read as a
+        repeat and was dropped.
+        """
+        return (self._pending_intents[-1][1] if self._pending_intents
+                else self._current_intent)
+
+    @property
+    def audio_sec(self) -> float:
+        return self._audio_sec
 
     @property
     def intent_commits(self) -> int:
@@ -109,7 +127,6 @@ class LightEngine(IMusicAnalyserHandler):
             self.event_buffer.set_playing(False)
         self._atmospheric_sent = False
         self._current_intent = None
-        self._decided_intent = None
         self._bars_in_current_intent = 0
         # D10: everything the stages hold describes audio from before the gap,
         # and the audio counter is the time base the grid and the cells share.
@@ -193,52 +210,23 @@ class LightEngine(IMusicAnalyserHandler):
         for decision in decisions:
             intent = intent_for_class(decision.label)
             self._bars_in_current_intent += 1
+            decided = self.decided_intent
 
-            if (self._decided_intent is LightIntent.DROP
-                    and intent is LightIntent.DROP
+            if (decided is LightIntent.DROP and intent is LightIntent.DROP
                     and self._bars_in_current_intent >= PEAK_PROMOTION_BARS):
                 logging.info(f'[engine] sustained DROP over '
                              f'{self._bars_in_current_intent} bars — promoting to PEAK')
                 intent = LightIntent.PEAK
-            elif (self._decided_intent is LightIntent.PEAK
-                    and intent is LightIntent.DROP):
+            elif decided is LightIntent.PEAK and intent is LightIntent.DROP:
                 # Absorbed, so the pair cannot oscillate and the timeline keeps
                 # reading the PEAK the room is actually looking at.
-                continue
-
-            if intent is self._decided_intent:
                 continue
 
             logging.info(
                 f'[engine] bar {decision.bar} @ {decision.start_sec:.2f}s  '
                 f'{decision.label} → {intent.name}')
-            await self._enqueue_or_apply('intent', intent,
-                                         delay_sec=self._intent_delay_sec())
-
-    def _intent_delay_sec(self) -> float:
-        """B1: what the chain has not already spent of the playback delay.
-
-        Measured rather than assumed -- the decoder's half is proportional to
-        bar length, so it moves with the tempo and ranges 12.11 s to 16.37 s
-        across the corpus at lag 2.  Clamped at zero, which is #154's accepted
-        lateness on slow material rather than a budget nobody can meet.
-        """
-        if self.section_decoder is None:
-            return self._playback_delay_sec
-        delay = self._playback_delay_sec - self.section_decoder.chain_latency_sec
-        if delay < 0.0:
-            if not self._latency_clamped:
-                self._latency_clamped = True
-                logging.warning(
-                    f'[engine] chain latency '
-                    f'{self.section_decoder.chain_latency_sec:.2f}s exceeds the '
-                    f'{self._playback_delay_sec:.2f}s playback delay — intents '
-                    f'commit {-delay:.2f}s late (slow tempo, accepted)')
-            return 0.0
-        if self._latency_clamped:
-            self._latency_clamped = False
-            logging.info('[engine] chain latency is back inside the playback delay')
-        return delay
+            await self._commit_intent(
+                intent, max(0.0, self._audio_sec - decision.start_sec))
 
     def _log_chain_latency(self) -> None:
         """Both halves, because only one of them can move."""
@@ -261,30 +249,79 @@ class LightEngine(IMusicAnalyserHandler):
             f'{max(0.0, self._playback_delay_sec - latency):.2f}s — ensure '
             f'dmx-enttec-node playback_delay_seconds matches')
 
-    async def _apply_intent(self, intent: LightIntent) -> None:
+    async def _commit_intent(self, intent: LightIntent, age_sec: float) -> None:
+        """The one path any intent reaches the stage by.
+
+        Both producers describe a SONG instant -- the committer a bar line, the
+        beat-absence timer the present moment -- so a command's fire time is
+        that instant plus the playback delay and nothing else, and the age is
+        measured (`_audio_sec - start_sec`) rather than modelled from a median
+        bar.  Two streams with two delays put the older statement last: a
+        decision is ~13.7 s old and waited ~0.3 s, a timer trip is new and
+        waited the whole 14 s, so a false ATMOSPHERIC landed on top of a drop
+        the committer had already called and then swallowed every repair.
+
+        A newer statement about the same instant or later replaces what is
+        queued for it; anything about earlier audio is left alone, because
+        superseding by arrival order would delete every intent block but the
+        last one whenever the chain sits near its budget.
+        """
+        now = self._clock.monotonic()
+        fire_at = now - age_sec + self._playback_delay_sec
+        self._note_lateness(now - fire_at)
+        fire_at = max(fire_at, now)
+
+        if self.command_queue:
+            self.command_queue.drop_pending('intent', fire_at)
+        self._pending_intents = [item for item in self._pending_intents
+                                 if item[0] < fire_at]
+        if intent is self.decided_intent:
+            return
+
+        self._bars_in_current_intent = 0
+        # The song instant this describes, in the report's own time base, so a
+        # consumer never has to reconstruct it from a delay it did not see.
+        song_sec = (None if self.event_buffer is None
+                    else self.event_buffer.elapsed() - age_sec)
+        if not self.command_queue:
+            await self._apply_intent(None, intent, song_sec)
+            return
+        entry = (fire_at, intent)
+        self._pending_intents.append(entry)
+        await self.command_queue.enqueue(
+            'intent', lambda: self._apply_intent(entry, intent, song_sec),
+            delay_sec=fire_at - now)
+
+    def _note_lateness(self, late_sec: float) -> None:
+        """#154's accepted lateness: one line per transition, not per bar."""
+        if late_sec > 0.0:
+            if not self._committing_late:
+                self._committing_late = True
+                logging.warning(
+                    f'[engine] the chain is older than the '
+                    f'{self._playback_delay_sec:.2f}s playback delay — intents '
+                    f'commit {late_sec:.2f}s late (slow tempo, accepted)')
+        elif self._committing_late:
+            self._committing_late = False
+            logging.info('[engine] the chain is back inside the playback delay')
+
+    async def _apply_intent(self, entry, intent: LightIntent,
+                            song_sec: float | None) -> None:
         """The single path that moves the stage: timeline and MIDI together, so
         nothing can light an intent the timeline does not know about.
 
         Runs when the queue fires, which is the instant the room hears the audio
-        this was decided from -- hence the split from ``_decided_intent``, which
-        is where the decision stream has got to.  Deciding against the stage
-        would re-commit every bar for a whole playback delay.
+        this was decided from -- hence the split from ``decided_intent``, which
+        is where the stream has got to.
         """
+        if entry is not None and self._pending_intents \
+                and self._pending_intents[0] is entry:
+            self._pending_intents.pop(0)
         if self.event_buffer:
-            self.event_buffer.set_intent(intent.value)
+            self.event_buffer.set_intent(intent.value, song_sec=song_sec)
         self._current_intent = intent
         self._intent_commits += 1
         await self.effect_controller.change_effect(intent)
-
-    async def _enqueue_or_apply(self, label: str, intent: LightIntent,
-                                delay_sec: float | None = None) -> None:
-        self._decided_intent = intent
-        self._bars_in_current_intent = 0
-        if self.command_queue:
-            await self.command_queue.enqueue(
-                label, lambda: self._apply_intent(intent), delay_sec=delay_sec)
-        else:
-            await self._apply_intent(intent)
 
     async def on_note(self):
         dmx_data = [0] * 24
@@ -299,9 +336,10 @@ class LightEngine(IMusicAnalyserHandler):
         if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True
-                # The timer describes NOW and the chain has spent nothing on it,
-                # so it waits the whole playback delay.
-                await self._enqueue_or_apply('atmospheric', LightIntent.ATMOSPHERIC)
+                # The timer describes NOW, so nothing has been spent on it and
+                # it waits the whole playback delay -- through the same stream
+                # as every decision, which is what keeps the two in order.
+                await self._commit_intent(LightIntent.ATMOSPHERIC, 0.0)
 
     async def on_1sec_callback(self):
         if not self.analyser.is_song_playing():
