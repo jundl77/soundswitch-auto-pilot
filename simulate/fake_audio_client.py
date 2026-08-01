@@ -8,6 +8,12 @@ log = logging.getLogger(__name__)
 class FileAudioClient:
     # Never throttles: pacing is the simulation runner's job.
 
+    # Which decoder produced the samples, and therefore which world's numbers
+    # these are (#161).  The corpus feature pipeline decodes with ffmpeg and the
+    # two disagree on real decisions, so anything cached off this client's audio
+    # is filed under the decoder that made it.
+    decode_path = 'librosa'
+
     def __init__(self, sample_rate: int, buffer_size: int, path: str):
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size

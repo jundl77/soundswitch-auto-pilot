@@ -6,6 +6,7 @@ import time
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import Clock, SYSTEM_CLOCK, VirtualClock
+from simulate import cell_cache
 
 TIMING_TOLERANCE_SEC = 0.050
 # Must match PLAYBACK_DELAY_SEC in lib/main.py and playback_delay_seconds in
@@ -47,7 +48,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     if threaded:
         watchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE, clock=clock)
     if section is None:
-        section = load_section_chain(watchdog=watchdog)
+        section = load_section_chain(watchdog=watchdog, audio_client=audio_client)
 
     effect_controller = EffectController(midi_client, event_buffer=event_buffer, clock=clock)
     light_engine = LightEngine(
@@ -77,7 +78,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     }, command_queue
 
 
-def load_section_chain(watchdog=None):
+def load_section_chain(watchdog=None, audio_client=None):
     """The shipped chain, reset, or None on a machine that does not have it.
 
     Built once per process and reused, because the encoder is 1.3 GB of weights
@@ -91,29 +92,67 @@ def load_section_chain(watchdog=None):
     belonging to one run, and handing that to the next simulation would share a
     shed level between two shows.  The real-time paths build one each and stop
     it; only the fast sim, which is where the cache pays, reuses.
+
+    **A warm cell cache short-circuits all of that** (D12): the extractor is
+    replayed, so no encoder is loaded, the chain is cheap to build per track,
+    and there is nothing worth sharing between simulations.
     """
     global _SECTION_CHAIN
-    if watchdog is not None:
-        from lib import section_chain
+    from lib import section_chain
 
-        if not section_chain.artifacts_present():
-            logging.warning('[sim] no NN artifacts on this machine — running '
-                            'the degradation state (beats, silence, held intent)')
+    if watchdog is not None:
+        # The threaded paths exist to run the real GPU stage; a replay there
+        # would prove nothing about the thread it is meant to exercise.
+        if not _artifacts_or_degrade():
             return None
         return section_chain.build_section_chain(watchdog=watchdog)
-    if _SECTION_CHAIN is _UNBUILT:
-        from lib import section_chain
 
-        if not section_chain.artifacts_present():
-            logging.warning('[sim] no NN artifacts on this machine — running '
-                            'the degradation state (beats, silence, held intent)')
-            _SECTION_CHAIN = None
-        else:
-            _SECTION_CHAIN = section_chain.build_section_chain()
-    if _SECTION_CHAIN is not None:
-        _SECTION_CHAIN.stream.reset()
-        _SECTION_CHAIN.decoder.reset()
-    return _SECTION_CHAIN
+    plan = _cell_cache_plan(audio_client)
+    if plan is not None:
+        replay, reason = cell_cache.open_replay(*plan)
+        if replay is not None:
+            logging.info(f'[sim] replaying cached extractor cells ← {plan[0].name}')
+            return section_chain.build_section_chain(extractor=lambda _: replay)
+        logging.info(f'[sim] extractor cells: {reason} — this run needs the GPU')
+
+    if _SECTION_CHAIN is _UNBUILT:
+        _SECTION_CHAIN = (section_chain.build_section_chain()
+                          if _artifacts_or_degrade() else None)
+    if _SECTION_CHAIN is None:
+        return None
+    _SECTION_CHAIN.stream.reset()
+    _SECTION_CHAIN.decoder.reset()
+    if plan is None:
+        return _SECTION_CHAIN
+    return cell_cache.recording_chain(_SECTION_CHAIN, *plan)
+
+
+def _artifacts_or_degrade() -> bool:
+    from lib import section_chain
+
+    if section_chain.artifacts_present():
+        return True
+    logging.warning('[sim] no NN artifacts on this machine — running '
+                    'the degradation state (beats, silence, held intent)')
+    return False
+
+
+def _cell_cache_plan(audio_client):
+    """``(sidecar path, key)`` for a client that reads a file it can name.
+
+    A microphone names neither a file nor a decoder, so it gets no cache and
+    the question never reaches the artifacts.
+    """
+    from lib import section_chain
+
+    path = getattr(audio_client, 'path', None)
+    decode = getattr(audio_client, 'decode_path', None)
+    if path is None or decode is None or not section_chain.artifacts_present():
+        return None
+    geometry = section_chain.read_geometry().stream
+    return (cell_cache.sidecar_path(path, decode),
+            cell_cache.cache_key(geometry, source_rate=SAMPLE_RATE,
+                                 audio_path=path, decode_path=decode))
 
 
 _UNBUILT = object()

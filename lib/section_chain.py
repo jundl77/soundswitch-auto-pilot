@@ -101,6 +101,36 @@ def artifacts_present(data_dir=None) -> bool:
         return False
 
 
+class Geometry(NamedTuple):
+    stream: object
+    head: object
+    mean: object
+
+
+def read_geometry(data_dir=None) -> Geometry:
+    """Everything the shipped files record about shape, and no weights.
+
+    Split out because the simulation's cell cache (D12) has to key on the
+    extractor geometry before deciding whether this run needs a 1.3 GB encoder
+    at all -- asking for it must not be what loads one.
+    """
+    from lib.analyser import mert_stream as M
+    from lib.analyser.section_model import load_head_geometry
+
+    found = artifacts(data_dir)
+    absent = found.missing()
+    if absent:
+        raise FileNotFoundError(
+            f"the shipped model artifacts are missing: {', '.join(absent)} -- "
+            f"they live in the gitignored corpus directory, not in the "
+            f"repository (see $RAVEFORM_DATA_DIR)")
+    head = load_head_geometry(found.graph)
+    stream = M.load_stream_geometry(found.affine,
+                                    label_frame_sec=head.label_frame_sec)
+    mean, _ = M.load_input_affine(found.affine)
+    return Geometry(stream, head, mean)
+
+
 def _check_class_space(priors) -> None:
     """Every class the model can decode has to light something, at startup.
 
@@ -117,7 +147,8 @@ def _check_class_space(priors) -> None:
 
 
 def build_section_chain(data_dir=None, *, device: str | None = None,
-                        fp16: bool = True, watchdog=None) -> SectionChain:
+                        fp16: bool = True, watchdog=None,
+                        extractor=None) -> SectionChain:
     """Encoder -> student -> committer, with the geometry read off the files.
 
     **A watchdog is the request for a thread** (D3).  The GPU stage reports its
@@ -126,35 +157,32 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
     stages run inline, which is what the virtual-clock simulation needs and what
     keeps its reports byte-identical.  One switch, and it is the object the two
     halves would have had to share anyway.
+
+    ``extractor`` is D12's seam: a callable handed the stream geometry that
+    returns a replacement feature stage, or None.  When it returns one, no
+    encoder is loaded at all -- which is the whole point of the simulation's
+    cell cache, and the reason it is a factory rather than a built object.
     """
     from lib.analyser import mert_stream as M
-    from lib.analyser.section_model import (PosteriorStream, SectionModel,
-                                            load_head_geometry)
+    from lib.analyser.section_model import PosteriorStream, SectionModel
     from lib.engine.section_decoder import (SHIPPING_DECODER_CONFIG, Priors,
                                             SectionDecoder, load_decoder_config)
 
     found = artifacts(data_dir)
-    absent = found.missing()
-    if absent:
-        raise FileNotFoundError(
-            f"the shipped model artifacts are missing: {', '.join(absent)} -- "
-            f"they live in the gitignored corpus directory, not in the "
-            f"repository (see $RAVEFORM_DATA_DIR)")
+    geometry, head, mean = read_geometry(data_dir)
 
-    head = load_head_geometry(found.graph)
-    geometry = M.load_stream_geometry(found.affine,
-                                      label_frame_sec=head.label_frame_sec)
-    mean, _ = M.load_input_affine(found.affine)
+    stage = None if extractor is None else extractor(geometry)
+    build_encoder = None
+    if stage is None:
+        device = device or M.best_device()
 
-    device = device or M.best_device()
+        def build_encoder():
+            return M.load_encoder(geometry, device=device, fp16=fp16)
 
-    def build_encoder():
-        return M.load_encoder(geometry, device=device, fp16=fp16)
+        stage = M.MertStream(build_encoder(), geometry=geometry)
 
-    encoder = build_encoder()
-    stream = PosteriorStream(M.MertStream(encoder, geometry=geometry),
-                             SectionModel(found.graph, mean=mean,
-                                          geometry=head))
+    stream = PosteriorStream(stage, SectionModel(found.graph, mean=mean,
+                                                 geometry=head))
     if watchdog is not None:
         from lib.analyser.gpu_stage import GpuStage
 
@@ -171,8 +199,13 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
     decoder = SectionDecoder(priors,
                              load_decoder_config(SHIPPING_DECODER_CONFIG),
                              feature_latency_sec=feature_latency_sec)
-    logging.info(f'[chain] {MODEL_VERSION} on {encoder.device} | '
+    logging.info(f'[chain] {MODEL_VERSION} on {_where(stage)} | '
                  f'feature latency {feature_latency_sec:.4f}s '
                  f'(F {geometry.margin_sec:g} + hop {geometry.hop_sec:g} + '
                  f'head {head.future_sec:g})')
     return SectionChain(stream, decoder, feature_latency_sec)
+
+
+def _where(stage) -> str:
+    encoder = getattr(stage, "_encoder", None)
+    return "replayed cells" if encoder is None else encoder.device
