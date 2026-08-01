@@ -31,7 +31,6 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
     CLEAN_MANIFEST_FILE,
     CONTINUOUS_COLUMNS,
     FEATURES_DIR,
-    KICK_MIN_RMS,
     MEL_EXPORTER_KEY,
     MEL_EXPORTER_VERSION,
     NO_INTENT,
@@ -71,10 +70,8 @@ def beat(t: float, **overrides) -> dict:
     record = {
         "t": t,
         "bpm": 128.0,
-        "onset_density": 4.0,
-        "kick_strength": 2.0,
-        "centroid_trend": 1.0,
-        "sub_bass_ratio": 0.3,
+        "strength": 0.0,
+        "change": False,
         "rms": 0.1,
     }
     record.update(overrides)
@@ -446,30 +443,30 @@ def test_join_reports_no_reattribution_when_every_block_came_off_the_queue():
 # --------------------------------------------------------------------------- #
 
 
-def test_kick_known_follows_the_rms_silence_gate():
-    """The kick sentinel is a number in the range of real ratios, so presence is
-    read off the row's own RMS (lib/analyser/CLAUDE.md)."""
-    sections = [(0.0, 30.0, "drop")]
-    beats = [beat(1.0, rms=KICK_MIN_RMS - 0.001),
-             beat(2.0, rms=KICK_MIN_RMS),
-             beat(3.0, rms=KICK_MIN_RMS + 0.001)]
-    rows, _stats = join(sections, beats)
+def test_every_feature_column_reads_a_key_the_report_still_carries():
+    """A column whose source key is gone joins as 0.0 on every beat of every
+    track, and nothing in the corpus build says so -- the header still names it,
+    the CSV still has a cell, and the z-twin standardises a constant.  So the
+    schema is checked against a report shaped as the pipeline now emits one,
+    rather than against the pre-demolition fixture the rest of this module uses.
+    """
+    live = {"t": 1.0, "bpm": 128.0, "strength": 0.0, "change": False, "rms": 0.1}
+    rows, _stats = join([(0.0, 30.0, "drop")], [live])
 
-    assert [row["kick_known"] for row in rows] == [0, 1, 1]
+    derived = {"track_id", "youtube_id", "t_song", "intent_at_beat",
+               "label_canonical", "label_raw", "label_v1", "bar_position_unknown"}
+    derived |= {f"{column}_z" for column in CONTINUOUS_COLUMNS}
+
+    assert set(rows[0]) - derived <= set(live)
+    assert set(TABLE_HEADER) - derived <= set(live)
 
 
 def test_feature_columns_are_copied_through_verbatim():
     sections = [(0.0, 30.0, "drop")]
-    rows, _stats = join(sections, [beat(1.0, bpm=124.5, onset_density=6.0,
-                                        kick_strength=3.25, centroid_trend=1.4,
-                                        sub_bass_ratio=0.42, rms=0.09)])
+    rows, _stats = join(sections, [beat(1.0, bpm=124.5, rms=0.09)])
     row = rows[0]
 
     assert row["bpm"] == 124.5
-    assert row["onset_density"] == 6.0
-    assert row["kick_strength"] == 3.25
-    assert row["centroid_trend"] == 1.4
-    assert row["sub_bass_ratio"] == 0.42
     assert row["rms"] == 0.09
 
 

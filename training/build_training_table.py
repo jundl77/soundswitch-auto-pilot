@@ -155,16 +155,17 @@ CACHE_VERSION = 1
 # --------------------------------------------------------------------------- #
 
 # Continuous features get a per-track z-scored twin (``<name>_z``).  Mixes differ
-# in loudness, brightness and bass weight by more than sections do within one
-# mix, so a fitter reading absolute values learns the mastering as much as the
-# music; the z-scored copy is the mix-invariant view.  Both are kept -- the
-# absolute values are what the live classifier actually thresholds on.
+# in loudness by more than sections do within one mix, so a fitter reading
+# absolute values learns the mastering as much as the music; the z-scored copy is
+# the mix-invariant view.  Both are kept -- absolute RMS is what the silence gate
+# reads, and the NN's own features are the mel sidecar, not these columns.
+#
+# The rule engine's four features (onset density, kick strength, centroid trend,
+# sub-bass ratio) were columns here until the demolition deleted the chains that
+# produced them.  A report carries none of those keys now, so emitting them would
+# write 0.0 on every beat of every track with nothing to say so.
 CONTINUOUS_COLUMNS = (
     "bpm",
-    "onset_density",
-    "kick_strength",
-    "centroid_trend",
-    "sub_bass_ratio",
     "rms",
 )
 
@@ -173,11 +174,6 @@ TABLE_HEADER = (
     "youtube_id",
     "t_song",                # song-position seconds of the beat
     "bpm",
-    "onset_density",
-    "kick_strength",
-    "kick_known",            # 0/1: was the kick measurable at this beat
-    "centroid_trend",
-    "sub_bass_ratio",
     "rms",
     "intent_at_beat",        # committed show state, de-shifted to song time
     "label_canonical",       # 7-class Raveform vocabulary
@@ -196,15 +192,6 @@ NO_INTENT = ""
 # beat falls.  The column is constant today and exists so the schema does not
 # change when Stage-2 downbeat tracking lands.
 BAR_POSITION_UNKNOWN = 1
-
-# Kick presence is read off the row's own RMS against the analyser's silence
-# gate, NOT by testing kick_strength against its sentinel: the sentinel is a
-# number in the range of real ratios, so a genuine measurement can land on it
-# (lib/analyser/CLAUDE.md, "Kick strength").  This constant MUST equal
-# `_KICK_MIN_RMS` in lib/analyser/music_analyser.py; the coupling is pinned by
-# tests/test_training_table_features.py rather than imported, so the table's
-# schema does not depend on a private name in the pipeline under evaluation.
-KICK_MIN_RMS = 0.005
 
 # label_v1: the canonical vocabulary merged down to the 5 classes the neural
 # section classifier trains on (docs/superpowers/specs/2026-07-26-nn-section-
@@ -530,18 +517,12 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
             intent = NO_INTENT
             without_intent += 1
 
-        rms = float(record.get("rms", 0.0))
         rows.append({
             "track_id": track_id,
             "youtube_id": youtube_id_,
             "t_song": t,
             "bpm": float(record.get("bpm", 0.0)),
-            "onset_density": float(record.get("onset_density", 0.0)),
-            "kick_strength": float(record.get("kick_strength", 0.0)),
-            "kick_known": 1 if rms >= KICK_MIN_RMS else 0,
-            "centroid_trend": float(record.get("centroid_trend", 0.0)),
-            "sub_bass_ratio": float(record.get("sub_bass_ratio", 0.0)),
-            "rms": rms,
+            "rms": float(record.get("rms", 0.0)),
             "intent_at_beat": intent,
             "label_canonical": label,
             "label_raw": raw.at(t) or "",
