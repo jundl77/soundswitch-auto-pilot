@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -176,6 +177,12 @@ class Flushed(RuntimeError):
 
 
 class Posterior(NamedTuple):
+    """``index`` is the extractor's cell index, which is song time and not a
+    count of pushes.  The two are the same number until something skips cells --
+    a `resync` after a ring overrun does exactly that -- and after one, a model
+    counting its own pushes stamps every remaining posterior early by the length
+    of the gap, which the decoder reads as the wrong part of the track."""
+
     index: int
     time_sec: float
     posterior: np.ndarray
@@ -208,25 +215,36 @@ class SectionModel:
                                axis=0)
         self._state = np.zeros((1, 1, self.geometry.rnn_hidden),
                                dtype=np.float32)
-        self._pushed = 0
+        self._window: deque = deque()
+        self._last_index: int | None = None
         self._flushed = False
 
-    def push(self, features) -> Posterior | None:
+    def push(self, features, index: int | None = None) -> Posterior | None:
+        """One cell in, the posterior for the cell ``future_cells`` back out.
+
+        ``index`` is the extractor's, and carrying it is what keeps the two
+        halves on one clock across a gap.  Omitted, it carries on from the last
+        cell pushed, which is the same number whenever nothing skipped.
+        """
         if self._flushed:
             raise Flushed("the model was flushed at a song boundary; reset it "
                           "before pushing the next song's cells")
-        return self._push(features)
+        return self._push(features, index)
 
-    def _push(self, features) -> Posterior | None:
+    def _push(self, features, index: int | None = None) -> Posterior | None:
         row = np.asarray(features, dtype=np.float32).reshape(-1)
         if len(row) != self.geometry.input_dim:
             raise ValueError(f"a cell is {len(row)}-dim, the graph's input_dim "
                              f"is {self.geometry.input_dim}")
         self._ring[:-1] = self._ring[1:]
         self._ring[-1] = row
-        self._pushed += 1
-        index = self._pushed - 1 - self.geometry.future_cells
-        return None if index < 0 else self._step(index)
+        self._last_index = (0 if self._last_index is None
+                            else self._last_index + 1) if index is None \
+            else int(index)
+        self._window.append(self._last_index)
+        if len(self._window) <= self.geometry.future_cells:
+            return None
+        return self._step(self._window.popleft())
 
     def flush(self) -> list:
         """Drain the cells still inside the future window at a song boundary."""
@@ -268,7 +286,7 @@ class PosteriorStream:
         posteriors = []
         while self.stream.due():
             for cell in self.stream.run_pass():
-                posterior = self.model.push(cell.features)
+                posterior = self.model.push(cell.features, cell.index)
                 if posterior is not None:
                     posteriors.append(posterior)
         return posteriors

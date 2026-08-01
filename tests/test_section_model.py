@@ -257,6 +257,49 @@ def test_a_posterior_is_a_distribution_and_the_boundary_a_probability(
 
 
 # --------------------------------------------------------------------------- #
+# A posterior is stamped by the cell it decided, not by how many arrived
+# --------------------------------------------------------------------------- #
+
+
+def test_a_posterior_carries_the_index_of_the_cell_it_decided(tiny, mean):
+    model = _model(tiny, mean)
+    cells = _cells(FUTURE + 5)
+    live = [model.push(row, index=400 + n) for n, row in enumerate(cells)]
+    assert [item.index for item in live if item is not None] \
+        == [400, 401, 402, 403, 404]
+
+
+def test_a_skipped_cell_run_does_not_slide_the_posterior_clock(
+        tiny, geometry, mean):
+    """The resync/push-counter disagreement, at the seam it lives on.
+
+    `MertStream.resync` abandons the cells the ring no longer holds and rejoins
+    the live edge, so its cell indices SKIP; a model counting its own pushes
+    stamps the first cell after the gap as if the gap had never happened, and
+    every posterior for the rest of the song is early by the length of the shed.
+    The decoder joins cells to bars by time, so that is not a cosmetic stamp --
+    it is the show reading the wrong part of the track, silently.
+    """
+    model = _model(tiny, mean)
+    for n, row in enumerate(_cells(FUTURE + 5)):
+        model.push(row, index=n)
+    model.reset()
+    live = [model.push(row, index=900 + n)
+            for n, row in enumerate(_cells(FUTURE + 2, seed=7))]
+    emitted = [item for item in live if item is not None]
+    assert [item.index for item in emitted] == [900, 901]
+    assert emitted[0].time_sec == pytest.approx(901 * geometry.label_frame_sec)
+
+
+def test_the_flushed_tail_carries_on_from_the_last_cell_pushed(tiny, mean):
+    model = _model(tiny, mean)
+    for n, row in enumerate(_cells(20)):
+        model.push(row, index=500 + n)
+    assert [item.index for item in model.flush()] \
+        == list(range(500 + 20 - FUTURE, 520))
+
+
+# --------------------------------------------------------------------------- #
 # The graph is verified at startup, not at the first beat
 # --------------------------------------------------------------------------- #
 
@@ -485,10 +528,12 @@ class _FakeModel:
     def __init__(self, answers):
         self.answers = list(answers)
         self.pushed = []
+        self.indices = []
         self.resets = 0
 
-    def push(self, features):
+    def push(self, features, index=None):
         self.pushed.append(features)
+        self.indices.append(index)
         return self.answers.pop(0) if self.answers else None
 
     def reset(self):
@@ -534,3 +579,15 @@ def test_resetting_the_pair_resets_both_halves():
     stream, model = _FakeStream([]), _FakeModel([])
     PosteriorStream(stream, model).reset()
     assert (stream.resets, model.resets) == (1, 1)
+
+
+def test_the_extractor_s_cell_index_is_what_the_model_is_stamped_with():
+    """The two halves must agree about song time across a gap, and only the
+    extractor knows there was one."""
+    from lib.analyser.section_model import PosteriorStream
+
+    stream = _FakeStream([[_cell(7, 'a')], [_cell(413, 'b')]])
+    stream._due = 2
+    model = _FakeModel(['p0', 'p1'])
+    PosteriorStream(stream, model).push_audio([0.0] * 8)
+    assert model.indices == [7, 413]
