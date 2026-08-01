@@ -81,13 +81,28 @@ async def _run_file_fast(args):
     sys.exit(0 if passed else 1)
 
 
-def _run_file_realtime_ui(args):
+def _session_buffer(look_ahead_sec: float, clock=None):
+    """A file has an end, so the session keeps all of it.
+
+    The view only ever draws the last thirty seconds, but the report written
+    when the track finishes is what the view is checked against -- and the
+    default window drops every intent older than two minutes silently.  The
+    microphone path keeps that window, because a set has no end.
+    """
+    from lib.clock import SYSTEM_CLOCK
     from lib.engine.event_buffer import EventBuffer
+
+    return EventBuffer(window_sec=float('inf'),
+                       clock=clock or SYSTEM_CLOCK,
+                       look_ahead_sec=look_ahead_sec)
+
+
+def _run_file_realtime_ui(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
-    event_buffer = EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC)
+    event_buffer = _session_buffer(PLAYBACK_DELAY_SEC)
     # Wall-clock paced, so the GPU stage belongs on its own thread here for
     # the same reason it does in production (D3).
     components, command_queue = build_simulation(audio_client, event_buffer,

@@ -315,3 +315,21 @@ def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
 
     import json
     assert [b['intent'] for b in json.loads(report.read_text())['intents']] == ['drop']
+
+
+def test_a_ui_file_session_keeps_the_whole_track():
+    """The live view only draws the last thirty seconds, but the report written
+    when the track ends is the acceptance evidence -- and a windowed buffer
+    drops every intent older than two minutes without saying so."""
+    from lib.clock import VirtualClock
+    from simulate import cli
+
+    clock = VirtualClock()
+    buffer = cli._session_buffer(14.0, clock=clock)
+    buffer.start()
+    buffer.set_intent('breakdown', song_sec=1.0)
+    clock.advance(400.0)
+    buffer.set_intent('drop', song_sec=401.0)
+
+    assert [b['intent'] for b in buffer.to_report()['intents']] \
+        == ['breakdown', 'drop']

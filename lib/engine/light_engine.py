@@ -230,6 +230,19 @@ class LightEngine(IMusicAnalyserHandler):
         self._current_intent = None
         self._bars_in_current_intent = 0
         self._floor_armed = True
+        # The new song may not inherit the old one's in-flight statements.
+        # `decided_intent` is the stream's tail, so a decision still queued
+        # from the last track deduplicates the new track's FIRST decision away
+        # -- and until it drains it is also what the floor's arming is racing,
+        # which made the floor's safety here an arithmetic accident between the
+        # playback delay and the floor margin rather than a decision.  The
+        # queued commands go with the bookkeeping: a command that would light
+        # the previous track's intent during this one is the same bug arriving
+        # by the other route.
+        if self.command_queue:
+            self.command_queue.drop_pending('intent', float('-inf'))
+            self.command_queue.drop_pending('refresh', float('-inf'))
+        self._pending_intents = []
         # Bar numbers restart with the grid, so last track's cursor would read
         # as a lag of thousands of bars.
         self._committed = None
@@ -267,6 +280,12 @@ class LightEngine(IMusicAnalyserHandler):
             # so does the instant of the last refresh.
             self.section_decoder.reset()
             self._last_refresh_sec = float('-inf')
+            # The grid restarts at bar zero, so the bar this last committed is
+            # a number from a grid that no longer exists.  Said immediately:
+            # the next decision is a whole chain latency away, and until then
+            # the view would go on showing the dead cursor.
+            self._committed = None
+            self._publish_decoder_state(None)
         for posterior in drained.posteriors:
             await self._commit(self.section_decoder.push_posterior(
                 posterior.time_sec, posterior.posterior, posterior.boundary))
@@ -430,8 +449,16 @@ class LightEngine(IMusicAnalyserHandler):
         # behind it is a second re-roll the room reads as a flicker -- and it
         # would be re-rolling from a pool chosen for a different intent.  Only
         # this direction: a refresh never drops an intent.
+        #
+        # Inclusive, unlike the intent drop above.  Two intent commands sharing
+        # a fire time are two bars the clamp collapsed and both are owed to the
+        # room; a refresh sharing one with an intent change is redundant by
+        # construction, and being strictly-after let it survive and fire FIRST
+        # (the queue orders equal times by commit sequence) -- a re-roll and an
+        # effect change back to back, which is the exact flicker this drop
+        # exists to prevent.
         if self.command_queue:
-            self.command_queue.drop_pending('refresh', fire_at)
+            self.command_queue.drop_pending('refresh', fire_at, inclusive=True)
         # The song instant this describes, in the report's own time base, so a
         # consumer never has to reconstruct it from a delay it did not see.
         song_sec = (None if self.event_buffer is None

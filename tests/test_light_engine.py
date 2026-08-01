@@ -1121,3 +1121,29 @@ async def test_a_song_boundary_forgets_the_commit_cursor():
     state = light.event_buffer.snapshot()['decoder']
     assert state['committed_bar'] is None
     assert state['lag_bars'] is None
+
+
+async def test_a_feature_gap_forgets_the_commit_cursor():
+    """A shed resets the decoder, so the grid restarts at bar zero while the
+    engine still holds the bar it last committed -- which the live view showed
+    as a lag of minus thirty-two bars on its first real run.
+
+    The song-boundary path already cleared it; the gap path is the same event
+    without a song boundary to announce it.
+    """
+    decoder = FakeDecoder()
+    chain = FakeChain()
+    light, _, clock, _ = engine(decoder=decoder, chain=chain, events=True)
+    decoder.recent_observations.append(
+        BarObservation(34, 60.0, 62.0, np.array([0.2] * 5), 0.1))
+    await elapse(light, clock, 60.0)
+    await commit(light, decoder, clock, 'breakdown', bar=32)
+    assert light.event_buffer.snapshot()['decoder']['committed_bar'] == 32
+
+    chain.gap = True
+    decoder.recent_observations.clear()
+    await elapse(light, clock, 1.0)
+
+    state = light.event_buffer.snapshot()['decoder']
+    assert state['committed_bar'] is None
+    assert state['lag_bars'] is None
