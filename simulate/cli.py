@@ -10,27 +10,38 @@ from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 
 def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
-                  pace_real_time: bool):
-    from simulate.runner import run_simulation
+                  pace_real_time: bool, report_path: str | None = None):
+    from simulate import runner
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(
-            run_simulation(components, duration_sec, pace_real_time=pace_real_time)
+            runner.run_simulation(components, duration_sec,
+                                  pace_real_time=pace_real_time)
         )
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
+        if report_path:
+            # The Dash server outlives the track, so this is the only moment the
+            # session's own report exists -- and it is what the view is checked
+            # against, a different run from the fast sim's.
+            _write_report(event_buffer, command_queue, report_path)
         loop.close()
 
 
-def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
-    from simulate.evaluator import evaluate, print_evaluation, report_checksum
+def _write_report(event_buffer, command_queue, report_path: str) -> dict:
+    from simulate.evaluator import report_checksum
     report = event_buffer.to_report(command_queue.get_timing_log())
     report['checksum'] = report_checksum(report)
     with open(report_path, 'w') as f:
         json.dump(report, f, indent=2, default=str)
     print(f'[simulate] report written → {report_path}  (sha256 {report["checksum"][:16]})')
-    result = evaluate(report)
+    return report
+
+
+def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
+    from simulate.evaluator import evaluate, print_evaluation
+    result = evaluate(_write_report(event_buffer, command_queue, report_path))
     print_evaluation(result)
     return result['passed']
 
@@ -92,7 +103,8 @@ def _run_file_realtime_ui(args):
 
     thread = threading.Thread(
         target=_run_pipeline,
-        args=(components, duration_sec, event_buffer, command_queue, True),
+        args=(components, duration_sec, event_buffer, command_queue, True,
+              args.report),
         daemon=True,
     )
     thread.start()
@@ -152,7 +164,8 @@ def add_simulate_subparser(subparsers):
     fp.add_argument('--play-audio', action='store_true',
                     help='Play audio from speakers (requires --ui and sounddevice)')
     fp.add_argument('--report', default='report.json',
-                    help='Report output path for fast mode (default: report.json)')
+                    help='Report output path (default: report.json); under --ui '
+                         'it is written when the track ends')
     fp.add_argument('--port', type=int, default=8050, help='Dash server port (--ui only)')
 
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')

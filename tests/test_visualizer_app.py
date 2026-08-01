@@ -289,3 +289,29 @@ def test_the_gpu_thread_runs_under_real_time_pacing(nn_artifacts, anchor_mp3):
     assert snap['beats_detected'] > 0
     assert snap['decoder']['observed_bar'] > 0
     assert queue.get_timing_log()
+
+
+def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
+    """The acceptance question is whether the view showed every intent the run
+    committed, and the fast sim's report is a different run -- real-time pacing
+    and a live GPU are not the virtual clock and a replay."""
+    from lib.clock import VirtualClock
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+    from lib.engine.event_buffer import EventBuffer
+    from simulate import cli, runner
+
+    async def nothing(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(runner, 'run_simulation', nothing)
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+    buffer.start()
+    buffer.set_intent('drop', song_sec=1.0)
+    report = tmp_path / 'session.json'
+
+    cli._run_pipeline({}, 1.0, buffer, DelayedCommandQueue(14.0, clock=clock),
+                      False, report_path=str(report))
+
+    import json
+    assert [b['intent'] for b in json.loads(report.read_text())['intents']] == ['drop']
