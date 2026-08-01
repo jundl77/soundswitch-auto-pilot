@@ -59,23 +59,40 @@ async def _sample_run() -> dict:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="D13: the demolished branch commits no "
-                                        "intent, so the plumbing verdict's four "
-                                        "show criteria cannot pass until Task 9 "
-                                        "rewires the decoder")
-async def test_sample_song_evaluation_passes():
+async def test_sample_song_evaluation_passes(nn_artifacts):
     """The plumbing verdict -- "did anything happen at all".
 
-    Between the demolition and the rewire the answer is deliberately no: beats,
-    silence and a held intent are the whole show (D13), and this asks for two
-    intent changes, two distinct intents, two channels and one effect change.
-    Strict, so it fails the moment Task 9 makes it true again and the marker
-    cannot be left behind.
+    It went strict-xfail through the demolition, because beats, silence and a
+    held intent were the whole show (D13) and this asks for two intent changes,
+    two distinct intents, two channels and one effect change.  The rewire makes
+    it true again, which is what the strictness was for: the marker could not be
+    left behind.
     """
     from simulate.evaluator import evaluate
     run = await _sample_run()
     result = evaluate(run['report'])
     assert result['passed'], f'sample-song evaluation failed: {result["criteria"]}'
+
+
+@pytest.mark.integration
+async def test_the_decoder_drives_the_show_on_a_real_track(nn_artifacts):
+    """The rewire's own reading, which the plumbing verdict cannot give.
+
+    "Two intents and an effect change" is satisfied by the silence timer plus
+    one commit.  What Task 9 has to show is a decoder committing repeatedly, on
+    the bar grid, into intents only a class could have produced -- and ATMOSPHERIC
+    among them, because `intro`/`outro` are classes now.  That last one closes a
+    named limitation: the retired engine could only reach ATMOSPHERIC through a
+    beat-absence timer, which mastered EDM never trips.
+    """
+    run = await _sample_run()
+    intents = [block['intent'] for block in run['report']['intents']]
+    assert len(intents) >= 4, intents
+    assert {'atmospheric', 'drop'} <= set(intents), intents
+    # Every block is stamped when the room hears it, one playback delay after
+    # the bar that caused it, so none may land past the audio.
+    assert all(block['t'] <= run['report']['duration_sec'] + 1e-6
+               for block in run['report']['intents'])
 
 
 @pytest.mark.integration

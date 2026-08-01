@@ -48,3 +48,20 @@ def stub_midi():
 @pytest.fixture
 def effect_controller(stub_midi):
     return EffectController(stub_midi)
+
+
+@pytest.fixture
+def nn_artifacts():
+    """Skip when the shipped model is not on this machine.
+
+    The encoder is 1.3 GB and the student's graph and priors live beside it in
+    the gitignored corpus directory, so a fresh clone can run everything that
+    does not need a committer and nothing that does.  Everything the demolition
+    left -- beats, silence, the OS2L wire, the digest survivors -- still runs
+    without it, which is what makes the skip narrow rather than a hole.
+    """
+    from lib import section_chain
+
+    if not section_chain.artifacts_present():
+        pytest.skip('the shipped NN artifacts are absent -- they live in the '
+                    'gitignored corpus directory, not in the repository')

@@ -246,6 +246,38 @@ class SectionModel:
                          _sigmoid(boundary.reshape(-1)[0]))
 
 
+class PosteriorStream:
+    """Audio in, posteriors out -- the two stages joined and nothing else.
+
+    The composition sits here rather than in a module of its own because a cell
+    is the only thing the two stages exchange, and nothing above them should
+    have to know a cell exists.  It starts no thread and holds no lock; Task 10
+    wraps this object, it does not replace it.
+
+    ``run_pass`` is drained rather than called once: one buffer can complete
+    more than one pass after a stall, and a pass left un-run is a hop of audio
+    the show never sees.
+    """
+
+    def __init__(self, stream, model: SectionModel) -> None:
+        self.stream = stream
+        self.model = model
+
+    def push_audio(self, samples) -> list:
+        self.stream.push_audio(samples)
+        posteriors = []
+        while self.stream.due():
+            for cell in self.stream.run_pass():
+                posterior = self.model.push(cell.features)
+                if posterior is not None:
+                    posteriors.append(posterior)
+        return posteriors
+
+    def reset(self) -> None:
+        self.stream.reset()
+        self.model.reset()
+
+
 def _softmax(logits: np.ndarray) -> np.ndarray:
     logits = np.asarray(logits, dtype=np.float32)
     shifted = np.exp(logits - logits.max())

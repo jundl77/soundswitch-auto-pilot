@@ -8,12 +8,23 @@ from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 from lib.clock import Clock, SYSTEM_CLOCK, VirtualClock
 
 TIMING_TOLERANCE_SEC = 0.050
-# Must match LOOK_AHEAD_SEC in lib/main.py and playback_delay_seconds in dmx-enttec-node.
-LOOK_AHEAD_SEC = 2.5
+# Must match PLAYBACK_DELAY_SEC in lib/main.py and playback_delay_seconds in
+# dmx-enttec-node. 14.0 per #154: the chain is 13.66 s at the corpus median bar
+# and 14.08 s at p99, so this is the budget the decoder's lag_bars=2 needs.
+PLAYBACK_DELAY_SEC = 14.0
 FAST_SIM_RANDOM_SEED = 1337
 
 
-def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK):
+def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK,
+                     section: object | None = None):
+    """The whole pipeline on stub clients -- the identical code path to prod.
+
+    ``section`` is the NN chain; absent, it is built from the shipped artifacts,
+    and if those are not on this machine the sim runs the degradation state
+    (beats, silence, a held intent) rather than refusing to start.  That is
+    #144's contract, and it is what keeps every test that does not need the
+    model runnable on a fresh clone.
+    """
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
@@ -23,14 +34,19 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     midi_client = StubMidiClient(clock=clock)
     os2l_client = StubOs2lClient(clock=clock)
     overlay_client = StubOverlayClient(clock=clock)
-    command_queue = DelayedCommandQueue(LOOK_AHEAD_SEC, clock=clock)
+    command_queue = DelayedCommandQueue(PLAYBACK_DELAY_SEC, clock=clock)
+
+    if section is None:
+        section = load_section_chain()
 
     effect_controller = EffectController(midi_client, event_buffer=event_buffer, clock=clock)
     light_engine = LightEngine(
         midi_client, os2l_client, overlay_client,
         effect_controller, command_queue,
         event_buffer=event_buffer,
-        look_ahead_sec=LOOK_AHEAD_SEC,
+        playback_delay_sec=PLAYBACK_DELAY_SEC,
+        section_chain=None if section is None else section.stream,
+        section_decoder=None if section is None else section.decoder,
         clock=clock,
     )
 
@@ -46,7 +62,33 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
         'music_analyser': music_analyser,
         'light_engine': light_engine,
         'event_buffer': event_buffer,
+        'section': section,
     }, command_queue
+
+
+def load_section_chain():
+    """The shipped chain, or None on a machine that does not have it.
+
+    Built once per process and reused: the encoder is 1.3 GB of weights, and a
+    fresh one per simulation would dominate a suite that runs several.  Sharing
+    it is safe because a chain is reset at every song boundary and a simulation
+    is one song.
+    """
+    global _SECTION_CHAIN
+    if _SECTION_CHAIN is _UNBUILT:
+        from lib import section_chain
+
+        if not section_chain.artifacts_present():
+            logging.warning('[sim] no NN artifacts on this machine — running '
+                            'the degradation state (beats, silence, held intent)')
+            _SECTION_CHAIN = None
+        else:
+            _SECTION_CHAIN = section_chain.build_section_chain()
+    return _SECTION_CHAIN
+
+
+_UNBUILT = object()
+_SECTION_CHAIN = _UNBUILT
 
 
 async def run_fast_simulation_components(audio_client, duration_sec: float = float('inf'),
@@ -62,7 +104,7 @@ async def run_fast_simulation_components(audio_client, duration_sec: float = flo
     random.seed(seed)
     clock = VirtualClock()
     event_buffer = EventBuffer(window_sec=float('inf'), clock=clock,
-                               look_ahead_sec=LOOK_AHEAD_SEC)
+                               look_ahead_sec=PLAYBACK_DELAY_SEC)
     components, command_queue = build_simulation(audio_client, event_buffer, clock=clock)
     event_buffer.start()
     await run_simulation(components, duration_sec, clock=clock)
@@ -108,6 +150,9 @@ async def run_simulation(components: dict, duration_sec: float,
             if sleep_sec > 0:
                 await asyncio.sleep(sleep_sec)
 
+        # Before `analyse`, which appends the debug click to the buffer it was
+        # handed: the feature stage must read the audio the room hears.
+        await components['light_engine'].on_audio(audio_signal)
         await music_analyser.analyse(audio_signal)
         await command_queue.drain()
 
@@ -149,19 +194,20 @@ def print_timing_report(command_queue, tolerance_sec: float = TIMING_TOLERANCE_S
         print('\n[TIMING REPORT] No commands were dispatched.')
         return
 
-    target = command_queue.delay_sec
     passed = 0
     worst_error_ms = 0.0
 
     print(f'\n{"─" * 72}')
-    print(f'  TIMING REPORT   delay_target={target:.3f}s   tolerance=±{tolerance_sec * 1000:.0f}ms')
+    # Per entry, not per queue: a beat and an intent wait different amounts (B1).
+    print(f'  TIMING REPORT   playback_delay={command_queue.delay_sec:.3f}s   '
+          f'tolerance=±{tolerance_sec * 1000:.0f}ms')
     print(f'{"─" * 72}')
     print(f'  {"label":<18} {"actual_delta":>12}  {"error":>8}  {"status":>6}')
     print(f'  {"─"*18} {"─"*12}  {"─"*8}  {"─"*6}')
 
     for entry in log:
         actual = entry['actual_delta_sec']
-        error = actual - target
+        error = actual - entry['target_delta_sec']
         error_ms = error * 1000
         ok = abs(error) <= tolerance_sec
         if ok:

@@ -3,14 +3,16 @@ from pathlib import Path
 
 import pytest
 
+from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
 from tests.conftest import ANCHOR_YOUTUBE_ID
 from training.pipeline_digest import (DOOMED_BEAT_COLUMNS, DOOMED_METRIC_KEYS,
                                       RESCALED_BEAT_COLUMNS,
                                       SURVIVING_BEAT_COLUMNS,
-                                      TIMING_ACCURACY_MAX_MS, check_digest,
-                                      degradation_digest, digest_report,
-                                      held_start_to_end, informational_digest,
-                                      relations_digest, survives_digest)
+                                      TIMING_ACCURACY_MAX_MS, _queue_errors_ms,
+                                      check_digest, degradation_digest,
+                                      digest_report, held_start_to_end,
+                                      informational_digest, relations_digest,
+                                      survives_digest)
 
 BASELINE = Path(__file__).parent / 'fixtures' / 'pipeline_digest_baseline.json'
 
@@ -288,9 +290,18 @@ def test_timing_accuracy_is_the_queue_error_not_the_command_count():
     log = [{'label': 'beat', 'actual_delta_sec': 2.5040, 'target_delta_sec': 2.5},
            {'label': 'intent', 'actual_delta_sec': 2.4990, 'target_delta_sec': 2.5}]
     d = survives_digest(_report([], timing_log=log))
-    assert d['timing_accuracy']['max_error_ms'] == pytest.approx(4.0, abs=1e-6)
-    assert d['timing_accuracy']['max_error_ms'] < TIMING_ACCURACY_MAX_MS
+    assert d['timing_accuracy'] == {'max_error_buffers': 1}
+    assert max(_queue_errors_ms(_report([], timing_log=log))) < TIMING_ACCURACY_MAX_MS
     assert 'commands' not in d['timing_accuracy']
+
+
+def test_a_command_two_buffers_late_moves_the_survivor():
+    """The bound is a survivor because it is a real claim, not because it is
+    always true: dispatching a buffer later than the grid allows moves it."""
+    period = BUFFER_SIZE / SAMPLE_RATE
+    log = [{'label': 'beat', 'actual_delta_sec': 2.5 + 1.5 * period,
+            'target_delta_sec': 2.5}]
+    assert survives_digest(_report([], timing_log=log))['timing_accuracy'] ==         {'max_error_buffers': 2}
 
 
 def test_the_queues_target_is_recorded_but_never_gated():
@@ -302,10 +313,27 @@ def test_the_queues_target_is_recorded_but_never_gated():
 
 
 def test_a_moved_look_ahead_leaves_every_survivor_where_it_was():
-    at_2_5 = [{'label': 'beat', 'actual_delta_sec': 2.501, 'target_delta_sec': 2.5}]
-    at_16 = [{'label': 'beat', 'actual_delta_sec': 16.001, 'target_delta_sec': 16.0}]
-    assert (survives_digest(_report([], timing_log=at_2_5))
-            == survives_digest(_report([], timing_log=at_16)))
+    """The rewire moves the delay, and the dispatch error moves WITH it.
+
+    The queue fires on the next buffer boundary, so in virtual time the error is
+    exactly ``ceil(D / buffer) * buffer - D`` -- a pure function of the delay,
+    and a different number for every delay.  Recording it in milliseconds made a
+    GATED survivor a fact about the look-ahead, which B1 is required to change:
+    2.5 s against a 5.805 ms buffer gives the 1.9501 ms the fixture was cut with,
+    and nothing about the pipeline has to move for that to stop being true.
+    What survives is the bound the field was really recording.
+    """
+    import math
+
+    period = BUFFER_SIZE / SAMPLE_RATE
+
+    def log(delay):
+        return [{'label': 'beat', 'target_delta_sec': delay,
+                 'actual_delta_sec': math.ceil(delay / period) * period}]
+
+    assert (survives_digest(_report([], timing_log=log(2.5)))
+            == survives_digest(_report([], timing_log=log(14.0)))
+            == survives_digest(_report([], timing_log=log(1.861))))
 
 
 def test_a_queue_that_missed_its_own_target_breaks_the_relation():
@@ -568,15 +596,20 @@ async def test_every_fixture_track_still_produces_its_committed_survivors(name, 
 
 
 @pytest.mark.integration
-async def test_the_demolished_pipeline_is_the_degradation_state(anchor_mp3):
-    """The D13 contract, on real audio and from the side that now holds.
+async def test_the_rewired_pipeline_has_left_the_degradation_state(anchor_mp3, nn_artifacts):
+    """The third and last reading of this predicate, from the side that holds now.
 
-    Its predecessor asserted the opposite on master's show and was deleted in
-    the demolition commit, which is what makes this reading evidence of a flip
-    rather than of a predicate that was always going to be True.
+    It has been asserted from both sides twice: True on master's rule engine was
+    the pre-registered failure, True after the demolition was D13, and False
+    here is the rewire.  Each flip was written the same commit the behaviour
+    moved in, which is what makes the predicate evidence rather than decoration.
+
+    The degradation contract itself is unchanged and still tested -- on
+    synthetic reports, where a held show can be constructed on demand.  What no
+    longer exists is a real track that produces one, and that is the point.
     """
     actual = await _anchor_digest(anchor_mp3)
-    assert held_start_to_end(actual['degradation'])
-    assert actual['degradation']['classified_blocks'] == 0
-    assert actual['degradation']['beats_detected'] > 0,         'beats must survive the demolition; only the classifier goes'
+    assert not held_start_to_end(actual['degradation'])
+    assert actual['degradation']['classified_blocks'] > 1
+    assert actual['degradation']['beats_detected'] > 0,         'beats must survive the rewire; only the classifier went'
 

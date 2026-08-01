@@ -133,7 +133,7 @@
         }
       ],
       "timing_accuracy": {
-        "max_error_ms": 1.9501
+        "max_error_buffers": 1
       }
     }
   },
@@ -261,7 +261,7 @@
         }
       ],
       "timing_accuracy": {
-        "max_error_ms": 1.9501
+        "max_error_buffers": 1
       }
     }
   },
@@ -393,7 +393,7 @@
         }
       ],
       "timing_accuracy": {
-        "max_error_ms": 1.9501
+        "max_error_buffers": 1
       }
     }
   }

@@ -449,3 +449,88 @@ def test_sha256_file_reads_the_bytes_on_disk(tmp_path):
     path = tmp_path / "blob"
     path.write_bytes(b"abc")
     assert S.sha256_file(path) == hashlib.sha256(b"abc").hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# The two stages joined
+# --------------------------------------------------------------------------- #
+
+
+class _FakeStream:
+    """A MertStream-shaped source of cells."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.pushed = []
+        self.resets = 0
+        self._due = 0
+
+    def push_audio(self, samples):
+        self.pushed.append(len(samples))
+        self._due += 1
+
+    def due(self):
+        return self._due > 0 and bool(self.script)
+
+    def run_pass(self):
+        self._due -= 1
+        return self.script.pop(0)
+
+    def reset(self):
+        self.resets += 1
+        self._due = 0
+
+
+class _FakeModel:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.pushed = []
+        self.resets = 0
+
+    def push(self, features):
+        self.pushed.append(features)
+        return self.answers.pop(0) if self.answers else None
+
+    def reset(self):
+        self.resets += 1
+
+
+def _cell(index, features):
+    class C:
+        pass
+
+    c = C()
+    c.index = index
+    c.features = features
+    return c
+
+
+def test_the_posterior_stream_runs_every_due_pass_before_it_returns():
+    """One buffer can complete more than one pass after a stall, and a pass left
+    un-run is a hop of audio the show never sees."""
+    from lib.analyser.section_model import PosteriorStream
+
+    stream = _FakeStream([[_cell(0, 'a'), _cell(1, 'b')], [_cell(2, 'c')]])
+    stream._due = 2
+    model = _FakeModel(['p0', 'p1', 'p2'])
+    posteriors = PosteriorStream(stream, model).push_audio([0.0] * 8)
+    assert model.pushed == ['a', 'b', 'c']
+    assert posteriors == ['p0', 'p1', 'p2']
+
+
+def test_cells_still_inside_the_future_window_produce_nothing_yet():
+    from lib.analyser.section_model import PosteriorStream
+
+    stream = _FakeStream([[_cell(0, 'a'), _cell(1, 'b')]])
+    model = _FakeModel([None, None])
+    assert PosteriorStream(stream, model).push_audio([0.0] * 8) == []
+
+
+def test_resetting_the_pair_resets_both_halves():
+    """A song boundary must clear both: the ring holds the previous track's
+    audio and the GRU state holds its whole structure."""
+    from lib.analyser.section_model import PosteriorStream
+
+    stream, model = _FakeStream([]), _FakeModel([])
+    PosteriorStream(stream, model).reset()
+    assert (stream.resets, model.resets) == (1, 1)

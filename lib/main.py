@@ -10,8 +10,12 @@ import time
 from collections import deque
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
-# Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
-LOOK_AHEAD_SEC = 2.5
+# Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json,
+# and simulate/runner.py. 14.0 per #154: the NN chain measures 13.66 s at the
+# corpus median bar and 14.08 s at p99, so this is the budget lag_bars=2 needs.
+# It is no longer a look-ahead: the engine runs BEHIND the room now, and what a
+# command waits is this minus what the chain already spent (B1).
+PLAYBACK_DELAY_SEC = 14.0
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
 
@@ -44,8 +48,7 @@ class SoundSwitchAutoPilot:
         self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
-        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(LOOK_AHEAD_SEC)
-        logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
+        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(PLAYBACK_DELAY_SEC)
 
         self._enable_playback: bool = debug_mode or output_device_index is not None
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
@@ -55,14 +58,23 @@ class SoundSwitchAutoPilot:
 
         from lib.engine.event_buffer import EventBuffer
         self.event_buffer: EventBuffer | None = (
-            EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC) if (enable_ui or report_path) else None
+            EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC) if (enable_ui or report_path) else None
         )
+
+        from lib import section_chain
+        self.section = (section_chain.build_section_chain()
+                        if section_chain.artifacts_present() else None)
+        if self.section is None:
+            logging.warning('[main] no NN artifacts on this machine — the show '
+                            'will hold one intent (beats and silence still run)')
 
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
                                                      self.command_queue, event_buffer=self.event_buffer,
-                                                     look_ahead_sec=LOOK_AHEAD_SEC)
+                                                     playback_delay_sec=PLAYBACK_DELAY_SEC,
+                                                     section_chain=None if self.section is None else self.section.stream,
+                                                     section_decoder=None if self.section is None else self.section.decoder)
 
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
                                                            note_clicks=debug_mode)
@@ -102,11 +114,16 @@ class SoundSwitchAutoPilot:
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
-        _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
+        # Monitoring is delayed by the same amount the room is, so headphones
+        # and the venue hear the same instant.
+        _playback_ready_at: float = time.monotonic() + PLAYBACK_DELAY_SEC
 
         while self.is_running:
             now = datetime.datetime.now()
             audio_signal = self.audio_client.read()
+            # Before `analyse`, which appends the debug click: the feature stage
+            # must read the audio the room hears.
+            await self.light_engine.on_audio(audio_signal)
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
             await self.command_queue.drain()
 

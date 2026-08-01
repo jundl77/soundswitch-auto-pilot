@@ -21,7 +21,10 @@ differently:
 ``degradation``   the projection onto what the branch's intermediate state may
                   produce: beats, the surviving silence timer, one held intent and
                   nothing else.  ``held_start_to_end`` is the predicate, and it is
-                  asserted from both sides — False here, True after the demolition.
+                  asserted from every side the branch passes through — False on
+                  master's rule engine, True after the demolition, False again
+                  once the decoder drives the show.  It stays because that is
+                  also what a live NN_SHED looks like from the outside.
 
 The aubio filterbank fingerprint that this file used to gate on is gone: the bank
 is deleted by the integration, so a fixed-grid fingerprint of it can only fail for
@@ -93,6 +96,25 @@ def _queue_errors_ms(report: dict) -> list:
             for e in report['timing_log']]
 
 
+def _queue_error_buffers(report: dict) -> int:
+    """The dispatch error in whole buffer periods -- the delay-invariant reading.
+
+    A command fires on the first drain at or after its due instant, so in
+    virtual time the error is exactly ``ceil(delay / buffer) * buffer - delay``:
+    a pure function of the delay and nothing else.  Recorded in milliseconds it
+    was a gated survivor that any change to the look-ahead moves on its own, and
+    B1 changes the look-ahead by mandate.  In buffers it says what the field was
+    always there to say -- the queue is never more than one buffer late -- and
+    still moves if that stops being true.
+    """
+    import math
+
+    from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
+
+    period_ms = BUFFER_SIZE / SAMPLE_RATE * 1000
+    return int(math.ceil(max(_queue_errors_ms(report), default=0.0) / period_ms))
+
+
 def _sound_events(events: list) -> list:
     return [{'t': round(e['t'], 3), 'playing': e['playing']} for e in events]
 
@@ -115,7 +137,6 @@ def survives_digest(report: dict, streams: dict | None = None) -> dict:
     beats = report['beats']
     metrics = report['metrics']
     streams = _normalise_streams(streams)
-    errors_ms = _queue_errors_ms(report)
     return {
         'beats_detected': metrics['beats_detected'],
         'beat_times_hash': _hash([round(b['t'], 4) for b in beats]),
@@ -128,7 +149,7 @@ def survives_digest(report: dict, streams: dict | None = None) -> dict:
         'sound_events': _sound_events(streams['sound']),
         'os2l': _os2l_digest(streams['os2l']),
         'timing_accuracy': {
-            'max_error_ms': round(max(errors_ms), 4) if errors_ms else 0.0,
+            'max_error_buffers': _queue_error_buffers(report),
         },
         'schema': {
             'report_keys': sorted(report.keys()),
