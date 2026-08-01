@@ -797,3 +797,198 @@ async def test_a_machine_with_no_committer_at_all_lights_the_floor_too():
     await settle(light, clock, queue)
 
     assert light.current_intent is LightIntent.ATMOSPHERIC
+
+
+# --------------------------------------------------------------------------- #
+# D9 -- the boundary-triggered effect refresh
+# --------------------------------------------------------------------------- #
+
+
+async def boundary(light, chain, clock, score, *, age_sec=8.0, sec=0.5):
+    """One posterior carrying a boundary score for audio ``age_sec`` old."""
+    from lib.analyser.section_model import Posterior
+
+    chain.pending.append(Posterior(0, light.audio_sec + sec - age_sec,
+                                   np.zeros(5), score))
+    await elapse(light, clock, sec)
+
+
+def autoloops(midi):
+    return [e for e in midi.events
+            if e['label'] in ('set_autoloop', 'set_special_effect')]
+
+
+async def held(light, decoder, chain, clock, queue, label='drop'):
+    """A committed intent, on the stage, with nothing left in flight."""
+    await elapse(light, clock, 20.0)
+    await bars(light, decoder, clock, label)
+    await settle(light, clock, queue)
+
+
+async def test_a_boundary_inside_a_held_intent_re_rolls_the_effect():
+    """D9: the successor to YAMNet's section-change refresh.  The audience-
+    visible behaviour is "the effect changes inside a long same-intent section",
+    which no class boundary can express because the class is the same either
+    side."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    before = len(autoloops(midi))
+    intent = light.current_intent
+
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    assert len(autoloops(midi)) == before + 1
+    assert light.current_intent is intent
+
+
+async def test_a_refresh_does_not_appear_on_the_intent_timeline():
+    """intent_changes_count reads the classifier's opinion and
+    effect_changes_count reads the show; a re-roll moves only the second."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    blocks = len(light.event_buffer.snapshot()['intents'])
+
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    assert len(light.event_buffer.snapshot()['intents']) == blocks
+
+
+async def test_a_quiet_boundary_changes_nothing():
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    before = len(autoloops(midi))
+
+    await boundary(light, chain, clock, 0.0)
+    await settle(light, clock, queue)
+
+    assert len(autoloops(midi)) == before
+
+
+async def test_a_refresh_re_rolls_from_the_intent_the_stage_is_showing():
+    from lib.engine.effect_definitions import INTENT_EFFECTS
+
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='breakdown')
+
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    pool = {effect.midi_channel.name
+            for effect in INTENT_EFFECTS[LightIntent.BREAKDOWN]}
+    assert autoloops(midi)[-1]['channel'] in pool
+
+
+async def test_a_boundary_before_anything_is_committed_lights_nothing():
+    """An effect lit with no intent committed is the stage moving on nobody's
+    decision, and the digest calls it a violation rather than a pass."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await elapse(light, clock, 20.0)
+
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    assert autoloops(midi) == []
+
+
+async def test_a_second_boundary_inside_the_cooldown_is_ignored():
+    """The one rate number the retired mechanism recorded, transferred
+    verbatim: cooldown_time_window_sec = 10."""
+    from lib.engine.light_engine import REFRESH_COOLDOWN_SEC
+
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    before = len(autoloops(midi))
+
+    await boundary(light, chain, clock, 1.0)
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+    assert len(autoloops(midi)) == before + 1
+
+    await elapse(light, clock, REFRESH_COOLDOWN_SEC)
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+    assert len(autoloops(midi)) == before + 2
+
+
+async def test_a_refresh_never_displaces_a_pending_intent_change():
+    """The superseding rule is the intent stream's, and a refresh is not an
+    intent: same-intent re-roll only."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='drop')
+
+    await bars(light, decoder, clock, 'breakdown', age_sec=0.5)
+    pending = len(queued_intents(queue))
+    assert pending == 1
+
+    await boundary(light, chain, clock, 1.0)
+    assert len(queued_intents(queue)) == pending
+
+    await settle(light, clock, queue)
+    assert light.current_intent is LightIntent.BREAKDOWN
+
+
+async def test_a_refresh_queued_across_an_intent_change_is_dropped():
+    """The change re-picks the effect itself, so a refresh landing behind it is
+    a second re-roll the room reads as a flicker."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='drop')
+    before = len(autoloops(midi))
+
+    # A boundary is younger than a decision, so it waits longer: a change
+    # decided after it still lands first.
+    await boundary(light, chain, clock, 1.0)
+    await bars(light, decoder, clock, 'breakdown', age_sec=13.7)
+    await settle(light, clock, queue)
+
+    assert len(autoloops(midi)) == before + 1
+    assert light.current_intent is LightIntent.BREAKDOWN
+
+
+async def test_a_refresh_lands_when_the_room_hears_the_audio_that_caused_it():
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    await boundary(light, chain, clock, 1.0, age_sec=8.0)
+
+    refresh = [item for item in queue._queue if item[4] == 'refresh']
+    assert len(refresh) == 1
+    assert refresh[0][3] == pytest.approx(14.0 - 8.0, abs=1e-6)
+
+
+async def test_a_gap_clears_the_refresh_cooldown():
+    """Everything the stages hold describes audio from before the gap, and the
+    instant of the last refresh is one of those things."""
+    from lib.engine.light_engine import REFRESH_COOLDOWN_SEC
+
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue)
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+    before = len(autoloops(midi))
+
+    chain.gap = True
+    await elapse(light, clock, 0.5)
+    await boundary(light, chain, clock, 1.0)
+    await settle(light, clock, queue)
+
+    assert len(autoloops(midi)) == before + 1
+    assert REFRESH_COOLDOWN_SEC > 1.0
+
+
+async def test_the_refresh_threshold_sits_inside_the_score_the_head_emits():
+    """A threshold at or outside the sigmoid's range is a switch, not a
+    trigger."""
+    from lib.engine.light_engine import BOUNDARY_REFRESH_SCORE
+
+    assert 0.0 < BOUNDARY_REFRESH_SCORE < 1.0

@@ -42,6 +42,33 @@ _LATENCY_LOG_STEP_SEC = 0.25
 # that turns out to be wrong reads as a broken rig.
 COLD_START_FLOOR_MARGIN_SEC = 4.0
 
+# D9.  The retired YAMNet detector re-rolled the lighting effect on a section
+# change, and that refresh -- an effect change inside an UNCHANGED intent -- is
+# behaviour no class boundary can express, because the class is the same either
+# side.  The boundary head replaces the trigger: same signal source, no new
+# model, and trained on section boundaries rather than on cosine outliers.
+#
+# `REFRESH_COOLDOWN_SEC` is the retired mechanism's own rate governor, moved
+# across unchanged (`YamnetChangeDetector.cooldown_time_window_sec = 10`).  It
+# is the only rate number that mechanism ever recorded: what it PRODUCED was
+# never measured and cannot be recovered, because the simulation stubbed
+# `detect_change` out from the day fast simulation landed, so YAMNet never fired
+# in a report, a fixture or a training table.  What the constants bracket is at
+# most six refreshes a minute with a hard ten-second floor, and fewer in
+# practice.
+#
+# The cooldown alone would sit at that ceiling, so the threshold is what does
+# the "fewer in practice" work, and it is measured rather than picked:
+# `training/nn_boundary_refresh_rate.py` reads the live boundary stream of the
+# three fixture tracks and prices each candidate.  0.5 -- the sigmoid's own
+# midpoint, and above the 94th percentile of cells on all three -- gives
+# 1.55/min mean (0.88 to 2.14), about a quarter of the ceiling and close to the
+# rate the annotator's own sections change on those tracks (1.17 to 2.33/min).
+# It also sits ABOVE the decoder's independently swept `boundary_ref` of 0.2, so
+# the show never re-rolls on evidence its own committer would call marginal.
+REFRESH_COOLDOWN_SEC = 10.0
+BOUNDARY_REFRESH_SCORE = 0.5
+
 
 class LightEngine(IMusicAnalyserHandler):
     """Decoder decisions in, a show out.
@@ -96,6 +123,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._latency_logged_at: float | None = None
         self._committing_late: bool = False
         self._floor_armed: bool = True
+        self._last_refresh_sec: float = float('-inf')
         self._log_chain_latency()
 
     def set_analyser(self, analyser: MusicAnalyser):
@@ -227,11 +255,15 @@ class LightEngine(IMusicAnalyserHandler):
         if drained.gap:
             # The feature stage stopped and rejoined the live edge, so every
             # cell the decoder is holding, and the bar it was assembling them
-            # into, describe audio from the other side of a discontinuity.
+            # into, describe audio from the other side of a discontinuity -- and
+            # so does the instant of the last refresh.
             self.section_decoder.reset()
+            self._last_refresh_sec = float('-inf')
         for posterior in drained.posteriors:
             await self._commit(self.section_decoder.push_posterior(
                 posterior.time_sec, posterior.posterior, posterior.boundary))
+            await self._refresh_on_boundary(posterior.boundary,
+                                            posterior.time_sec)
 
     async def on_beat(self, beat_number: int, bpm: float, bpm_changed: bool) -> None:
         current_second = self.analyser.get_song_current_duration().total_seconds()
@@ -356,6 +388,12 @@ class LightEngine(IMusicAnalyserHandler):
             return
 
         self._bars_in_current_intent = 0
+        # A change re-picks the effect itself, so a refresh queued to land
+        # behind it is a second re-roll the room reads as a flicker -- and it
+        # would be re-rolling from a pool chosen for a different intent.  Only
+        # this direction: a refresh never drops an intent.
+        if self.command_queue:
+            self.command_queue.drop_pending('refresh', fire_at)
         # The song instant this describes, in the report's own time base, so a
         # consumer never has to reconstruct it from a delay it did not see.
         song_sec = (None if self.event_buffer is None
@@ -423,6 +461,52 @@ class LightEngine(IMusicAnalyserHandler):
     async def _show_light_bar(self, dmx_data: list) -> None:
         self.overlay_client.update_overlay_data(OverlayEffect.LIGHT_BAR_24,
                                                 dmx_data)
+
+    async def _refresh_on_boundary(self, boundary: float, song_sec: float) -> None:
+        """D9: the model says a section changed, so re-roll inside the intent.
+
+        The successor to YAMNet's section-change refresh, and the same shape:
+        a rate-limited trigger that re-picks the effect without touching the
+        intent.  It rides the same room-aligned stream as every decision -- a
+        cell is younger than a bar decision, so it waits longer and still lands
+        when the room hears it -- but on its own label, because superseding is
+        the intent stream's and a refresh is not an intent.
+        """
+        if boundary < BOUNDARY_REFRESH_SCORE:
+            return
+        if song_sec - self._last_refresh_sec < REFRESH_COOLDOWN_SEC:
+            return
+        # Armed on detection, the way the retired detector armed its cooldown:
+        # a trigger consumed by a guard below still costs its own ten seconds.
+        self._last_refresh_sec = song_sec
+        if self._current_intent is None and not self._pending_intents:
+            # An effect lit with no intent committed is the stage moving on
+            # nobody's decision; the digest calls that a violation.
+            return
+
+        now = self._clock.monotonic()
+        fire_at = max(now, now - (self._audio_sec - song_sec)
+                      + self._playback_delay_sec)
+        committed = self._intent_commits
+        if not self.command_queue:
+            await self._apply_refresh(committed)
+            return
+        await self.command_queue.enqueue(
+            'refresh', lambda: self._apply_refresh(committed),
+            delay_sec=fire_at - now)
+
+    async def _apply_refresh(self, committed: int) -> None:
+        """Re-roll, unless the intent moved between deciding this and firing it.
+
+        The commit counter rather than the intent itself: "nothing has been
+        applied since" is what "inside a held intent" means, and comparing the
+        intent alone would be fooled by a round trip back to the same one.
+        """
+        if self._intent_commits != committed or self._current_intent is None:
+            return
+        logging.info(f'[engine] boundary inside {self._current_intent.name} — '
+                     f'refreshing the effect')
+        await self.effect_controller.change_effect(self._current_intent)
 
     async def _floor_if_nothing_arrived(self) -> None:
         """Light something once, if the committer never spoke at all.
