@@ -292,6 +292,47 @@ def queue_block(beat_t: float, intent: str, end: float, look_ahead=LOOK_AHEAD) -
     return {"t": beat_t + look_ahead, "intent": intent, "end": end}
 
 
+def test_a_recorded_song_instant_is_taken_as_it_stands():
+    """The NN engine's delay is per command -- the playback delay minus the
+    decision's own age -- so no constant de-shift and no beat-matching rule
+    reaches song time: a bar line is not a beat the report carries, and the
+    residual wobbles by a feature hop.  The engine knows the instant exactly and
+    records it, and the join stops inferring."""
+    beats = [10.0, 10.5, 11.0]
+    blocks = [{"t": 24.0, "song_t": 10.31, "intent": "DROP", "end": 40.0}]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=50.0)
+
+    assert spans[0][0] == pytest.approx(10.31)
+    assert spans[0][1] == pytest.approx(40.0 - (24.0 - 10.31))
+    assert alignment.song_recorded == 1
+    assert alignment.song_stamped == 0
+
+
+def test_a_recorded_instant_is_not_floored_at_the_first_beat():
+    """The floor is a correction to an inference; there is no inference here,
+    and a decoder's first bar legitimately opens before the first beat the
+    report kept."""
+    blocks = [{"t": 20.0, "song_t": 6.0, "intent": "ATMOSPHERIC", "end": 30.0}]
+    spans, _alignment = realign_intents(blocks, LOOK_AHEAD, [9.0, 9.5],
+                                        duration_sec=40.0)
+    assert spans[0][0] == pytest.approx(6.0)
+
+
+def test_recorded_and_inferred_blocks_can_share_one_report():
+    """A report cut across the change, and every older report in the corpus:
+    the inference is not retired, it is what a block without the stamp gets."""
+    beats = [10.0, 10.5, 11.0]
+    blocks = [queue_block(10.0, "GROOVE", 20.0),
+              {"t": 34.0, "song_t": 20.0, "intent": "DROP", "end": 44.0}]
+
+    spans, alignment = realign_intents(blocks, LOOK_AHEAD, beats, duration_sec=50.0)
+
+    assert spans[0][0] == pytest.approx(10.0)
+    assert spans[1][0] == pytest.approx(20.0)
+    assert (alignment.song_recorded, alignment.song_stamped) == (1, 0)
+
+
 def test_a_queue_stamped_block_is_shifted_back():
     beats = [10.0, 10.5, 11.0]
     blocks = [queue_block(10.0, "GROOVE", 20.0)]
@@ -400,7 +441,7 @@ def test_realignment_of_nothing_is_nothing():
     spans, alignment = realign_intents([], LOOK_AHEAD, [1.0], duration_sec=30.0)
 
     assert spans == []
-    assert alignment == (0, 0, 0)
+    assert alignment == (0, 0, 0, 0)
 
 
 def test_a_report_without_beats_is_left_uniformly_shifted():

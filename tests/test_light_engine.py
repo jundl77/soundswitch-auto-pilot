@@ -105,15 +105,21 @@ class FakeDecoder:
 
 
 def engine(*, decoder=None, chain=None, playback_delay_sec=14.0, clock=None,
-           queue=True):
+           queue=True, events=False):
     clock = clock or VirtualClock()
     midi = StubMidiClient(clock=clock)
     command_queue = DelayedCommandQueue(playback_delay_sec, clock=clock) \
         if queue else None
+    buffer = None
+    if events:
+        from lib.engine.event_buffer import EventBuffer
+        buffer = EventBuffer(window_sec=float('inf'), clock=clock,
+                             look_ahead_sec=playback_delay_sec)
+        buffer.start()
     light = LightEngine(midi, StubOs2lClient(clock=clock),
                         StubOverlayClient(clock=clock),
-                        EffectController(midi, clock=clock),
-                        command_queue,
+                        EffectController(midi, clock=clock, event_buffer=buffer),
+                        command_queue, event_buffer=buffer,
                         playback_delay_sec=playback_delay_sec,
                         section_chain=chain, section_decoder=decoder,
                         clock=clock)
@@ -470,6 +476,28 @@ async def test_the_stream_is_deduplicated_against_what_it_will_show():
     await elapse(light, clock, 0.2)
     await commit(light, decoder, clock, 'drop', age_sec=13.2)
     assert len(queued_intents(queue)) == 1
+
+
+async def test_a_block_records_the_song_instant_it_describes():
+    """The report's two time bases, both written down.
+
+    A block's stamp is when the room sees it, and the delay behind it is a
+    per-command quantity, so nothing downstream can recover the audio it was
+    about -- and a labelled score against the wrong ~14 s of a track is a number
+    that looks fine.  The engine knows the instant exactly at commit time;
+    recording it is the only place that costs nothing.
+    """
+    decoder = FakeDecoder()
+    light, queue, clock, _ = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 20.0)
+    await commit(light, decoder, clock, 'drop', age_sec=13.7)
+    await settle(light, clock, queue)
+
+    block = light.event_buffer.to_report()['intents'][0]
+    assert block['song_t'] == pytest.approx(20.0 - 13.7, abs=1e-6)
+    # The fire stamp carries the drain quantum this test drives; the recorded
+    # instant does not, which is the whole difference between them.
+    assert block['t'] == pytest.approx(20.3, abs=0.25)
 
 
 def _posterior(time_sec, boundary):

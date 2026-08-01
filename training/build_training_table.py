@@ -59,14 +59,18 @@ Label semantics (binding, from the validated corpus)
 Time bases
 ----------
 
-Beat timestamps are song-position seconds.  Intent blocks are MOSTLY audience
-time -- one look-ahead delay later -- so they are shifted back by the report's
-own ``metrics.look_ahead_sec`` before being read at a beat.  Mel frames carry
-the same stamp convention as beats.
+Beat timestamps are song-position seconds.  An intent block is stamped in
+AUDIENCE time and carries ``song_t``, the instant of audio it describes, so the
+join reads that and infers nothing.  It has to: under the NN engine a block's
+delay is the playback delay minus that decision's own measured age, so it
+differs per command, and no constant de-shift and no beat-matching rule can
+recover song time from the stamp alone -- a bar line is not a beat the report
+carries.  Mel frames carry the same stamp convention as beats.
 
-"Mostly", because a block's base is not recorded in the report and has to be
-inferred.  Every intent commit now rides the delayed command queue, so every
-beat-driven block is AUDIENCE time and shifts back cleanly.  The exception is
+Blocks WITHOUT ``song_t`` -- every report cut before the engine recorded it, of
+which the corpus holds thousands -- keep the older inference, and it is what the
+rest of this section describes.  Every intent commit rides the delayed command
+queue, so every beat-driven block is audience time and shifts back cleanly.  The exception is
 beat-absence ATMOSPHERIC: it rides the queue too, but a timer fired it rather
 than a beat, so ``t - look_ahead`` lands nowhere near one and the detection can
 only read it as song-stamped -- leaving it one look-ahead late.  Measured on the
@@ -74,7 +78,8 @@ eval set, that block falls past the last label and scores nothing; a mid-song
 silence would misplace it.  Reports cut before the engine unified its commit
 paths do carry genuinely song-stamped blocks, and this reading is still right
 for them.  ``realign_intents`` records the counts in ``meta.json`` -- a growing
-``song_stamped`` means a commit path moved again.
+``song_stamped`` means a commit path moved again, and a report mixing recorded
+and inferred blocks means it was cut across the change.
 
 Decode-cache discipline
 -----------------------
@@ -346,6 +351,7 @@ class IntentAlignment(NamedTuple):
     blocks: int
     song_stamped: int      # committed immediately -- already in song time
     clamped_tail: int      # queue commit frozen at the report's end by mark_end
+    song_recorded: int = 0  # the block carried the instant it describes
 
 
 def _nearest_gap(sorted_times: list, value: float) -> float:
@@ -365,9 +371,18 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
                     tolerance: float = _QUEUE_STAMP_TOLERANCE_SEC) -> tuple:
     """Intent blocks -> song-time spans, respecting BOTH of the engine's clocks.
 
-    The engine commits an intent two different ways, and they land in different
-    time bases (``lib/`` is read-only, so the join compensates rather than the
-    engine being changed):
+    **A block that records ``song_t`` needs no inference at all**, and every
+    block the NN engine commits does.  Its delay is a per-command quantity now
+    (the playback delay minus the decision's measured age, B1), so no constant
+    de-shift reaches song time and no beat-matching rule can recover it either:
+    a bar line is not a beat the report carries, and the residual wobbles by up
+    to a whole feature hop.  The engine knows the instant exactly at commit time
+    and says so; this reads it.
+
+    The inference below is what reports cut before that stamping need, and it is
+    kept rather than retired because the corpus holds thousands of them.  There,
+    the engine commits an intent two different ways and they land in different
+    time bases:
 
     * **Queue commits** are enqueued at a beat and fire one look-ahead later, so
       the block is stamped in AUDIENCE time and must be shifted back.  Every
@@ -398,12 +413,18 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
     Returns ``(spans, IntentAlignment)``.
     """
     if not blocks:
-        return [], IntentAlignment(0, 0, 0)
+        return [], IntentAlignment(0, 0, 0, 0)
 
     starts: list = []
-    song_stamped = clamped_tail = 0
+    shifts: list = []
+    song_stamped = clamped_tail = song_recorded = 0
     for block in blocks:
         t = float(block["t"])
+        if block.get("song_t") is not None:
+            starts.append(float(block["song_t"]))
+            song_recorded += 1
+            shifts.append(t - starts[-1])
+            continue
         is_clamped = (duration_sec is not None
                       and abs(t - float(duration_sec)) <= _STAMP_EPS)
         explained_by_queue = (
@@ -418,11 +439,13 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
         else:
             starts.append(t)
             song_stamped += 1
+        shifts.append(t - starts[-1])
 
     # The first block cannot begin before the first beat: the run's opening
-    # commit happens AT that beat.  A no-op whenever the classification above
-    # was right, and a floor under it when it was not.
-    if beat_times:
+    # commit happens AT that beat.  A no-op whenever the reading above was
+    # right, and a floor under it when it was not -- but never applied to a
+    # recorded instant, which is not an inference to be corrected.
+    if beat_times and not blocks[0].get("song_t"):
         starts[0] = max(starts[0], beat_times[0])
 
     spans = []
@@ -432,9 +455,10 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
         else:
             raw_end = block.get("end", duration_sec)
             end = (float("inf") if raw_end is None
-                   else float(raw_end) - look_ahead_sec)
+                   else float(raw_end) - shifts[index])
         spans.append((starts[index], max(starts[index], end), str(block["intent"])))
-    return spans, IntentAlignment(len(blocks), song_stamped, clamped_tail)
+    return spans, IntentAlignment(len(blocks), song_stamped, clamped_tail,
+                                  song_recorded)
 
 
 def zscores(values: list) -> list:
