@@ -77,7 +77,10 @@ def _run_file_realtime_ui(args):
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     event_buffer = EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC)
-    components, command_queue = build_simulation(audio_client, event_buffer)
+    # Wall-clock paced, so the GPU stage belongs on its own thread here for
+    # the same reason it does in production (D3).
+    components, command_queue = build_simulation(audio_client, event_buffer,
+                                                 threaded=True)
 
     try:
         import librosa
@@ -120,7 +123,8 @@ def run_realtime(args):
         input_device_index=args.device_index,
     )
     event_buffer = EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC)
-    components, command_queue = build_simulation(audio_client, event_buffer)
+    components, command_queue = build_simulation(audio_client, event_buffer,
+                                                 threaded=True)
     event_buffer.start()
 
     # Microphone input is hardware-paced — no artificial pacing needed.

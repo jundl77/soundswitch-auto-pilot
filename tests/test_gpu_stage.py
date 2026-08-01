@@ -404,6 +404,68 @@ def test_every_transition_is_logged(stage, caplog):
     assert messages.count('[gpu]') >= 2, 'the stage said nothing either way'
 
 
+@pytest.mark.integration
+def test_a_watchdog_is_what_puts_the_shipped_chain_on_a_thread(nn_artifacts,
+                                                              anchor_mp3):
+    """The wiring switch, and the WDDM measurement that goes with it.
+
+    Reserved bytes are recorded rather than merely bounded because the trap is
+    silent: under pressure the driver spills to host memory and raises no OOM at
+    all, so a run that has started crawling looks exactly like one that has not.
+    During the Tasks 8+9 acceptance this box reached 7.8 of 8.0 GB.
+    """
+    from lib import section_chain
+    from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
+    from lib.clients.pyaudio_client import PyAudioClient  # noqa: F401
+    from simulate.fake_audio_client import FileAudioClient
+
+    watchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE)
+    chain = section_chain.build_section_chain(watchdog=watchdog)
+    assert isinstance(chain.stream, GpuStage)
+    try:
+        audio = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, anchor_mp3)
+        audio.start_streams()
+        reserved = [_reserved()]
+        for _ in range(int(70.0 * SAMPLE_RATE / BUFFER_SIZE)):
+            if audio.exhausted:
+                break
+            chain.stream.push_audio(audio.read())
+            # The file client hands over audio as fast as the disk allows, which
+            # is not a pace the GPU has to keep: unthrottled, the ring overruns
+            # inside four passes.  Live audio arrives at 1x; this waits for the
+            # pass instead, which is the same relation and finishes sooner.
+            while not chain.stream.idle:
+                time.sleep(0.001)
+            if chain.stream.passes > len(reserved) - 1:
+                reserved.append(_reserved())
+        audio.close()
+    finally:
+        chain.stop()
+
+    assert chain.stream.passes > 20, 'not enough passes to say anything'
+    assert watchdog.fault is None, f'the stage faulted: {watchdog.fault}'
+
+    # The pool is EXPECTED to climb while the ring fills: a pass encodes what
+    # the ring holds, so activations grow with the buffer until it reaches its
+    # 30 s length.  What must not happen is growth after that -- the WDDM trap
+    # is a pool that keeps climbing and spills to host memory without ever
+    # raising an OOM, so a run that has started crawling reads as a healthy one.
+    settled = reserved[len(reserved) * 2 // 3:]
+    print(f'\n[task10] {chain.stream.passes} passes | cuda reserved '
+          f'{reserved[1] / 1e6:.0f}MB after pass 1, '
+          f'{max(reserved) / 1e6:.0f}MB peak, '
+          f'{(max(settled) - min(settled)) / 1e6:+.1f}MB over the last third '
+          f'({len(settled)} passes)')
+    assert max(settled) - min(settled) < 256e6, \
+        'the reserved pool was still climbing once the ring was full'
+
+
+def _reserved() -> int:
+    from lib.analyser.gpu_stage import reserved_bytes
+
+    return reserved_bytes() or 0
+
+
 def test_stopping_the_stage_ends_its_thread(tiny, mean):  # noqa: F811
     worker = GpuStage(chain(SlowEncoder(), tiny, mean),
                       DriftWatchdog(BUFFER_SEC))

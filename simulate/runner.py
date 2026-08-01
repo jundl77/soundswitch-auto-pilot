@@ -16,7 +16,7 @@ FAST_SIM_RANDOM_SEED = 1337
 
 
 def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK,
-                     section: object | None = None):
+                     section: object | None = None, threaded: bool = False):
     """The whole pipeline on stub clients -- the identical code path to prod.
 
     ``section`` is the NN chain; absent, it is built from the shipped artifacts,
@@ -24,8 +24,15 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     (beats, silence, a held intent) rather than refusing to start.  That is
     #144's contract, and it is what keeps every test that does not need the
     model runnable on a fresh clone.
+
+    ``threaded`` is the real-time paths' switch (D3): the microphone and the
+    ``--ui`` file run is paced by a wall clock, so the GPU stage belongs on its
+    own thread there exactly as it does in production.  Fast simulation runs on
+    a virtual clock and stays single-threaded, which is what makes its reports
+    byte-identical run to run.
     """
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
+    from lib.analyser.drift_watchdog import DriftWatchdog
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.effect_controller import EffectController
     from lib.engine.light_engine import LightEngine
@@ -36,8 +43,11 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     overlay_client = StubOverlayClient(clock=clock)
     command_queue = DelayedCommandQueue(PLAYBACK_DELAY_SEC, clock=clock)
 
+    watchdog = None
+    if threaded:
+        watchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE, clock=clock)
     if section is None:
-        section = load_section_chain()
+        section = load_section_chain(watchdog=watchdog)
 
     effect_controller = EffectController(midi_client, event_buffer=event_buffer, clock=clock)
     light_engine = LightEngine(
@@ -50,7 +60,8 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
         clock=clock,
     )
 
-    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, clock=clock)
+    music_analyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, light_engine, clock=clock,
+                                   watchdog=watchdog)
     light_engine.set_analyser(music_analyser)
 
     return {
@@ -66,7 +77,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
     }, command_queue
 
 
-def load_section_chain():
+def load_section_chain(watchdog=None):
     """The shipped chain, reset, or None on a machine that does not have it.
 
     Built once per process and reused, because the encoder is 1.3 GB of weights
@@ -75,8 +86,21 @@ def load_section_chain():
     track's ring, GRU state and bar grid into the next simulation -- which makes
     a report a function of what ran before it in the same process, and there is
     no song boundary between two simulations to do the job.
+
+    A threaded chain is NOT cached: it owns a running thread and a watchdog
+    belonging to one run, and handing that to the next simulation would share a
+    shed level between two shows.  The real-time paths build one each and stop
+    it; only the fast sim, which is where the cache pays, reuses.
     """
     global _SECTION_CHAIN
+    if watchdog is not None:
+        from lib import section_chain
+
+        if not section_chain.artifacts_present():
+            logging.warning('[sim] no NN artifacts on this machine — running '
+                            'the degradation state (beats, silence, held intent)')
+            return None
+        return section_chain.build_section_chain(watchdog=watchdog)
     if _SECTION_CHAIN is _UNBUILT:
         from lib import section_chain
 
@@ -190,6 +214,9 @@ async def run_simulation(components: dict, duration_sec: float,
             await command_queue.drain()
 
     audio_client.close()
+    section = components.get('section')
+    if section is not None:
+        section.stop()
     logging.info('[sim] simulation complete')
 
 

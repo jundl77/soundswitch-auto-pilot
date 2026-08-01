@@ -46,6 +46,17 @@ class SectionChain(NamedTuple):
     decoder: object
     feature_latency_sec: float
 
+    def stop(self) -> None:
+        """Ends the GPU thread, if this chain has one.
+
+        The one `getattr` in the wiring, and it is here rather than at each
+        entry point: whether the stream is threaded is a property of how the
+        chain was built, and nothing above it should have to remember.
+        """
+        stop = getattr(self.stream, "stop", None)
+        if stop is not None:
+            stop()
+
 
 def corpus_dir() -> Path:
     """The gitignored corpus root, resolved the way every other reader does.
@@ -106,8 +117,16 @@ def _check_class_space(priors) -> None:
 
 
 def build_section_chain(data_dir=None, *, device: str | None = None,
-                        fp16: bool = True) -> SectionChain:
-    """Encoder -> student -> committer, with the geometry read off the files."""
+                        fp16: bool = True, watchdog=None) -> SectionChain:
+    """Encoder -> student -> committer, with the geometry read off the files.
+
+    **A watchdog is the request for a thread** (D3).  The GPU stage reports its
+    health to one and reads its shed level off it, so handing one over is
+    exactly the statement "run this off the caller's thread"; without one the
+    stages run inline, which is what the virtual-clock simulation needs and what
+    keeps its reports byte-identical.  One switch, and it is the object the two
+    halves would have had to share anyway.
+    """
     from lib.analyser import mert_stream as M
     from lib.analyser.section_model import (PosteriorStream, SectionModel,
                                             load_head_geometry)
@@ -127,11 +146,20 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
                                       label_frame_sec=head.label_frame_sec)
     mean, _ = M.load_input_affine(found.affine)
 
-    encoder = M.load_encoder(geometry, device=device or M.best_device(),
-                             fp16=fp16)
+    device = device or M.best_device()
+
+    def build_encoder():
+        return M.load_encoder(geometry, device=device, fp16=fp16)
+
+    encoder = build_encoder()
     stream = PosteriorStream(M.MertStream(encoder, geometry=geometry),
                              SectionModel(found.graph, mean=mean,
                                           geometry=head))
+    if watchdog is not None:
+        from lib.analyser.gpu_stage import GpuStage
+
+        stream = GpuStage(stream, watchdog, reinit=build_encoder)
+        stream.start()
 
     # The half of B1's chain latency that cannot move: how much future audio a
     # cell's posterior depends on.  The other half is the decoder's, and it is

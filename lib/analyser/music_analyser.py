@@ -30,7 +30,8 @@ class MusicAnalyser:
                  buffer_size: int,
                  handler: IMusicAnalyserHandler,
                  clock: Clock = SYSTEM_CLOCK,
-                 note_clicks: bool = False):
+                 note_clicks: bool = False,
+                 watchdog: DriftWatchdog | None = None):
         self._clock: Clock = clock
         self.sample_rate: int = sample_rate
         self.buffer_size: int = buffer_size
@@ -47,8 +48,10 @@ class MusicAnalyser:
         # else here is LOOP-scoped — a song boundary says nothing about whether
         # the loop is keeping up.
         self._rhythm: MadmomRhythm = MadmomRhythm(self.sample_rate)
-        self._drift: DriftWatchdog = DriftWatchdog(self.buffer_size / self.sample_rate,
-                                                   clock=self._clock)
+        # Shared when the GPU stage is threaded: drift is measured here and
+        # health is reported there, and the ladder derives one level from both.
+        self._drift: DriftWatchdog = watchdog or DriftWatchdog(
+            self.buffer_size / self.sample_rate, clock=self._clock)
         self._rhythm_log_at: datetime.datetime = self._clock.now() + _RHYTHM_LOG_INTERVAL
         self._beats_since_log: int = 0
         self._last_beat_activation: float = 0.0

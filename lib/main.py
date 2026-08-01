@@ -62,7 +62,14 @@ class SoundSwitchAutoPilot:
         )
 
         from lib import section_chain
-        self.section = (section_chain.build_section_chain()
+        from lib.analyser.drift_watchdog import DriftWatchdog
+
+        # One ladder, two inputs: pacing is measured by the analyser and health
+        # is reported by the GPU stage, and neither can see what the other does
+        # (D3, census 0.4).  Handing it to the chain is also what puts the GPU
+        # stage on its own thread.
+        self.drift_watchdog: DriftWatchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE)
+        self.section = (section_chain.build_section_chain(watchdog=self.drift_watchdog)
                         if section_chain.artifacts_present() else None)
         if self.section is None:
             logging.warning('[main] no NN artifacts on this machine — the show '
@@ -77,7 +84,8 @@ class SoundSwitchAutoPilot:
                                                      section_decoder=None if self.section is None else self.section.decoder)
 
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
-                                                           note_clicks=debug_mode)
+                                                           note_clicks=debug_mode,
+                                                           watchdog=self.drift_watchdog)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
@@ -148,6 +156,8 @@ class SoundSwitchAutoPilot:
                 await self._do_10s_callback()
 
         self.audio_client.close()
+        if self.section is not None:
+            self.section.stop()
         self.os2l_client.stop()
         self.midi_client.stop()
         self.overlay_client.stop()
