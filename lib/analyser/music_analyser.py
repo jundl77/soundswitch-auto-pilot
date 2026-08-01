@@ -234,9 +234,13 @@ class MusicAnalyser:
         was_playing = self.is_playing
         self._reset_state()
         if was_playing:
-            handler_started = self._clock.monotonic()
+            # No forgive here.  This used to bracket the MIDI settle, which has
+            # since moved behind the command queue into `_show_sound_stop`,
+            # where it is bracketed at the point it actually blocks.  Left in
+            # place it forgave the engine's ordinary boundary work -- the OS2L
+            # send, the effect reset, the enqueue -- which is loop time the
+            # watchdog is supposed to see.
             self.handler.on_sound_stop()
-            self._drift.forgive(self._clock.monotonic() - handler_started)
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:
         if not self.is_playing or current_bpm <= 0:

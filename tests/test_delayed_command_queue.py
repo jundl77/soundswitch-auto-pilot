@@ -316,3 +316,27 @@ async def test_a_command_at_exactly_the_same_fire_time_is_a_predecessor_not_a_re
     clock.advance(1.0)
     await q.drain()
     assert fired == ['bar10', 'bar11']
+
+
+async def test_an_inclusive_drop_takes_the_equal_fire_time_the_default_keeps():
+    """One stream where equality IS a restatement, so the caller says which.
+
+    An effect refresh landing at the instant of an intent change is redundant
+    by construction -- the change re-picks the effect itself.  Strictly-after
+    let it survive, and because it was enqueued first the queue's (fire time,
+    sequence) ordering fired it BEFORE the change: a re-roll and an effect
+    change back to back, the flicker the drop exists to prevent.
+    """
+    from lib.clock import VirtualClock
+
+    clock = VirtualClock()
+    q = DelayedCommandQueue(14.0, clock=clock)
+    fired = []
+
+    await q.enqueue('refresh', _record(fired, 'refresh'), delay_sec=0.0)
+    assert q.drop_pending('refresh', clock.monotonic()) == 0
+    assert q.drop_pending('refresh', clock.monotonic(), inclusive=True) == 1
+
+    clock.advance(1.0)
+    await q.drain()
+    assert fired == []

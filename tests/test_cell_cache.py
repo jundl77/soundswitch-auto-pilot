@@ -7,6 +7,7 @@ replay's whole job is reproducing the *grouping* as well as the values.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -141,10 +142,13 @@ def test_a_reset_mid_run_is_replayed_where_it_happened(audio, key):
 
 
 def test_an_exhausted_replay_reports_nothing_due_rather_than_looping(audio, key):
+    """The `while due()` loop above it must terminate at the end of the
+    recording.  Pushing PAST the recording is a different question and a
+    different answer -- see the truncation test below; here the replay has been
+    fed exactly what it was recorded over."""
     path = record(audio, key)
     replay, _ = cell_cache.open_replay(path, key)
     drive(replay)
-    replay.push_audio(np.zeros(100, dtype=np.float32))
     assert not replay.due()
     assert replay.run_pass() == []
 
@@ -318,3 +322,125 @@ def test_a_warm_chain_loads_no_encoder(nn_artifacts, anchor_mp3, monkeypatch):
 
 def _refuse(*args, **kwargs):
     raise AssertionError("a warm run loaded the encoder")
+
+
+# --------------------------------------------------------------------------- #
+# What the key has to carry beyond the geometry
+# --------------------------------------------------------------------------- #
+
+
+def test_the_key_carries_the_arithmetic_the_cells_were_computed_under(key):
+    """Device and precision are resolved at build time, not requested, and
+    cuda-fp16 and cpu-fp32 are different numbers for the same audio."""
+    assert set(key["backend"]) == {"device", "precision"}
+    assert key["backend"]["precision"] in ("fp16", "fp32")
+
+
+def test_a_sidecar_recorded_under_another_backend_is_a_named_miss(audio, key):
+    """Without this a sidecar recorded on a CPU box replays as the GPU path's
+    answer -- a different measurement, with nothing anywhere to say so."""
+    path = record(audio, key)
+    other = json.loads(json.dumps(key))
+    other["backend"] = {"device": "cpu", "precision": "fp32"}
+    replay, reason = cell_cache.open_replay(path, other)
+    assert replay is None and reason == "miss_backend"
+
+
+def test_the_builder_and_the_key_read_the_backend_from_one_place():
+    """They cannot drift apart if there is only one answer."""
+    from lib import section_chain
+
+    assert section_chain.resolve_backend("cpu", False) == {
+        "device": "cpu", "precision": "fp32"}
+    assert section_chain.resolve_backend("cuda")["precision"] == "fp16"
+
+
+# --------------------------------------------------------------------------- #
+# A recording that stopped early
+# --------------------------------------------------------------------------- #
+
+
+def test_a_recording_records_how_much_audio_it_covers(audio, key):
+    path = record(audio, key)
+    with np.load(path) as archive:
+        assert int(archive["total_pushed"]) == 6 * 100
+
+
+def test_a_recording_shorter_than_this_run_is_a_named_miss(audio, key):
+    """`run_simulation` stops on a duration_sec bound as readily as on the end
+    of the file, and saves an identically keyed sidecar either way."""
+    path = record(audio, key, stream=FakeStream())
+    replay, reason = cell_cache.open_replay(path, key, expected_samples=6 * 100)
+    assert replay is not None and reason == "hit"
+
+    replay, reason = cell_cache.open_replay(path, key,
+                                            expected_samples=6 * 100 + 1)
+    assert replay is None and reason == "miss_truncated"
+
+
+def test_a_replay_pushed_past_its_recording_refuses_instead_of_going_quiet(
+        audio, key):
+    """The guarantee for a caller that cannot say how long the run will be:
+    serving nothing for the rest of a track is a silent wrong show."""
+    path = record(audio, key)
+    replay, reason = cell_cache.open_replay(path, key)
+    assert reason == "hit"
+
+    drive(replay, buffers=6)
+    with pytest.raises(cell_cache.TruncatedRecording):
+        replay.push_audio(np.zeros(100, dtype=np.float32))
+
+
+def test_a_replay_over_exactly_its_recording_is_not_refused(audio, key):
+    path = record(audio, key)
+    replay, _reason = cell_cache.open_replay(path, key)
+    assert as_tuples(drive(replay, buffers=6)) == as_tuples(drive(FakeStream()))
+
+
+# --------------------------------------------------------------------------- #
+# Publishing the sidecar
+# --------------------------------------------------------------------------- #
+
+
+def test_the_temp_name_is_the_writer_s_own(audio, key, monkeypatch):
+    """The corpus batch and the benchmark both run pools over the same files.
+    One fixed `.part` beside the audio let two writers publish each other's
+    bytes -- and on Windows raised PermissionError out of a finished run."""
+    seen = []
+    real = Path.write_bytes
+
+    def spy(self, data):
+        seen.append(self.name)
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", spy)
+    record(audio, key)
+    assert len(seen) == 1
+    assert str(os.getpid()) in seen[0] and seen[0].endswith(".part")
+
+
+def test_a_sidecar_that_cannot_be_published_does_not_fail_the_run(
+        audio, key, monkeypatch, caplog):
+    """A cache is an optimisation: the simulation that just finished is
+    complete whether or not its cells reach the disk."""
+    def refuse(self, data):
+        raise PermissionError(13, "used by another process")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+    with caplog.at_level("WARNING"):
+        record(audio, key)
+    assert any("could not publish" in message for message in caplog.messages)
+    assert not cell_cache.sidecar_path(audio, key["decode"]).exists()
+
+
+def test_an_archive_whose_arrays_disagree_is_a_named_miss(audio, key):
+    """Caught at load, where it costs a re-record, rather than as an IndexError
+    out of the middle of a simulation minutes into a batch."""
+    path = record(audio, key)
+    with np.load(path) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    arrays["cell_index"] = arrays["cell_index"][:-1]
+    cell_cache._write_archive(path, arrays)
+
+    replay, reason = cell_cache.open_replay(path, key)
+    assert replay is None and reason == "miss_schema"

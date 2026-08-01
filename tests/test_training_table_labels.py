@@ -1157,6 +1157,33 @@ def test_a_block_inside_the_budget_is_not_late():
     assert alignment.late == 0
 
 
+def test_lateness_ships_with_the_denominator_that_makes_it_readable():
+    """A block can only be measured for lateness if it RECORDED its instant.
+
+    An inferred start is derived from the look-ahead, so its shift IS the
+    look-ahead and can never exceed it -- "0 late" on the thousands of
+    pre-`song_t` corpus reports is structural, and without the denominator it
+    is indistinguishable from a chain that never ran behind.
+    """
+    inferred = [queue_block(6.0, "DROP", 40.0)]
+    _, alignment = realign_intents(inferred, LOOK_AHEAD, [6.0], duration_sec=60.0)
+    assert (alignment.late, alignment.song_recorded) == (0, 0)
+
+    recorded = [{"t": 8.5, "song_t": 6.0, "intent": "DROP", "end": 40.0}]
+    _, alignment = realign_intents(recorded, LOOK_AHEAD, [6.0], duration_sec=60.0)
+    assert (alignment.late, alignment.song_recorded) == (0, 1)
+
+
+def test_join_stats_carry_the_lateness_denominator_to_the_batch():
+    sections = [(0.0, 40.0, "drop")]
+    beats = [beat(t) for t in (6.0, 7.0, 8.0)]
+    intents = [{"t": 8.5, "song_t": 6.0, "intent": "DROP", "end": 40.0}]
+    _rows, stats = join(sections, beats, intents, duration_sec=40.0)
+
+    assert stats.intent_blocks_song_recorded == 1
+    assert stats.intent_blocks_late == 0
+
+
 def test_the_batch_tidies_every_file_one_simulation_leaves(tmp_path):
     """D12 added a second derived file beside the audio, ~25 MB a track.  Over
     this corpus that is ~35 GiB the batch would leak -- an order of magnitude

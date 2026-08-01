@@ -8,6 +8,12 @@ from lib.clients.midi_message import MidiChannel
 from typing import List
 from enum import Enum
 
+# SoundSwitch drops the pause message unless the previous one has settled.  A
+# named constant because the engine has to forgive exactly this much lost lead
+# and no more: it brackets the call, and forgiving whatever the bracket happened
+# to take would write off a real stall as a deliberate one.
+SETTLE_SEC = 0.2
+
 
 class EffectAction(Enum):
     ACTIVATE = 1,
@@ -65,7 +71,7 @@ class MidiClient:
     def on_sound_stop(self):
         self.set_all_intensities(0)
         if not self.soundswitch_is_paused:
-            time.sleep(0.2)  # SoundSwitch drops this message unless the previous one has settled
+            time.sleep(SETTLE_SEC)
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))
             self.soundswitch_is_paused = True
 

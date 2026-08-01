@@ -131,6 +131,23 @@ def read_geometry(data_dir=None) -> Geometry:
     return Geometry(stream, head, mean)
 
 
+def resolve_backend(device: str | None = None, fp16: bool = True) -> dict:
+    """The arithmetic a chain built right now would run its encoder under.
+
+    Neither half is requested by the callers that matter: `build_section_chain`
+    takes `device=None` and picks `best_device()`, and `fp16` defaults on.  So
+    the same call is cuda-fp16 on this box and cpu-fp32 on a box with no GPU,
+    and those produce different cell bytes -- which makes this part of the
+    cell cache's identity (#161's argument, applied to the numbers rather than
+    to the decoder).  One function, read by the builder and by the key, so the
+    two cannot answer differently.
+    """
+    from lib.analyser import mert_stream as M
+
+    return {"device": device or M.best_device(),
+            "precision": "fp16" if fp16 else "fp32"}
+
+
 def _check_class_space(priors) -> None:
     """Every class the model can decode has to light something, at startup.
 
@@ -174,10 +191,10 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
     stage = None if extractor is None else extractor(geometry)
     build_encoder = None
     if stage is None:
-        device = device or M.best_device()
+        backend = resolve_backend(device, fp16)
 
         def build_encoder():
-            return M.load_encoder(geometry, device=device, fp16=fp16)
+            return M.load_encoder(geometry, device=backend["device"], fp16=fp16)
 
         stage = M.MertStream(build_encoder(), geometry=geometry)
 

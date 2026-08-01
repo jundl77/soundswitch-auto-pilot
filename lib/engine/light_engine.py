@@ -6,7 +6,7 @@ from lib.audio_config import SAMPLE_RATE
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_definitions import LightIntent, intent_for_class
-from lib.clients.midi_client import MidiClient
+from lib.clients.midi_client import SETTLE_SEC, MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
 from lib.analyser.music_analyser import MusicAnalyser
@@ -32,14 +32,21 @@ _LATENCY_LOG_STEP_SEC = 0.25
 # How long past the chain's own latency the engine waits for a first decision
 # before lighting something itself.  "Hold the intent" is only a show if there
 # IS one: a GPU that is dead at boot commits nothing, so the rig stays dark for
-# the whole night while the log says the show is holding.  Two nominal bars of
-# slack past the measured chain, which the healthy path beats on every fixture
-# track -- and the cost of being wrong is one extra effect change at the top of
-# a set, against a dark stage.
+# the whole night while the log says the show is holding.
+#
+# **It is the bar grid's warm-up budget, not a safety margin.**  The chain
+# latency the floor waits past is the steady-state number -- features plus
+# (lag + 1) bars -- and it assumes a grid.  At a song start there is none: the
+# first decision cannot arrive until enough beats have been seen to lay bar
+# lines down and fill the committer's lag, and that is what this covers.  Two
+# nominal bars, which is the shape of the thing it is waiting for.
 #
 # ATMOSPHERIC because the owner's error asymmetry says so: a quiet default that
 # turns out to be wrong reads as a slow start, and a guessed high-energy look
-# that turns out to be wrong reads as a broken rig.
+# that turns out to be wrong reads as a broken rig.  On a healthy chain the
+# floor firing during a beatless intro is not an error at all -- ATMOSPHERIC is
+# what the model says about an intro too, so the floor pre-empts the decoder
+# with the answer the decoder was going to give.
 COLD_START_FLOOR_MARGIN_SEC = 4.0
 
 # D9.  The retired YAMNet detector re-rolled the lighting effect on a section
@@ -201,13 +208,20 @@ class LightEngine(IMusicAnalyserHandler):
         ~10 s and re-warmed the decoder for another 14.  All night, and
         invisible to a virtual clock, which does not advance while a real thread
         sleeps.  So the forgive follows the stall to where it actually runs.
+
+        **Bounded by the settle itself.**  The bracket also contains the
+        overlay's teardown and whatever the OS decides to do to this thread, and
+        forgiving all of it would write off genuine lost lead as a stall the
+        show chose -- which is the one thing that could hide the loop failing to
+        keep up at exactly the moment it is most likely to.
         """
         started = self._clock.monotonic()
         try:
             yield
         finally:
             if self._watchdog is not None:
-                self._watchdog.forgive(self._clock.monotonic() - started)
+                self._watchdog.forgive(
+                    min(self._clock.monotonic() - started, SETTLE_SEC))
 
     def _at_the_room(self, label: str, action) -> None:
         """Fire when the audience hears the audio that caused it, then forget.
@@ -276,8 +290,17 @@ class LightEngine(IMusicAnalyserHandler):
         if drained.gap:
             # The feature stage stopped and rejoined the live edge, so every
             # cell the decoder is holding, and the bar it was assembling them
-            # into, describe audio from the other side of a discontinuity -- and
-            # so does the instant of the last refresh.
+            # into, describe audio from the other side of a discontinuity.
+            #
+            # The refresh instant is a different case and the premise it was
+            # added under was wrong: cell time does NOT restart at a resync
+            # (indices skip forward, they do not rewind), so the recorded
+            # instant is still a valid past one.  Clearing it re-opens the
+            # cooldown, which is a deliberate choice -- the show has just
+            # resumed on audio it has not seen the front of, and the first
+            # boundary after that is worth landing -- not a correction.  The
+            # case that genuinely needs the clear is a song boundary, where
+            # cell time does restart, and `_at_the_room` does it there.
             self.section_decoder.reset()
             self._last_refresh_sec = float('-inf')
             # The grid restarts at bar zero, so the bar this last committed is

@@ -25,6 +25,12 @@ class FileAudioClient:
     def support_output(self) -> bool: return False
 
     def start_streams(self, start_stream_out: bool = False):
+        # Idempotent: the cell cache asks how long this run will be before the
+        # runner starts the client, and decoding a track twice to answer that
+        # would cost the corpus batch a second decode per track.
+        if self._audio is not None:
+            self._pos = 0
+            return
         cache_path = f'{self.path}.{self.sample_rate}.npy'
         src_mtime = os.path.getmtime(self.path)
         if os.path.exists(cache_path) and os.path.getmtime(cache_path) > src_mtime:
@@ -62,3 +68,8 @@ class FileAudioClient:
     @property
     def duration_sec(self) -> float:
         return len(self._audio) / self.sample_rate if self._audio is not None else 0.0
+
+    @property
+    def total_samples(self) -> int | None:
+        """How many samples a full run over this file will push, or None."""
+        return None if self._audio is None else len(self._audio)

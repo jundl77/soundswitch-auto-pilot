@@ -1147,3 +1147,99 @@ async def test_a_feature_gap_forgets_the_commit_cursor():
     state = light.event_buffer.snapshot()['decoder']
     assert state['committed_bar'] is None
     assert state['lag_bars'] is None
+
+
+# --------------------------------------------------------------------------- #
+# The song boundary, and what may not cross it
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_song_boundary_clears_the_intents_still_in_flight():
+    """The new song may not inherit the old one's statements.
+
+    `decided_intent` is the stream's tail, so a decision still queued from the
+    last track is what the new track's FIRST decision is deduplicated against
+    -- and until it drains it is also what the cold-start floor's arming races,
+    which made the floor's safety here an accident of two independently
+    tunable constants rather than a decision.
+    """
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='drop')
+
+    await bars(light, decoder, clock, 'breakdown', age_sec=0.5)
+    assert len(queued_intents(queue)) == 1
+    assert light.decided_intent is LightIntent.BREAKDOWN
+
+    light.on_sound_stop()
+
+    assert queued_intents(queue) == []
+    assert light.decided_intent is None
+
+
+async def test_a_song_boundary_clears_the_refreshes_still_in_flight():
+    """Same rule, other stream: a re-roll owed to the last track would land on
+    a pool chosen for an intent this track has not committed."""
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='drop')
+    await boundary(light, chain, clock, 1.0)
+    assert [item for item in queue._queue if item[4] == 'refresh']
+
+    light.on_sound_stop()
+
+    assert [item for item in queue._queue if item[4] == 'refresh'] == []
+
+
+async def test_a_refresh_sharing_an_intent_change_s_fire_time_is_dropped():
+    """The clamp collapses fire times, and the two streams mean different
+    things by that.
+
+    Two intent commands at one instant are two bars the clamp collapsed and
+    both are owed to the room.  A refresh at an intent change's instant is
+    redundant -- and being strictly-after let it survive AND fire first, since
+    it was enqueued earlier and the queue orders equal times by sequence.
+    """
+    from lib.analyser.section_model import Posterior
+
+    decoder, chain = FakeDecoder(), FakeChain()
+    light, queue, clock, midi = engine(decoder=decoder, chain=chain, events=True)
+    await held(light, decoder, chain, clock, queue, label='drop')
+    before = len(autoloops(midi))
+
+    # Older than the playback delay, so both commands clamp to the same `now`.
+    old = light.audio_sec - 20.0
+    chain.pending = [Posterior(0, old, np.zeros(5), 1.0),
+                     Posterior(1, old, np.zeros(5), 0.0)]
+    decoder._script = [[], [BarDecision(9, 'breakdown', old)]]
+    await elapse(light, clock, 0.5)
+
+    assert [item for item in queue._queue if item[4] == 'refresh'] == []
+
+    await settle(light, clock, queue)
+    assert len(autoloops(midi)) == before + 1
+    assert light.current_intent is LightIntent.BREAKDOWN
+
+
+async def test_the_deliberate_stall_forgives_the_settle_and_not_the_rest():
+    """A bounded forgive, because the bracket holds more than the settle.
+
+    Whatever else runs inside it -- the overlay teardown, or the OS descheduling
+    this thread -- is lost lead the watchdog is supposed to see.  Forgiving all
+    of it would hide the loop failing to keep up at exactly the moment it is
+    most likely to.
+    """
+    from lib.analyser.drift_watchdog import DriftWatchdog
+    from lib.clients.midi_client import SETTLE_SEC
+
+    clock = VirtualClock()
+    watchdog = DriftWatchdog(256 / SAMPLE_RATE, clock=clock)
+    light, queue, _clock, midi = engine(clock=clock)
+    light._watchdog = watchdog
+
+    forgiven = []
+    watchdog.forgive = forgiven.append
+    with light._deliberate_stall():
+        clock.advance(SETTLE_SEC * 10)
+
+    assert forgiven == [SETTLE_SEC]

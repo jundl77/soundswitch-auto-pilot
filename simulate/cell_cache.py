@@ -30,6 +30,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+import secrets
 import zipfile
 from pathlib import Path
 
@@ -52,9 +54,23 @@ _TOP_LEVEL_MISSES = (("schema", "miss_schema"),
                      ("source_rate", "miss_source_rate"),
                      ("audio_size", "miss_audio_changed"),
                      ("audio_mtime", "miss_audio_changed"))
-_GROUP_MISSES = (("encoder", "miss_encoder"), ("framing", "miss_framing"))
+_GROUP_MISSES = (("encoder", "miss_encoder"), ("framing", "miss_framing"),
+                 ("backend", "miss_backend"))
 
 log = logging.getLogger(__name__)
+
+
+class TruncatedRecording(RuntimeError):
+    """A replay was pushed past the audio its recording covers.
+
+    The recorder saves on every normal stop, and `run_simulation` stops on a
+    `duration_sec` bound as readily as on the end of the file -- so a run cut
+    short leaves a sidecar that is indistinguishable, by key, from a complete
+    one.  Replayed into a full run it serves cells until the recording ends and
+    then serves nothing at all, for the rest of the track, in silence: the
+    decoder stops receiving posteriors and the show holds one intent with no
+    fault anywhere.  Loud and stopped beats quiet and wrong.
+    """
 
 
 def sidecar_path(audio_path, decode_path: str) -> Path:
@@ -62,13 +78,25 @@ def sidecar_path(audio_path, decode_path: str) -> Path:
     return audio_path.with_name(f"{audio_path.name}.{decode_path}.{SUFFIX}")
 
 
-def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str) -> dict:
-    """Everything a cell depends on, in the two groups that fail differently.
+def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str,
+              backend: dict | None = None) -> dict:
+    """Everything a cell depends on, in the three groups that fail differently.
 
-    `encoder` is which weights produced the features; `framing` is the geometry
-    they were pooled under.  Split so a miss says which one moved rather than
-    "something".
+    `encoder` is which weights produced the features, `framing` is the geometry
+    they were pooled under, and `backend` is the arithmetic that ran them.
+    Split so a miss says which one moved rather than "something".
+
+    **The backend belongs here for the same reason the decode path does.**  It
+    is chosen at build time, not requested: `build_section_chain` resolves the
+    device off `best_device()` and the precision off its `fp16` default, so the
+    same call produces cuda-fp16 cells on this box and cpu-fp32 cells on a box
+    with no GPU.  Those are different numbers, and without this a sidecar
+    recorded on one replays as the other's answer -- a wrong measurement with
+    nothing to say so.  It is resolved through the chain's own helper rather
+    than recomputed, so the key and the builder cannot drift apart.
     """
+    from lib import section_chain
+
     stat = Path(audio_path).stat()
     return {
         "schema": SCHEMA,
@@ -85,6 +113,8 @@ def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str) -> di
             "buffer_sec": float(geometry.buffer_sec),
             "label_frame_sec": float(geometry.label_frame_sec),
         },
+        "backend": dict(backend if backend is not None
+                        else section_chain.resolve_backend()),
         "source_rate": int(source_rate),
         "audio_size": stat.st_size,
         "audio_mtime": stat.st_mtime,
@@ -102,8 +132,15 @@ def miss_reason(stored: dict, wanted: dict) -> str | None:
     return None
 
 
-def open_replay(path, key: dict):
-    """``(Replay, "hit")``, or ``(None, reason)`` -- never an exception."""
+def open_replay(path, key: dict, expected_samples: int | None = None):
+    """``(Replay, "hit")``, or ``(None, reason)`` -- never an exception.
+
+    ``expected_samples`` is how much audio this run will push, when the caller
+    can say.  A recording that does not cover it is ``miss_truncated`` and is
+    re-recorded rather than served short.  A caller that cannot say still gets
+    the guarantee, one layer later: `Replay` refuses at the sample the
+    recording stops covering instead of quietly emitting nothing.
+    """
     path = Path(path)
     if not path.exists():
         return None, "miss_new"
@@ -113,12 +150,37 @@ def open_replay(path, key: dict):
             reason = miss_reason(stored, key)
             if reason is not None:
                 return None, reason
+            total = int(archive["total_pushed"])
+            if expected_samples is not None and total < int(expected_samples):
+                return None, "miss_truncated"
+            if not _internally_consistent(archive):
+                return None, "miss_schema"
             return Replay(archive["pass_trigger"], archive["pass_offset"],
                           archive["cell_index"], archive["cell_seen_sec"],
                           archive["cell_features"],
-                          float(key["framing"]["label_frame_sec"])), "hit"
+                          float(key["framing"]["label_frame_sec"]),
+                          total), "hit"
     except (OSError, KeyError, ValueError, zipfile.BadZipFile):
         return None, "miss_unreadable"
+
+
+def _internally_consistent(archive) -> bool:
+    """Do the five arrays describe one recording?
+
+    Checked at load, where it is a named miss and costs a re-record, rather
+    than at the first `run_pass` that indexes past the end -- which happens
+    minutes into a batch, out of the middle of a simulation, as an IndexError
+    with nothing in it about a cache.  A sidecar can be inconsistent without
+    being unreadable: a writer killed between members, or a schema that grew a
+    column while keeping its name.
+    """
+    offsets = archive["pass_offset"]
+    cells = len(archive["cell_index"])
+    return (len(offsets) == len(archive["pass_trigger"]) + 1
+            and (len(offsets) == 0 or (int(offsets[0]) == 0
+                                       and int(offsets[-1]) == cells))
+            and len(archive["cell_seen_sec"]) == cells
+            and len(archive["cell_features"]) == cells)
 
 
 class Replay:
@@ -129,18 +191,26 @@ class Replay:
     """
 
     def __init__(self, triggers, offsets, indices, seen_sec, features,
-                 label_frame_sec: float) -> None:
+                 label_frame_sec: float, total_pushed: int = 0) -> None:
         self._triggers = np.asarray(triggers, dtype=np.int64)
         self._offsets = np.asarray(offsets, dtype=np.int64)
         self._indices = np.asarray(indices, dtype=np.int64)
         self._seen_sec = np.asarray(seen_sec, dtype=np.float64)
         self._features = np.asarray(features, dtype=np.float32)
         self._label_frame_sec = float(label_frame_sec)
+        self._total_pushed = int(total_pushed)
         self._pushed = 0
         self._cursor = 0
 
     def push_audio(self, samples) -> None:
         self._pushed += len(samples)
+        if self._pushed > self._total_pushed:
+            raise TruncatedRecording(
+                f"this recording covers {self._total_pushed} source samples "
+                f"and the run has pushed {self._pushed} -- it was cut short "
+                f"(a duration_sec bound saves a sidecar exactly like a "
+                f"complete run does).  Delete the sidecar, or re-record it "
+                f"over the whole file.")
 
     def due(self) -> bool:
         return (self._cursor < len(self._triggers)
@@ -211,16 +281,18 @@ class Recorder:
         dim = len(self._features[0]) if self._features else 0
         features = (np.stack(self._features) if self._features
                     else np.zeros((0, dim), dtype=np.float32))
-        _write_archive(self.path, {
+        written = _write_archive(self.path, {
             "key": np.str_(json.dumps(self._key, sort_keys=True)),
+            "total_pushed": np.int64(self._pushed),
             "pass_trigger": np.asarray(self._triggers, dtype=np.int64),
             "pass_offset": np.asarray(self._offsets, dtype=np.int64),
             "cell_index": np.asarray(self._indices, dtype=np.int64),
             "cell_seen_sec": np.asarray(self._seen_sec, dtype=np.float64),
             "cell_features": features,
         })
-        log.info(f'[cells] wrote {len(self._indices)} cells over '
-                 f'{len(self._triggers)} passes → {self.path}')
+        if written:
+            log.info(f'[cells] wrote {len(self._indices)} cells over '
+                     f'{len(self._triggers)} passes → {self.path}')
 
 
 class RecordingStream(PosteriorStream):
@@ -242,7 +314,21 @@ def recording_chain(chain, path, key: dict):
                                chain.stream.model))
 
 
-def _write_archive(path: Path, arrays: dict) -> None:
+def _write_archive(path: Path, arrays: dict) -> bool:
+    """Publish the sidecar atomically, or log why it could not be.
+
+    **The temp name carries the writer's identity.**  It used to be one fixed
+    `.part` beside the audio, and the corpus batch and the benchmark both run a
+    pool over the same files: two writers then interleaved on one temp file and
+    published each other's bytes.  On Windows the second `replace` onto a file
+    the first still has open raises `PermissionError` instead -- out of
+    `run_simulation`, after every expensive thing in the run had already
+    succeeded.
+
+    **A cache is an optimisation, so failing to publish one is not a failure.**
+    The simulation that just finished is complete and correct whether or not
+    its cells reach the disk; the next run simply pays for the GPU again.
+    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
         for name, value in arrays.items():
@@ -253,10 +339,17 @@ def _write_archive(path: Path, arrays: dict) -> None:
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o600 << 16
             archive.writestr(info, member.getvalue())
-    tmp = path.with_suffix(path.suffix + ".part")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}."
+                         f"{secrets.token_hex(4)}.part")
     try:
         tmp.write_bytes(buffer.getvalue())
         tmp.replace(path)
+        return True
+    except OSError as error:
+        tmp.unlink(missing_ok=True)
+        log.warning(f'[cells] could not publish {path.name} ({error!r}) — the '
+                    f'run is unaffected, the next one pays for the GPU again')
+        return False
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

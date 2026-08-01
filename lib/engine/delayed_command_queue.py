@@ -71,7 +71,8 @@ class DelayedCommandQueue:
             (fire_at, self._sequence, enqueue_time, delay, label, factory),
             key=lambda item: (item[0], item[1]))
 
-    def drop_pending(self, label: str, later_than: float) -> int:
+    def drop_pending(self, label: str, later_than: float,
+                     inclusive: bool = False) -> int:
         """Cancel this label's undelivered commands firing after a time.
 
         The supersede half of a single serialized stream: a command's fire time
@@ -91,12 +92,21 @@ class DelayedCommandQueue:
         keep their order through the queue's (fire time, sequence) sort, which
         is commit order.
 
+        `inclusive` takes the equal fire times too, and exists for the one
+        stream where equality IS a restatement: an effect refresh landing at
+        the instant of an intent change is redundant, because the change
+        re-picks the effect itself.  The caller says which meaning it holds,
+        because the queue cannot know.
+
         The clamp goes with them: a cancelled command's fire time was the floor
         every later one in its stream was held to, and leaving it in place lets
         it order the stream from the grave.
         """
-        keep = [item for item in self._queue
-                if not (item[4] == label and item[0] > later_than)]
+        def doomed(item) -> bool:
+            return item[4] == label and (item[0] >= later_than if inclusive
+                                         else item[0] > later_than)
+
+        keep = [item for item in self._queue if not doomed(item)]
         dropped = len(self._queue) - len(keep)
         if not dropped:
             return 0

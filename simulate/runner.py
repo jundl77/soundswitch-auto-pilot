@@ -110,7 +110,8 @@ def load_section_chain(watchdog=None, audio_client=None):
 
     plan = _cell_cache_plan(audio_client)
     if plan is not None:
-        replay, reason = cell_cache.open_replay(*plan)
+        replay, reason = cell_cache.open_replay(
+            *plan, expected_samples=_expected_samples(audio_client))
         if replay is not None:
             logging.info(f'[sim] replaying cached extractor cells ← {plan[0].name}')
             return section_chain.build_section_chain(extractor=lambda _: replay)
@@ -136,6 +137,20 @@ def _artifacts_or_degrade() -> bool:
     logging.warning('[sim] no NN artifacts on this machine — running '
                     'the degradation state (beats, silence, held intent)')
     return False
+
+
+def _expected_samples(audio_client):
+    """How much audio this run will push, for a client that knows.
+
+    A recording cut short by a `duration_sec` bound is keyed exactly like a
+    complete one, so this is what turns "serves cells and then silently stops"
+    into a named miss that re-records.  The client is started to answer --
+    `start_streams` is idempotent and the runner is about to call it anyway.
+    """
+    if not hasattr(audio_client, 'total_samples'):
+        return None
+    audio_client.start_streams()
+    return audio_client.total_samples
 
 
 def _cell_cache_plan(audio_client):

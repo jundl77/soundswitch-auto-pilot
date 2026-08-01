@@ -474,6 +474,14 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
     # whose stamp is more than one look-ahead after the audio it names was
     # committed late because the chain was older than the playback delay.  The
     # engine warns once per transition; this is how many blocks it cost.
+    #
+    # Only a block that RECORDED its instant can be measured this way -- an
+    # inferred start is derived from the look-ahead, so its shift is the
+    # look-ahead by construction and can never exceed it.  `song_recorded` is
+    # therefore the denominator, and it ships beside the count: on the
+    # thousands of pre-`song_t` corpus reports "0 late" is structural, and
+    # without the denominator it is indistinguishable from a chain that never
+    # ran behind.
     late = sum(1 for shift in shifts if shift > look_ahead_sec + tolerance)
     return spans, IntentAlignment(len(blocks), song_stamped, clamped_tail,
                                   song_recorded, late)
@@ -515,7 +523,8 @@ class JoinStats(NamedTuple):
     dropped_in_dropped_section: int
     beats_without_intent: int
     intent_blocks_song_stamped: int   # blocks the engine committed immediately
-    intent_blocks_late: int           # blocks the chain committed past the budget
+    intent_blocks_song_recorded: int  # blocks carrying the instant they describe
+    intent_blocks_late: int           # of those, committed past the budget
     intent_reattributed: int          # rows whose intent the realignment moved
 
 
@@ -587,6 +596,7 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
         dropped_in_dropped_section=in_dropped,
         beats_without_intent=without_intent,
         intent_blocks_song_stamped=alignment.song_stamped,
+        intent_blocks_song_recorded=alignment.song_recorded,
         intent_blocks_late=alignment.late,
         intent_reattributed=reattributed,
     )
@@ -1091,6 +1101,8 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 dropped["in_dropped_section"] += stats.dropped_in_dropped_section
                 dropped["without_intent"] += stats.beats_without_intent
                 dropped["intent_blocks_song_stamped"] += stats.intent_blocks_song_stamped
+                dropped["intent_blocks_song_recorded"] += \
+                    stats.intent_blocks_song_recorded
                 dropped["intent_blocks_late"] += stats.intent_blocks_late
                 dropped["intent_reattributed"] += stats.intent_reattributed
                 for joined_row in joined:
@@ -1272,9 +1284,11 @@ def print_report(stats: TableStats, results: list, table_path: Path,
     print(f"  song-stamped intent blocks realigned: "
           f"{dropped['intent_blocks_song_stamped']}  "
           f"(rows re-attributed: {dropped['intent_reattributed']})")
-    print(f"  intent blocks committed late: {dropped['intent_blocks_late']}  "
+    print(f"  intent blocks committed late: {dropped['intent_blocks_late']} of "
+          f"{dropped['intent_blocks_song_recorded']} eligible  "
           f"(#154's accepted lateness -- the chain was older than the "
-          f"playback delay)")
+          f"playback delay; only a block that RECORDED its instant can be "
+          f"measured, so a zero denominator means the reports predate it)")
     print(f"  tracks with no cached report : {len(stats.missing_reports)}"
           + (f"  {stats.missing_reports[:10]}" if stats.missing_reports else ""))
     print(f"  tracks skipped, no sidecar   : {len(stats.missing_sidecars)}"
