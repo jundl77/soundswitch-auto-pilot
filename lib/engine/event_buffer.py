@@ -148,7 +148,12 @@ class EventBuffer:
             timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
-                'is_playing': self._is_playing,
+                # Sound state is written per audio buffer by the analyser's
+                # silence detector, so when the audio ends the last value it
+                # wrote stands forever.  `mark_end` is the one place that knows
+                # there will be no more buffers, so it is the only thing that
+                # can retire the flag.
+                'is_playing': self._is_playing and self._end_time is None,
                 'beats': [b for b in self._beats if b['t'] >= cutoff],
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
                 'intents': [e for e in self._intents if e.get('end', now) >= cutoff],

@@ -333,3 +333,29 @@ def test_a_ui_file_session_keeps_the_whole_track():
 
     assert [b['intent'] for b in buffer.to_report()['intents']] \
         == ['breakdown', 'drop']
+
+
+def test_the_pill_leaves_playing_when_the_audio_runs_out():
+    """The pill is the one widget that says whether anything is happening, and
+    it read PLAYING for 55 minutes after a track ended.
+
+    Sound state is written by the analyser's silence detector, which runs *per
+    audio buffer*.  When a file ends the buffers simply stop arriving, so the
+    detector never runs again and the last thing it wrote stands forever --
+    while the clock beside it is frozen by `mark_end`.  A pill sourced from a
+    field that can no longer be updated is not reporting the sound state.
+    """
+    from lib.clock import VirtualClock
+    from lib.engine.event_buffer import EventBuffer
+
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+    buffer.start()
+    buffer.set_playing(True)
+    clock.advance(240.0)
+    buffer.mark_end()
+    clock.advance(3300.0)
+
+    pill = ''.join(_texts(V._build_metrics(buffer.snapshot())[0]))
+    assert 'PLAYING' not in pill, pill
+    assert 'PAUSED' in pill, pill
