@@ -1,16 +1,17 @@
 {
   "NyEKXA7_6z0.mp3": {
     "degradation": {
-      "atmospheric_blocks": 0,
+      "atmospheric_blocks": 1,
       "beat_times_hash": "17811ad9905a6dcf",
       "beats_detected": 701,
-      "classified_blocks": 19,
-      "effect_changes": 17,
-      "intent_blocks": 19,
+      "classified_blocks": 8,
+      "effect_changes": 22,
+      "intent_blocks": 9,
       "intents_held": [
+        "atmospheric",
+        "breakdown",
         "buildup",
         "drop",
-        "groove",
         "peak"
       ],
       "sound_events": [
@@ -20,41 +21,59 @@
         },
         {
           "playing": false,
-          "t": 362.185
+          "t": 362.353
         }
       ]
     },
     "informational": {
-      "dominant_intent": "peak",
-      "effect_changes_count": 17,
-      "intent_changes_count": 19,
+      "dominant_intent": "atmospheric",
+      "effect_changes_count": 22,
+      "intent_changes_count": 9,
       "intent_distribution_sec": {
-        "buildup": 24.62,
-        "drop": 49.25,
-        "groove": 46.53,
-        "peak": 241.53
+        "atmospheric": 149.96,
+        "breakdown": 81.15,
+        "buildup": 71.91,
+        "drop": 16.42,
+        "peak": 30.99
       },
       "midi": {
-        "commands": 18,
+        "commands": 23,
         "labels": [
           "set_autoloop",
-          "set_color_override",
-          "set_special_effect"
+          "set_color_override"
         ],
-        "ordering_hash": "e35642961a20a7db"
+        "ordering_hash": "f31432694184f6a0"
       },
-      "onset_density_mean": 7.636624,
-      "onset_density_median": 8.0,
       "overlay": {
-        "light_bar_updates": 2653
+        "light_bar_updates": 701
       },
       "timing": {
-        "commands": 1402,
+        "commands": 1426,
         "target_delta_sec": [
-          2.5
+          0.0,
+          0.0158,
+          0.0564,
+          0.0912,
+          0.3641,
+          0.5963,
+          0.8169,
+          6.0181,
+          6.0762,
+          6.1459,
+          6.2155,
+          6.4593,
+          6.4767,
+          6.4883,
+          6.529,
+          6.558,
+          6.6625,
+          6.7147,
+          6.8134,
+          6.9005,
+          14.0
         ]
       },
-      "unique_intents_count": 4
+      "unique_intents_count": 5
     },
     "relations": {
       "midi_arrives_in_enqueue_order": true,
@@ -64,7 +83,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "98e437ca74a2bccce38bf3076435a5f197bc8b5f790e03e4e9e963e439b2947d",
+    "report_checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
     "survives": {
       "beat_columns_hash": "9b23db785d730282",
       "beat_times_hash": "17811ad9905a6dcf",
@@ -139,17 +158,17 @@
   },
   "PNpXKsge4xM.mp3": {
     "degradation": {
-      "atmospheric_blocks": 1,
+      "atmospheric_blocks": 2,
       "beat_times_hash": "ad68746b34addf45",
       "beats_detected": 729,
-      "classified_blocks": 37,
-      "effect_changes": 38,
-      "intent_blocks": 38,
+      "classified_blocks": 9,
+      "effect_changes": 16,
+      "intent_blocks": 11,
       "intents_held": [
         "atmospheric",
         "breakdown",
-        "buildup",
-        "groove"
+        "drop",
+        "peak"
       ],
       "sound_events": [
         {
@@ -159,31 +178,44 @@
       ]
     },
     "informational": {
-      "dominant_intent": "groove",
-      "effect_changes_count": 38,
-      "intent_changes_count": 38,
+      "dominant_intent": "breakdown",
+      "effect_changes_count": 16,
+      "intent_changes_count": 11,
       "intent_distribution_sec": {
-        "atmospheric": 0.0,
-        "breakdown": 13.6,
-        "buildup": 31.57,
-        "groove": 209.55
+        "atmospheric": 20.68,
+        "breakdown": 96.89,
+        "drop": 33.09,
+        "peak": 92.56
       },
       "midi": {
-        "commands": 38,
+        "commands": 16,
         "labels": [
-          "set_autoloop"
+          "set_autoloop",
+          "set_special_effect"
         ],
-        "ordering_hash": "9e377080d7e0854e"
+        "ordering_hash": "fcb7d7de7bcd7573"
       },
-      "onset_density_mean": 6.866207,
-      "onset_density_median": 7.333333,
       "overlay": {
-        "light_bar_updates": 1359
+        "light_bar_updates": 729
       },
       "timing": {
-        "commands": 1459,
+        "commands": 1475,
         "target_delta_sec": [
-          2.5
+          1.9198,
+          2.0185,
+          2.0591,
+          2.0766,
+          2.1114,
+          2.123,
+          2.3204,
+          2.7906,
+          2.8138,
+          6.2155,
+          6.3548,
+          6.4129,
+          6.8424,
+          6.9121,
+          14.0
         ]
       },
       "unique_intents_count": 4
@@ -196,7 +228,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "33fcfc7f79a95b54fd827e710371efd8455c6230b6b33482978934840f19e1a6",
+    "report_checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
     "survives": {
       "beat_columns_hash": "67e04f6846937dcd",
       "beat_times_hash": "ad68746b34addf45",
@@ -267,18 +299,16 @@
   },
   "SBnxzXkc_qw.mp3": {
     "degradation": {
-      "atmospheric_blocks": 0,
+      "atmospheric_blocks": 1,
       "beat_times_hash": "d12ee19b0c83e6c9",
       "beats_detected": 1050,
-      "classified_blocks": 16,
-      "effect_changes": 14,
-      "intent_blocks": 16,
+      "classified_blocks": 2,
+      "effect_changes": 9,
+      "intent_blocks": 3,
       "intents_held": [
+        "atmospheric",
         "breakdown",
-        "buildup",
-        "drop",
-        "groove",
-        "peak"
+        "buildup"
       ],
       "sound_events": [
         {
@@ -288,37 +318,40 @@
       ]
     },
     "informational": {
-      "dominant_intent": "peak",
-      "effect_changes_count": 14,
-      "intent_changes_count": 16,
+      "dominant_intent": "breakdown",
+      "effect_changes_count": 9,
+      "intent_changes_count": 3,
       "intent_distribution_sec": {
-        "breakdown": 27.36,
-        "buildup": 3.36,
-        "drop": 39.06,
-        "groove": 3.43,
-        "peak": 332.77
+        "atmospheric": 66.25,
+        "breakdown": 298.71,
+        "buildup": 24.02
       },
       "midi": {
-        "commands": 15,
+        "commands": 10,
         "labels": [
           "set_autoloop",
-          "set_color_override",
-          "set_special_effect"
+          "set_color_override"
         ],
-        "ordering_hash": "6898e0500f5f41eb"
+        "ordering_hash": "dd707ce2544bdd22"
       },
-      "onset_density_mean": 7.213219,
-      "onset_density_median": 7.333333,
       "overlay": {
-        "light_bar_updates": 2641
+        "light_bar_updates": 1050
       },
       "timing": {
         "commands": 2000,
         "target_delta_sec": [
-          2.5
+          2.2449,
+          2.2681,
+          6.2271,
+          6.3258,
+          6.378,
+          6.529,
+          6.5986,
+          6.8424,
+          14.0
         ]
       },
-      "unique_intents_count": 5
+      "unique_intents_count": 3
     },
     "relations": {
       "midi_arrives_in_enqueue_order": true,
@@ -328,7 +361,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "cb9233eefaa2c686b6830f9554b7740d97319ff10a0043a64146191bde03baf2",
+    "report_checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
     "survives": {
       "beat_columns_hash": "e7841a1a5a6a9713",
       "beat_times_hash": "d12ee19b0c83e6c9",

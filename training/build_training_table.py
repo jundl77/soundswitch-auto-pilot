@@ -84,9 +84,12 @@ and inferred blocks means it was cut across the change.
 Decode-cache discipline
 -----------------------
 
-The simulation writes ``<mp3>.<samplerate>.npy`` beside the audio (~7.7x the mp3
-size; the full corpus would be ~95 GiB).  Each worker deletes its track's cache
-as soon as the sidecar is written.  Caches that already existed before the batch
+The simulation leaves two derived files beside the audio: the decoded samples
+(``<mp3>.<samplerate>.npy``, ~7.7x the mp3, ~95 GiB over the corpus) and D12's
+extractor cell sidecar (``<mp3>.<decoder>.mertcells.npz``, ~25 MB a track,
+~35 GiB over the corpus).  Each worker deletes both as soon as the features are
+out, in a ``finally`` -- and neither buys this batch anything, because it
+simulates a track at most once.  Files that already existed before the batch
 started are left alone -- the run must not clean up after someone else.
 
 A downloader may be writing into ``audio/`` concurrently, so only ``*.mp3``
@@ -693,6 +696,21 @@ def decode_cache_path(mp3_path: str) -> str:
     return f"{mp3_path}.{SAMPLE_RATE}.npy"
 
 
+def derived_cache_paths(mp3_path: str) -> tuple:
+    """Everything one simulation leaves beside the audio.
+
+    Two files now, not one: D12's extractor cell sidecar is ~25 MB a track, so
+    over this corpus it is ~35 GiB -- an order of magnitude past the decode
+    cache this cleanup was built for, and the batch re-simulates a track at most
+    once anyway, so a cache of the pass it just ran buys nothing.
+    """
+    from simulate.cell_cache import sidecar_path
+    from simulate.fake_audio_client import FileAudioClient
+
+    return (decode_cache_path(mp3_path),
+            str(sidecar_path(mp3_path, FileAudioClient.decode_path)))
+
+
 def _write_json_gz(path: Path, payload: dict) -> None:
     """Write a gzipped JSON document atomically and reproducibly.
 
@@ -770,7 +788,6 @@ def simulate_track(job: SimJob) -> SimResult:
     import asyncio
 
     started = time.monotonic()
-    cache_path = decode_cache_path(job.mp3_path)
     try:
         from simulate.fake_audio_client import FileAudioClient
         from simulate.runner import run_fast_simulation
@@ -791,10 +808,11 @@ def simulate_track(job: SimJob) -> SimResult:
                          0, 0, 0, time.monotonic() - started)
     finally:
         if not job.keep_cache:
-            try:
-                os.unlink(cache_path)
-            except OSError:
-                pass
+            for path in derived_cache_paths(job.mp3_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -934,7 +952,8 @@ def find_caches(data_dir: Path) -> set:
     audio_dir = data_dir / AUDIO_DIR
     if not audio_dir.exists():
         return set()
-    return {str(path) for path in audio_dir.glob("*.npy")}
+    return {str(path) for path in audio_dir.glob("*.npy")} | {
+        str(path) for path in audio_dir.glob("*.mertcells.npz")}
 
 
 # --------------------------------------------------------------------------- #

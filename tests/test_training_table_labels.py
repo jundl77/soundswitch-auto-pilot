@@ -1155,3 +1155,31 @@ def test_a_block_inside_the_budget_is_not_late():
     _, alignment = realign_intents(blocks, LOOK_AHEAD, [6.0], duration_sec=60.0)
 
     assert alignment.late == 0
+
+
+def test_the_batch_tidies_every_file_one_simulation_leaves(tmp_path):
+    """D12 added a second derived file beside the audio, ~25 MB a track.  Over
+    this corpus that is ~35 GiB the batch would leak -- an order of magnitude
+    past the decode cache this cleanup was built for."""
+    from build_training_table import derived_cache_paths
+
+    mp3 = tmp_path / "0001.abc.mp3"
+    derived = derived_cache_paths(str(mp3))
+
+    assert len(derived) == 2
+    assert any(path.endswith(".npy") for path in derived)
+    assert any(path.endswith(".mertcells.npz") for path in derived)
+    assert all(Path(path).parent == tmp_path for path in derived)
+
+
+def test_pre_existing_caches_of_both_kinds_are_seen(tmp_path):
+    """Tidying is scoped to what THIS run created, which needs the before-shot
+    to see both kinds."""
+    from build_training_table import AUDIO_DIR, find_caches
+
+    audio = tmp_path / AUDIO_DIR
+    audio.mkdir()
+    (audio / "a.mp3.44100.npy").write_bytes(b"")
+    (audio / "b.mp3.librosa.mertcells.npz").write_bytes(b"")
+
+    assert len(find_caches(tmp_path)) == 2
