@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import math
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -724,6 +726,17 @@ def test_a_non_causal_affine_is_refused(tmp_path):
         M.load_stream_geometry(path, label_frame_sec=0.25)
 
 
+def test_an_affine_that_names_no_encoder_layers_is_refused(tmp_path):
+    """It used to fall through to `layers=()` and die with an IndexError at the
+    first encode -- first use, not startup, which is not this module's rule."""
+    path = tmp_path / "nolayers.npz"
+    np.savez(path, mean=np.zeros(4, np.float32), std=np.ones(4, np.float32),
+             geometry=np.str_(json.dumps({"causal": 1, "margin_sec": 3.0,
+                                          "hop_sec": 1.0, "buffer_sec": 30.0})))
+    with pytest.raises(ValueError, match="layers"):
+        M.load_stream_geometry(path, label_frame_sec=CELL)
+
+
 def test_an_affine_with_no_geometry_record_is_refused(tmp_path):
     path = tmp_path / "bare.npz"
     np.savez(path, mean=np.zeros(4, np.float32), std=np.ones(4, np.float32))
@@ -734,8 +747,89 @@ def test_an_affine_with_no_geometry_record_is_refused(tmp_path):
 def test_an_encoder_whose_weights_hash_differs_is_refused():
     with pytest.raises(RuntimeError, match="encoder weights"):
         M.check_encoder_sha("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb")
-    M.check_encoder_sha("aaaaaaaaaaaaaaaa", None)
     M.check_encoder_sha("aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa")
+
+
+def test_an_unpinned_encoder_is_refused_rather_than_waved_through():
+    """The check used to compare against None on every shipped path, so the one
+    component fetched from the network was the one never verified."""
+    with pytest.raises(ValueError, match="unpinned"):
+        M.check_encoder_sha("aaaaaaaaaaaaaaaa", None)
+
+
+class _StubTensor:
+    def detach(self):
+        return self
+
+    def to(self, _device):
+        return self
+
+    def numpy(self):
+        return np.arange(4, dtype=np.float32)
+
+
+class _StubEncoder:
+    sampling_rate = SR
+    do_normalize = False
+    config = type("config", (), {"hidden_size": 4})
+
+    def eval(self):
+        return self
+
+    def half(self):
+        return self
+
+    def to(self, _device):
+        return self
+
+    def state_dict(self):
+        return {"weight": _StubTensor()}
+
+
+def _stub_transformers(monkeypatch, calls):
+    class _Loader:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            calls.append((model_id, kwargs.get("revision"),
+                          kwargs.get("trust_remote_code")))
+            return _StubEncoder()
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(
+        AutoModel=_Loader, Wav2Vec2FeatureExtractor=_Loader))
+
+
+def _pinned_geometry(**kwargs):
+    return M.StreamGeometry(model_id="stub/encoder", layers=(0,), margin_sec=3.0,
+                            hop_sec=1.0, buffer_sec=30.0, label_frame_sec=CELL,
+                            **kwargs)
+
+
+def test_the_encoder_is_fetched_at_the_pinned_revision(monkeypatch):
+    """Weights AND the remote code it executes: `trust_remote_code` without a
+    revision is an unattended `git pull` from a repo we do not own."""
+    calls: list = []
+    _stub_transformers(monkeypatch, calls)
+    sha = M.state_dict_sha(_StubEncoder())
+    encoder = M.load_encoder(_pinned_geometry(encoder_sha=sha), device="cpu",
+                             fp16=False)
+    assert calls == [("stub/encoder", M.DEFAULT_MODEL_REVISION, True)] * 2
+    assert encoder.model_sha == sha
+
+
+def test_an_encoder_whose_weights_are_not_the_pinned_ones_never_loads(monkeypatch):
+    _stub_transformers(monkeypatch, [])
+    with pytest.raises(RuntimeError, match="encoder weights"):
+        M.load_encoder(_pinned_geometry(encoder_sha="0" * 16), device="cpu",
+                       fp16=False)
+
+
+def test_the_shipped_geometry_carries_the_encoder_pin(tmp_path):
+    path = _affine(tmp_path, geometry={"causal": 1, "margin_sec": 3.0,
+                                       "hop_sec": 1.0, "buffer_sec": 30.0})
+    geometry = M.load_stream_geometry(path, label_frame_sec=CELL)
+    assert geometry.model_id == M.DEFAULT_MODEL_ID
+    assert geometry.revision == M.DEFAULT_MODEL_REVISION
+    assert geometry.encoder_sha == M.DEFAULT_ENCODER_SHA
 
 
 def test_encoder_frame_count_follows_the_conv_stack():
@@ -784,6 +878,50 @@ def test_the_shipped_geometry_fits_the_eight_second_budget():
     assert 8.0 - total < head.label_frame_sec
 
 
+def _sidecar_track(geometry):
+    """A corpus track with both a stream sidecar at this geometry and its audio.
+
+    The directory name is derived from the geometry the affine records, so there
+    is no path constant here to go stale against a re-extraction.
+    """
+    import run_eval_set
+
+    corpus = Path(run_eval_set.corpus_dir())
+    tag = "-".join(str(int(layer)) for layer in geometry.layers)
+    directory = (corpus / "features_stream"
+                 / f"{geometry.model_id.split('/')[-1]}_L{tag}"
+                   f"_F{geometry.margin_sec:g}_hop{geometry.hop_sec:g}")
+    for path in sorted(directory.glob("*.npz")):
+        audio = corpus / "audio" / f"{path.stem}.mp3"
+        if audio.exists():
+            return path, audio
+    pytest.skip(f"no stream sidecar with its audio under {directory} -- both "
+                f"live in the gitignored corpus data directory")
+
+
+@pytest.mark.integration
+def test_the_pinned_encoder_hash_is_the_one_the_sidecars_were_cut_with():
+    """The provenance the committed constant cannot carry on its own.
+
+    The offline features record which weights produced them; the affine does
+    not, and neither is committed. So the pin is a constant in `lib/` and this
+    is the check that ties it to the artifacts the student was trained on.
+    """
+    affine, onnx = _require_artifacts()
+    from lib.analyser import section_model as S
+
+    geometry = M.load_stream_geometry(
+        affine, label_frame_sec=S.load_head_geometry(onnx).label_frame_sec)
+    sidecar, _audio = _sidecar_track(geometry)
+    with np.load(sidecar) as archive:
+        assert str(archive["model_sha"]) == M.DEFAULT_ENCODER_SHA
+        assert str(archive["model_id"]) == geometry.model_id
+        assert float(archive["stream_margin_sec"]) == geometry.margin_sec
+        assert float(archive["stream_hop_sec"]) == geometry.hop_sec
+        assert float(archive["stream_buffer_sec"]) == geometry.buffer_sec
+        assert float(archive["label_frame_sec"]) == geometry.label_frame_sec
+
+
 @pytest.fixture(scope="module")
 def real_stack():
     from lib.analyser import section_model as S
@@ -808,6 +946,34 @@ def test_the_real_encoder_streams_the_same_cells_twice_in_one_process(
         assert first.index == second.index
         assert np.array_equal(first.features, second.features)
     assert runs[0][0].features.shape == (head.input_dim,)
+
+
+@pytest.mark.integration
+def test_the_live_stage_reproduces_a_corpus_sidecar_for_a_track_prefix(
+        real_stack, capsys):
+    """The real stack against features the student was actually trained on.
+
+    The fake-encoder sweep proves the schedule and the pooling; only this proves
+    that the real encoder, driven live, lands on the bytes the offline extractor
+    wrote. Compared over a prefix whose every cell's horizon is inside the audio
+    fed, so nothing here depends on where the track ends.
+    """
+    encoder, geometry, _head = real_stack
+    sidecar, audio_path = _sidecar_track(geometry)
+    with np.load(sidecar) as archive:
+        emb = np.asarray(archive["emb"], dtype=np.float32)
+
+    audio = _ffmpeg_audio(audio_path, M.ENCODER_SAMPLE_RATE)[:60 * M.ENCODER_SAMPLE_RATE]
+    cells = _run_stream(encoder, geometry, audio,
+                        source_rate=M.ENCODER_SAMPLE_RATE)
+    limit = 500
+    deltas = [float(np.abs(cell.features - emb[cell.index].reshape(-1)).max())
+              for cell in cells if cell.index < limit]
+    with capsys.disabled():
+        print(f"\nsidecar reproduction ({sidecar.stem}, {len(deltas)} cells): "
+              f"max abs delta {max(deltas):g}")
+    assert len(deltas) >= 400
+    assert max(deltas) == 0.0
 
 
 @pytest.mark.integration

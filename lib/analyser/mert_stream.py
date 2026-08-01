@@ -361,6 +361,18 @@ class CellAccumulator:
 # --------------------------------------------------------------------------- #
 
 
+# The encoder identity, which is not geometry and is not in any shipped artifact.
+# The affine records how the features were framed; nothing records which weights
+# produced them except the corpus sidecars, which are gitignored -- so the pin
+# lives here, and an integration test checks it back against a sidecar's
+# `model_sha`. A retyped geometry constant would drift in silence; this one
+# cannot, because `load_encoder` hashes the weights it actually got and refuses
+# to hand back an encoder that disagrees.
+DEFAULT_MODEL_ID = "m-a-p/MERT-v1-330M"
+DEFAULT_MODEL_REVISION = "5240c2708a5acaee1007f43fb9735c7dcd0b78c9"
+DEFAULT_ENCODER_SHA = "decfecaef6d14868"
+
+
 @dataclass(frozen=True)
 class StreamGeometry:
     model_id: str
@@ -370,6 +382,7 @@ class StreamGeometry:
     buffer_sec: float
     label_frame_sec: float
     encoder_sha: str | None = None
+    revision: str = DEFAULT_MODEL_REVISION
 
     @property
     def margin_samples(self) -> int:
@@ -388,12 +401,11 @@ class StreamGeometry:
         return self.margin_sec + self.hop_sec
 
 
-DEFAULT_MODEL_ID = "m-a-p/MERT-v1-330M"
-
-
 def load_stream_geometry(affine_path, *, label_frame_sec: float,
                          model_id: str = DEFAULT_MODEL_ID,
-                         encoder_sha: str | None = None) -> StreamGeometry:
+                         revision: str = DEFAULT_MODEL_REVISION,
+                         encoder_sha: str | None = DEFAULT_ENCODER_SHA
+                         ) -> StreamGeometry:
     """The extractor geometry the shipped input affine was fitted under.
 
     The affine is the artifact that records it, and a live path fed features
@@ -409,12 +421,14 @@ def load_stream_geometry(affine_path, *, label_frame_sec: float,
         raise ValueError(f"{affine_path} carries an empty geometry record")
     if int(record.get("causal", 0)) != 1:
         raise ValueError(f"{affine_path} was fitted on non-causal features")
+    if not layers:
+        raise ValueError(f"{affine_path} names no encoder layers")
     return StreamGeometry(model_id=model_id, layers=layers,
                           margin_sec=float(record["margin_sec"]),
                           hop_sec=float(record["hop_sec"]),
                           buffer_sec=float(record["buffer_sec"]),
                           label_frame_sec=float(label_frame_sec),
-                          encoder_sha=encoder_sha)
+                          encoder_sha=encoder_sha, revision=revision)
 
 
 def load_input_affine(affine_path):
@@ -425,7 +439,10 @@ def load_input_affine(affine_path):
 
 
 def check_encoder_sha(actual: str, expected: str | None) -> None:
-    if expected and actual != expected:
+    if not expected:
+        raise ValueError("refusing an unpinned encoder: there is no weights "
+                         "hash to check the fetched model against")
+    if actual != expected:
         raise RuntimeError(f"encoder weights hash {actual} is not the "
                            f"{expected} the features were extracted with")
 
@@ -500,9 +517,11 @@ def load_encoder(geometry: StreamGeometry, *, device: str, fp16: bool = True,
                  expected_sha: str | None = None) -> MertEncoder:
     from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
-    model = AutoModel.from_pretrained(geometry.model_id, trust_remote_code=True)
-    extractor = Wav2Vec2FeatureExtractor.from_pretrained(geometry.model_id,
-                                                         trust_remote_code=True)
+    model = AutoModel.from_pretrained(geometry.model_id,
+                                      revision=geometry.revision,
+                                      trust_remote_code=True)
+    extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+        geometry.model_id, revision=geometry.revision, trust_remote_code=True)
     model.eval()
     model_sha = state_dict_sha(model)
     check_encoder_sha(model_sha, expected_sha or geometry.encoder_sha)
