@@ -414,6 +414,11 @@ both have moved:
   zero. This is a phase-*tracking* problem, not a one-shot phase *decision*: an
   oracle frozen phase covers only about two thirds of a track, and a
   boundary-logit phase vote lost to plain counting on every configuration tried.
+  An offline downbeat head and bar-phase decoder do exist in `training/nn/`,
+  unwired and parked: their v1 scoring ran on the aubio beat stream and was
+  removed when madmom replaced it (owner decisions #81/#133), so
+  `training/nn/CLAUDE.md` carries the removal note and `docs/migration-evidence.md`
+  the successor numbers.
 - **Section-boundary latency is now a chain, not a vote window.** A committed
   intent trails the audio it describes by the feature latency plus the
   committer's lag -- around 13.7 s at the corpus median bar, and proportional to

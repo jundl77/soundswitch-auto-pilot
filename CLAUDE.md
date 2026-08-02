@@ -494,6 +494,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 | `nn/decoder_config.json` | the shipping decoder config, committed as a file rather than synthesised at runtime. Loading a config with a key `DecodeParams` does not know **raises** -- it used to be silently dropped, which would have shipped a decoder nobody chose |
 | `nn/evaluate_v1.py` | decoded timelines + training table -> the verdict for one split at `<data-dir>/models/v1/eval_<split>.json` (`eval_val.json` is the tuned reading, `eval_test.json` the selection-clean one): NN and rule classifier side by side, scored by `evaluate_against_labels`' own functions |
 | `nn/sweep.py` | cached posteriors -> the decoder parameter search and `<data-dir>/models/v1/decoder_config.json` (best val macro-F1 subject to the baseline's flicker and the latency budget) |
+| `nn/downbeat_*.py`, `nn/evaluate_downbeat.py`, `nn/compare_runs.py` | the downbeat chain: a second head, a bar-phase decoder and their verdict harness. Offline and parked -- nothing in `lib/` imports any of it, and the show counts bars instead. Mapped in `training/nn/CLAUDE.md` |
 
 `clean_manifest.csv` is the boundary between "audio we happen to have" and "audio we are willing to learn from". Only its `ok` rows may feed a training table or an evaluation run.
 
@@ -632,6 +633,24 @@ order:
    crispness@0.5 s, all of it placement) and re-quoting the older -0.0377 figure
    is a mistake: that one was measured on annotated beats, and its caveat was
    hiding most of the cost. 57 of 215 val tracks need nothing at all.
+
+   **The offline machinery from the downbeat branch is still in `training/nn/`,
+   and it is parked training work rather than a deployment prerequisite.** A
+   downbeat head, a bar-phase decoder over a candidate grid, and an evaluation
+   harness that scores a predicted grid against the annotator's all live there;
+   nothing in `lib/` imports any of it, and the show counts bars instead
+   (rulings #157/#158). **That chain's v1 scoring was removed rather than
+   carried as a dated record**: it bound to the aubio beat stream madmom has
+   since replaced, so its figures and its BLOCKED-at-0.85 verdict are superseded
+   (owner decisions #81/#133). `training/nn/CLAUDE.md` carries the removal note;
+   the successor measurement is committed in `docs/migration-evidence.md` --
+   gate-faithful downbeat F1 0.50 on val against 0.71 on the annotator's own
+   grid, the 0.85 gate retired as sitting above published *offline* SOTA on
+   general music, and F1 >= 0.55 at a median of two phase flips per track or
+   fewer recommended in its place. The expert-grid bound is the figure that
+   never depended on the beat source: it is what the head and the decoder are
+   worth on a clean grid, and a better beat source moves the live number towards
+   it without moving it.
 2. **The show's look-ahead grew to the decoder's budget**, and the relation
    between the two systems inverted with it -- `PLAYBACK_DELAY_SEC` is 14.0 s and
    the queue now holds a command for `playback_delay - chain_latency` rather than

@@ -688,16 +688,28 @@ class WindowDataset(_TorchDataset):
 
     # -- the window itself -------------------------------------------------- #
 
-    def window(self, index: int, offset: int, gain_db: float = 0.0) -> tuple:
-        """The five arrays for item ``index`` at an explicit frame offset."""
-        track_index, _slot = self._slots[index]
-        track = self._tracks[track_index]
-        mel_full = self._mel(track)
-        targets = self._targets(track)
+    def mel_window(self, index: int, offset: int, gain_db: float = 0.0) -> np.ndarray:
+        """The mel slice for item ``index``, gain applied, padded at the tail.
 
-        mel = _take(mel_full, offset, self.window_frames, 0.0)
+        Split out of ``window`` so a head with different targets (the downbeat
+        head) reuses this loading, caching, padding and gain path verbatim
+        instead of copying it -- one definition of what a window *is*.
+        """
+        track = self._tracks[self._slots[index][0]]
+        mel = _take(self._mel(track), offset, self.window_frames, 0.0)
         if gain_db:
             np.maximum(mel + gain_db * LOG_MEL_PER_DB, 0.0, out=mel)
+        return mel
+
+    def track_id_of(self, index: int) -> str:
+        """The youtube id item ``index`` was cut from."""
+        return self._tracks[self._slots[index][0]].youtube_id
+
+    def window(self, index: int, offset: int, gain_db: float = 0.0) -> tuple:
+        """The five arrays for item ``index`` at an explicit frame offset."""
+        track = self._tracks[self._slots[index][0]]
+        targets = self._targets(track)
+        mel = self.mel_window(index, offset, gain_db)
 
         pooled_offset = offset // LABEL_POOL
         return (
