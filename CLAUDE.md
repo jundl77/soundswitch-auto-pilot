@@ -116,7 +116,7 @@ caller's thread".
 | `lib/clients/os2l_client.py` | zeroconf discovery of VirtualDJ; bidirectional OS2L JSON |
 | `lib/clients/pyaudio_client.py` | Mono 44.1 kHz audio input (and optional debug output passthrough) |
 | `lib/clients/overlay_client.py` | UDP binary DMX overlay (hardcoded IP â€” must match venue) |
-| `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics, and the decoder-state row |
+| `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics, and the decoder-state row; motion is the browser's job (see Visualizer smoothness) |
 | `simulate/runner.py` | Simulation runner â€” stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing with a threaded GPU stage for the live UI |
 | `simulate/cell_cache.py` | The extractor's cells, cached beside the audio â€” what makes a warm `simulate file` pure CPU and byte-deterministic |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
@@ -334,6 +334,52 @@ When moving away from SoundSwitch to direct DMX:
 - Replace `EffectController._apply_autoloop(effect)` with a `_send_dmx(intent)` call
 - Everything above (`MERT -> student -> decoder -> LightIntent -> EventBuffer`) stays unchanged
 - `INTENT_EFFECTS` dict in `effect_definitions.py` becomes the only thing to remove
+
+---
+
+## Visualizer smoothness
+
+The UI shares a process, and a GIL, with the pipeline. So the rule is that
+**smoothness is bought in the browser and never from the server**: the poll stays
+at its tick and its single callback, because a faster poll once starved the
+plotly bundle behind Chrome's connection limit, and a 10 Hz viewer once cost the
+audio loop four sheds. The server publishes an anchor beside the panels; the
+browser runs one `requestAnimationFrame` loop off it and interpolates.
+
+Two things about that loop are measured facts rather than preferences, and both
+are easy to undo by accident:
+
+- **Nothing on the per-frame path may touch Plotly.** `Plotly.relayout` is not a
+  cheap way to move an axis -- it re-renders the traces, so scrolling by relayout
+  spent 40% of the main thread, most of it laying out the same beat markers sixty
+  times a second. The window scrolls by translating a wrapper div, which the
+  compositor does with pixels that already exist, and the axis is only re-seated
+  when the offset would expose the padded strip. That strip is why the timeline is
+  drawn past the lead: what translates in from the right has to be future the
+  audience has not reached rather than a gap.
+- **The offset is derived from the figure's live range, not from a stored
+  anchor.** Whether the range last moved because the server pushed a figure or
+  because the loop re-seated it, the window on screen is right, so there is no
+  seam to get wrong and no ordering to coordinate.
+
+What is animated: the window scroll and both clocks (from their own bases), and
+the beat glow, which is a CSS keyframe retriggered per beat with a negative
+animation-delay so a beat arriving mid-poll starts its decay where it landed.
+What is stepwise **by design** is data arrival -- new beats and new intent blocks
+appear at the poll rate, and beat markers are Plotly nodes rebuilt on every
+figure push, so there is no stable element for an enter-transition to attach to.
+The now-cursor moves at no rate at all: in a window that always ends a fixed lead
+past now its screen position is a constant, so it is a plain positioned div
+outside the translated layer -- as a plotted shape it rode the transform and
+jittered against the very thing it measures.
+
+Measuring this needs a **real visible browser window**. A hidden tab gets no
+`requestAnimationFrame` whatsoever, so every cadence reads as zero and every
+throttled tab looks like a passing result; a headless one measures software
+raster instead of the machine's compositor. And a run whose track has ended reads
+frozen for an unrelated reason -- the server clock stops, so the loop correctly
+stops extrapolating. Both mistakes were made here before the numbers meant
+anything.
 
 ---
 
