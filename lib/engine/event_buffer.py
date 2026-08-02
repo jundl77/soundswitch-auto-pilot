@@ -121,6 +121,7 @@ class EventBuffer:
             timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
+                'look_ahead_sec': self._look_ahead_sec,
                 'is_playing': self._is_playing and self._end_time is None,
                 'beats': [b for b in self._beats if b['t'] >= cutoff],
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],

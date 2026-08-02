@@ -70,6 +70,26 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
+def _room_events(events: list, snapshot: dict) -> list:
+    """Detection-stamped records moved onto the room clock; unheard ones dropped."""
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    now = snapshot.get('now', 0.0)
+    return [dict(event, t=event['t'] + delay) for event in events
+            if event['t'] + delay <= now]
+
+
+def _clock_text(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f'{minutes}min {secs}sec' if minutes else f'{secs}sec'
+
+
+def _song_and_room(snapshot: dict) -> tuple:
+    starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
+    if not starts:
+        return None, None
+    song = max(0.0, snapshot.get('now', 0.0) - starts[-1])
+    return song, max(0.0, song - snapshot.get('look_ahead_sec', 0.0))
+
 
 def _build_timeline(snapshot: dict) -> go.Figure:
     now   = snapshot['now']
@@ -106,7 +126,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
 
-    for ev in snapshot.get('sound_events', []):
+    for ev in _room_events(snapshot.get('sound_events', []), snapshot):
         if ev['t'] < x0:
             continue
         is_start = ev['playing']
@@ -124,7 +144,8 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             xanchor='left',
         ))
 
-    beat_x = [b['t'] for b in snapshot['beats'] if b['t'] >= x0]
+    beat_x = [b['t'] for b in _room_events(snapshot['beats'], snapshot)
+              if b['t'] >= x0]
     beat_y = [0.25] * len(beat_x)
     beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
 
@@ -174,7 +195,7 @@ def _build_stage(snapshot: dict) -> list:
     glow_m   = cfg['glow_mult']
 
     now   = snapshot['now']
-    beats = snapshot.get('beats', [])
+    beats = _room_events(snapshot.get('beats', []), snapshot)
     dt    = (now - beats[-1]['t']) if beats else 999.0
     pulse = max(0.0, 1.0 - dt / decay)
 
@@ -266,7 +287,9 @@ def _build_legend() -> list:
 def _build_metrics(snapshot: dict) -> list:
     bpm         = snapshot.get('bpm', 0.0)
     beats       = snapshot.get('beats_detected', 0)
-    elapsed     = snapshot.get('now', 0.0)
+    song, room  = _song_and_room(snapshot)
+    song_text   = '—' if song is None else _clock_text(song)
+    room_text   = '—' if room is None else _clock_text(room)
     intent_key  = snapshot.get('intent')
     cfg         = _intent_config(intent_key)
     intent_lbl  = cfg['label']
@@ -279,7 +302,8 @@ def _build_metrics(snapshot: dict) -> list:
 
     items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'{elapsed:.1f}s', style={'color': MUTED, 'marginRight': '20px'}),
+        html.Span(f'room {room_text}', style={'color': '#e6edf3', 'fontWeight': 'bold', 'marginRight': '10px'}),
+        html.Span(f'song {song_text}', style={'color': MUTED, 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
         html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),

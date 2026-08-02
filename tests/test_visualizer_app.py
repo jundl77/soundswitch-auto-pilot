@@ -16,6 +16,7 @@ def _snapshot(**overrides) -> dict:
         'bpm': 128.0,
         'beats_detected': 0,
         'intent': 'drop',
+        'look_ahead_sec': 0.0,
         'timing_stats': {'samples': 0, 'mean_delta_sec': None,
                          'mean_error_ms': None, 'max_error_ms': None,
                          'by_label': {}},
@@ -52,6 +53,21 @@ def _colour_of(items, prefix: str) -> str:
                          f'{[".".join(_texts(i)) for i in items]}')
 
 
+def _metric(items, prefix: str) -> str:
+    for span in items:
+        text = ''.join(_texts(span))
+        if text.startswith(prefix):
+            return text
+    raise AssertionError(f'no metric strip item starts with {prefix!r}: '
+                         f'{[".".join(_texts(i)) for i in items]}')
+
+
+def _glow_px(slots) -> int:
+    glow = next(style['boxShadow'] for style in _styles(slots)
+                if 'boxShadow' in style)
+    return int(glow.split()[2].removesuffix('px'))
+
+
 def test_beat_marker_size_ignores_the_deleted_strength_channel():
     quiet = V._build_timeline(_snapshot(
         beats=[{'t': 9.0, 'bpm': 128.0, 'strength': 0.0}]))
@@ -65,6 +81,95 @@ def test_beat_markers_render_when_the_channel_is_gone_from_the_buffer():
     fig = V._build_timeline(_snapshot(
         beats=[{'t': 9.0, 'bpm': 128.0}, {'t': 9.5, 'bpm': 128.0}]))
     assert fig.data[0].marker.size == (V.BEAT_MARKER_SIZE,) * 2
+
+
+def test_a_clock_past_a_minute_reads_as_minutes_and_seconds():
+    assert V._clock_text(65.0) == '1min 5sec'
+    assert V._clock_text(222.0) == '3min 42sec'
+
+
+def test_a_clock_under_a_minute_never_says_zero_minutes():
+    assert V._clock_text(42.0) == '42sec'
+    assert V._clock_text(0.0) == '0sec'
+
+
+def test_the_room_clock_reads_zero_until_the_playback_delay_has_elapsed():
+    early = V._build_metrics(_snapshot(
+        now=9.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}]))
+    assert _metric(early, 'room') == 'room 0sec'
+    assert _metric(early, 'song') == 'song 9sec'
+
+    later = V._build_metrics(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}]))
+    assert _metric(later, 'room') == 'room 6sec'
+    assert _metric(later, 'song') == 'song 20sec'
+
+
+def test_a_new_sound_start_restarts_both_clocks():
+    items = V._build_metrics(_snapshot(
+        now=100.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True},
+                      {'t': 60.0, 'playing': False},
+                      {'t': 80.0, 'playing': True}]))
+    assert _metric(items, 'song') == 'song 20sec'
+    assert _metric(items, 'room') == 'room 6sec'
+
+
+def test_both_clocks_are_blank_until_the_first_sound_start():
+    items = V._build_metrics(_snapshot(now=30.0, look_ahead_sec=14.0,
+                                       sound_events=[]))
+    assert _metric(items, 'song') == 'song —'
+    assert _metric(items, 'room') == 'room —'
+
+
+def test_a_beat_is_plotted_at_the_moment_the_room_hears_it():
+    fig = V._build_timeline(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        beats=[{'t': 3.0, 'bpm': 128.0}]))
+    assert fig.data[0].x == (17.0,)
+
+
+def test_a_beat_the_room_has_not_heard_yet_is_not_plotted():
+    fig = V._build_timeline(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        beats=[{'t': 3.0, 'bpm': 128.0}, {'t': 12.0, 'bpm': 128.0}]))
+    assert fig.data[0].x == (17.0,)
+
+
+def test_the_sound_markers_move_onto_the_room_clock_with_the_beats():
+    fig = V._build_timeline(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 1.0, 'playing': True}]))
+    assert [a.x for a in fig.layout.annotations if 'START' in a.text] == [15.0]
+
+
+def test_an_intent_block_is_already_room_fired_and_is_not_shifted_again():
+    fig = V._build_timeline(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        intents=[{'t': 5.0, 'intent': 'drop', 'end': 10.0}]))
+    rect = next(s for s in fig.layout.shapes if s.type == 'rect')
+    assert (rect.x0, rect.x1) == (5.0, 10.0)
+
+
+def test_the_stage_pulses_on_the_beat_the_room_hears_not_the_one_detected():
+    beats = [{'t': 6.0, 'bpm': 128.0}]
+    on_the_room_clock = V._build_stage(
+        _snapshot(now=20.0, look_ahead_sec=14.0, beats=beats))
+    on_the_detector_clock = V._build_stage(
+        _snapshot(now=20.0, look_ahead_sec=0.0, beats=beats))
+    assert _glow_px(on_the_room_clock) > _glow_px(on_the_detector_clock)
+
+
+def test_the_snapshot_carries_the_delay_the_display_shifts_by():
+    from lib.clock import VirtualClock
+    from lib.engine.event_buffer import EventBuffer
+
+    buffer = EventBuffer(window_sec=float('inf'), clock=VirtualClock(),
+                         look_ahead_sec=14.0)
+    buffer.start()
+    assert buffer.snapshot()['look_ahead_sec'] == pytest.approx(14.0)
 
 
 def test_intent_config_covers_exactly_the_intents_the_show_can_enter():
