@@ -8,7 +8,11 @@ TITLE = 'SoundSwitch Visualizer'
 SLOT_LABELS = list('ABCDEFGH')
 TIMELINE_WINDOW_SEC = 30.0
 TIMELINE_LEAD_SEC = 0.5
-NOW_CURSOR_X = TIMELINE_WINDOW_SEC / (TIMELINE_WINDOW_SEC + TIMELINE_LEAD_SEC)
+# Drawn past the lead so the strip the browser translates in from the right is
+# always future the audience has not reached, never a gap in the show.
+TIMELINE_PAD_SEC = 1.0
+TIMELINE_FULL_SEC = TIMELINE_WINDOW_SEC + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
+NOW_CURSOR_X = TIMELINE_WINDOW_SEC / TIMELINE_FULL_SEC
 GLOW_BASE_PX = 16
 DARK_BG   = '#0d1117'
 CARD_BG   = '#111827'
@@ -104,13 +108,14 @@ def _anchor(snapshot: dict) -> dict:
         'room': room,
         'span': TIMELINE_WINDOW_SEC,
         'lead': TIMELINE_LEAD_SEC,
+        'pad':  TIMELINE_PAD_SEC,
     }
 
 
 def _build_timeline(snapshot: dict) -> go.Figure:
     now   = snapshot['now']
     x0    = now - TIMELINE_WINDOW_SEC
-    x1    = now + TIMELINE_LEAD_SEC
+    x1    = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
 
     shapes, annotations = [], []
 
@@ -155,12 +160,6 @@ def _build_timeline(snapshot: dict) -> go.Figure:
               if b['t'] >= x0]
     beat_y = [0.25] * len(beat_x)
     beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
-
-    shapes.append(dict(
-        type='line', xref='paper', yref='paper',
-        x0=NOW_CURSOR_X, x1=NOW_CURSOR_X, y0=0, y1=1,
-        line=dict(color='rgba(255,255,255,0.25)', width=1, dash='dot'),
-    ))
 
     fig = go.Figure()
     if beat_x:
@@ -366,6 +365,8 @@ function(sync) {
     if (a.running) return ds.no_update;
     a.running = true;
 
+    const RESEAT_PX = 24;
+
     const clock = (s) => {
         const t = Math.max(0, Math.floor(s));
         const m = Math.floor(t / 60);
@@ -374,16 +375,37 @@ function(sync) {
 
     const tick = (id, prefix, base, drift) => {
         const el = document.getElementById(id);
-        if (el && base != null) el.textContent = prefix + clock(base + drift);
+        if (!el || base == null) return;
+        const text = prefix + clock(base + drift);
+        if (el.textContent !== text) el.textContent = text;
     };
 
+    const plotWidth = (gd) => {
+        const fl = gd._fullLayout;
+        if (!fl) return 0;
+        if (fl.xaxis && fl.xaxis._length) return fl.xaxis._length;
+        return fl.width - fl.margin.l - fl.margin.r;
+    };
+
+    // Scrolling by relayout re-renders every beat marker on every frame, which
+    // measured 3.2 of 4.7 ms and 40% of the main thread.  Translating a wrapper
+    // moves the same pixels on the compositor, and the axis is only re-seated
+    // once the offset would expose the padded strip.
     const scroll = (now) => {
         const gd = document.querySelector('#timeline .js-plotly-plot');
-        if (!gd || !gd.layout || !window.Plotly) return;
-        const ax = gd.layout.xaxis;
-        const full = a.span + a.lead;
-        if (!ax.autorange && Math.abs(ax.range[1] - ax.range[0] - full) > full * 0.01) return;
-        window.Plotly.relayout(gd, {'xaxis.range': [now - a.span, now + a.lead]});
+        const el = document.getElementById('timeline-scroll');
+        if (!gd || !el || !window.Plotly || !gd.layout || !gd.layout.xaxis) return;
+        const range = gd.layout.xaxis.range;
+        const width = plotWidth(gd);
+        if (!range || !width) return;
+        const pps = width / (range[1] - range[0]);
+        let dx = (now + a.lead + a.pad - range[1]) * pps;
+        if (dx < 0 || dx > RESEAT_PX) {
+            window.Plotly.relayout(
+                gd, {'xaxis.range': [now - a.span, now + a.lead + a.pad]});
+            dx = 0;
+        }
+        el.style.transform = 'translate3d(' + (-dx).toFixed(2) + 'px,0,0)';
     };
 
     const pulse = (now) => {
@@ -420,8 +442,22 @@ def build_app(event_buffer) -> dash.Dash:
             'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '14px',
         }),
-        dcc.Graph(id='timeline', config={'displayModeBar': False},
-                  style={'borderBottom': f'1px solid {BORDER}'}),
+        html.Div([
+            html.Div(dcc.Graph(id='timeline',
+                               config={'displayModeBar': False}),
+                     id='timeline-scroll',
+                     style={'willChange': 'transform'}),
+            html.Div(id='now-cursor', style={
+                'position': 'absolute', 'top': '0', 'bottom': '0',
+                'left': f'{NOW_CURSOR_X * 100:.4f}%', 'width': '1px',
+                'background': 'rgba(255,255,255,0.25)',
+                'pointerEvents': 'none',
+            }),
+        ], style={
+            'position': 'relative', 'overflow': 'hidden',
+            'background': DARK_BG,
+            'borderBottom': f'1px solid {BORDER}',
+        }),
         html.Div(id='stage', style={
             'display': 'grid', 'gridTemplateColumns': 'repeat(8, 1fr)',
             'gap': '10px', 'padding': '20px 20px 16px',

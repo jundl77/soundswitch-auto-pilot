@@ -206,6 +206,16 @@ def test_the_browser_drives_the_axis_the_clocks_and_the_glow():
         assert driven in V.ANIMATION_JS, driven
 
 
+def test_the_scroll_translates_per_frame_and_re_seats_the_axis_rarely():
+    # Measured: relayout re-renders every beat marker, 3.2 of 4.7 ms per call.
+    # The per-frame path must be the compositor, not Plotly.
+    js = V.ANIMATION_JS
+    assert 'translate3d' in js
+    assert 'RESEAT_PX' in js
+    scroll = js[js.index('const scroll'):js.index('const pulse')]
+    assert scroll.index('translate3d') > scroll.index('RESEAT_PX')
+
+
 def test_the_stylesheet_animates_the_beat_glow_instead_of_the_server():
     assert '@keyframes ss-pulse' in _app().index_string
 
@@ -231,11 +241,35 @@ def test_the_clock_spans_are_addressable_by_the_browser():
     assert {'room-clock', 'song-clock'} <= ids
 
 
-def test_the_now_cursor_rides_the_window_edge_rather_than_the_data():
+def _find_by_id(node, target):
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            found = _find_by_id(item, target)
+            if found is not None:
+                return found
+        return None
+    if getattr(node, 'id', None) == target:
+        return node
+    children = getattr(node, 'children', None)
+    return None if children is None else _find_by_id(children, target)
+
+
+def test_the_now_cursor_is_a_fixed_screen_position_not_a_plotted_shape():
+    # The window always ends a fixed lead past now, so the cursor's screen x is
+    # a constant -- a shape would ride the scrolling transform and jitter.
     fig = V._build_timeline(_snapshot(now=10.0))
-    cursor = next(s for s in fig.layout.shapes
-                  if s.line.dash == 'dot' and s.xref == 'paper')
-    assert cursor.x0 == cursor.x1 == pytest.approx(V.NOW_CURSOR_X)
+    assert [s for s in fig.layout.shapes if s.xref == 'paper'] == []
+
+    cursor = _find_by_id(_app().layout.children, 'now-cursor')
+    assert cursor is not None
+    assert cursor.style['left'] == f'{V.NOW_CURSOR_X * 100:.4f}%'
+    assert cursor.style['position'] == 'absolute'
+
+
+def test_the_scrolled_layer_is_outside_the_graph_dash_rerenders():
+    scroll = _find_by_id(_app().layout.children, 'timeline-scroll')
+    assert scroll is not None
+    assert scroll.style.get('willChange') == 'transform'
 
 
 def test_the_second_grid_is_an_axis_setting_not_thirty_shapes():
@@ -245,10 +279,13 @@ def test_the_second_grid_is_an_axis_setting_not_thirty_shapes():
 
 
 def test_the_running_intent_block_reaches_the_edge_the_browser_scrolls_to():
+    # Out to the pad, not just the lead: the pad is the strip the transform
+    # translates in, so a block stopping at the lead would open a gap there.
     fig = V._build_timeline(_snapshot(
         now=20.0, intents=[{'t': 5.0, 'intent': 'drop'}]))
     rect = next(s for s in fig.layout.shapes if s.type == 'rect')
-    assert rect.x1 == pytest.approx(20.0 + V.TIMELINE_LEAD_SEC)
+    assert rect.x1 == pytest.approx(
+        20.0 + V.TIMELINE_LEAD_SEC + V.TIMELINE_PAD_SEC)
 
 
 def test_the_snapshot_carries_the_delay_the_display_shifts_by():
