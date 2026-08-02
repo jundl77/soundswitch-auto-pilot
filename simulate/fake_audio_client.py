@@ -6,12 +6,6 @@ log = logging.getLogger(__name__)
 
 
 class FileAudioClient:
-    # Never throttles: pacing is the simulation runner's job.
-
-    # Which decoder produced the samples, and therefore which world's numbers
-    # these are (#161).  The corpus feature pipeline decodes with ffmpeg and the
-    # two disagree on real decisions, so anything cached off this client's audio
-    # is filed under the decoder that made it.
     decode_path = 'librosa'
 
     def __init__(self, sample_rate: int, buffer_size: int, path: str):
@@ -25,9 +19,6 @@ class FileAudioClient:
     def support_output(self) -> bool: return False
 
     def start_streams(self, start_stream_out: bool = False):
-        # Idempotent: the cell cache asks how long this run will be before the
-        # runner starts the client, and decoding a track twice to answer that
-        # would cost the corpus batch a second decode per track.
         if self._audio is not None:
             self._pos = 0
             return
@@ -71,5 +62,4 @@ class FileAudioClient:
 
     @property
     def total_samples(self) -> int | None:
-        """How many samples a full run over this file will push, or None."""
         return None if self._audio is None else len(self._audio)

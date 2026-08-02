@@ -22,9 +22,6 @@ def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
         if report_path:
-            # The Dash server outlives the track, so this is the only moment the
-            # session's own report exists -- and it is what the view is checked
-            # against, a different run from the fast sim's.
             _write_report(event_buffer, command_queue, report_path)
         loop.close()
 
@@ -64,7 +61,6 @@ async def _run_file_fast(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import run_fast_simulation
 
-    # Per-beat INFO lines cost more wall time than the DSP at fast-sim speed.
     logging.getLogger().setLevel(logging.WARNING)
 
     wall_start = time.monotonic()
@@ -82,13 +78,6 @@ async def _run_file_fast(args):
 
 
 def _session_buffer(look_ahead_sec: float, clock=None):
-    """A file has an end, so the session keeps all of it.
-
-    The view only ever draws the last thirty seconds, but the report written
-    when the track finishes is what the view is checked against -- and the
-    default window drops every intent older than two minutes silently.  The
-    microphone path keeps that window, because a set has no end.
-    """
     from lib.clock import SYSTEM_CLOCK
     from lib.engine.event_buffer import EventBuffer
 
@@ -103,8 +92,6 @@ def _run_file_realtime_ui(args):
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     event_buffer = _session_buffer(PLAYBACK_DELAY_SEC)
-    # Wall-clock paced, so the GPU stage belongs on its own thread here for
-    # the same reason it does in production (D3).
     components, command_queue = build_simulation(audio_client, event_buffer,
                                                  threaded=True)
 
@@ -154,7 +141,6 @@ def run_realtime(args):
                                                  threaded=True)
     event_buffer.start()
 
-    # Microphone input is hardware-paced — no artificial pacing needed.
     thread = threading.Thread(
         target=_run_pipeline,
         args=(components, float('inf'), event_buffer, command_queue, False),

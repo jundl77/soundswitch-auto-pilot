@@ -15,9 +15,6 @@ WARN_COLOR = '#f0883e'
 MUTED      = '#6e7681'
 POSTERIOR_FILL = '#58a6ff'
 
-# Onset density used to scale this; the density chain left with the rule engine
-# and the freed channel is deliberately not re-purposed (D14).  Constant, not
-# derived from a field that is now always zero.
 BEAT_MARKER_SIZE = 16
 
 INTENT_CONFIG = {
@@ -37,9 +34,6 @@ INTENT_CONFIG = {
         'glow_mult':  1.6,
         'label':      'BREAKDOWN',
     },
-    # No `groove`: the model's class space has none and `LightIntent.GROOVE` is
-    # retired (D7).  A legend entry for an intent the show cannot enter is the
-    # exact lie D7 removed the enum member over.
     'buildup': {
         'primary':    '#e65100',
         'accent':     '#f9a825',
@@ -84,7 +78,6 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
     shapes, annotations = [], []
 
-    # Drawn first so the intent bands render on top.
     t_grid = int(x0)
     while t_grid <= x1:
         shapes.append(dict(
@@ -221,12 +214,6 @@ def _build_stage(snapshot: dict) -> list:
 
 
 def _build_decoder(snapshot: dict) -> list:
-    """D14's one new panel: what the committer is looking at.
-
-    The show is driven by the decoder now, and from the stage view alone a
-    stuck one and a quiet passage are the same picture -- so the class
-    posteriors and the commit cursor are the only things worth adding.
-    """
     state = snapshot.get('decoder') or {}
     classes = state.get('classes') or []
     if not classes:
@@ -302,12 +289,6 @@ def _build_metrics(snapshot: dict) -> list:
 
 
 def _timing_health(stats: dict) -> tuple:
-    """Each stream against its OWN target, never against a written-down delay.
-
-    The four streams wait four different amounts (B1) and the numbers move with
-    the measured chain, so the only durable question is whether the queue is
-    hitting what it aimed at.  A literal here read amber for entire shows.
-    """
     by_label = stats.get('by_label') or {}
     if not by_label:
         return 'cmd timing: —', MUTED

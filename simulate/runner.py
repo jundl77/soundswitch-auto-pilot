@@ -9,29 +9,13 @@ from lib.clock import Clock, SYSTEM_CLOCK, VirtualClock
 from simulate import cell_cache
 
 TIMING_TOLERANCE_SEC = 0.050
-# Must match PLAYBACK_DELAY_SEC in lib/main.py and playback_delay_seconds in
-# dmx-enttec-node. 14.0 per #154: the chain is 13.66 s at the corpus median bar
-# and 14.08 s at p99, so this is the budget the decoder's lag_bars=2 needs.
+# Must match lib/main.py's PLAYBACK_DELAY_SEC and dmx-enttec-node's playback_delay_seconds.
 PLAYBACK_DELAY_SEC = 14.0
 FAST_SIM_RANDOM_SEED = 1337
 
 
 def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK,
                      section: object | None = None, threaded: bool = False):
-    """The whole pipeline on stub clients -- the identical code path to prod.
-
-    ``section`` is the NN chain; absent, it is built from the shipped artifacts,
-    and if those are not on this machine the sim runs the degradation state
-    (beats, silence, a held intent) rather than refusing to start.  That is
-    #144's contract, and it is what keeps every test that does not need the
-    model runnable on a fresh clone.
-
-    ``threaded`` is the real-time paths' switch (D3): the microphone and the
-    ``--ui`` file run is paced by a wall clock, so the GPU stage belongs on its
-    own thread there exactly as it does in production.  Fast simulation runs on
-    a virtual clock and stays single-threaded, which is what makes its reports
-    byte-identical run to run.
-    """
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.analyser.drift_watchdog import DriftWatchdog
     from lib.engine.delayed_command_queue import DelayedCommandQueue
@@ -80,30 +64,10 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
 
 
 def load_section_chain(watchdog=None, audio_client=None):
-    """The shipped chain, reset, or None on a machine that does not have it.
-
-    Built once per process and reused, because the encoder is 1.3 GB of weights
-    and a fresh one per simulation would dominate a suite that runs several.
-    **Reset on every hand-out**, because sharing it otherwise carries the last
-    track's ring, GRU state and bar grid into the next simulation -- which makes
-    a report a function of what ran before it in the same process, and there is
-    no song boundary between two simulations to do the job.
-
-    A threaded chain is NOT cached: it owns a running thread and a watchdog
-    belonging to one run, and handing that to the next simulation would share a
-    shed level between two shows.  The real-time paths build one each and stop
-    it; only the fast sim, which is where the cache pays, reuses.
-
-    **A warm cell cache short-circuits all of that** (D12): the extractor is
-    replayed, so no encoder is loaded, the chain is cheap to build per track,
-    and there is nothing worth sharing between simulations.
-    """
     global _SECTION_CHAIN
     from lib import section_chain
 
     if watchdog is not None:
-        # The threaded paths exist to run the real GPU stage; a replay there
-        # would prove nothing about the thread it is meant to exercise.
         if not _artifacts_or_degrade():
             return None
         return section_chain.build_section_chain(watchdog=watchdog)
@@ -140,13 +104,6 @@ def _artifacts_or_degrade() -> bool:
 
 
 def _expected_samples(audio_client):
-    """How much audio this run will push, for a client that knows.
-
-    A recording cut short by a `duration_sec` bound is keyed exactly like a
-    complete one, so this is what turns "serves cells and then silently stops"
-    into a named miss that re-records.  The client is started to answer --
-    `start_streams` is idempotent and the runner is about to call it anyway.
-    """
     if not hasattr(audio_client, 'total_samples'):
         return None
     audio_client.start_streams()
@@ -154,11 +111,6 @@ def _expected_samples(audio_client):
 
 
 def _cell_cache_plan(audio_client):
-    """``(sidecar path, key)`` for a client that reads a file it can name.
-
-    A microphone names neither a file nor a decoder, so it gets no cache and
-    the question never reaches the artifacts.
-    """
     from lib import section_chain
 
     path = getattr(audio_client, 'path', None)
@@ -177,12 +129,6 @@ _SECTION_CHAIN = _UNBUILT
 
 async def run_fast_simulation_components(audio_client, duration_sec: float = float('inf'),
                                          seed: int = FAST_SIM_RANDOM_SEED):
-    """The fast sim, handing back every client it built.
-
-    The stub MIDI and OS2L clients hold wires the report does not carry, and the
-    golden fixture pins those. One code path so a fixture cut here describes the
-    same run the benchmark scores.
-    """
     from lib.engine.event_buffer import EventBuffer
 
     random.seed(seed)
@@ -234,8 +180,6 @@ async def run_simulation(components: dict, duration_sec: float,
             if sleep_sec > 0:
                 await asyncio.sleep(sleep_sec)
 
-        # Before `analyse`, which appends the debug click to the buffer it was
-        # handed: the feature stage must read the audio the room hears.
         await components['light_engine'].on_audio(audio_signal)
         await music_analyser.analyse(audio_signal)
         await command_queue.drain()
@@ -285,7 +229,6 @@ def print_timing_report(command_queue, tolerance_sec: float = TIMING_TOLERANCE_S
     worst_error_ms = 0.0
 
     print(f'\n{"─" * 72}')
-    # Per entry, not per queue: a beat and an intent wait different amounts (B1).
     print(f'  TIMING REPORT   playback_delay={command_queue.delay_sec:.3f}s   '
           f'tolerance=±{tolerance_sec * 1000:.0f}ms')
     print(f'{"─" * 72}')

@@ -1,30 +1,4 @@
-"""D12: the extractor's cells, cached beside the audio -- the decode cache one
-layer up.
-
-`simulate file` runs the identical NN path to production, and the only part of
-it that needs a GPU is the MERT encoder.  Recording the cells it emits and
-replaying them makes every later run pure CPU, and makes the honest determinism
-claim the `.npy` decode cache already set the precedent for: **byte-identical
-reports given cached sidecars**, with everything downstream of the extractor
-bit-exact and the extractor itself replayed.
-
-**The trigger is a position in the call sequence, not song time.**  A pass is
-recorded against the number of source samples pushed when it ran, so a replay
-needs neither the resampler, the ring, nor the schedule -- and a `reset()`
-mid-run (the engine does one at each song boundary) needs no special handling,
-because the recorded triggers already span it.  A `Replay` is therefore
-single-use and `open_replay` hands back a fresh one per simulation.
-
-**The decode path is part of the identity, twice** (#161).  The simulation
-decodes mp3s with librosa and the corpus pipeline with ffmpeg, and the two move
-13.2% of near-boundary decisions -- so a corpus sidecar replayed into a sim (or
-the reverse) would be a silently different measurement.  It is in the filename,
-which makes the collision structurally impossible, and in the key, which makes
-it a named miss rather than a wrong answer.
-
-The threaded stage is deliberately not cached: `--ui` and `realtime` exist to
-run the real GPU thread, and a replay there would prove nothing about it.
-"""
+"""The extractor's cells, recorded beside the audio and replayed without a GPU."""
 from __future__ import annotations
 
 import hashlib
@@ -44,15 +18,9 @@ from lib.analyser.section_model import PosteriorStream
 SCHEMA = "mert-cells/1"
 SUFFIX = "mertcells.npz"
 
-# 1980-01-01, the zip epoch: see training/nn/infer.py's `save_posteriors`, whose
-# reasoning this writer follows -- np.savez inherits its timestamp from a CPython
-# default and its compressed form folds the zlib build into the bytes, so a
-# determinism claim resting on either is a claim about one machine.
+# 1980-01-01 is the zip format's own epoch: the fixed timestamp keeps clocks out of the bytes.
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
-# The code that turns audio into cells.  `mert_stream` owns the resampler, the
-# ring, the pooling and the frame-time arithmetic; this module owns the
-# recording and the replay that has to reproduce them exactly.
 _EXTRACTOR_SOURCES = (
     Path(__file__).resolve(),
     Path(__file__).resolve().parents[1] / "lib" / "analyser" / "mert_stream.py",
@@ -60,21 +28,7 @@ _EXTRACTOR_SOURCES = (
 
 
 def extractor_sha() -> str:
-    """Identity of the extractor itself, which the rest of the key never had.
-
-    Everything else describes the encoder's WEIGHTS and the geometry they were
-    pooled under -- nothing about the code between the two.  The only lever was
-    the hand-maintained `SCHEMA` string and nothing coupled it to the module, so
-    an extractor edit that left the geometry alone replayed stale cells: the
-    benchmark printed MATCHES BASELINE with the live extractor never called at
-    all, which is the one thing a checksum gate exists to make impossible.
-    Demonstrated by replacing `run_pass`, `push_audio` and `load_encoder` with
-    raisers and still reproducing the committed checksum exactly.
-
-    Source bytes rather than a git sha: this runs at a show's start-up, where
-    `training/`'s git machinery deliberately does not reach, and the reports it
-    protects are invalidated by an edit whether or not it has been committed.
-    """
+    """Source bytes rather than a git sha: an uncommitted edit invalidates cells too."""
     digest = hashlib.sha256()
     for path in _EXTRACTOR_SOURCES:
         digest.update(path.read_bytes())
@@ -93,16 +47,7 @@ log = logging.getLogger(__name__)
 
 
 class TruncatedRecording(RuntimeError):
-    """A replay was pushed past the audio its recording covers.
-
-    The recorder saves on every normal stop, and `run_simulation` stops on a
-    `duration_sec` bound as readily as on the end of the file -- so a run cut
-    short leaves a sidecar that is indistinguishable, by key, from a complete
-    one.  Replayed into a full run it serves cells until the recording ends and
-    then serves nothing at all, for the rest of the track, in silence: the
-    decoder stops receiving posteriors and the show holds one intent with no
-    fault anywhere.  Loud and stopped beats quiet and wrong.
-    """
+    ...
 
 
 def sidecar_path(audio_path, decode_path: str) -> Path:
@@ -112,21 +57,6 @@ def sidecar_path(audio_path, decode_path: str) -> Path:
 
 def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str,
               backend: dict | None = None) -> dict:
-    """Everything a cell depends on, in the three groups that fail differently.
-
-    `encoder` is which weights produced the features, `framing` is the geometry
-    they were pooled under, and `backend` is the arithmetic that ran them.
-    Split so a miss says which one moved rather than "something".
-
-    **The backend belongs here for the same reason the decode path does.**  It
-    is chosen at build time, not requested: `build_section_chain` resolves the
-    device off `best_device()` and the precision off its `fp16` default, so the
-    same call produces cuda-fp16 cells on this box and cpu-fp32 cells on a box
-    with no GPU.  Those are different numbers, and without this a sidecar
-    recorded on one replays as the other's answer -- a wrong measurement with
-    nothing to say so.  It is resolved through the chain's own helper rather
-    than recomputed, so the key and the builder cannot drift apart.
-    """
     from lib import section_chain
 
     stat = Path(audio_path).stat()
@@ -155,7 +85,6 @@ def cache_key(geometry, *, source_rate: int, audio_path, decode_path: str,
 
 
 def miss_reason(stored: dict, wanted: dict) -> str | None:
-    """``None`` when the sidecar may be replayed, else the name of the miss."""
     for field, reason in _TOP_LEVEL_MISSES:
         if stored.get(field) != wanted.get(field):
             return reason
@@ -166,14 +95,6 @@ def miss_reason(stored: dict, wanted: dict) -> str | None:
 
 
 def open_replay(path, key: dict, expected_samples: int | None = None):
-    """``(Replay, "hit")``, or ``(None, reason)`` -- never an exception.
-
-    ``expected_samples`` is how much audio this run will push, when the caller
-    can say.  A recording that does not cover it is ``miss_truncated`` and is
-    re-recorded rather than served short.  A caller that cannot say still gets
-    the guarantee, one layer later: `Replay` refuses at the sample the
-    recording stops covering instead of quietly emitting nothing.
-    """
     path = Path(path)
     if not path.exists():
         return None, "miss_new"
@@ -198,15 +119,6 @@ def open_replay(path, key: dict, expected_samples: int | None = None):
 
 
 def _internally_consistent(archive) -> bool:
-    """Do the five arrays describe one recording?
-
-    Checked at load, where it is a named miss and costs a re-record, rather
-    than at the first `run_pass` that indexes past the end -- which happens
-    minutes into a batch, out of the middle of a simulation, as an IndexError
-    with nothing in it about a cache.  A sidecar can be inconsistent without
-    being unreadable: a writer killed between members, or a schema that grew a
-    column while keeping its name.
-    """
     offsets = archive["pass_offset"]
     cells = len(archive["cell_index"])
     return (len(offsets) == len(archive["pass_trigger"]) + 1
@@ -217,12 +129,6 @@ def _internally_consistent(archive) -> bool:
 
 
 class Replay:
-    """The recorded cells, handed back on the schedule they were emitted on.
-
-    Single-use: `reset` is deliberately not a rewind, because the recording
-    already contains whatever the live stream did after its own resets.
-    """
-
     def __init__(self, triggers, offsets, indices, seen_sec, features,
                  label_frame_sec: float, total_pushed: int = 0) -> None:
         self._triggers = np.asarray(triggers, dtype=np.int64)
@@ -267,14 +173,6 @@ class Replay:
 
 
 class Recorder:
-    """A pass-through over the live extractor that writes what it emitted.
-
-    Only the four methods the synchronous consumer uses are forwarded.  The
-    shed path's `resync` is not one of them: the fast simulation has no
-    watchdog and cannot shed, so a resync reaching a recording would be a new
-    fact about the pipeline and should stop rather than be silently cached.
-    """
-
     def __init__(self, stream, path, key: dict) -> None:
         self.stream = stream
         self.path = Path(path)
@@ -329,39 +227,17 @@ class Recorder:
 
 
 class RecordingStream(PosteriorStream):
-    """The chain's stream when this run is the one paying for the GPU.
-
-    `stop` is where the sidecar is written, because `SectionChain.stop` is
-    already the one place that knows whether a chain owns something that has to
-    be wound down, and nothing above it should have to remember.
-    """
-
     def stop(self) -> None:
         self.stream.save()
 
 
 def recording_chain(chain, path, key: dict):
-    """The shipped chain, re-headed onto a recorder over its own extractor."""
     return chain._replace(
         stream=RecordingStream(Recorder(chain.stream.stream, path, key),
                                chain.stream.model))
 
 
 def _write_archive(path: Path, arrays: dict) -> bool:
-    """Publish the sidecar atomically, or log why it could not be.
-
-    **The temp name carries the writer's identity.**  It used to be one fixed
-    `.part` beside the audio, and the corpus batch and the benchmark both run a
-    pool over the same files: two writers then interleaved on one temp file and
-    published each other's bytes.  On Windows the second `replace` onto a file
-    the first still has open raises `PermissionError` instead -- out of
-    `run_simulation`, after every expensive thing in the run had already
-    succeeded.
-
-    **A cache is an optimisation, so failing to publish one is not a failure.**
-    The simulation that just finished is complete and correct whether or not
-    its cells reach the disk; the next run simply pays for the GPU again.
-    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
         for name, value in arrays.items():
