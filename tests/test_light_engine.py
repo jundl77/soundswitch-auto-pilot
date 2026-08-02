@@ -991,3 +991,12 @@ async def test_the_deliberate_stall_forgives_the_settle_and_not_the_rest():
         clock.advance(SETTLE_SEC * 10)
 
     assert forgiven == [SETTLE_SEC]
+
+
+def test_the_grid_never_tears_itself_down_before_the_show_has_gone_quiet():
+    from lib.engine import light_engine, section_decoder
+
+    assert section_decoder._BEAT_GAP_SEC > light_engine._BEAT_ABSENCE_SEC, \
+        'the bar grid re-anchors while the engine still believes a section is ' \
+        'playing: the decisions either side of the gap would name bars on two ' \
+        'different grids with nothing on screen saying the beat had stopped'
