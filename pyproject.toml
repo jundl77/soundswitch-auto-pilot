@@ -26,15 +26,8 @@ dependencies = [
     "zeroconf",
     "netifaces",
     "setuptools<71",
-    # The show. The section model is an ONNX graph, its encoder is a
-    # transformers checkpoint, and torch is what loads and runs the encoder --
-    # all three are on the live path now, not in an offline extra.
-    # torch stays at 2.11: the legacy TorchScript ONNX exporter is the only path
-    # that keeps a dynamic time axis for a GRU, and it is deprecated from 2.9.
-    # torch and onnxruntime are the pair the CUDA preflight validated together.
-    # transformers has a separate provenance -- it predates that report, and its
-    # record is the run in which the MERT encoder was actually loaded. Both are
-    # written out in the PR body, which is where a fresh clone can read them.
+    # torch stays at 2.11: only the legacy TorchScript ONNX exporter keeps a GRU's
+    # time axis dynamic, and it is deprecated from 2.9. Pin provenance is the PR body.
     "torch>=2.11,<2.12",
     "transformers>=4.57,<5",
     "onnxruntime>=1.28,<2",
@@ -50,27 +43,18 @@ visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
-# Offline NN work only.  `training/nn/` itself is no longer offline-only: the
-# show imports its decoder and its priors (`lib/engine/section_decoder.py`
-# inserts `training/` on the path and imports `nn.decoder`), deliberately, so
-# that an offline sweep and the runtime cannot disagree by a line.  What stays
-# offline is the TRAINING of the acoustic model, which is what this extra is.
-# torch and onnxruntime are base dependencies now and are deliberately not
-# repeated here -- two pins for one package is two answers to which one ships.
-# tensorboard is a floor rather than a range: nothing else in the tree pins it
-# any more, and the trainer uses only its SummaryWriter surface.
+# Training the acoustic model only -- the show imports nn.decoder, so training/nn/
+# is not offline-only. torch and onnxruntime are base deps and are not repeated here.
 training = [
     "onnx>=1.22,<2",
     "tensorboard>=2.16",
-    # tensorboard's image summaries encode through PIL and it is not a hard
-    # dependency of tensorboard itself; without it the per-epoch confusion
-    # matrix raises mid-epoch, an hour into a run.
+    # tensorboard's image summaries encode through PIL, which tensorboard does not
+    # require; without it the per-epoch confusion matrix raises an hour into a run.
     "pillow>=10",
 ]
 
-# The CUDA wheel index, bound to torch alone.  `explicit = true` is load-bearing:
-# without it uv consults this index for every package and shadows PyPI with an
-# incomplete mirror.
+# `explicit = true` is load-bearing: without it uv consults this index for every
+# package and shadows PyPI with an incomplete mirror.
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
@@ -78,17 +62,11 @@ explicit = true
 
 [tool.uv]
 link-mode = "copy"
-# Resolve only for the environment this project actually runs in.  uv resolves
-# universally across `requires-python`, and on the py3.13 branch ml-dtypes
-# (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against this
-# project's own numpy<2 pin.  Removing this line breaks `uv lock`.
+# Removing this breaks `uv lock`: uv resolves universally, and on py3.13 ml-dtypes
+# (via onnx) demands numpy>=2.1 against this project's numpy<2 pin.
 environments = ["sys_platform == 'win32' and python_full_version < '3.12'"]
-# madmom's last PyPI release (0.16.1, 2018) cannot be imported on Python >= 3.10
-# — `from collections import MutableSequence`. Git main fixed that and carries a
-# pyproject.toml, so it builds on py3.11/MSVC; there is no tagged release with
-# the fix, hence a SHA. Build isolation is off because the Cython/numpy build
-# needs this environment's numpy ABI, and the build deps are named explicitly
-# rather than inherited from whatever happens to be installed.
+# madmom builds from a SHA because no release imports on py3.10+, and from this
+# environment's numpy ABI because the Cython build links against it.
 no-build-isolation-package = ["madmom"]
 extra-build-dependencies = { madmom = ["cython", "numpy>=1.26,<2", "setuptools<71"] }
 
