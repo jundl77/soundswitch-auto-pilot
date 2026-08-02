@@ -323,7 +323,7 @@ def _timing_health(stats: dict) -> tuple:
 
 
 def build_app(event_buffer) -> dash.Dash:
-    app = dash.Dash(__name__, title=TITLE)
+    app = dash.Dash(__name__, title=TITLE, eager_loading=True)
     app.layout = html.Div([
         html.Div(_build_legend(), style={
             'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
@@ -343,7 +343,7 @@ def build_app(event_buffer) -> dash.Dash:
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
-        dcc.Interval(id='tick', interval=100),
+        dcc.Interval(id='tick', interval=250),
     ], style={'background': DARK_BG, 'minHeight': '100vh'})
 
     @app.callback(
