@@ -9,23 +9,16 @@ from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clock import Clock, SYSTEM_CLOCK
 
 _BPM_BEAT_WINDOW = 9
+_BPM_FOLD_MIN = 85.0
+_BPM_FOLD_MAX = 170.0
 _NOTE_REFRACTORY = datetime.timedelta(milliseconds=75)
 _RHYTHM_LOG_INTERVAL = datetime.timedelta(seconds=10)
 
-# ~150 ms of per-buffer samples at 5.805 ms/buffer.
 _ENERGY_WINDOW_BUFFERS = 26
 
-# The gate this replaced read the 40-band mel filterbank and asked whether every
-# band sat under 1e-4; the bank is gone, so it reads the RMS the loop already
-# computes.  The number is the one that reproduces the committed sound-start and
-# sound-stop instants on the golden fixture tracks, not a plausible level: see
-# `## Task 4` in .superpowers/sdd/2026-08-01-nn-integration/progress.md for the
-# sweep, including the one instant no RMS reading can reproduce and why.
+# Swept to reproduce the committed sound-start/stop instants on the golden fixtures.
 _SILENCE_RMS = 1.5e-4
 
-# How long the rolling state is allowed to run before it is rebuilt.  It bounds
-# what the analyser holds; it says nothing about the music, which is why it is
-# rolled rather than restarted (see `_roll_song_clock`).
 _SONG_CLOCK_HORIZON = datetime.timedelta(minutes=15)
 
 
@@ -47,14 +40,7 @@ class MusicAnalyser:
             2. * np.pi * np.arange(self.buffer_size) / self.buffer_size
             * self.sample_rate / 3000.)
 
-        # Constructed once and never rebuilt by _reset_state(), which fires on
-        # every 0.3 s of silence: the rhythm stack is cleared in place there
-        # rather than reloading eight pickled LSTMs mid-show, and everything
-        # else here is LOOP-scoped — a song boundary says nothing about whether
-        # the loop is keeping up.
         self._rhythm: MadmomRhythm = MadmomRhythm(self.sample_rate)
-        # Shared when the GPU stage is threaded: drift is measured here and
-        # health is reported there, and the ladder derives one level from both.
         self._drift: DriftWatchdog = watchdog or DriftWatchdog(
             self.buffer_size / self.sample_rate, clock=self._clock)
         self._rhythm_log_at: datetime.datetime = self._clock.now() + _RHYTHM_LOG_INTERVAL
@@ -63,27 +49,12 @@ class MusicAnalyser:
         self._reset_state()
 
     def _roll_song_clock(self) -> None:
-        """Bound the rolling state without telling the show a new song started.
-
-        A venue feed is continuous, so the 0.3 s silence gate never trips and
-        this is the only boundary the engine ever sees.  Going through
-        `_reset_state` cleared `is_playing`, so the next buffer of the same
-        uninterrupted audio re-announced a sound START with no stop before it
-        -- and downstream that is a song boundary: the ring is zeroed, the
-        student starts cold, the bar grid goes, every queued intent is dropped
-        and the cold-start floor re-arms, which can put the room in ATMOSPHERIC
-        in the middle of a peak.  The rule engine cost about one beat here; the
-        chain costs a whole latency plus a grid warm-up, four times an hour.
-        """
         playing = self.is_playing
         self._reset_state()
         self.is_playing = playing
 
     def _reset_state(self) -> None:
         self._rhythm.reset()
-
-        # Beat instants in madmom's own stream time: if the input drops audio,
-        # stream time still measures the music the detector actually heard.
         self._beat_stream_times: deque = deque(maxlen=_BPM_BEAT_WINDOW)
 
         self.is_playing: bool = False
@@ -104,9 +75,6 @@ class MusicAnalyser:
             return datetime.timedelta(seconds=0)
 
     def get_beat_position(self) -> float:
-        # Read once: a song reset on the audio thread can zero this between the
-        # guard and the division, and the OS2L sender that calls this has no
-        # exception handler to survive it.
         beat_interval_sec = self.time_to_last_beat_sec
         if self.is_playing and beat_interval_sec > 0:
             time_to_current_beat_sec = (self._clock.now() - self.last_beat_detected).total_seconds()
@@ -120,7 +88,6 @@ class MusicAnalyser:
         return self._fold_bpm(self._measured_bpm())
 
     def _measured_bpm(self) -> float:
-        """Median recent inter-beat interval; 0.0 until measurable."""
         if len(self._beat_stream_times) < 3:
             return 0.0
         interval = float(np.median(np.diff(np.array(self._beat_stream_times))))
@@ -128,12 +95,11 @@ class MusicAnalyser:
 
     @staticmethod
     def _fold_bpm(bpm: float) -> float:
-        """Fold into [85, 170) by octave halving/doubling; 0.0 if not measurable."""
         if not math.isfinite(bpm) or bpm <= 0:
             return 0.0
-        while bpm >= 170.0:
+        while bpm >= _BPM_FOLD_MAX:
             bpm /= 2.0
-        while bpm < 85.0:
+        while bpm < _BPM_FOLD_MIN:
             bpm *= 2.0
         return bpm
 
@@ -168,8 +134,6 @@ class MusicAnalyser:
             self._roll_song_clock()
 
         if is_beat and self.note_clicks:
-            # Owner preference: the -d click marks the BEAT, not every onset.
-            # Must stay last: every feature above ran on the clean signal.
             audio_signal += self.click_sound
 
         await self.handler.on_cycle()
@@ -221,11 +185,6 @@ class MusicAnalyser:
         return bool(beats)
 
     async def _track_note(self, beats: list, now: datetime.datetime) -> bool:
-        """The overlay's 24-channel light bar, advanced once per beat.
-
-        Its supplier used to be the onset stream, which the NN integration
-        deletes; beats are the same substitution the -d click already took.
-        """
         is_note = bool(beats) and now - self.last_note_detected > _NOTE_REFRACTORY
         if is_note:
             await self.handler.on_note()
@@ -256,12 +215,6 @@ class MusicAnalyser:
         was_playing = self.is_playing
         self._reset_state()
         if was_playing:
-            # No forgive here.  This used to bracket the MIDI settle, which has
-            # since moved behind the command queue into `_show_sound_stop`,
-            # where it is bracketed at the point it actually blocks.  Left in
-            # place it forgave the engine's ordinary boundary work -- the OS2L
-            # send, the effect reset, the enqueue -- which is loop time the
-            # watchdog is supposed to see.
             self.handler.on_sound_stop()
 
     def _has_bpm_changed(self, current_bpm: float) -> bool:

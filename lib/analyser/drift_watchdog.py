@@ -1,23 +1,4 @@
-"""Notices when the show's one sheddable stage should stop, from either side.
-
-The ladder used to have two rungs, `SECTION_DETECTION` and `ONSET_DETECTION`,
-and the NN integration deleted both tenants. What is left is the GPU feature
-stage, so the ladder is one rung -- and `NN_SHED` is not a smaller show, it is
-the degradation contract of #144: hold the intent, keep beats and the silence
-timer, and say so loudly.
-
-**Two inputs, one door.** Drift measures lost lead against a hardware-paced
-input, which is the only thing that can see the loop failing to keep up. It is
-structurally blind to the stage failing on its own: a CUDA fault, a driver
-reset, a sleep/resume context loss or a hung pass all cost the audio loop
-exactly nothing, so pacing stays perfect while the show holds one intent
-forever. The stage reports those itself, and either input alone holds the door
-shut -- clearing one is not clearing both.
-
-The two arrive on different threads (drift from the audio loop, health from the
-GPU thread) and each writes only its own half; the derived level is settled
-under a lock so a transition cannot be logged twice or lost.
-"""
+"""Notices when the show's one sheddable stage should stop, from either side."""
 
 from __future__ import annotations
 
@@ -30,16 +11,9 @@ from lib.clock import SYSTEM_CLOCK, Clock
 
 _WINDOW_SEC = 5.0
 _ENTER_SEC = 0.15
-# Positive, not negative: a hardware-paced input hands over exactly one buffer
-# per buffer period, so the loop can never consume audio faster than it arrives
-# and drift can never go negative however much headroom there is. Requiring
-# negative drift to recover leaves the watchdog latched for the whole show.
+# Positive: a hardware-paced input hands over one buffer per period, so drift never goes negative.
 _EXIT_SEC = 0.05
 
-# A flapping stage crosses this door twice per pass, so the transition log is
-# on a per-direction rate limit for the same reason every other WARNING here is.
-# What is suppressed is COUNTED and carried into the next line: a quiet log and
-# a healthy rig have to stay distinguishable.
 _LOG_INTERVAL_SEC = 30.0
 
 
@@ -49,13 +23,6 @@ class ShedLevel(IntEnum):
 
 
 class DriftWatchdog:
-    """Tracks lost lead and stage health, and picks a shed level from both.
-
-    `observe()` is called once per processed audio buffer, from the same thread
-    that does the processing. `report_fault` / `report_healthy` are called by
-    the stage, from its own thread.
-    """
-
     def __init__(self, buffer_sec: float, clock: Clock = SYSTEM_CLOCK,
                  window_sec: float = _WINDOW_SEC):
         self._buffer_sec = buffer_sec
@@ -87,7 +54,6 @@ class DriftWatchdog:
         return self._fault
 
     def forgive(self, sec: float) -> None:
-        """Deliberate stalls (the MIDI settle at a song boundary) are not lost lead."""
         if sec <= 0:
             return
         self._samples = deque((w + sec, s) for w, s in self._samples)
@@ -98,13 +64,9 @@ class DriftWatchdog:
 
     @property
     def drift_sec(self) -> float:
-        """Lead lost inside the rolling window. Negative means catching up."""
         return self._drift_sec
 
-    # -- health, from the stage's own thread -------------------------------- #
-
     def report_fault(self, kind: str) -> ShedLevel:
-        """The stage cannot run. Latched until it says otherwise."""
         if self._fault != kind:
             was = self._fault
             self._fault = kind
@@ -113,13 +75,10 @@ class DriftWatchdog:
         return self._level
 
     def report_healthy(self) -> ShedLevel:
-        """The stage completed work. Drift may still be holding the door."""
         if self._fault is not None:
             self._fault = None
             self._settle('stage healthy')
         return self._level
-
-    # -- drift, from the audio loop ----------------------------------------- #
 
     def observe(self) -> ShedLevel:
         wall = self._clock.monotonic()

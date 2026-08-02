@@ -5,6 +5,8 @@ from collections import deque
 
 from lib.clock import Clock, SYSTEM_CLOCK
 
+_UNMEASURED_BEAT_STRENGTH = 0.0
+
 
 class EventBuffer:
     def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK,
@@ -12,13 +14,10 @@ class EventBuffer:
         self._lock = threading.Lock()
         self._window_sec = window_sec
         self._clock = clock
-        # Beats are stamped in song time, intent/effect blocks one look-ahead
-        # later in audience time. Recorded so a report is self-describing.
         self._look_ahead_sec = look_ahead_sec
         self._start_time: float | None = None
         self._end_time: float | None = None
         self._is_playing: bool = False
-        # An infinite window promises complete reports, so the cap comes off.
         self._beats: deque[dict] = deque(maxlen=None if window_sec == float('inf') else 3000)
         self._effects: list[dict] = []
         self._intents: list[dict] = []
@@ -32,8 +31,6 @@ class EventBuffer:
             self._start_time = self._clock.monotonic()
 
     def mark_end(self) -> None:
-        """Clamp later timestamps, so the look-ahead flush tail cannot stretch
-        a report past the audio that produced it."""
         with self._lock:
             self._end_time = self._clock.monotonic()
 
@@ -52,10 +49,7 @@ class EventBuffer:
         with self._lock:
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
-                # Onset density scaled the marker size; the density chain is
-                # gone and nothing has replaced it, so the channel is constant
-                # rather than carrying a number nobody measured.
-                'strength': 0.0,
+                'strength': _UNMEASURED_BEAT_STRENGTH,
                 'change': change,
                 'rms': round(rms, 4),
             })
@@ -78,15 +72,6 @@ class EventBuffer:
             self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
     def set_intent(self, intent: str, song_sec: float | None = None) -> None:
-        """``t`` is when the room sees it; ``song_t`` is the audio it describes.
-
-        Both, because they are two different facts and only one of them can be
-        recovered from the other.  A block's stamp is its fire time, and the
-        delay behind it moves per command (B1) -- so no constant de-shift
-        reaches song time, and a consumer that guesses one scores the show
-        against the wrong part of the track.  The engine knows the instant
-        exactly at commit time; this is where it says so.
-        """
         with self._lock:
             if intent == self._current_intent:
                 return
@@ -106,12 +91,6 @@ class EventBuffer:
             self._timing_log = list(log)
 
     def set_decoder_state(self, **state) -> None:
-        """What the committer is looking at -- for the live view only.
-
-        Deliberately absent from ``to_report``: a report is scored against
-        labels beat by beat, and the decoder's own cursor is a fact about the
-        instant Dash asked rather than about the show.
-        """
         with self._lock:
             self._decoder_state = dict(state)
 
@@ -128,11 +107,6 @@ class EventBuffer:
 
     @classmethod
     def _timing_stats(cls, log: list[dict]) -> dict:
-        """Per stream, because the streams wait different amounts (B1).
-
-        A mean delay pooled over four streams is a number no command ever
-        targeted, so health is each entry's distance from *its own* target.
-        """
         labels: dict = {}
         for entry in log:
             labels.setdefault(entry['label'], []).append(entry)
@@ -141,18 +115,12 @@ class EventBuffer:
                               for label, entries in sorted(labels.items())})
 
     def snapshot(self) -> dict:
-        """Thread-safe copy of recent state — called from Dash every 100 ms."""
         with self._lock:
             now = self._now()
             cutoff = now - self._window_sec
             timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
-                # Sound state is written per audio buffer by the analyser's
-                # silence detector, so when the audio ends the last value it
-                # wrote stands forever.  `mark_end` is the one place that knows
-                # there will be no more buffers, so it is the only thing that
-                # can retire the flag.
                 'is_playing': self._is_playing and self._end_time is None,
                 'beats': [b for b in self._beats if b['t'] >= cutoff],
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
@@ -167,7 +135,6 @@ class EventBuffer:
             }
 
     def to_report(self, timing_log: list[dict] | None = None) -> dict:
-        """Full serializable report for agentic evaluation or JSON export."""
         with self._lock:
             now = self._now()
 
@@ -208,7 +175,6 @@ class EventBuffer:
                 'intents': all_intents,
                 'timing_log': tlog,
                 'metrics': {
-                    # Subtract from an intent/effect block's bounds to reach song time.
                     'look_ahead_sec': self._look_ahead_sec,
                     'beats_detected': len(all_beats),
                     'bpm_last': all_beats[-1]['bpm'] if all_beats else 0.0,

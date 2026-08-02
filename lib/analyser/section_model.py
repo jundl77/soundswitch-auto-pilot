@@ -1,41 +1,4 @@
-"""The online student, one cell at a time -- the deployed decision.
-
-Ported from phase-b's `OnlineCRNN.step` and the graph
-`training/nn/ceiling/online_export.py` exports from it. The model is
-bidirectional over a bounded window: cell ``t`` is decided from a ring holding
-``t-reach .. t+future+reach``, plus the forward GRU's carried state, which is
-the whole past of the song at no extra cost. So the live path holds two things
-and nothing else -- a ring of feature cells and one state tensor.
-
-**The ring is primed from the corpus mean, never zeros** (D10). Zero raw
-features are a confident out-of-distribution input after the model's own input
-affine; the corpus mean is the one row it reads as no information, and it is
-what the whole-track pass pads its edges with.
-
-**The session is pinned single-threaded.** That is a determinism contract, not
-a performance choice: a threaded reduction sums in whatever order the pool
-finishes in, and float addition is not associative. Throughput, when it is
-wanted, comes from running tracks in parallel over separate sessions.
-
-**Nothing here is thread-safe and nothing here needs to be.** The ring, the
-carried state and the cell counter are one object owned end to end by whichever
-thread consumes cells; `reset` is not an exception, and a sound-stop arriving on
-another thread (D10) has to be marshalled onto that one.
-
-**The graph is verified against its recorded sha at construction**, and so is
-its geometry, against the shapes the graph itself declares and against its own
-internal arithmetic -- the sha covers the .onnx bytes, so an edited sidecar is a
-wrong-geometry model that passes every hash it is asked for. Not at the first
-beat: a show that discovers its model is the wrong one halfway through a set has
-already played the wrong lights.
-
-The session is built through an injectable factory. `session` is the only
-definition of the pinned options and is the default; the seam exists because
-building a synthetic ONNX graph for a unit test needs the `onnx` package, which
-is not a dependency of the show. It is not what the degradation drills use --
-those fault the encoder, because that is where a GPU fault actually lands; the
-student runs on CPU.
-"""
+"""The online student, one cell at a time -- the deployed decision."""
 from __future__ import annotations
 
 import hashlib
@@ -83,7 +46,6 @@ class HeadGeometry:
 
 
 def load_head_geometry(onnx_path) -> HeadGeometry:
-    """The graph's own record of its shape -- a retyped constant drifts."""
     meta_path = Path(str(onnx_path) + ".json")
     record = json.loads(meta_path.read_text(encoding="utf-8"))
     missing = [field for field in _GEOMETRY_FIELDS if field not in record]
@@ -102,13 +64,6 @@ def load_head_geometry(onnx_path) -> HeadGeometry:
 
 
 def check_head_geometry(geometry: HeadGeometry) -> None:
-    """What the sidecar can be caught contradicting without opening the graph.
-
-    The sha covers the .onnx bytes and nothing else, so an edited sidecar is a
-    wrong-geometry model that verifies. The cells-versus-seconds check is the
-    one that matters: a future window off by two changes no tensor shape, so the
-    graph runs and every posterior comes out stamped early.
-    """
     if geometry.conv_reach_cells < 0:
         raise ValueError(f"a {geometry.window_cells}-cell window cannot hold "
                          f"{geometry.future_cells} future cells and the present "
@@ -152,9 +107,7 @@ def _axis(shape: list, axis: int, wanted: int, field: str) -> None:
 
 
 def session_options() -> ort.SessionOptions:
-    """Split out from `session` because a constructed InferenceSession does not
-    report the options it was built with, so this is the only object a test can
-    assert on."""
+    # Single-threaded is a determinism contract: float addition is not associative.
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1
@@ -168,22 +121,10 @@ def session(path) -> ort.InferenceSession:
 
 
 class Flushed(RuntimeError):
-    """The model was drained at a song boundary; `reset` before reusing it.
-
-    Terminal rather than idempotent, and the same on both halves of the
-    pipeline: pushes after a flush read a ring still holding the padding rows
-    the flush put there, and a second flush would silently drop the next song's
-    tail instead of saying so.
-    """
+    ...
 
 
 class Posterior(NamedTuple):
-    """``index`` is the extractor's cell index, which is song time and not a
-    count of pushes.  The two are the same number until something skips cells --
-    a `resync` after a ring overrun does exactly that -- and after one, a model
-    counting its own pushes stamps every remaining posterior early by the length
-    of the gap, which the decoder reads as the wrong part of the track."""
-
     index: int
     time_sec: float
     posterior: np.ndarray
@@ -191,8 +132,6 @@ class Posterior(NamedTuple):
 
 
 class SectionModel:
-    """One posterior per label cell, from the ring and the carried state."""
-
     def __init__(self, onnx_path, *, mean, geometry: HeadGeometry | None = None,
                  expected_sha: str | None = None, session_factory=None) -> None:
         self.geometry = geometry or load_head_geometry(onnx_path)
@@ -221,12 +160,6 @@ class SectionModel:
         self._flushed = False
 
     def push(self, features, index: int | None = None) -> Posterior | None:
-        """One cell in, the posterior for the cell ``future_cells`` back out.
-
-        ``index`` is the extractor's, and carrying it is what keeps the two
-        halves on one clock across a gap.  Omitted, it carries on from the last
-        cell pushed, which is the same number whenever nothing skipped.
-        """
         if self._flushed:
             raise Flushed("the model was flushed at a song boundary; reset it "
                           "before pushing the next song's cells")
@@ -248,7 +181,6 @@ class SectionModel:
         return self._step(self._window.popleft())
 
     def flush(self) -> list:
-        """Drain the cells still inside the future window at a song boundary."""
         if self._flushed:
             raise Flushed("the model has already been flushed; reset it first")
         self._flushed = True
@@ -266,34 +198,11 @@ class SectionModel:
 
 
 class Drained(NamedTuple):
-    """What one call handed the consumer.
-
-    ``gap`` means everything the consumer holds describes audio from before a
-    discontinuity, so the decoder's cells, its bar grid and its trellis all have
-    to go: a bar assembled across a gap is assembled out of two different parts
-    of the song.  Nothing but a threaded stage can produce one, and the type is
-    shared so the engine has one consumer path rather than two.
-    """
-
     gap: bool
     posteriors: list
 
 
 class PosteriorStream:
-    """Audio in, posteriors out -- the two stages joined and nothing else.
-
-    The composition sits here rather than in a module of its own because a cell
-    is the only thing the two stages exchange, and nothing above them should
-    have to know a cell exists.  It starts no thread and holds no lock; the GPU
-    stage wraps this object, it does not replace it, and the split between
-    ``feed`` (the audio thread's half) and ``run_pass`` (the GPU thread's) is
-    what lets it.
-
-    ``run_pass`` is drained rather than called once: one buffer can complete
-    more than one pass after a stall, and a pass left un-run is a hop of audio
-    the show never sees.
-    """
-
     def __init__(self, stream, model: SectionModel) -> None:
         self.stream = stream
         self.model = model
@@ -312,18 +221,11 @@ class PosteriorStream:
         return self.stream.due()
 
     def run_pass(self) -> list:
-        """One encoder pass, stepped through the student: the unit of work."""
         out = [self.model.push(cell.features, cell.index)
                for cell in self.stream.run_pass()]
         return [item for item in out if item is not None]
 
     def resync(self):
-        """Rejoin the live edge after a gap, on both halves.
-
-        The extractor abandons what the ring can no longer serve and keeps its
-        sample index, which is song time; the student starts cold, because its
-        window and its carried state describe audio from before the gap.
-        """
         record = self.stream.resync()
         self.model.reset()
         return record

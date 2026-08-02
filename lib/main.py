@@ -10,12 +10,9 @@ import time
 from collections import deque
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
-# Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json,
-# and simulate/runner.py. 14.0 per #154: the NN chain measures 13.66 s at the
-# corpus median bar and 14.08 s at p99, so this is the budget lag_bars=2 needs.
-# It is no longer a look-ahead: the engine runs BEHIND the room now, and what a
-# command waits is this minus what the chain already spent (B1).
+# Must match playback_delay_seconds in dmx-enttec-node and simulate/runner.py's copy.
 PLAYBACK_DELAY_SEC = 14.0
+_UI_ONLY_WINDOW_SEC = 60.0
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
 
@@ -30,8 +27,6 @@ class SoundSwitchAutoPilot:
                  enable_ui: bool = False,
                  ui_port: int = 8050,
                  report_path: str | None = None):
-        # Imported here, not at module scope: hoisting these makes `--help` pay
-        # for the whole DSP and model stack.
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
@@ -57,25 +52,16 @@ class SoundSwitchAutoPilot:
         self.overlay_client: OverlayClient = OverlayClient()
 
         from lib.engine.event_buffer import EventBuffer
-        # `--report` promises the whole session, so the rolling window comes off
-        # for it the way `simulate.cli._session_buffer` already takes it off:
-        # the default 60 s window prunes at 2x itself on every write, so a
-        # thirty-minute set reported six intent changes out of sixty and a beat
-        # count saturated at the deque cap.  The UI alone keeps the window --
-        # it draws 30 s and nothing reads back past it.
         self.event_buffer: EventBuffer | None = (
             EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC,
-                        window_sec=float('inf') if report_path else 60.0)
+                        window_sec=(float('inf') if report_path
+                                    else _UI_ONLY_WINDOW_SEC))
             if (enable_ui or report_path) else None
         )
 
         from lib import section_chain
         from lib.analyser.drift_watchdog import DriftWatchdog
 
-        # One ladder, two inputs: pacing is measured by the analyser and health
-        # is reported by the GPU stage, and neither can see what the other does
-        # (D3, census 0.4).  Handing it to the chain is also what puts the GPU
-        # stage on its own thread.
         self.drift_watchdog: DriftWatchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE)
         self.section = (section_chain.build_section_chain(watchdog=self.drift_watchdog)
                         if section_chain.artifacts_present() else None)
@@ -104,18 +90,6 @@ class SoundSwitchAutoPilot:
         self.midi_client.list_devices()
 
     async def run(self):
-        """Set up, run the loop, and shut down -- the last one unconditionally.
-
-        Every client is opened before the loop and every one of them holds
-        something that outlives this coroutine: a PyAudio stream, a lit rig, a
-        CUDA context on a worker thread, and `Os2lSender`'s NON-daemon thread.
-        With the teardown sitting after the loop, any exception in it skipped
-        all five: the venue rig stayed lit at whatever the last effect was, the
-        encoder stayed resident, and the interpreter then blocked at exit
-        forever on the OS2L thread while it went on driving VirtualDJ.  A
-        traceback that hangs the process with the lights on is the worst
-        available failure, and it was the default one.
-        """
         logging.info("[main] setting up auto pilot..")
         try:
             await self._run()
@@ -132,8 +106,6 @@ class SoundSwitchAutoPilot:
             self.os2l_client.start()
         if self.event_buffer is not None:
             self.event_buffer.start()
-        # The buffer is also what `--report` fills, so it is not the flag that
-        # decides whether a web server opens.
         if self.enable_ui:
             import threading
             from simulate.visualizer_app import run_app
@@ -153,15 +125,11 @@ class SoundSwitchAutoPilot:
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
-        # Monitoring is delayed by the same amount the room is, so headphones
-        # and the venue hear the same instant.
         _playback_ready_at: float = time.monotonic() + PLAYBACK_DELAY_SEC
 
         while self.is_running:
             now = datetime.datetime.now()
             audio_signal = self.audio_client.read()
-            # Before `analyse`, which appends the debug click: the feature stage
-            # must read the audio the room hears.
             await self.light_engine.on_audio(audio_signal)
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
             await self.command_queue.drain()
@@ -187,15 +155,6 @@ class SoundSwitchAutoPilot:
                 await self._do_10s_callback()
 
     def _shut_down(self) -> None:
-        """Close everything, and let no one failure stop the rest.
-
-        Ordered by what the room can see: audio in first so nothing new
-        arrives, then the GPU thread, then the wires, then the rig -- and the
-        rig last because `MidiClient.stop` is what blanks it, so it must not be
-        skipped by something upstream of it raising.  The overlay's clear is
-        only queued by `stop`, so it is transmitted here rather than waiting
-        for an `on_cycle` the loop has already left.
-        """
         self.is_running = False
         for what, close in (('audio', self.audio_client.close),
                             ('section chain',
@@ -260,12 +219,6 @@ async def run_cmd(args: argparse.Namespace):
 
 
 async def list_cmd(args: argparse.Namespace):
-    """Device indices, and nothing else built to print them.
-
-    Constructing the whole app for this loaded the 1.3 GB encoder onto the GPU
-    on any machine that has it -- and `list` is the documented first step of
-    every run, on the venue box, where the GPU may be busy enough to fail.
-    """
     from lib.clients.pyaudio_client import PyAudioClient
     from lib.clients.midi_client import MidiClient
 

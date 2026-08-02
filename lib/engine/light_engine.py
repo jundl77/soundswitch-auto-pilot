@@ -18,79 +18,19 @@ if TYPE_CHECKING:
 
 _BEAT_ABSENCE_SEC = 2.5
 
-# D8, converted rather than re-chosen: the retired device promoted a DROP that
-# had survived 32 commits, and a commit was a beat.  The decoder commits once
-# per bar, so the same musical length is 32 / 4.  PEAK is the one intent no
-# class produces -- "a drop that has lasted" is a run length, which no window of
-# audio can express.
+# 32 beat-commits on the retired device, converted to bars at 4 beats each.
 PEAK_PROMOTION_BARS = 8
 
-# Enough movement in the measured chain to be worth a line; below it the log
-# would say the same number every ten seconds with the last digit twitching.
 _LATENCY_LOG_STEP_SEC = 0.25
-
-# How long past the chain's own latency the engine waits for a first decision
-# before lighting something itself.  "Hold the intent" is only a show if there
-# IS one: a GPU that is dead at boot commits nothing, so the rig stays dark for
-# the whole night while the log says the show is holding.
-#
-# **It is the bar grid's warm-up budget, not a safety margin.**  The chain
-# latency the floor waits past is the steady-state number -- features plus
-# (lag + 1) bars -- and it assumes a grid.  At a song start there is none: the
-# first decision cannot arrive until enough beats have been seen to lay bar
-# lines down and fill the committer's lag, and that is what this covers.  Two
-# nominal bars, which is the shape of the thing it is waiting for.
-#
-# ATMOSPHERIC because the owner's error asymmetry says so: a quiet default that
-# turns out to be wrong reads as a slow start, and a guessed high-energy look
-# that turns out to be wrong reads as a broken rig.  On a healthy chain the
-# floor firing during a beatless intro is not an error at all -- ATMOSPHERIC is
-# what the model says about an intro too, so the floor pre-empts the decoder
-# with the answer the decoder was going to give.
 COLD_START_FLOOR_MARGIN_SEC = 4.0
 
-# D9.  The retired YAMNet detector re-rolled the lighting effect on a section
-# change, and that refresh -- an effect change inside an UNCHANGED intent -- is
-# behaviour no class boundary can express, because the class is the same either
-# side.  The boundary head replaces the trigger: same signal source, no new
-# model, and trained on section boundaries rather than on cosine outliers.
-#
-# `REFRESH_COOLDOWN_SEC` is the retired mechanism's own rate governor, moved
-# across unchanged (`YamnetChangeDetector.cooldown_time_window_sec = 10`).  It
-# is the only rate number that mechanism ever recorded: what it PRODUCED was
-# never measured and cannot be recovered, because the simulation stubbed
-# `detect_change` out from the day fast simulation landed, so YAMNet never fired
-# in a report, a fixture or a training table.  What the constants bracket is at
-# most six refreshes a minute with a hard ten-second floor, and fewer in
-# practice.
-#
-# The cooldown alone would sit at that ceiling, so the threshold is what does
-# the "fewer in practice" work, and it is measured rather than picked:
-# `training/nn_boundary_refresh_rate.py` reads the live boundary stream of the
-# three fixture tracks and prices each candidate.  0.5 -- the sigmoid's own
-# midpoint, and above the 94th percentile of cells on all three -- gives
-# 1.55/min mean (0.88 to 2.14), about a quarter of the ceiling and close to the
-# rate the annotator's own sections change on those tracks (1.17 to 2.33/min).
-# It also sits ABOVE the decoder's independently swept `boundary_ref` of 0.2, so
-# the show never re-rolls on evidence its own committer would call marginal.
 REFRESH_COOLDOWN_SEC = 10.0
+# Priced by training/nn_boundary_refresh_rate.py at 1.55 refreshes/min.
 BOUNDARY_REFRESH_SCORE = 0.5
 
 
 class LightEngine(IMusicAnalyserHandler):
-    """Decoder decisions in, a show out.
-
-    The engine no longer decides anything about the music.  It maps the class
-    the committer chose onto the rig, keeps the one show device the class space
-    cannot express (PEAK), and holds every command until the audience hears the
-    audio that caused it.
-
-    That last part inverted with the NN (B1).  The rule engine ran AHEAD of the
-    room and the queue held its commands back by the whole playback delay; the
-    model runs BEHIND it, so a command waits ``playback_delay - chain_latency``
-    -- and since a beat and a decision are different ages when they arrive, the
-    delay belongs to the stream rather than to the queue.
-    """
+    """Decoder decisions in, a show out."""
 
     def __init__(self,
                  midi_client: MidiClient,
@@ -119,9 +59,6 @@ class LightEngine(IMusicAnalyserHandler):
         self._note_counter: int = 0
         self._atmospheric_sent: bool = False
         self._current_intent: LightIntent | None = None
-        # The intent commands enqueued and not yet delivered, in fire order.
-        # With `_current_intent` they are the whole stream: what the stage shows
-        # now, and what it is going to show.
         self._pending_intents: list = []
         self._published_bpm: dict = {}
         self._bars_in_current_intent: int = 0
@@ -143,14 +80,6 @@ class LightEngine(IMusicAnalyserHandler):
 
     @property
     def decided_intent(self) -> LightIntent | None:
-        """What the stream ends on: the last command still in flight, or what
-        the stage is showing when nothing is.
-
-        Deduplicating against "what was last decided" instead was the shape of
-        the latch: a command that had been superseded still counted as the
-        engine's opinion, so the decision that would have repaired it read as a
-        repeat and was dropped.
-        """
         return (self._pending_intents[-1][1] if self._pending_intents
                 else self._current_intent)
 
@@ -163,15 +92,6 @@ class LightEngine(IMusicAnalyserHandler):
         return self._intent_commits
 
     def on_sound_start(self):
-        """A boundary the engine hears 14 s before the room does.
-
-        So the two halves part company: the engine's own bookkeeping and the
-        OS2L wire (which talks to a DJ's software, not to the audience) happen
-        now, and everything the room can SEE waits until the room hears what
-        caused it.  Before this split the stage blacked out while the last
-        fourteen seconds of a track were still playing -- inaudible in every
-        report, unmissable in the venue.
-        """
         logging.info('[engine] sound start')
         self.os2l_client.on_sound_start(0, 0, 20000, 120)
         if self.event_buffer:
@@ -198,23 +118,6 @@ class LightEngine(IMusicAnalyserHandler):
 
     @contextlib.contextmanager
     def _deliberate_stall(self):
-        """A stall the show chose is not lost lead.
-
-        `MidiClient.on_sound_stop` blocks for 0.2 s giving the rig time to
-        settle.  It used to run inside `MusicAnalyser._on_sound_stop`, which
-        forgave it; making the boundary room-aligned moved it into the drain
-        loop a playback delay later, where nothing did -- and 0.2 s is over the
-        watchdog's 0.15 s door, so every track change shed the GPU stage for
-        ~10 s and re-warmed the decoder for another 14.  All night, and
-        invisible to a virtual clock, which does not advance while a real thread
-        sleeps.  So the forgive follows the stall to where it actually runs.
-
-        **Bounded by the settle itself.**  The bracket also contains the
-        overlay's teardown and whatever the OS decides to do to this thread, and
-        forgiving all of it would write off genuine lost lead as a stall the
-        show chose -- which is the one thing that could hide the loop failing to
-        keep up at exactly the moment it is most likely to.
-        """
         started = self._clock.monotonic()
         try:
             yield
@@ -224,14 +127,6 @@ class LightEngine(IMusicAnalyserHandler):
                     min(self._clock.monotonic() - started, SETTLE_SEC))
 
     def _at_the_room(self, label: str, action) -> None:
-        """Fire when the audience hears the audio that caused it, then forget.
-
-        The engine's own bookkeeping is NOT part of what waits: it describes
-        the boundary the engine just heard, not the one the room is about to.
-        It used to sit behind the early return, so an un-queued engine skipped
-        every reset here -- including the two stages' -- and carried the last
-        song's ring, GRU state and bar grid into the next one.
-        """
         if self.command_queue:
             async def command():
                 action()
@@ -244,28 +139,12 @@ class LightEngine(IMusicAnalyserHandler):
         self._current_intent = None
         self._bars_in_current_intent = 0
         self._floor_armed = True
-        # The new song may not inherit the old one's in-flight statements.
-        # `decided_intent` is the stream's tail, so a decision still queued
-        # from the last track deduplicates the new track's FIRST decision away
-        # -- and until it drains it is also what the floor's arming is racing,
-        # which made the floor's safety here an arithmetic accident between the
-        # playback delay and the floor margin rather than a decision.  The
-        # queued commands go with the bookkeeping: a command that would light
-        # the previous track's intent during this one is the same bug arriving
-        # by the other route.
         if self.command_queue:
             self.command_queue.drop_pending('intent', float('-inf'))
             self.command_queue.drop_pending('refresh', float('-inf'))
         self._pending_intents = []
-        # Bar numbers restart with the grid, so last track's cursor would read
-        # as a lag of thousands of bars.
         self._committed = None
-        # Cell time restarts with the chain, so a refresh instant from the last
-        # track is a number in the FUTURE of this one: left in place it holds
-        # the cooldown shut for the whole of the next song.
         self._last_refresh_sec = float('-inf')
-        # D10: everything the stages hold describes audio from before the gap,
-        # and the audio counter is the time base the grid and the cells share.
         self._audio_sec = 0.0
         if self.section_chain is not None:
             self.section_chain.reset()
@@ -277,36 +156,13 @@ class LightEngine(IMusicAnalyserHandler):
         self.overlay_client.flush_messages()
 
     async def on_audio(self, audio_signal) -> None:
-        """Every buffer, before the rhythm stage reads it.
-
-        The counter runs whether or not a song is playing, because it is what
-        stamps the bar grid and the feature stage is being fed the same buffers
-        either way.  Both are zeroed at a song boundary, together.
-        """
         self._audio_sec += len(audio_signal) / SAMPLE_RATE
         if self.section_chain is None or self.section_decoder is None:
             return
         drained = self.section_chain.push_audio(audio_signal)
         if drained.gap:
-            # The feature stage stopped and rejoined the live edge, so every
-            # cell the decoder is holding, and the bar it was assembling them
-            # into, describe audio from the other side of a discontinuity.
-            #
-            # The refresh instant is a different case and the premise it was
-            # added under was wrong: cell time does NOT restart at a resync
-            # (indices skip forward, they do not rewind), so the recorded
-            # instant is still a valid past one.  Clearing it re-opens the
-            # cooldown, which is a deliberate choice -- the show has just
-            # resumed on audio it has not seen the front of, and the first
-            # boundary after that is worth landing -- not a correction.  The
-            # case that genuinely needs the clear is a song boundary, where
-            # cell time does restart, and `_at_the_room` does it there.
             self.section_decoder.reset()
             self._last_refresh_sec = float('-inf')
-            # The grid restarts at bar zero, so the bar this last committed is
-            # a number from a grid that no longer exists.  Said immediately:
-            # the next decision is a whole chain latency away, and until then
-            # the view would go on showing the dead cursor.
             self._committed = None
             self._publish_decoder_state(None)
         for posterior in drained.posteriors:
@@ -343,25 +199,13 @@ class LightEngine(IMusicAnalyserHandler):
 
     @staticmethod
     def _publishable_bpm(state: dict, bpm: float) -> float:
-        """Hold the last measured tempo rather than publishing a warm-up 0.0,
-        which OS2L consumers read as a tempo of zero rather than "not known yet".
-
-        Not cleared between songs: a new track's first second carries the
-        previous track's tempo, which a DJ has beat-matched anyway.
-        """
+        # OS2L consumers read a warm-up 0.0 as a tempo of zero, not as "unknown".
         if bpm > 0:
             state['last'] = bpm
             return bpm
         return state.get('last', 0.0)
 
     async def _commit(self, decisions) -> None:
-        """The successor to the whole stability pipeline.
-
-        There is nothing left to guard: the decoder's fitted duration floors
-        replace min-dwell, its -inf transitions replace the veto, and its
-        backtrace pruning replaces the vote buffer.  What remains is PEAK, and
-        it is deliberately the same device it always was.
-        """
         self._publish_decoder_state(decisions[-1] if decisions else None)
         for decision in decisions:
             intent = intent_for_class(decision.label)
@@ -374,8 +218,6 @@ class LightEngine(IMusicAnalyserHandler):
                              f'{self._bars_in_current_intent} bars — promoting to PEAK')
                 intent = LightIntent.PEAK
             elif decided is LightIntent.PEAK and intent is LightIntent.DROP:
-                # Absorbed, so the pair cannot oscillate and the timeline keeps
-                # reading the PEAK the room is actually looking at.
                 continue
 
             logging.info(
@@ -385,13 +227,6 @@ class LightEngine(IMusicAnalyserHandler):
                 intent, max(0.0, self._audio_sec - decision.start_sec))
 
     def _publish_decoder_state(self, decision) -> None:
-        """D14: the thing driving the show, where Dash can see it.
-
-        Pushed from the audio loop into the one object the two threads share,
-        rather than let the view reach into a decoder that is being written to.
-        A stuck decoder and a quiet passage are the same picture from the stage
-        alone, so "no evidence at this bar" has to be sayable.
-        """
         if self.event_buffer is None or self.section_decoder is None:
             return
         decoder = self.section_decoder
@@ -414,7 +249,6 @@ class LightEngine(IMusicAnalyserHandler):
         )
 
     def _log_chain_latency(self) -> None:
-        """Both halves, because only one of them can move."""
         decoder = self.section_decoder
         if decoder is None:
             logging.info(f'[engine] no section decoder — holding intent; '
@@ -428,9 +262,6 @@ class LightEngine(IMusicAnalyserHandler):
         logging.info(
             f'[engine] chain latency {latency:.2f}s = '
             f'{decoder.feature_latency_sec:.2f}s features + '
-            # lag + 1, because bar b's observation needs bar b to finish before
-            # the commit lands lag bars later.  Printed as it is computed: this
-            # is the line an operator reconciles against dmx-enttec-node.
             f'{latency - decoder.feature_latency_sec:.2f}s decoder '
             f'({decoder.params.lag_bars} + 1 lag × {decoder.bar_sec:.3f}s bars) | '
             f'playback delay {self._playback_delay_sec:.2f}s → queue delay '
@@ -438,22 +269,6 @@ class LightEngine(IMusicAnalyserHandler):
             f'dmx-enttec-node playback_delay_seconds matches')
 
     async def _commit_intent(self, intent: LightIntent, age_sec: float) -> None:
-        """The one path any intent reaches the stage by.
-
-        Both producers describe a SONG instant -- the committer a bar line, the
-        beat-absence timer the present moment -- so a command's fire time is
-        that instant plus the playback delay and nothing else, and the age is
-        measured (`_audio_sec - start_sec`) rather than modelled from a median
-        bar.  Two streams with two delays put the older statement last: a
-        decision is ~13.7 s old and waited ~0.3 s, a timer trip is new and
-        waited the whole 14 s, so a false ATMOSPHERIC landed on top of a drop
-        the committer had already called and then swallowed every repair.
-
-        A newer statement about the same instant or later replaces what is
-        queued for it; anything about earlier audio is left alone, because
-        superseding by arrival order would delete every intent block but the
-        last one whenever the chain sits near its budget.
-        """
         self._floor_armed = False
         now = self._clock.monotonic()
         fire_at = now - age_sec + self._playback_delay_sec
@@ -468,22 +283,8 @@ class LightEngine(IMusicAnalyserHandler):
             return
 
         self._bars_in_current_intent = 0
-        # A change re-picks the effect itself, so a refresh queued to land
-        # behind it is a second re-roll the room reads as a flicker -- and it
-        # would be re-rolling from a pool chosen for a different intent.  Only
-        # this direction: a refresh never drops an intent.
-        #
-        # Inclusive, unlike the intent drop above.  Two intent commands sharing
-        # a fire time are two bars the clamp collapsed and both are owed to the
-        # room; a refresh sharing one with an intent change is redundant by
-        # construction, and being strictly-after let it survive and fire FIRST
-        # (the queue orders equal times by commit sequence) -- a re-roll and an
-        # effect change back to back, which is the exact flicker this drop
-        # exists to prevent.
         if self.command_queue:
             self.command_queue.drop_pending('refresh', fire_at, inclusive=True)
-        # The song instant this describes, in the report's own time base, so a
-        # consumer never has to reconstruct it from a delay it did not see.
         song_sec = (None if self.event_buffer is None
                     else self.event_buffer.elapsed() - age_sec)
         if not self.command_queue:
@@ -496,7 +297,6 @@ class LightEngine(IMusicAnalyserHandler):
             delay_sec=fire_at - now)
 
     def _note_lateness(self, late_sec: float) -> None:
-        """#154's accepted lateness: one line per transition, not per bar."""
         if late_sec > 0.0:
             if not self._committing_late:
                 self._committing_late = True
@@ -510,13 +310,6 @@ class LightEngine(IMusicAnalyserHandler):
 
     async def _apply_intent(self, entry, intent: LightIntent,
                             song_sec: float | None) -> None:
-        """The single path that moves the stage: timeline and MIDI together, so
-        nothing can light an intent the timeline does not know about.
-
-        Runs when the queue fires, which is the instant the room hears the audio
-        this was decided from -- hence the split from ``decided_intent``, which
-        is where the stream has got to.
-        """
         if entry is not None and self._pending_intents \
                 and self._pending_intents[0] is entry:
             self._pending_intents.pop(0)
@@ -527,13 +320,6 @@ class LightEngine(IMusicAnalyserHandler):
         await self.effect_controller.change_effect(intent)
 
     async def on_note(self):
-        """The overlay's 24-channel chase, one step per beat.
-
-        Room-aligned like everything else the audience can see: it is driven by
-        a beat, which the engine detects as the audio arrives, so it waits the
-        whole playback delay.  Un-queued it advanced fourteen seconds ahead of
-        the music -- visibly uncorrelated with it, and invisible in a report.
-        """
         dmx_data = [0] * 24
         self._note_counter = (self._note_counter + 3) % 24
         dmx_data[self._note_counter] = 100
@@ -551,25 +337,12 @@ class LightEngine(IMusicAnalyserHandler):
                                                 dmx_data)
 
     async def _refresh_on_boundary(self, boundary: float, song_sec: float) -> None:
-        """D9: the model says a section changed, so re-roll inside the intent.
-
-        The successor to YAMNet's section-change refresh, and the same shape:
-        a rate-limited trigger that re-picks the effect without touching the
-        intent.  It rides the same room-aligned stream as every decision -- a
-        cell is younger than a bar decision, so it waits longer and still lands
-        when the room hears it -- but on its own label, because superseding is
-        the intent stream's and a refresh is not an intent.
-        """
         if boundary < BOUNDARY_REFRESH_SCORE:
             return
         if song_sec - self._last_refresh_sec < REFRESH_COOLDOWN_SEC:
             return
-        # Armed on detection, the way the retired detector armed its cooldown:
-        # a trigger consumed by a guard below still costs its own ten seconds.
         self._last_refresh_sec = song_sec
         if self._current_intent is None and not self._pending_intents:
-            # An effect lit with no intent committed is the stage moving on
-            # nobody's decision; the digest calls that a violation.
             return
 
         now = self._clock.monotonic()
@@ -584,12 +357,6 @@ class LightEngine(IMusicAnalyserHandler):
             delay_sec=fire_at - now)
 
     async def _apply_refresh(self, committed: int) -> None:
-        """Re-roll, unless the intent moved between deciding this and firing it.
-
-        The commit counter rather than the intent itself: "nothing has been
-        applied since" is what "inside a held intent" means, and comparing the
-        intent alone would be fooled by a round trip back to the same one.
-        """
         if self._intent_commits != committed or self._current_intent is None:
             return
         logging.info(f'[engine] boundary inside {self._current_intent.name} — '
@@ -597,18 +364,6 @@ class LightEngine(IMusicAnalyserHandler):
         await self.effect_controller.change_effect(self._current_intent)
 
     async def _floor_if_nothing_arrived(self) -> None:
-        """Light something once, if the committer never spoke at all.
-
-        "Hold the intent" is only a show if there IS one.  A GPU that is dead
-        at boot -- or a machine with no artifacts -- commits nothing, so the
-        first decision never comes and the rig is dark for the whole night
-        while every log line says the show is holding.
-
-        It describes the audio the room is hearing NOW, because that is the
-        only instant it has any claim about, and that is exactly one playback
-        delay of age -- so it fires on the next drain rather than waiting a
-        second delay for an instant it cannot name.
-        """
         if not self._floor_armed:
             return
         chain = (0.0 if self.section_decoder is None
@@ -630,9 +385,6 @@ class LightEngine(IMusicAnalyserHandler):
         if self.analyser.get_seconds_since_last_beat() > _BEAT_ABSENCE_SEC:
             if not self._atmospheric_sent:
                 self._atmospheric_sent = True
-                # The timer describes NOW, so nothing has been spent on it and
-                # it waits the whole playback delay -- through the same stream
-                # as every decision, which is what keeps the two in order.
                 await self._commit_intent(LightIntent.ATMOSPHERIC, 0.0)
 
     async def on_1sec_callback(self):

@@ -1,43 +1,4 @@
-"""The GPU stage on its own thread, and what the show does when it stops.
-
-B3: one encoder pass is ~81 ms, ~210 ms at p95 under contention, against a
-5.805 ms buffer period -- and the audio input DROPS rather than queues. Run
-inline, the show throws away fourteen buffers of audio once a second, in
-periodic gouges rather than as smooth lag, which is precisely the failure the
-drift watchdog was built to notice and cannot fix. So the pass and the student
-step that follows it move off the audio loop:
-
-    audio thread   resample -> ring write -> a monotonic sample index, and the
-                   drain of whatever the GPU thread has finished
-    GPU thread     one pass per hop, the student step per cell, whole passes
-                   handed off through a bounded queue
-    consumer       the audio thread again -- the decoder feed and the engine
-                   commit stay where the queue, the MIDI client and the event
-                   buffer already live, so no show state is shared across
-                   threads at all
-
-Overflow of that queue is a shed event, never a stall: the audio thread's
-contract is that it cannot be made to wait for the GPU under any condition,
-including the GPU being dead.
-
-**A shed keeps feeding the ring**, which looks like waste and is the opposite.
-The extractor's sample index IS song time and is what every cell is stamped
-from, so a stage that stops taking audio comes back with a clock that disagrees
-with the beat grid it is decoded against -- silently, and for the rest of the
-song. Resampling 256 samples and writing them costs microseconds; what a shed is
-about is not spending 81 ms on a GPU that cannot do it.
-
-**Both edges of a gap clear.** Audio from before a gap must never decode as
-current -- the lesson the onset chain taught. Entering a shed drops the hand-off
-queue and tells the consumer to reset the decoder; leaving one resyncs the
-extractor past the gap and starts the student cold, because its window and its
-carried state describe audio from before it.
-
-**A persistent fault must not become its own outage** (D11/#144): the retry
-backs off to one attempt per half minute and stays there, the logging is
-rate-limited, and the show runs on beats and the silence timer for as long as
-the GPU stays away. There is no second classifier and none is wanted.
-"""
+"""The GPU stage on its own thread, and what the show does when it stops."""
 from __future__ import annotations
 
 import logging
@@ -52,49 +13,21 @@ from lib.analyser.mert_stream import RingOverrun
 from lib.analyser.section_model import Drained
 from lib.clock import SYSTEM_CLOCK, Clock
 
-# Four passes is four seconds of posteriors. The consumer drains every buffer,
-# so reaching this at all means it has been away for longer than any song
-# boundary's MIDI settle.
 _QUEUE_PASSES = 4
-
-# How long the thread sleeps when there is nothing due. Audio wakes it, so this
-# only bounds how quickly it notices a shed, a restore or a stop.
 _IDLE_WAIT_SEC = 0.05
 
-# A pass is 81 ms and 210 ms at p95. Two orders of magnitude above that is not a
-# slow pass, it is a driver reset or a dead context -- and Windows' own TDR
-# gives up at 2 s.
+# Orders of magnitude above a p95 pass, and Windows' own TDR gives up at 2 s.
 _PASS_TIMEOUT_SEC = 5.0
 
-# The first retry is immediate because the commonest fault, a ring overrun, is
-# already fixed by the resync the restore performs. After that a GPU that is not
-# coming back must cost one attempt per half minute, forever, and no more.
 _BACKOFF_SEC = (0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 _LOG_INTERVAL_SEC = 30.0
 _STATUS_INTERVAL_SEC = 30.0
-
-# What "the GPU came back" means, and it is not one pass.  A card that faults
-# every other pass returned a pass every other pass -- which reset the backoff
-# to its immediate rung and the fault log to unseen, so an intermittent GPU
-# produced 60 WARNINGs a second, a decoder reset every ~80 ms and no posteriors
-# at all, forever, while the backoff and the rate limit both read as working.
-# Ten consecutive clean passes is ~10 s of audio at the shipped 1 s hop: an
-# order of magnitude longer than any flap period the fault path can produce,
-# and ten hops for a card that genuinely recovered.
 _HEALTHY_PASSES = 10
 _PASS_SAMPLES = 64
 _STOP_JOIN_SEC = 2.0
 
 
 def reserved_bytes():
-    """CUDA's reserved pool, or None when nothing has imported torch.
-
-    Read through `sys.modules` rather than by importing: on a CPU box, and in
-    every test that never loads a real encoder, torch is 2.5 GB this module has
-    no reason to pull in. The number is here because the WDDM trap is silent --
-    the driver spills to host memory under pressure and raises no OOM at all, so
-    a run that is quietly crawling looks exactly like one that is not.
-    """
     torch = sys.modules.get("torch")
     if torch is None:
         return None
@@ -107,13 +40,6 @@ def reserved_bytes():
 
 
 class GpuStage:
-    """`PosteriorStream` with a thread in front of it and a watchdog behind it.
-
-    Thread ownership, which the two stages below already state and this object
-    is what makes true: `push_audio`, `drain`, `reset`, `start` and `stop` are
-    the audio thread's; everything else belongs to the worker.
-    """
-
     def __init__(self, posteriors, watchdog, *, clock: Clock = SYSTEM_CLOCK,
                  reinit=None, queue_passes: int = _QUEUE_PASSES,
                  pass_timeout_sec: float = _PASS_TIMEOUT_SEC) -> None:
@@ -147,8 +73,6 @@ class GpuStage:
         self.reinits = 0
         self.resyncs = 0
 
-    # -- what the audio thread may touch ------------------------------------ #
-
     def start(self) -> None:
         if self._thread is not None:
             return
@@ -169,7 +93,6 @@ class GpuStage:
                             'was left to exit on its own')
 
     def push_audio(self, samples) -> Drained:
-        """One audio buffer in, whatever the GPU thread has finished out."""
         self._check_for_a_hung_pass()
         if not self._reset_requested:
             self.posteriors.feed(samples)
@@ -177,19 +100,6 @@ class GpuStage:
         return self._drain()
 
     def reset(self, ) -> None:
-        """A song boundary (D10), marshalled onto the worker.
-
-        The ring cannot be zeroed under a snapshot in flight, so the request is
-        handed over and the audio thread stops feeding until it has been taken.
-        That costs at most one pass of audio.
-
-        At a sound STOP that audio is silence, by the definition of the
-        boundary (0.3 s under the silence floor).  At a sound START it is not:
-        it is up to one hop of the new track's opening, dropped while the
-        engine's own `_audio_sec` keeps counting it, so the extractor rejoins a
-        hop late against the beat grid.  Bounded and one-off per track, and the
-        alternative is a torn snapshot; recorded here rather than implied.
-        """
         if self._thread is None or not self._thread.is_alive():
             self._take_reset()
             return
@@ -230,19 +140,13 @@ class GpuStage:
         if started is None:
             return
         if self._clock.monotonic() - started > self._pass_timeout_sec:
-            # Idempotent: the watchdog latches one fault and logs one transition
-            # however many buffers go by while the pass stays in there.
             self._watchdog.report_fault('hung_pass')
-
-    # -- the worker --------------------------------------------------------- #
 
     def _work(self) -> None:
         while self._running:
             try:
                 self._tick()
             except Exception as error:
-                # A worker that dies takes the show's only classifier with it and
-                # says nothing, which is the one outcome worse than a shed.
                 self._fault('stage_error', error)
                 self._sleep()
 
@@ -278,9 +182,6 @@ class GpuStage:
         self._reset_requested = False
 
     def _enter_shed(self) -> None:
-        # The flag flips LAST, because it is what a waiter watches: flipping it
-        # first means the evidence a test (or an operator tailing the log) came
-        # for does not exist yet when the wait returns.
         with self._lock:
             self._queue.clear()
             self._gap = True
@@ -295,12 +196,6 @@ class GpuStage:
         with self._lock:
             self._queue.clear()
             self._gap = True
-        # `_attempts` deliberately survives: a restore is the stage being let
-        # through to TRY, not evidence that it works.  Clearing it here made
-        # every retry of a permanently dead GPU start from the immediate rung,
-        # so the backoff never grew and a fault became its own outage.  Only a
-        # SUSTAINED run of passes resets it -- one pass is what a flapping card
-        # gives you between faults.
         self._say('restored', f'[gpu] restored at the live edge: skipped '
                               f'{record.lost_sec:.2f}s / {record.cells_lost} '
                               f'cells, resuming at cell '
@@ -333,18 +228,6 @@ class GpuStage:
         self._status()
 
     def _offer(self, produced) -> bool:
-        """Whether the pass reached the consumer.
-
-        The answer is the caller's health signal rather than a courtesy.
-        Reporting healthy unconditionally on the next line cancelled the fault
-        an overflow had just raised, so the level went NN_SHED -> NONE before
-        `_tick` could ever see it: `_enter_shed` never ran, the queue was never
-        dropped, `_gap` was never raised and the consumer never reset its
-        decoder.  It received the stale groups as current and then, once it
-        resumed draining, cells from an arbitrarily later part of the song --
-        with `gap=False` saying nothing had happened, which is the one thing
-        both edges of a gap exist to prevent.
-        """
         if not produced:
             return True
         with self._lock:
@@ -359,14 +242,9 @@ class GpuStage:
                     f'consumer that has stopped draining')
         return False
 
-    # -- degradation -------------------------------------------------------- #
-
     def _fault(self, kind: str, detail) -> None:
         self.faults += 1
         self._clean = 0
-        # Not "holds its intent": at boot there is no intent to hold, and a log
-        # line claiming one is what let a dead-at-boot GPU read as a working
-        # show.  The engine's cold-start floor is what makes the rig lit.
         self._say(kind, f'[gpu] {kind}: {detail} — the show holds whatever '
                         f'intent it has (a quiet floor at start-up) and keeps '
                         f'beats (fault #{self.faults}, {self.reinits} reinit(s))')
@@ -377,11 +255,6 @@ class GpuStage:
         return _BACKOFF_SEC[min(self._attempts, len(_BACKOFF_SEC) - 1)]
 
     def _retry(self) -> None:
-        """Ask the watchdog to let a pass through again, on a capped backoff.
-
-        Only a stage fault is the stage's to clear: shed by drift, the loop is
-        behind and resuming the GPU is the last thing that helps.
-        """
         if self._watchdog.fault is None:
             return
         now = self._clock.monotonic()
@@ -394,11 +267,6 @@ class GpuStage:
         self._watchdog.report_healthy()
 
     def _reinitialise(self) -> bool:
-        """Rebuild the encoder, which is the only part a dead context invalidates.
-
-        The ring, the schedule and the sample index are numpy and survive; a new
-        stream would restart the clock the whole show is stamped against.
-        """
         self.reinits += 1
         try:
             self.posteriors.set_encoder(self._reinit())
@@ -413,15 +281,6 @@ class GpuStage:
         return True
 
     def _say(self, kind: str, message: str) -> None:
-        """One line per kind per half minute, and the suppressed count with it.
-
-        A persistent fault must not become its own outage (D11) and neither
-        must a persistent flap: every WARNING here is on a path a broken GPU
-        reaches once per pass, so an unlimited one is 60 lines a second for as
-        long as the card is bad.  The count is carried into the next line
-        rather than dropped, because silence and "nothing happened" have to
-        stay distinguishable.
-        """
         now = self._clock.monotonic()
         last = self._said.get(kind)
         if last is not None and now - last < _LOG_INTERVAL_SEC:

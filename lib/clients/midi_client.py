@@ -8,10 +8,7 @@ from lib.clients.midi_message import MidiChannel
 from typing import List
 from enum import Enum
 
-# SoundSwitch drops the pause message unless the previous one has settled.  A
-# named constant because the engine has to forgive exactly this much lost lead
-# and no more: it brackets the call, and forgiving whatever the bracket happened
-# to take would write off a real stall as a deliberate one.
+# SoundSwitch hardware drops the pause message unless the previous one has settled.
 SETTLE_SEC = 0.2
 
 
