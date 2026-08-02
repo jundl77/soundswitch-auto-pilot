@@ -206,7 +206,7 @@ def main(argv=None) -> int:
         offset[key] = offset.get(key, 0) + 1
     print("required phase at the first matched live beat:",
           json.dumps(dict(sorted(first.items()))), flush=True)
-    print("annotated index of the first matched live beat:",
+    print("annotated-minus-live index offset at the first match:",
           json.dumps(dict(sorted(offset.items()))), flush=True)
 
     shapes: dict = {}
@@ -305,7 +305,8 @@ def main(argv=None) -> int:
                             "total_slips": int(sum(t["slips"] for t in tracks))},
             "first_beat": {
                 "required_phase_histogram": dict(sorted(first.items())),
-                "annotated_index_of_first_matched_live_beat": dict(sorted(offset.items())),
+                "annotated_minus_live_index_offset_at_first_match":
+                    dict(sorted(offset.items())),
                 "live_start_prior": list(pt.LIVE_START_PRIOR),
             },
             "slip_shapes": dict(sorted(shapes.items(), key=lambda kv: -kv[1])),
