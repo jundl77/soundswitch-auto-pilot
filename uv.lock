@@ -1819,6 +1819,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "jupyterlab", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
+    { name = "onnx", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
     { name = "pytest-asyncio", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
 ]
@@ -1842,6 +1843,7 @@ requires-dist = [
     { name = "madmom", git = "https://github.com/CPJKU/madmom.git?rev=27f032e8947204902c675e5e341a3faf5dc86dae" },
     { name = "netifaces" },
     { name = "numpy", specifier = ">=1.26,<2" },
+    { name = "onnx", marker = "extra == 'dev'", specifier = ">=1.22,<2" },
     { name = "onnx", marker = "extra == 'training'", specifier = ">=1.22,<2" },
     { name = "onnxruntime", specifier = ">=1.28,<2" },
     { name = "pillow", marker = "extra == 'training'", specifier = ">=10" },
