@@ -27,6 +27,11 @@ def beats(n: int, *, period: float = 0.5, start: float = 0.0) -> list:
     return [start + i * period for i in range(n)]
 
 
+def bar_line(index: int, *, period: float = 0.5, start: float = 0.0) -> float:
+    """Where the grid puts bar ``index``'s line, given the first beat at ``start``."""
+    return start + (BEATS_PER_BAR - 1 + index * BEATS_PER_BAR) * period
+
+
 def decoder(*, lag_bars=2, floor=4, feature_latency_sec=0.0, **params):
     return SectionDecoder(toy_priors(floor=floor),
                           DecodeParams(lag_bars=lag_bars, min_coverage=1,
@@ -69,11 +74,22 @@ def feed(section, *, bars, labels, period=0.5, cells_per_bar=8,
     return driver
 
 
-def test_a_bar_is_four_beats_anchored_at_the_first_detected_beat():
+def test_a_bar_is_four_beats_and_the_first_line_closes_on_the_fourth_beat():
     section = decoder()
     for beat in beats(9, period=0.5):
         section.push_beat(beat)
-    assert section.bar_edges == [0.0, 2.0, 4.0]
+    assert section.bar_edges == [pytest.approx(1.5), pytest.approx(3.5)]
+
+
+def test_the_first_detected_beat_is_bar_position_one_not_zero():
+    section = decoder()
+    section.push_beat(4.0)
+    assert section.bar_edges == [], \
+        'the first detected beat opened a bar; madmom has not emitted the ' \
+        'downbeat its warm-up costs'
+    for beat in beats(3, period=0.5, start=4.5):
+        section.push_beat(beat)
+    assert section.bar_edges == [pytest.approx(5.5)]
 
 
 def test_no_bar_is_decodable_until_a_second_edge_closes_it():
@@ -87,13 +103,13 @@ def test_no_bar_is_decodable_until_a_second_edge_closes_it():
 
 def test_a_bar_waits_for_the_cells_that_close_it():
     section = decoder()
-    for beat in beats(3 * BEATS_PER_BAR, period=0.5):
+    for beat in beats(4 * BEATS_PER_BAR, period=0.5):
         section.push_beat(beat)
-    section.push_posterior(1.0, one_hot(2), 0.0)
+    section.push_posterior(bar_line(0), one_hot(2), 0.0)
     assert section.bars_pushed == 0
-    section.push_posterior(1.9, one_hot(2), 0.0)
+    section.push_posterior(bar_line(1) - 0.1, one_hot(2), 0.0)
     assert section.bars_pushed == 0
-    section.push_posterior(2.0, one_hot(2), 0.0)
+    section.push_posterior(bar_line(1), one_hot(2), 0.0)
     assert section.bars_pushed == 1
 
 
@@ -102,9 +118,9 @@ def test_a_short_bar_waits_for_the_boundary_window_too():
     section = decoder()
     for beat in beats(3 * BEATS_PER_BAR, period=fast):
         section.push_beat(beat)
-    section.push_posterior(fast * BEATS_PER_BAR, one_hot(2), 0.0)
+    section.push_posterior(bar_line(1, period=fast), one_hot(2), 0.0)
     assert section.bars_pushed == 0
-    section.push_posterior(TOLERANCE, one_hot(2), 0.0)
+    section.push_posterior(bar_line(0, period=fast) + TOLERANCE, one_hot(2), 0.0)
     assert section.bars_pushed == 1
 
 
@@ -131,9 +147,9 @@ def test_a_bars_posterior_is_the_mean_of_the_cells_inside_it():
     for beat in beats(3 * BEATS_PER_BAR, period=0.5):
         section.push_beat(beat)
     inside = [one_hot(0), one_hot(3)]
-    section.push_posterior(0.5, inside[0], 0.0)
-    section.push_posterior(1.5, inside[1], 0.0)
-    section.push_posterior(2.5, one_hot(4), 0.0)
+    section.push_posterior(bar_line(0) + 0.5, inside[0], 0.0)
+    section.push_posterior(bar_line(0) + 1.5, inside[1], 0.0)
+    section.push_posterior(bar_line(1), one_hot(4), 0.0)
     assert section.bars_pushed == 1
     np.testing.assert_allclose(section.recent_observations[-1].posterior,
                                np.mean(inside, axis=0))
@@ -143,9 +159,9 @@ def test_the_closing_edge_belongs_to_the_next_bar():
     section = decoder()
     for beat in beats(3 * BEATS_PER_BAR, period=0.5):
         section.push_beat(beat)
-    section.push_posterior(1.0, one_hot(0), 0.0)
-    section.push_posterior(2.0, one_hot(3), 0.0)
-    section.push_posterior(2.5, one_hot(3), 0.0)
+    section.push_posterior(bar_line(0) + 1.0, one_hot(0), 0.0)
+    section.push_posterior(bar_line(1), one_hot(3), 0.0)
+    section.push_posterior(bar_line(1) + 0.5, one_hot(3), 0.0)
     np.testing.assert_allclose(section.recent_observations[-1].posterior,
                                one_hot(0))
 
@@ -155,13 +171,13 @@ def test_the_boundary_is_the_max_within_tolerance_of_the_bar_line_or_nan_with_no
     driver = Driver(section)
     for beat in beats(5 * BEATS_PER_BAR, period=0.5):
         driver.beat(beat)
-    driver.cell(1.0, one_hot(0), 0.11)
-    driver.cell(1.7, one_hot(0), 0.93)
-    driver.cell(2.0, one_hot(3), 0.02)
-    driver.cell(3.9, one_hot(3), 0.40)
-    driver.cell(4.0, one_hot(3), 0.05)
-    driver.cell(4.4, one_hot(3), 0.77)
-    driver.cell(6.0, one_hot(3), 0.01)
+    driver.cell(bar_line(0) + 1.0, one_hot(0), 0.11)
+    driver.cell(bar_line(1) - 0.3, one_hot(0), 0.93)
+    driver.cell(bar_line(1), one_hot(3), 0.02)
+    driver.cell(bar_line(2) - 0.1, one_hot(3), 0.40)
+    driver.cell(bar_line(2), one_hot(3), 0.05)
+    driver.cell(bar_line(2) + 0.4, one_hot(3), 0.77)
+    driver.cell(bar_line(3), one_hot(3), 0.01)
     assert np.isnan(driver.observations[0].boundary)
     assert driver.observations[1].boundary == pytest.approx(0.93)
     assert driver.observations[2].boundary == pytest.approx(0.77)
@@ -172,8 +188,8 @@ def test_a_bar_with_no_cells_is_no_evidence_rather_than_a_flat_guess():
     driver = Driver(section)
     for beat in beats(4 * BEATS_PER_BAR, period=0.5):
         driver.beat(beat)
-    driver.cell(0.5, one_hot(2), 0.0)
-    driver.cell(4.5, one_hot(2), 0.0)
+    driver.cell(bar_line(0) + 0.5, one_hot(2), 0.0)
+    driver.cell(bar_line(2) + 0.5, one_hot(2), 0.0)
     assert section.bars_pushed == 2
     assert driver.observations[1].posterior is None
 
@@ -183,9 +199,9 @@ def test_temperature_is_applied_per_cell_before_the_bar_average():
     section = decoder(temperature=0.5)
     for beat in beats(3 * BEATS_PER_BAR, period=0.5):
         section.push_beat(beat)
-    section.push_posterior(0.5, rows[0], 0.0)
-    section.push_posterior(1.5, rows[1], 0.0)
-    section.push_posterior(2.0, one_hot(2), 0.0)
+    section.push_posterior(bar_line(0) + 0.5, rows[0], 0.0)
+    section.push_posterior(bar_line(0) + 1.5, rows[1], 0.0)
+    section.push_posterior(bar_line(1), one_hot(2), 0.0)
     np.testing.assert_allclose(
         section.recent_observations[-1].posterior,
         temper(np.asarray(rows, dtype=np.float64), 0.5).mean(axis=0))
@@ -217,7 +233,7 @@ def test_a_decision_carries_the_bar_line_it_starts_on():
     assert driver.decisions
     for decision in driver.decisions:
         assert isinstance(decision, BarDecision)
-        assert decision.start_sec == pytest.approx(decision.bar * 2.0)
+        assert decision.start_sec == pytest.approx(bar_line(decision.bar))
 
 
 def test_the_backtrace_ring_does_not_grow_with_the_set():
@@ -278,15 +294,28 @@ def test_a_re_anchor_leaves_the_bar_it_had_already_closed_alone():
     section = decoder(lag_bars=2)
     for beat in beats(8, period=0.5):
         section.push_beat(beat)
-    assert section.bar_edges == [pytest.approx(0.0), pytest.approx(2.0)]
+    assert section.bar_edges == [pytest.approx(bar_line(0)),
+                                 pytest.approx(bar_line(1))]
 
     section.push_beat(60.0)
-    assert section.bar_edges[1] == pytest.approx(2.0), \
+    assert section.bar_edges[1] == pytest.approx(bar_line(1)), \
         'the closed bar lost the line that closed it'
-    assert 60.0 - 2.0 not in [pytest.approx(hi - lo) for lo, hi
-                              in zip(section.bar_edges, section.bar_edges[1:])
-                              if lo == pytest.approx(0.0)], \
+    assert 60.0 - bar_line(1) not in [pytest.approx(hi - lo) for lo, hi
+                                      in zip(section.bar_edges, section.bar_edges[1:])
+                                      if lo == pytest.approx(bar_line(0))], \
         'bar 0 was stretched across the gap'
+
+
+def test_the_bar_a_gap_re_anchors_still_lasts_four_beats():
+    section = decoder(lag_bars=2)
+    for beat in beats(8, period=0.5):
+        section.push_beat(beat)
+    section.push_beat(60.0)
+    for beat in beats(5, period=0.5, start=60.5):
+        section.push_beat(beat)
+    assert section.bar_edges[-2:] == [pytest.approx(60.0), pytest.approx(62.0)], \
+        'the re-anchored grid carried the first-beat warm-up offset it has no ' \
+        'evidence for and closed a three-beat bar'
 
 
 def test_the_bar_the_gap_falls_in_is_never_decoded():

@@ -33,6 +33,13 @@ _BEAT_GAP_SEC = 4.0
 _EDGE_RETAIN_BARS = 64
 _BAR_MEDIAN_BARS = 25
 
+# madmom's online warm-up costs the first annotated beat, so the first beat the
+# runtime sees is bar position 1 on 147 of 215 val tracks and 0 on 51; a gap
+# mid-stream is not a cold start and carries no such evidence, so the beat that
+# ends one opens a bar.  models/phase_b/phase_tracking/phase_tracking_gate.json.
+_FIRST_BEAT_BAR_POSITION = 1
+_RE_ANCHOR_BAR_POSITION = 0
+
 
 class BarDecision(NamedTuple):
     bar: int
@@ -80,7 +87,7 @@ class SectionDecoder:
                                               self.params.lag_bars + 4))
         self._edge_base: int = 0
         self._bar_offset: int = 0
-        self._beats: int = 0
+        self._bar_position: int = _FIRST_BEAT_BAR_POSITION
         self._last_beat_sec: float | None = None
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf
@@ -137,9 +144,9 @@ class SectionDecoder:
         at_sec = float(at_sec)
         if self._re_anchoring(at_sec):
             self._re_anchor(at_sec)
-        elif self._beats % BEATS_PER_BAR == 0:
+        elif self._bar_position == 0:
             self._append_edge(at_sec)
-        self._beats += 1
+        self._bar_position = (self._bar_position + 1) % BEATS_PER_BAR
         self._last_beat_sec = at_sec
         return self._advance()
 
@@ -153,7 +160,7 @@ class SectionDecoder:
             f're-anchoring the bar grid at {at_sec:.2f}s and dropping '
             f'{len(self._cells)} pending cells')
         self._append_edge(at_sec)
-        self._beats = 0
+        self._bar_position = _RE_ANCHOR_BAR_POSITION
         self._cells.clear()
         self._restart_committer_at(self._edge_base + len(self._edges) - 1)
 
