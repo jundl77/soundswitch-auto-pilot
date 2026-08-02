@@ -1,26 +1,4 @@
-"""Two fresh processes, one file, one question: are the bytes the same?
-
-The fast simulation was byte-deterministic before the NN went into it -- RNG
-seeded, virtual clock, no wall-clock jitter.  The model puts an fp16 GPU forward
-pass in the middle of that, and a GPU is the one component in the stack whose
-answer can depend on which kernels a driver picked, so the claim has to be
-measured rather than inherited.
-
-Four runs per track, each in its own interpreter, because a determinism claim
-made inside one process is a claim about one process's caches:
-
-    cold, cold   the encoder runs; the extractor cell sidecar (D12) is deleted
-                 first, so both runs pay for the GPU.  This is the only pair
-                 that can see GPU nondeterminism.
-    warm, warm   the cells are replayed; pure CPU, and everything downstream of
-                 the extractor is the same arithmetic either way.
-    cold vs warm the replay reproducing the live extractor exactly -- the
-                 property the cache is only allowed to exist if it has.
-
-The extractor sidecars are compared as bytes too, which is a sharper instrument
-than the report: a run whose posteriors moved but whose committed bars did not
-looks identical in a checksum and is visible here.
-"""
+"""Two fresh processes, one file, one question: are the bytes the same?"""
 from __future__ import annotations
 
 import argparse
@@ -79,7 +57,6 @@ async def run_once(mp3: str, mode: str) -> dict:
 
 
 def _child(mp3: str, mode: str) -> dict:
-    """One run, in an interpreter that has never seen this track."""
     out = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--run-one", mp3,
          "--mode", mode],
@@ -94,9 +71,6 @@ def prove(mp3: str) -> dict:
     runs = [_child(mp3, mode) for mode in ("cold", "cold", "warm", "warm")]
     cold_a, cold_b, warm_a, warm_b = runs
 
-    # One number, not two: `report_checksum` already IS the sha256 of the
-    # canonical report, so a second hash of the same bytes under another name
-    # would read as corroboration rather than as the restatement it is.
     def report_same(left, right):
         return left["checksum"] == right["checksum"]
     return {
@@ -111,7 +85,6 @@ def prove(mp3: str) -> dict:
 
 
 def contract(proof: dict) -> str:
-    """What the measurement licenses saying, and nothing more."""
     if not all(t["warm_across_processes"] and t["cold_matches_warm"]
                for t in proof.values()):
         return "not byte-deterministic"

@@ -1,27 +1,4 @@
-"""What the boundary head fires at, and how often -- D9's threshold evidence.
-
-The retired YAMNet detector re-rolled the lighting effect on a section change,
-and that refresh is behaviour no class boundary can express, because the class
-is the same either side.  The boundary head replaces the trigger, and the rule
-this project applies to a new threshold is: match a measured rate, do not pick
-a number.
-
-**The rate YAMNet produced was never measured and cannot be recovered.**
-`simulate/runner.py` stubbed `detect_change` out from the day fast simulation
-landed, so YAMNet never fired in a report, a fixture or a training table; no
-metric for it ever existed in the report schema, and no commit in the history
-carries one.  Production left an uncounted log line.  What the retired
-constants do bracket is `cooldown_time_window_sec = 10` -- at most six
-refreshes a minute, with a hard ten-second floor, and fewer in practice because
-firing required a majority of one second to be a MAD outlier.
-
-So the governor moves across verbatim and the threshold is chosen to land the
-realised rate well inside that bracket rather than at its ceiling.  This script
-is what measures it: the live boundary stream of each track, and the refresh
-rate a candidate threshold would produce once the cooldown is applied.
-
-    uv run python training/nn_boundary_refresh_rate.py <mp3>... --write
-"""
+"""What the boundary head fires at, and how often -- D9's threshold evidence."""
 from __future__ import annotations
 
 import argparse
@@ -41,7 +18,6 @@ QUANTILES = (0.5, 0.75, 0.9, 0.95, 0.99)
 
 
 async def boundary_stream(mp3: str) -> dict:
-    """Every cell's boundary score, off the real chain, with the real decoder."""
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.engine.section_decoder import SectionDecoder
     from simulate.fake_audio_client import FileAudioClient
@@ -65,7 +41,6 @@ async def boundary_stream(mp3: str) -> dict:
 
 
 def fires(cells: list, threshold: float, cooldown_sec: float) -> list:
-    """The instants a refresh would be requested at, cooldown applied."""
     last = float("-inf")
     out = []
     for at, boundary in cells:

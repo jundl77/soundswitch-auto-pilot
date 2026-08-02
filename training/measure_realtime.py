@@ -1,25 +1,4 @@
-"""Per-buffer CPU cost of the audio loop, and what the GPU thread does beside it.
-
-Two readings, because the NN integration split the show across two threads and
-one number can no longer describe it.
-
-**The audio loop** is the thread that must never miss a buffer: live input
-arrives at exactly 1x and the input side DROPS rather than queues, so falling
-behind costs audio.  Its per-buffer work is `LightEngine.on_audio` (resample,
-ring write, drain the hand-off, feed the decoder, commit),
-`MusicAnalyser.analyse` (madmom and the silence gate) and the command queue's
-drain.  Every one of those is timed here against the 5.805 ms buffer period.
-
-**The GPU thread** runs one encoder pass per hop and hands whole passes over a
-bounded queue.  Its latency does not have to fit inside a buffer -- it has a
-whole hop -- so it is reported as a distribution beside the hop, and the queue
-depth the audio loop sees is what says whether the hand-off is keeping up.
-
-The loop is PACED at real time, which is not an optional nicety: the pass
-schedule is driven by how much audio has arrived, so an unpaced feed overruns
-the extractor's ring inside four passes and measures the shed path instead of
-the show.  A run therefore costs its own `--seconds` in wall clock.
-"""
+"""Per-buffer CPU cost of the audio loop, and what the GPU thread does beside it."""
 
 from __future__ import annotations
 
@@ -34,8 +13,6 @@ import numpy as np
 SR, BUFFER = 44100, 256
 BUDGET_MS = 1000.0 * BUFFER / SR
 
-# Decision #18's bar, and the one the madmom migration was read against.  It is
-# a bar on the AUDIO LOOP: the GPU thread is measured against its hop instead.
 CORE_SHARE_BAR_PCT = 20.0
 
 
@@ -82,7 +59,6 @@ def _time_each(audio: np.ndarray, step) -> np.ndarray:
 
 
 def spread(values: list, scale: float = 1.0) -> dict:
-    """The distribution of a sampled quantity, or an empty dict if none were."""
     if not values:
         return {}
     array = np.asarray(values, dtype=np.float64) * scale
@@ -100,18 +76,7 @@ def verdict(core_share_pct: float, bar_pct: float = CORE_SHARE_BAR_PCT) -> str:
     return 'PASS' if core_share_pct <= bar_pct else 'OVER BAR'
 
 
-# --------------------------------------------------------------------------- #
-# The paced audio loop
-# --------------------------------------------------------------------------- #
-
-
 async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
-    """Feed a track through the production wiring at real time, timing it.
-
-    Mirrors `lib/main.py`'s construction rather than importing the simulation
-    runner: the runner's fast path is single-threaded on a virtual clock, and a
-    virtual clock cannot measure what a thread costs.
-    """
     from lib.analyser.drift_watchdog import DriftWatchdog
     from lib.analyser.gpu_stage import reserved_bytes
     from lib.analyser.music_analyser import MusicAnalyser
@@ -155,8 +120,6 @@ async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
     period = BUFFER / SR
     buffers = (len(audio) - BUFFER) // BUFFER
 
-    # The first call loads madmom's nets and warms CUDA; timing it would put a
-    # one-off startup cost in a per-buffer distribution.
     await engine.on_audio(audio[:BUFFER])
     await analyser.analyse(audio[:BUFFER].copy())
 
@@ -165,6 +128,7 @@ async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
     for index in range(1, buffers):
         deadline += period
         slack = deadline - time.perf_counter()
+        # An unpaced feed overruns the extractor's ring within four passes.
         if slack > 0:
             time.sleep(slack)
         pacing_ms.append((time.perf_counter() - deadline) * 1000.0)
@@ -236,13 +200,9 @@ def main() -> None:
     from lib.analyser.madmom_rhythm import MadmomRhythm
 
     rhythm = MadmomRhythm(SR)
-    rhythm.process(audio[:BUFFER])            # exclude first-call model warm-up
+    rhythm.process(audio[:BUFFER])
     rows.append(_stats('madmom rhythm', _time_each(audio, rhythm.process)))
 
-    # The two rows this harness used to carry beside that one -- the mel
-    # filterbank and the rhythm stack it replaced -- measured code the NN
-    # integration deleted.  Their figures survive in docs/migration-evidence.md;
-    # the harness stays for the stages that take their place.
     paced = None
     if not args.front_end_only:
         print(f'\npacing {args.seconds:.0f}s of audio through the production '

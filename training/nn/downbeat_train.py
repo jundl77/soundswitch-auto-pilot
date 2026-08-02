@@ -1,46 +1,4 @@
-"""Train ``DownbeatCRNN`` on the expert beat grids.
-
-    uv run python -m training.nn.downbeat_train --data-dir <corpus> \
-        --run-name downbeat_v1 --epochs 40 --batch-size 128
-
-One head, one loss: masked BCE against the Gaussian downbeat target, with
-``pos_weight`` measured off the train split rather than guessed.  Almost
-everything else -- seeding, the loader policy, the checkpoint/resume contract,
-the RNG capture, the weight hash, TensorBoard, PR-AUC, ECE -- is imported from
-``train`` rather than restated.  The two heads share a determinism contract, and
-a second copy of it is a second thing to keep true.
-
-**The metric is peak-based, and that is not a stylistic choice.**  A frame-wise
-PR-AUC scores a model on how well it ranks *frames*, but nothing downstream
-consumes frames: Task 3's HMM consumes one activation value per beat instant and
-the verdict counts downbeats matched within +-70 ms.  So validation stitches the
-windowed activations back into whole-track curves, picks peaks, and matches them
-to the annotated downbeats at the tolerance the component is actually scored at.
-The peak picker here is deliberately naive -- non-maximum suppression and a
-threshold, no tempo model, no phase state -- because it must not flatter the
-model by doing the decoder's job.  The number it produces is a floor, and Task
-3's decoder should beat it.
-
-**Calibration is a metric, not a side effect, and it is reported twice.**
-``pos_weight`` ~ 9 deliberately inflates every probability the head emits: that
-is the price of learning a 10 %-mass target and it makes the raw sigmoid a
-*ranking* score, not P(downbeat).  Reporting only the raw ECE would therefore
-score the reweighting rather than the model.  The second number subtracts
-``log(pos_weight)`` from every logit -- the exact analytic inverse of the
-reweighting under a balanced-prior reading -- and answers the question that
-matters: is the head's confidence *shaped* right, once the training-time prior
-shift is undone?  Nothing in the objective pushes the model toward hard 0/1
-activations, and nothing smooths them either; the decoder wants an honest ranked
-curve and both numbers are logged every epoch so a drift into overconfidence is
-visible rather than inferred.
-
-Determinism follows the same validated recipe as the section head: seeded
-everything, ``use_deterministic_algorithms(True)``, cuDNN benchmarking off, no
-``gather`` and no boolean indexing anywhere in the loss path, and the loader
-generator re-seeded from ``(seed, epoch)`` so a resumed run rejoins the exact
-trajectory.  Two runs of one config in fresh processes produce bitwise-identical
-weights.
-"""
+"""Train ``DownbeatCRNN`` on the expert beat grids."""
 from __future__ import annotations
 
 import argparse
@@ -83,10 +41,6 @@ from .train import (
     REPORT_FILE,
     TB_DIR,
     TENSORBOARD_PORT,
-    # The section head's masked, positive-reweighted BCE over [B, T] logits is
-    # *exactly* this head's loss, and its ratio-form weight is exactly this
-    # head's weight.  Imported under neutral names rather than copied: two
-    # implementations of one formula is two things to keep true.
     boundary_bce as masked_bce,
     boundary_pos_weight as sparsity_pos_weight,
     build_loader,
@@ -106,41 +60,27 @@ from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
 
 MODEL_VERSION = "downbeat_v1"
 
-# The tolerance the whole component is scored at, and the sigma the targets were
-# built with -- imported rather than restated so the two cannot diverge.
 TOLERANCE_SEC = DOWNBEAT_SIGMA_SEC
 
-# The Gaussian target crosses 0.5 at ~1.18 sigma (~82 ms), i.e. just outside the
-# match tolerance -- the natural place to binarise for a frame-wise PR curve.
+# The Gaussian target crosses 0.5 at ~1.18 sigma, just outside TOLERANCE_SEC.
 POSITIVE_THRESHOLD = 0.5
 
-# Non-maximum suppression radius for the naive peak picker.  A bar at the fastest
-# tempo in the corpus (252 BPM, 4/4) is 0.95 s, so 0.70 s cannot merge two real
-# downbeats at any tempo the corpus contains, while still collapsing the shoulder
-# frames of a single activation bump.
+# A 4/4 bar at the corpus's fastest tempo (252 BPM) is 0.95 s; a test pins the gap.
 MIN_PEAK_DISTANCE_SEC = 0.70
 
-# Operating points swept on val to report the peak-picking F1.  Coarse on
-# purpose: this is a floor for Task 3's decoder, not a tuned system.
 PEAK_THRESHOLDS = tuple(round(0.05 * step, 2) for step in range(1, 20))
 
-
-# --------------------------------------------------------------------------- #
-# Corpus statistics -> the loss weight
-# --------------------------------------------------------------------------- #
+UNSUPERVISED_SCORE = -1.0
 
 
 class DownbeatStats(NamedTuple):
-    """Target sparsity over a split, plus the spread that a single weight hides."""
-
-    positive: float          # summed target mass over supervised frames
-    valid: int               # supervised frames
-    frames: int              # frames in total, supervised or not
-    track_mass: np.ndarray   # [tracks] per-track mean target mass
+    positive: float
+    valid: int
+    frames: int
+    track_mass: np.ndarray
 
 
 def accumulate_downbeat_stats(targets_iterable) -> DownbeatStats:
-    """Fold whole-track ``DownbeatTargets`` into the sparsity statistics."""
     positive = 0.0
     valid = 0
     frames = 0
@@ -158,14 +98,6 @@ def accumulate_downbeat_stats(targets_iterable) -> DownbeatStats:
 
 
 def load_downbeat_stats(data_dir, youtube_ids, grids_by_youtube_id) -> DownbeatStats:
-    """``accumulate_downbeat_stats`` over a split, without decoding any mel.
-
-    Reads each sidecar's *header* for its frame count and rebuilds the targets,
-    so the weight for a 962-track split costs a couple of seconds rather than a
-    gigabyte of decompressed spectrogram.  The frame count is truncated exactly
-    as ``WindowDataset`` truncates it, so the statistic describes the frames the
-    model is actually shown.
-    """
     data_dir = Path(data_dir)
 
     def targets():
@@ -178,54 +110,27 @@ def load_downbeat_stats(data_dir, youtube_ids, grids_by_youtube_id) -> DownbeatS
     return accumulate_downbeat_stats(targets())
 
 
-# --------------------------------------------------------------------------- #
-# Peak picking and event matching (the metric the component is scored at)
-# --------------------------------------------------------------------------- #
+def _plateau_midpoints(indices: np.ndarray) -> np.ndarray:
+    breaks = np.flatnonzero(np.diff(indices) > 1)
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [indices.size - 1]))
+    return indices[(starts + ends) // 2]
 
 
 def peak_candidates(scores: np.ndarray, min_distance: int) -> np.ndarray:
-    """Frame indices surviving greedy non-maximum suppression, in time order.
-
-    Threshold-*free* by construction, and that is what makes the threshold sweep
-    honest: suppression order depends only on the scores, so the set of peaks
-    above a threshold ``t`` is exactly the subset of this list scoring >= ``t``.
-    Picking peaks after thresholding instead would let a lower threshold change
-    which peak wins a neighbourhood, and the sweep would be comparing different
-    pickers rather than different operating points.
-
-    Only local maxima can survive suppression -- a frame lower than its immediate
-    neighbour is blocked by it at any ``min_distance >= 1`` -- so the candidate
-    set is narrowed to those first, which is what keeps this cheap enough to run
-    on every val track every epoch.
-
-    **A plateau collapses to its centre, not to an edge.**  A saturating head
-    emits runs of identical values, and every tie-break rule that picks an
-    endpoint biases the reported instant by half the plateau -- up to a frame,
-    which is 46 ms of the 70 ms budget.  Taking the midpoint is unbiased, and it
-    also stops a flat activation from being mistaken for a comb of peaks: a
-    constant curve has exactly one, in the middle, which is the right answer for
-    a model that has said nothing.
-    """
     scores = np.asarray(scores, dtype=np.float64)
     n = len(scores)
     if n == 0 or min_distance < 1:
         return np.zeros(0, dtype=np.int64)
 
     padded = np.concatenate(([-np.inf], scores, [-np.inf]))
-    local = np.flatnonzero((scores >= padded[:-2]) & (scores >= padded[2:]))
-    if local.size == 0:
+    local_maxima = np.flatnonzero((scores >= padded[:-2]) & (scores >= padded[2:]))
+    if local_maxima.size == 0:
         return np.zeros(0, dtype=np.int64)
 
-    # Consecutive candidate indices are a plateau (an isolated maximum is a run
-    # of one and passes through untouched); keep each run's middle frame.
-    breaks = np.flatnonzero(np.diff(local) > 1)
-    starts = np.concatenate(([0], breaks + 1))
-    ends = np.concatenate((breaks, [local.size - 1]))
-    local = local[(starts + ends) // 2]
+    local_maxima = _plateau_midpoints(local_maxima)
 
-    # Stable sort: equal-scoring peaks resolve by frame index, so the picker is a
-    # pure function of the activation and the determinism proof holds.
-    order = local[np.argsort(-scores[local], kind="stable")]
+    order = local_maxima[np.argsort(-scores[local_maxima], kind="stable")]
     blocked = np.zeros(n, dtype=bool)
     taken: list = []
     for index in order:
@@ -238,14 +143,6 @@ def peak_candidates(scores: np.ndarray, min_distance: int) -> np.ndarray:
 
 def match_events(predicted: np.ndarray, reference: np.ndarray,
                  tolerance: float = TOLERANCE_SEC) -> tuple:
-    """``(tp, fp, fn)`` for one-to-one matching of two sorted time arrays.
-
-    Two pointers, greedy in time.  Greedy is *optimal* here rather than merely
-    convenient: both sequences are separated by far more than ``2 * tolerance``
-    (a bar is >= 0.95 s at the corpus's fastest tempo, and the picker suppresses
-    peaks within 0.70 s), so no reference instant is ever in range of two
-    predictions and there is no matching for a bipartite solver to improve on.
-    """
     predicted = np.asarray(predicted, dtype=np.float64)
     reference = np.asarray(reference, dtype=np.float64)
     index = other = 0
@@ -264,7 +161,6 @@ def match_events(predicted: np.ndarray, reference: np.ndarray,
 
 
 def prf(tp: int, fp: int, fn: int) -> dict:
-    """Precision/recall/F1 from a confusion triple, undefined cases at 0."""
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
@@ -274,20 +170,12 @@ def prf(tp: int, fp: int, fn: int) -> dict:
 
 def frame_times(frames, frame_sec: float = FRAME_SEC,
                 t0: float | None = None) -> np.ndarray:
-    """Song time of mel frame ``k``: ``t0 + k * frame_sec`` with ``t0 == frame_sec``."""
     t0 = frame_sec if t0 is None else t0
     return t0 + np.asarray(frames, dtype=np.float64) * frame_sec
 
 
 def sweep_peak_f1(per_track: list, thresholds=PEAK_THRESHOLDS,
                   tolerance: float = TOLERANCE_SEC) -> dict:
-    """Micro-averaged peak F1 at every threshold, plus the best operating point.
-
-    ``per_track`` is ``[(candidate_times, candidate_scores, reference_times)]``.
-    Micro rather than macro: a track contributes in proportion to its bar count,
-    which is how the corpus-wide verdict counts and keeps a 90-second track from
-    weighing the same as a nine-minute one.
-    """
     curve: dict = {}
     for threshold in thresholds:
         tp = fp = fn = 0
@@ -303,13 +191,6 @@ def sweep_peak_f1(per_track: list, thresholds=PEAK_THRESHOLDS,
 
 
 def binary_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = ECE_BINS) -> float:
-    """Expected calibration error of a single sigmoid output.
-
-    Delegates to the section head's ``per_class_ece`` on the two-column
-    ``[1 - p, p]`` form: the positive column of that is exactly the textbook
-    binary ECE, and one binning implementation is worth more than a second
-    hand-rolled one that has to be trusted separately.
-    """
     probs = np.asarray(probs, dtype=np.float64)
     labels = np.asarray(labels).astype(np.int64)
     if len(labels) == 0:
@@ -319,41 +200,13 @@ def binary_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = ECE_BINS) ->
 
 
 def deweighted(probs: np.ndarray, pos_weight: float) -> np.ndarray:
-    """Undo the ``pos_weight`` prior shift on a probability array.
-
-    Reweighting the positive class by ``w`` is, at the optimum, exactly a
-    ``+log w`` shift of every logit; subtracting it back recovers what the head
-    would have said under the corpus's own prior.  This is a *reporting*
-    transform -- nothing trains against it -- and it is what separates "the model
-    is overconfident" from "we asked it to be".
-    """
     probs = np.clip(np.asarray(probs, dtype=np.float64), 1e-12, 1.0 - 1e-12)
     logits = np.log(probs / (1.0 - probs)) - math.log(max(pos_weight, 1e-12))
     return 1.0 / (1.0 + np.exp(-logits))
 
 
-# --------------------------------------------------------------------------- #
-# Validation
-# --------------------------------------------------------------------------- #
-
-
 def stitch(dataset: DownbeatWindowDataset, rows: np.ndarray, start: int,
            sums: dict, counts: dict) -> int:
-    """Accumulate a batch of window activations into whole-track curves.
-
-    Windows tile a track from frame 0 in eval mode and the *last* one is clamped
-    back so it re-overlaps its predecessor (``WindowDataset``'s tail fix), so the
-    overlap is averaged rather than overwritten: taking the later window would
-    silently prefer one of two equally valid estimates on every track's final
-    ~16 s, which is where a peak-picking metric is most fragile.
-
-    **Requires ``dataset.augment=False`` and a loader with ``shuffle=False``.**
-    ``rows`` is matched to dataset indices by position from ``start``, and the
-    offsets are read back from ``window_offset``, which under augmentation
-    re-draws a *random* offset per epoch. Stitching an augmented dataset would
-    therefore scatter each window to a position it was not cut from and produce a
-    plausible-looking curve of noise -- no exception, no shape error.
-    """
     index = start
     for row in rows:
         youtube_id = dataset.track_id_of(index)
@@ -369,13 +222,6 @@ def stitch(dataset: DownbeatWindowDataset, rows: np.ndarray, start: int,
 def evaluate(model: nn.Module, loader: DataLoader, dataset: DownbeatWindowDataset,
              device: torch.device, *, pos_weight: float,
              min_distance: int) -> dict:
-    """One pass over the val split -> the metric block logged each epoch.
-
-    The loss is per window (that is the objective); every ranking number is read
-    off the stitched whole-track curves instead, so an overlapped frame is
-    counted once and the frame-wise metrics describe the same array the peak
-    picker sees.
-    """
     model.eval()
     sums = {}
     counts = {}
@@ -414,13 +260,8 @@ def evaluate(model: nn.Module, loader: DataLoader, dataset: DownbeatWindowDatase
         scores.append(activation[live])
         labels.append(targets.downbeat[live] >= POSITIVE_THRESHOLD)
 
-        # Frames outside the supervised region are not evidence of absence -- the
-        # annotation simply stops -- so the picker must not be allowed to spend
-        # peaks there, and the truth must not count downbeats there either.  The
-        # sentinel is below every probability rather than 0.0, so an unsupervised
-        # frame is processed last by the suppression and cannot delete a real
-        # peak beside it.
-        picked = peak_candidates(np.where(live, activation, -1.0), min_distance)
+        picked = peak_candidates(np.where(live, activation, UNSUPERVISED_SCORE),
+                                 min_distance)
         picked = picked[live[picked]] if picked.size else picked
         is_downbeat = targets.beat_phase == 1
         beat_frame = targets.beat_frame
@@ -447,10 +288,6 @@ def evaluate(model: nn.Module, loader: DataLoader, dataset: DownbeatWindowDatase
         "mean_prob": float(scores.mean()) if scores.size else 0.0,
         "positive_rate": float(labels.mean()) if labels.size else 0.0,
         "frames": int(scores.size),
-        # Peaks *at the operating point*, not raw candidates: a valley of exactly
-        # equal activation is a plateau and contributes a candidate at its centre,
-        # so the raw count roughly doubles on a well-separated activation and
-        # reading it as "predicted downbeats" would be wrong.
         "peaks": int(swept["tp"] + swept["fp"]),
         "candidates": candidates,
         "downbeats": references,
@@ -458,7 +295,6 @@ def evaluate(model: nn.Module, loader: DataLoader, dataset: DownbeatWindowDatase
 
 
 def log_epoch(writer, epoch: int, record: dict, metrics: dict) -> None:
-    """Everything the owner watches live, flushed so it is on screen at once."""
     if writer is None:
         return
     for key in ("f1", "precision", "recall", "f1_at_half", "pr_auc", "ece",
@@ -468,13 +304,7 @@ def log_epoch(writer, epoch: int, record: dict, metrics: dict) -> None:
     writer.flush()
 
 
-# --------------------------------------------------------------------------- #
-# Training
-# --------------------------------------------------------------------------- #
-
-
 def train(config: dict) -> dict:
-    """Run (or resume) one downbeat training job; returns the training report."""
     data_dir = Path(config["data_dir"])
     run_dir = data_dir / MODELS_DIR / MODEL_VERSION / config["run_name"]
     tb_dir = data_dir / MODELS_DIR / MODEL_VERSION / TB_DIR / config["run_name"]
@@ -527,9 +357,6 @@ def train(config: dict) -> dict:
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],
                                   weight_decay=config["weight_decay"])
 
-    # Schedule length derived from the dataset, never hardcoded: the corpus is
-    # still growing and a cosine tail computed for a stale window count decays to
-    # zero before the run ends (or never gets there).
     steps_per_epoch = max(1, math.ceil(len(train_set) / config["batch_size"]))
     total_steps = steps_per_epoch * config["epochs"]
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
@@ -548,8 +375,6 @@ def train(config: dict) -> dict:
                 f"({state['config_fingerprint'][:12]} vs {fingerprint[:12]}) -- "
                 f"resuming would produce a model no report describes"
             )
-        # Before load_state_dict, not after: a geometry mismatch that changes no
-        # tensor shape loads *cleanly* and is then invisible.
         if state.get("arch") != model.arch():
             raise RuntimeError(
                 f"{checkpoint_path} was written for architecture "
@@ -617,9 +442,6 @@ def train(config: dict) -> dict:
 
     for epoch in range(start_epoch + 1, config["epochs"] + 1):
         train_set.set_epoch(epoch)
-        # Re-seeded from (seed, epoch) rather than left to run on, so a resumed
-        # run draws the same batch order as an uninterrupted one without having
-        # to restore the sampler's internal state.
         generator.manual_seed(config["seed"] * 1_000_003 + epoch)
 
         model.train()
@@ -634,9 +456,6 @@ def train(config: dict) -> dict:
             loss = masked_bce(model(mel), target, mask, pos_weight=pos_weight)
             step = (epoch - 1) * steps_per_epoch + index + 1
             value = float(loss.detach())
-            # Before the step, not after: a NaN that has already been applied has
-            # destroyed the weights, and the checkpoint written at the end of the
-            # epoch would preserve the wreckage.
             if not math.isfinite(value):
                 raise RuntimeError(f"non-finite loss at step {step}")
 
@@ -682,10 +501,6 @@ def train(config: dict) -> dict:
             best = {"f1": float(metrics["f1"]), "epoch": epoch,
                     "metrics": {key: value for key, value in metrics.items()
                                 if key != "f1_curve"}}
-            # `metrics` is the flat metric block, not `best` -- nesting `best`
-            # here would make the field `best.pt["metrics"]["metrics"]["f1"]`,
-            # and a consumer that guessed the shorter path would read a dict
-            # where it expected a float.
             torch.save({"model": model.state_dict(), "arch": model.arch(),
                         "config": config, "epoch": epoch, "f1": best["f1"],
                         "metrics": best["metrics"], "pos_weight": pos_weight},
@@ -706,9 +521,6 @@ def train(config: dict) -> dict:
         }, checkpoint_path)
 
         if config["crash_after_epoch"] and epoch >= config["crash_after_epoch"]:
-            # Resume drill: die the way a killed process dies -- checkpoint on
-            # disk, nothing flushed, no cleanup -- so `--resume` is proven against
-            # a real interruption rather than a graceful shutdown.
             print(f"crash-after-epoch {epoch}: exiting hard", flush=True)
             sys.stdout.flush()
             os._exit(17)
@@ -760,11 +572,6 @@ def train(config: dict) -> dict:
           f"weights {report['weight_hash'][:16]} | {wall:.1f}s "
           f"({report['steps_per_second']:.1f} steps/s)", flush=True)
     return report
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -823,5 +630,5 @@ def main(argv: list | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":   # spawn re-imports this module; the guard is required
+if __name__ == "__main__":
     raise SystemExit(main())

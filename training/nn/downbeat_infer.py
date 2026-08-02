@@ -1,66 +1,4 @@
-"""Downbeat activation sidecars: checkpoint -> ONNX -> one npz per track.
-
-    uv run python -m training.nn.downbeat_infer --data-dir <corpus> --export
-    uv run python -m training.nn.downbeat_infer --data-dir <corpus> --workers 6
-
-This is the offline stand-in for the runtime, and the *only* thing Task 4 reads.
-It exports the trained head to the one inference artifact (a graph plus a
-SHA-256 every sidecar carries), slides it over each track exactly as the runtime
-would, and aggregates the per-frame activation onto beat instants from **both**
-input conditions:
-
-* ``live`` -- the production pipeline's own beat stream, lifted bit for bit out
-  of each track's cached sim report.  This is the deployment condition and the
-  one a gate binds to.
-* ``expert`` -- the annotator's beat grid, the diagnostic upper bound.  The gap
-  between the two is the beat-source degradation cost.
-
-**The sidecar carries beat *instants*, never bar phase.**  The phase is truth,
-and truth does not ride into an artifact generated for the test split.  The
-expert beat times are an *input* (they define the diagnostic condition); the
-phase they carry is what Task 4 scores against, read from the annotations.
-
-**`dynamo=False`.**  The section head's pre-flight bisected it: the TorchDynamo
-exporter exports a GRU model *without error* and silently bakes the traced time
-length into the graph.  This architecture has the same GRU, so the same rule
-applies and the declared axes are asserted after export rather than assumed.
-
-**The window is the model's whole world.**  ``DownbeatCRNN`` is bidirectional
-over a 16 s window, so a frame's activation depends on where in a window it was
-read.  The runtime slides that window on its 100 ms callback and averages every
-window covering a frame; so does this, on the section chain's geometry, because
-one cadence in the runtime is the point.  A whole-track single pass would be two
-orders of magnitude cheaper and would not be the same model.  ``EDGE_SEC`` of
-each window is dropped before aggregation -- those frames have no context on one
-side and a cold recurrent state -- except at the two ends of the track, which no
-window's interior can reach; ``coverage`` records how many windows voted, so the
-thin ends are visible rather than indistinguishable from the confident middle.
-
-**Note that these activations are not the ones Task 2's 0.5512 describes.**  That
-number was measured under the trainer's non-overlapping eval tiling.  The sliding
-window is a better estimate of the same quantity and a different one; the naive
-peak-picking floor has to be re-measured on these sidecars before any decoder
-gain is attributed to the decoder.
-
-**The aggregation window was measured, not assumed.**  Task 1 left it open with
-symmetric ``[-1, +1]`` as the null hypothesis, explicitly refusing to infer it
-from where input flux peaks.  ``lag_profile`` is the instrument: it reports mean
-activation against frame offset from the annotated instants, so where a *trained*
-activation actually peaks is a measurement in the report rather than an argument.
-``--lag-profile`` runs it over existing sidecars.
-
-The window itself, and the arithmetic that applies it, live in
-``downbeat_decoder``: a half-beat candidate grid has to be aggregated at decode
-time off the stored curve, and in the runtime that aggregation is decode-path
-work.  This module owns the *curve* and caches the per-beat case beside it.
-
-**Determinism is a written contract.**  One pinned single-threaded CPU session
-(``export_onnx.session`` -- one definition, not a convention), windows summed in
-a fixed order into float64, parallelism per *track* so no track's numbers depend
-on the worker count, and the archive written with a fixed member order and epoch
-by ``infer.save_posteriors`` rather than by ``np.savez``, whose reproducibility
-is a CPython default rather than an API promise.
-"""
+"""Downbeat activation sidecars: checkpoint -> ONNX -> one npz per track."""
 from __future__ import annotations
 
 import argparse
@@ -78,10 +16,6 @@ import onnxruntime as ort
 import torch
 
 from .dataset import FEATURES_DIR, FRAME_SEC, WINDOW_FRAMES, load_sidecar, make_splits
-# The aggregation window and its arithmetic live in the decoder: in the runtime
-# putting an activation onto a beat stream is decode-path work, and a half-beat
-# candidate grid has to be aggregated at decode time off the stored curve.  This
-# module owns the *curve*; it borrows the window so the two cannot disagree.
 from .downbeat_decoder import (
     AGG_HI_FRAMES,
     AGG_LO_FRAMES,
@@ -93,9 +27,6 @@ from .downbeat_train import MODEL_VERSION
 from .export_onnx import OPSET, declared_axes, session, sha256_file
 from .model import count_parameters
 from .train import BEST_CHECKPOINT, MODELS_DIR, weight_hash
-# ``_sigmoid`` and ``save_posteriors`` are the section chain's own: the numerically
-# stable sigmoid and the byte-reproducible archive writer are exactly the same
-# problem here, and a second copy of either is a second thing to keep true.
 from .infer import (
     EDGE_FRAMES,
     HOP_FRAMES,
@@ -106,10 +37,6 @@ from .infer import (
     window_offsets,
 )
 
-# ``_read_json_gz`` is imported private and deliberately: it is the reader that
-# wrote the cache, and a second one that disagrees about the envelope is how a
-# report cache comes to be read as something it is not.  Same trade as the
-# downbeat dataset's private ``_take``.
 from build_training_table import (  # noqa: E402
     _read_json_gz,
     default_data_dir,
@@ -122,9 +49,6 @@ MODEL_META_FILE = "downbeat.onnx.json"
 SIDECAR_DIR = "downbeat_posteriors"
 MANIFEST_FILE = "manifest.json"
 
-# The Task 2 verdict: `downbeat_v1` epoch 20, val peak F1 0.5512 by peak-picking
-# against the annotated grid -- no beat stream involved.  Named here so
-# "the downbeat model" is one file rather than whichever run someone typed last.
 DEFAULT_RUN = "downbeat_v1"
 CHECKPOINT_FILE = BEST_CHECKPOINT
 
@@ -133,14 +57,10 @@ OUTPUT_NAME = "downbeat_logits"
 BATCH_AXIS = "batch"
 TIME_AXIS = "time"
 
-# The two input conditions, in the order they are written and reported.  ``live``
-# is named for its role: the pipeline's beat tracker has already changed once, and
-# a key named after a tracker would outlive the stream it described.
 CONDITIONS = ("live", "expert")
 
 
 def model_dir(data_dir) -> Path:
-    """``<data-dir>/models/downbeat_v1`` -- where the exported graph lives."""
     return Path(data_dir) / MODELS_DIR / MODEL_VERSION
 
 
@@ -148,22 +68,7 @@ def default_checkpoint(data_dir) -> Path:
     return model_dir(data_dir) / DEFAULT_RUN / CHECKPOINT_FILE
 
 
-# --------------------------------------------------------------------------- #
-# Checkpoint -> module
-# --------------------------------------------------------------------------- #
-
-
 def load_downbeat_checkpoint(path) -> dict:
-    """Read a downbeat ``best.pt`` and check it is shaped like one.
-
-    Deliberately *not* shared with the section head's loader.  The two payloads
-    differ: this one is flat (``["f1"]`` and ``["metrics"]["f1"]`` are both
-    floats), the section head's nests its metric block one level deeper, and a
-    "shared" loader would have to guess which it was holding.  The fields are
-    checked by name because the alternative -- a ``KeyError`` three functions
-    later, or worse a ``.get`` that returns ``None`` and exports a graph with no
-    ``pos_weight`` recorded -- costs more than this does.
-    """
     path = Path(path)
     state = torch.load(path, map_location="cpu", weights_only=False)
     for field in ("model", "arch", "pos_weight"):
@@ -178,14 +83,6 @@ def load_downbeat_checkpoint(path) -> dict:
 
 
 def build_from_checkpoint(state: dict) -> DownbeatCRNN:
-    """The exact module the checkpoint's weights belong to, in eval mode.
-
-    Geometry comes from the checkpoint's own ``arch`` block and the built
-    module's ``arch()`` is checked back against it *before* any weight loads.
-    The round trip is not typo paranoia: ``arch`` survives JSON as lists rather
-    than tuples, and a constructor that quietly reinterpreted one of its fields
-    would produce a model that loads, runs, and is wrong.
-    """
     arch = state["arch"]
     model = DownbeatCRNN(**arch)
     if model.arch() != arch:
@@ -198,28 +95,19 @@ def build_from_checkpoint(state: dict) -> DownbeatCRNN:
     return model
 
 
-# --------------------------------------------------------------------------- #
-# Export
-# --------------------------------------------------------------------------- #
-
-
 def export_model(model: DownbeatCRNN, path, *,
                  window_frames: int = WINDOW_FRAMES) -> dict:
-    """Write ``path`` and return its declared axes, having verified them.
-
-    ``window_frames`` decides the shape of the tracing input only; the whole
-    point of the assertion below is that it does not decide the shape of the
-    graph.
-    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     dummy = torch.zeros(1, int(window_frames), model.n_mels)
 
     tmp = path.with_suffix(path.suffix + ".part")
     try:
+        # torch's dynamo exporter bakes the traced time length into a GRU graph
+        # without erroring, so the declared axes are asserted after export.
         torch.onnx.export(
             model, (dummy,), str(tmp),
-            dynamo=False,                 # see the module docstring; not a default
+            dynamo=False,
             opset_version=OPSET,
             input_names=[INPUT_NAME],
             output_names=[OUTPUT_NAME],
@@ -244,7 +132,6 @@ def export_model(model: DownbeatCRNN, path, *,
 
 def export(checkpoint_path, out_path=None, *,
            window_frames: int = WINDOW_FRAMES) -> dict:
-    """Checkpoint file -> ``downbeat.onnx`` + its metadata sidecar."""
     checkpoint_path = Path(checkpoint_path)
     out_path = Path(out_path) if out_path else checkpoint_path.parent.parent / MODEL_FILE
 
@@ -282,7 +169,6 @@ def export(checkpoint_path, out_path=None, *,
 
 
 def run_window(sess, mel: np.ndarray) -> np.ndarray:
-    """``mel [batch, time, n_mels] float32`` -> ``downbeat_logits [batch, time]``."""
     if mel.ndim != 3:
         raise ValueError(f"mel must be [batch, time, n_mels], got {mel.shape}")
     (logits,) = sess.run([OUTPUT_NAME],
@@ -290,23 +176,9 @@ def run_window(sess, mel: np.ndarray) -> np.ndarray:
     return logits
 
 
-# --------------------------------------------------------------------------- #
-# One track's activation
-# --------------------------------------------------------------------------- #
-
-
 class TrackActivation(NamedTuple):
-    """One track's whole-track activation and the geometry it was produced with.
-
-    The geometry travels with the result rather than being re-read from the
-    module constants at write time: ``infer_track`` takes window, hop and edge as
-    arguments, and a sidecar that recorded the defaults while holding
-    non-default numbers would be worse than an unlabelled one -- the cache key
-    built on it would accept it.
-    """
-
-    activation: np.ndarray      # [n] float32, mean of the per-window sigmoids
-    coverage: np.ndarray        # [n] uint16, windows that voted on each frame
+    activation: np.ndarray
+    coverage: np.ndarray
     n_frames: int
     windows: int
     window_frames: int
@@ -317,13 +189,6 @@ class TrackActivation(NamedTuple):
 def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
                 hop_frames: int = HOP_FRAMES,
                 edge_frames: int = EDGE_FRAMES) -> TrackActivation:
-    """Whole-track downbeat activation by sliding ``sess``'s graph over ``mel``.
-
-    ``mel`` is ``[n, n_mels]`` as written by the batch sim.  The frame count is
-    truncated exactly as ``WindowDataset`` truncates it, so the activation array
-    is the same length as the targets Task 1 built and the two can be indexed
-    against one another without an off-by-one.
-    """
     n_frames = usable_frames(len(mel))
     if n_frames < 1:
         raise RuntimeError(f"track has {len(mel)} mel frames -- nothing to infer")
@@ -366,20 +231,7 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
                            int(window_frames), int(hop_frames), int(edge_frames))
 
 
-# --------------------------------------------------------------------------- #
-# Where the activation sits against the grid
-# --------------------------------------------------------------------------- #
-
-
 def lag_profile(activation: np.ndarray, frames, radius: int = 4) -> np.ndarray:
-    """Mean activation at each frame offset from a set of reference frames.
-
-    The instrument the aggregation window is chosen with.  Task 1 refused to
-    infer the window from where input flux peaks -- that says where the
-    *evidence* arrives, not where a model fitted to a target sitting on the
-    instant puts its output -- so this measures the trained activation directly.
-    Index ``radius`` is offset 0.
-    """
     activation = np.asarray(activation, dtype=np.float64)
     frames = np.asarray(frames, dtype=np.int64)
     profile = np.full(2 * int(radius) + 1, np.nan, dtype=np.float64)
@@ -391,17 +243,7 @@ def lag_profile(activation: np.ndarray, frames, radius: int = 4) -> np.ndarray:
     return profile
 
 
-# --------------------------------------------------------------------------- #
-# Beat streams
-# --------------------------------------------------------------------------- #
-
-
 def live_beat_times(data_dir, youtube_id: str) -> np.ndarray:
-    """The production pipeline's own beat instants, out of the cached sim report.
-
-    Not a re-derivation: this is the exact stream the live engine produces, which
-    is what makes the primary evaluation condition the deployment condition.
-    """
     path = report_path(Path(data_dir), youtube_id)
     if not path.exists():
         raise RuntimeError(
@@ -412,29 +254,12 @@ def live_beat_times(data_dir, youtube_id: str) -> np.ndarray:
 
 
 def expert_beat_times(grid) -> np.ndarray:
-    """The annotator's beat instants -- the diagnostic condition's input.
-
-    Only the instants.  The phase is truth and stays in the annotations.
-    """
     return np.asarray(grid.times, dtype=np.float64)
-
-
-# --------------------------------------------------------------------------- #
-# Sidecar I/O
-# --------------------------------------------------------------------------- #
 
 
 def sidecar_arrays(track: TrackActivation, beats: dict, model_sha: str,
                    pos_weight: float, *, lo: int = AGG_LO_FRAMES,
                    hi: int = AGG_HI_FRAMES) -> dict:
-    """Everything one sidecar records, in write order.
-
-    The frame time base is stated rather than implied: ``activation[k]`` is at
-    ``t0 + k * frame_sec`` with ``t0 == frame_sec``, the convention the mel
-    sidecars and Task 1's targets share.  ``pos_weight`` rides along because the
-    activation is a *ranking* score inflated by it, and a consumer that wants a
-    probability-shaped input needs the number to undo the shift with.
-    """
     arrays: dict = {"activation": track.activation, "coverage": track.coverage}
     for condition in CONDITIONS:
         times, scores, counts = beats[condition]
@@ -458,12 +283,6 @@ def sidecar_arrays(track: TrackActivation, beats: dict, model_sha: str,
 
 
 def sidecar_is_current(path, model_sha: str) -> bool:
-    """Is ``path`` already this model's answer, on this geometry?
-
-    (model hash, track) as the spec asks, plus the window *and* aggregation
-    geometry: either produces different numbers from the same graph and would
-    otherwise be silently reused.
-    """
     path = Path(path)
     if not path.exists():
         return False
@@ -479,20 +298,7 @@ def sidecar_is_current(path, model_sha: str) -> bool:
         return False
 
 
-# --------------------------------------------------------------------------- #
-# Corpus run
-# --------------------------------------------------------------------------- #
-
-
 def split_ids(data_dir, splits=("val", "test")) -> list:
-    """Every id in the named splits, sorted.
-
-    Val and test by default and nothing else: the decoder is tuned on val and the
-    verdict reads test once, and 962 train tracks would cost hours of inference
-    that nothing downstream reads.  Generating the test sidecars now is
-    inputs-only -- no label is read here and none is written -- and regenerating
-    them later at a different code revision is the larger risk.
-    """
     assignment = make_splits(Path(data_dir), write=False)
     ids: set = set()
     for name in splits:
@@ -513,7 +319,6 @@ def _beat_streams(data_dir: Path, youtube_id: str, grid,
 def generate(data_dir, *, model_path=None, out_dir=None, ids=None,
              workers: int = 1, force: bool = False,
              progress_every: int = 25) -> dict:
-    """Write an activation sidecar for every id; returns the run manifest."""
     from .downbeat_dataset import load_beat_grid
 
     data_dir = Path(data_dir)
@@ -527,10 +332,8 @@ def generate(data_dir, *, model_path=None, out_dir=None, ids=None,
     features = data_dir / FEATURES_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # One shared session: onnxruntime releases the GIL inside `Run`, so N python
-    # threads give N single-threaded inferences in parallel without the per-process
-    # model copy a ProcessPool needs.  Each track is handled start to finish by one
-    # task, so nothing about a track's output depends on how many threads run.
+    # Threads share one single-threaded session: onnxruntime frees the GIL in `Run`,
+    # and a threaded reduction sums in completion order -- float add is not associative.
     sess = session(model_path)
     records_by_id = {str(track.get("id")): track for track in load_tracks(data_dir)}
 
@@ -554,13 +357,6 @@ def generate(data_dir, *, model_path=None, out_dir=None, ids=None,
             streams = _beat_streams(data_dir, youtube_id, grid, track.activation)
             save_sidecar(path, sidecar_arrays(track, streams, model_sha, pos_weight))
         except Exception as error:
-            # A corpus run is long and the sidecars are cached, so one unreadable
-            # track must not throw the rest away.  A sidecar left over from an
-            # older model or geometry is deleted on the way out: otherwise the
-            # manifest says "failed" while the file still answers to np.load and
-            # the next reader consumes last week's numbers believing they are
-            # this model's.  A file that *is* current is left alone -- a transient
-            # read error must not destroy a good artifact.
             stale = path.exists() and not sidecar_is_current(path, model_sha)
             if stale:
                 path.unlink(missing_ok=True)
@@ -625,18 +421,7 @@ def generate(data_dir, *, model_path=None, out_dir=None, ids=None,
     return manifest
 
 
-# --------------------------------------------------------------------------- #
-# The aggregation-window measurement
-# --------------------------------------------------------------------------- #
-
-
 def measure_lag(data_dir, ids, *, radius: int = 4, sidecar_dir=None) -> dict:
-    """Where the trained activation peaks relative to annotated downbeats.
-
-    Pooled over tracks, on existing sidecars, at frame resolution.  A profile
-    that peaks anywhere but 0 says the aggregation window has to move; adopting a
-    shift on any other evidence would bake it in (Task 1 §8 F2).
-    """
     from .downbeat_dataset import load_beat_grid
 
     data_dir = Path(data_dir)
@@ -663,9 +448,6 @@ def measure_lag(data_dir, ids, *, radius: int = 4, sidecar_dir=None) -> dict:
             continue
         downbeat += lag_profile(activation, frames, radius)
         control += lag_profile(activation, others[others >= 0], radius)
-        # Per-downbeat argmax as well as the mean: a mean can be dragged by the
-        # shoulders of a peak that is exactly centred, and the modal offset
-        # cannot.
         window = np.clip(frames[:, None] + np.arange(-radius, radius + 1),
                          0, len(activation) - 1)
         peaks += np.bincount(activation[window].argmax(axis=1),
@@ -679,11 +461,6 @@ def measure_lag(data_dir, ids, *, radius: int = 4, sidecar_dir=None) -> dict:
             "peak_histogram": peaks.tolist(),
             "argmax_offset": offsets[int(np.argmax(downbeat))],
             "modal_peak_offset": offsets[int(np.argmax(peaks))]}
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -732,11 +509,6 @@ def main(argv: list | None = None) -> int:
             print(f"  {name:16s} {axes}")
         return 0
 
-    # Generation is inputs-only and covers both splits; the lag profile reads the
-    # annotated bar phase to decide a decoder parameter, which makes it a *tuning*
-    # measurement and therefore val's alone.  Defaulting it to val+test would have
-    # tuned the aggregation window against the test split on a bare invocation --
-    # the exact hazard `sweep.py` refuses outright.
     splits = args.splits if args.splits is not None else (
         ["val"] if args.lag_profile else ["val", "test"])
     ids = args.ids if args.ids is not None else split_ids(args.data_dir, splits)
@@ -744,9 +516,6 @@ def main(argv: list | None = None) -> int:
         ids = ids[:args.limit]
 
     if args.lag_profile:
-        # Checked against split *membership*, not against the --splits flag: an
-        # explicit --ids would otherwise walk straight past a flag-level guard,
-        # and a contamination guard that only covers the default path is not one.
         stray = sorted(set(ids) - set(split_ids(args.data_dir, ["val"])))
         if stray:
             parser.error(

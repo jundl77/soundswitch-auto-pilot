@@ -15,12 +15,6 @@ def main() -> None:
     beats = report['beats']
     intents = report['intents']
     duration = report['duration_sec']
-    # Intent blocks are stamped in audience time.  The delay behind each one is
-    # per command now (B1), so no constant reaches song time -- a block waited
-    # `playback_delay` only while the chain fit inside it, and on a slow track
-    # it waited less.  The engine records the instant it means as `song_t`
-    # precisely so nothing has to guess; `look_ahead_sec` is the fallback for
-    # reports cut before that field existed.
     look_ahead = report['metrics'].get('look_ahead_sec', 0.0)
 
     def song_bounds(block: dict) -> tuple:

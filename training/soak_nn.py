@@ -1,37 +1,4 @@
-"""The live soak: real audio through real hardware for half an hour, measured.
-
-Task 14's gate is #126 -- the whole stack keeps up -- and the only thing that
-can answer it is a run paced by an audio device rather than by a loop.  Live
-input arrives at exactly 1x and the input side DROPS rather than queues, so a
-loop that falls behind loses audio, not latency; and three of the four failure
-modes #143 names (a CUDA fault, a driver reset, a sleep/resume context loss)
-cost a simulation exactly nothing because a simulation has no driver.
-
-Two processes, because a soak needs a source and a subject:
-
-    python training/soak_nn.py play --device 7 --gap 3
-    python training/soak_nn.py run  --midi-port 1 --input-device 5 --minutes 33
-
-``play`` writes eval-set tracks back-to-back into the VB-Audio Virtual Cable's
-INPUT endpoint; ``run`` reads them back off its OUTPUT endpoint.  The gap
-between tracks is deliberate and is most of the point: it is longer than the
-analyser's 0.3 s silence gate, so every track change is a real sound-stop /
-sound-start pair -- the boundary that cost 9.79 s of NN_SHED before the settle
-forgiveness moved to where the stall actually runs, and the one thing no
-simulation can exhibit (a virtual clock does not advance while a thread sleeps).
-
-``run`` builds the SAME `SoundSwitchAutoPilot` the CLI does, with the same
-arguments; what it adds is a stop after a fixed wall time and a 1 Hz sampler on
-its own thread.  Two things force that: `run` has no duration flag and no
-signal a detached Windows process can be sent without killing it before the
-report is written, and an asyncio sampler would starve -- the audio loop awaits
-coroutines that never suspend, so it never yields to the event loop.
-
-MIDI: any port index works because nothing is asserted about what is on the
-other end; `loopMIDI Port 1` is a virtual port with no hardware behind it, which
-is how this was run.  `run` refuses to start without SOME port (the assert lives
-in `MidiClient.start`), so there is no --no-midi route to take.
-"""
+"""The live soak: real audio through real hardware for half an hour, measured."""
 
 from __future__ import annotations
 
@@ -57,11 +24,9 @@ SAMPLE_INTERVAL_SEC = 1.0
 BUCKET_SEC = 60.0
 BUDGET_MS = 1000.0 * 256 / 44100
 
-# One second of buffers, the count the madmom soak dropped for the same reason.
+# One second of buffers, the count the madmom soak dropped.
 WARMUP_BUFFERS = 172
 
-# Enough eval-set tracks to clear half an hour with four track changes inside
-# it.  In the frozen set's own order, so re-freezing the set re-picks them.
 DEFAULT_TRACK_COUNT = 5
 
 
@@ -86,7 +51,6 @@ def spread(values, scale: float = 1.0) -> dict:
 
 
 def buckets(stamps, values, width: float = BUCKET_SEC) -> list:
-    """Per-minute tails, so a run that degrades slowly cannot hide in a mean."""
     if not stamps:
         return []
     out, start = [], 0
@@ -103,11 +67,6 @@ def buckets(stamps, values, width: float = BUCKET_SEC) -> list:
                     "p99_ms": float(np.percentile(values[start:], 99)),
                     "max_ms": float(np.max(values[start:]))})
     return out
-
-
-# --------------------------------------------------------------------------- #
-# play
-# --------------------------------------------------------------------------- #
 
 
 def play(device: int, tracks: list, gap_sec: float, sample_rate: int,
@@ -142,14 +101,7 @@ def play(device: int, tracks: list, gap_sec: float, sample_rate: int,
     print(f"done, {(time.monotonic() - started) / 60:.1f} minutes", flush=True)
 
 
-# --------------------------------------------------------------------------- #
-# run
-# --------------------------------------------------------------------------- #
-
-
 class Sampler(threading.Thread):
-    """1 Hz readout of everything a soak has to be able to say afterwards."""
-
     def __init__(self, app, minutes: float):
         super().__init__(name="soak-sampler", daemon=True)
         self._app = app
@@ -163,9 +115,6 @@ class Sampler(threading.Thread):
         stage = None if self._app.section is None else self._app.section.stream
         started = time.monotonic()
         last = watchdog.level.name
-        # `is_running` is set by `app.run()`, which has not been awaited yet:
-        # gating the loop on it from the first tick ends the sampler instantly
-        # and leaves the soak running until something kills it.
         seen_running = False
         while time.monotonic() < self._until:
             time.sleep(SAMPLE_INTERVAL_SEC)
@@ -202,12 +151,6 @@ class Sampler(threading.Thread):
 
 
 def _instrument(app) -> dict:
-    """Time the audio loop's three phases and stamp every song boundary.
-
-    Wrapping from outside rather than instrumenting `lib/`: the pipeline under
-    measurement stays exactly the code that ships, and the wrapper costs one
-    call per buffer against a budget of 5.805 ms.
-    """
     record = {"stamps": [], "on_audio": [], "analyse": [], "drain": [],
               "loop": [], "between_reads": [], "boundaries": []}
     engine, analyser, queue = app.light_engine, app.music_analyser, app.command_queue
@@ -219,14 +162,6 @@ def _instrument(app) -> dict:
     read_ended = [None]
 
     def tapped_read():
-        """The madmom soak's metric, kept identical so the two are comparable.
-
-        End of the previous read to the start of this one: everything the loop
-        does between two hardware buffers, including the periodic callbacks, the
-        MIDI writes and any time the process spent descheduled.  The three
-        phases below are the same interval broken up; this is the one number
-        that can be put beside 2026-07-29's.
-        """
         now = time.perf_counter()
         if read_ended[0] is not None:
             record["between_reads"].append((now - read_ended[0]) * 1000.0)
@@ -278,22 +213,6 @@ def _instrument(app) -> dict:
 
 def boundary_verdict(boundaries: list, transitions: list,
                      window_sec: float = 30.0) -> dict:
-    """Did any track change shed the stage?
-
-    The pass criterion for the settle-forgiveness fix, and the reason the gaps
-    are in the playlist at all.  A shed inside `window_sec` of a boundary is
-    attributed to it -- the watchdog needs a full calm window to restore, so
-    the cost of one is visible for far longer than the stall that caused it.
-
-    **A capture with no boundary in it fails.**  The methodology is five tracks
-    back to back; a run whose playlist never started, whose cable was never
-    silent, or that simply never saw a track change has not tested the thing
-    this predicate is about.  Short-circuiting on an empty list left `near`
-    empty and `passed` True, so exactly that run reported PASS -- and one did:
-    the branch's own soak counted three "boundaries" that were 15-minute
-    self-resets.  `held_start_to_end` was hardened on the same reasoning
-    (zero blocks is not a held show, it is a dark one).
-    """
     near = []
     if not boundaries:
         return {"boundaries": 0, "sheds_near_a_boundary": 0, "detail": [],
@@ -325,8 +244,6 @@ async def _soak(args) -> dict:
     sampler.start()
     await app.run()
 
-    # madmom's soak dropped the same count: the first buffers pay for madmom's
-    # nets and the first CUDA pass, which is a startup cost, not a per-buffer one.
     warm = WARMUP_BUFFERS
     stamps, loop = timing["stamps"][warm:], timing["loop"][warm:]
     record = {

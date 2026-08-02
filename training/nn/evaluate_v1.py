@@ -1,70 +1,5 @@
 #!/usr/bin/env python
-"""Score the decoded NN chain against the Raveform labels, beside the rule classifier.
-
-This is the verdict run.  Everything before it -- dataset, CRNN, ONNX export,
-posterior sidecars, priors, fixed-lag Viterbi -- exists to produce a decision
-stream; this module asks the only question that matters about one: **is it
-better than what ships today, measured the same way, on the same tracks?**
-
-It answers on the VAL split by default, and on the TEST split exactly once --
-the selection-clean verdict.  ``--split`` is how that read happens (``sweep.py``
-refuses ``test`` outright; this module cannot, because the verdict needs it), so
-the discipline lives in the workflow rather than in the code: after a test read,
-a bad result is a NEW versioned model with its own single read, never a re-tune
-scored against the same split.  Both verdicts are written side by side --
-``eval_val.json`` is the tuned reading, ``eval_test.json`` the clean one.
-
-How the comparison is kept honest
----------------------------------
-
-*The metrics are not reimplemented.*  Every number comes from
-``evaluate_against_labels`` -- the same ``Score`` accumulators, the same
-``match_events``, ``flicker_instants``, ``beat_weights`` and ``prf`` that
-produced the committed rule baseline.  What this module adds is one accumulation
-loop, because two things genuinely differ (below) and only those two.
-
-*Undecoded is not wrong.*  The decoder runs on a bar grid, so it says nothing
-about ``[0, first_downbeat)`` -- median 0.107 s, max 0.466 s on this corpus --
-or about the sub-bar tail past the final bar line.  Those beats are marked with
-the evaluator's own ``NO_INTENT`` sentinel, which it already excludes from every
-cell and reports separately.  Counting them as misdecodes would be a systematic
-charge against ``intro`` and ``outro`` specifically, since those are the classes
-that own the ends of a track, and it would be a charge for the annotation
-grid's origin rather than for anything the network did.
-
-*Two of the five classes are not actually contested, and the report says so.*
-ATMOSPHERIC -- the only intent covering ``intro`` and ``outro`` -- fires from a
-beat-ABSENCE timer, while the training table carries one row per DETECTED BEAT.
-The rows that exist are therefore exactly the rows where that trigger cannot be
-active, so the baseline's zero on those two classes is a property of the
-beat-indexed harness, not a measured limit of its vocabulary.  Those classes
-carry ~64 % of the headline delta, so ``expressible_comparison`` publishes the
-restricted macro-F1 over the contested classes as the model-vs-model number, and
-per-track win counts are reported in BOTH readings -- only the restricted one
-can go negative.
-
-*The claim map is the fairness argument, and it is reported both ways.*  The
-rule classifier's ATMOSPHERIC is credited against ``intro`` OR ``outro`` because
-an intent describes a moment and cannot know its position in the arrangement.
-A network predicting ``label_v1`` is not under that handicap, so its primary
-score uses IDENTITY claims: predicting ``intro`` over ``outro`` is a miss.  That
-is a strictly higher bar than the baseline is held to, so the same decode is
-ALSO scored with rule-equivalent claims -- intro/outro collapsed back into one
-ambiguous class, exactly the handicap ATMOSPHERIC carries -- and both appear in
-the report.  If the NN only wins under one of them, the report says so instead
-of picking the flattering one.
-
-*The class stream is the comparand.*  A model predicting label classes cannot
-express DROP -> PEAK, so quoting the rule classifier's intent-stream flicker
-against it would overstate the model.  ``STREAM_ORDER`` exists for exactly this
-and the side-by-side table reads the ``class`` stream on both sides.  Under
-identity claims the NN's two streams are provably the same stream; the report
-records that rather than printing one number twice.
-
-Usage::
-
-    uv run python -m training.nn.evaluate_v1 --data-dir <data> [--split val]
-"""
+"""Score the decoded NN chain against the Raveform labels, beside the rule classifier."""
 from __future__ import annotations
 
 import argparse
@@ -81,7 +16,8 @@ from .decoder import (DecodeParams, FixedLagViterbi, bar_grid, bar_observations,
                       load_decoder_config)
 from .priors import MODEL_VERSION, MODELS_DIR, PRIORS_FILE, Priors
 
-from build_training_table import NO_INTENT, TABLE_FILE  # noqa: E402  (nn/__init__ sets the path)
+from build_training_table import NO_INTENT, TABLE_FILE  # noqa: E402
+# Metrics imported, never reimplemented: only the claim map and sentinel differ.
 from evaluate_against_labels import (  # noqa: E402
     INTENT_ORDER,
     INTENT_TO_LABELS,
@@ -109,87 +45,35 @@ from evaluate_against_labels import (  # noqa: E402
 from evaluate_against_labels import write_json as _write_json  # noqa: E402
 from raveform_fetch_annotations import BEATS_DIR, annotations_dir  # noqa: E402
 
-# The evaluator's "no prediction at this beat" sentinel, reused rather than
-# reinvented: it already means "exclude from every cell and report the share",
-# which is exactly what an undecoded bar-grid edge is.
 UNDECODED = NO_INTENT
 
 SPLITS_FILE = "splits.json"
 POSTERIORS_DIR = "posteriors"
-# Duplicated from export_onnx rather than imported: that module builds torch
-# modules at import time, and the decode-and-score path is torch-free by
-# contract.  One filename is a cheaper coupling than dragging torch in.
+# export_onnx builds torch modules at import time; this path is torch-free.
 MODEL_FILE = "model.onnx"
-# Named after the split it scored, so a ``--split test`` run without ``--out``
-# cannot silently overwrite the val verdict with test numbers -- the two
-# readings answer different questions and must both survive on disk.
 EVAL_FILE = "eval_{split}.json"
 DECODER_CONFIG_FILE = "decoder_config.json"
 
-# The primary space.  ``canonical`` is not scored here: the network's vocabulary
-# IS ``label_v1``, so a canonical score would be measuring the label merge
-# rather than the model.
 DEFAULT_SPACE = "v1"
 
-
-# --------------------------------------------------------------------------- #
-# Claim maps
-# --------------------------------------------------------------------------- #
+_TP, _FP, _FN = 0, 1, 2
 
 
 def identity_claims(space: str = DEFAULT_SPACE) -> dict:
-    """Each predicted class claims exactly itself -- the primary scoring.
-
-    The network names the class; there is no ambiguity to forgive.
-    """
     return {label: (label,) for label in SPACES[space].labels}
 
 
 def rule_equivalent_claims(space: str = DEFAULT_SPACE) -> dict:
-    """The network handed the rule classifier's exact handicap, for comparison.
-
-    ATMOSPHERIC claims ``intro`` OR ``outro`` and is credited against whichever
-    is there.  Giving the NN the same ambiguity answers the one question a
-    side-by-side table cannot answer on its own: how much of the gap is the
-    model, and how much is the two sides being scored under different rules.
-
-    Note the second-order effect, which is the point of doing it properly rather
-    than just relabelling the confusion matrix: two classes that make the same
-    claim are not distinguishable in the CLASS stream either, so an intro ->
-    outro switch stops being a class change here exactly as it does for the rule
-    classifier.  Boundary and flicker move with it.
-    """
     ambiguous = INTENT_TO_LABELS["atmospheric"][space]
     return {label: (ambiguous if label in ambiguous else (label,))
             for label in SPACES[space].labels}
 
 
 def _claim_key(claims: dict, label: str) -> str:
-    """A stable identity for "what class does this prediction claim".
-
-    Differencing THIS instead of the raw prediction is what turns
-    ``intent_changes`` into the evaluator's ``class_changes``: the claim is
-    formed before the difference, so two predictions making the same claim are
-    not a change.  Reusing the evaluator's own differencer for both streams
-    keeps the quantisation identical on both sides of the table.
-    """
     return "\x00".join(claims[label])
 
 
-# --------------------------------------------------------------------------- #
-# Bar decisions -> beat grid
-# --------------------------------------------------------------------------- #
-
-
 def beat_classes(beat_times, edges, bar_labels) -> tuple:
-    """The decoded class at every beat; ``UNDECODED`` outside the bar grid.
-
-    The decoder commits per bar and the evaluator scores per beat, so this is
-    the only place the two clocks meet.  A beat exactly on a bar line belongs to
-    the bar it opens (the decision takes effect there), and a beat outside
-    ``[edges[0], edges[n_bars])`` -- the pre-downbeat head or the sub-bar tail --
-    has no decision at all rather than the nearest one.
-    """
     labels = tuple(bar_labels)
     edges = np.asarray(edges, dtype=np.float64)
     if len(labels) + 1 > edges.size:
@@ -202,35 +86,8 @@ def beat_classes(beat_times, edges, bar_labels) -> tuple:
     return tuple(labels[i] if 0 <= i < len(labels) else UNDECODED for i in index)
 
 
-# --------------------------------------------------------------------------- #
-# Scoring
-# --------------------------------------------------------------------------- #
-
-
 def score_predicted(track: TrackBeats, space: str, predicted, *,
                     claims: dict | None = None) -> Score:
-    """Score a per-beat predicted-class stream into the evaluator's own ``Score``.
-
-    Deliberately parallel to ``score_track`` rather than a call to it: that
-    function reads the fixed intent vocabulary out of a module global, and the
-    two things this needs to vary -- the claim map and the "no prediction"
-    sentinel -- are exactly what it hard-codes.  Everything downstream of the
-    accumulation (``match_events``, ``flicker_instants``, ``typed_predictions``,
-    ``beat_weights``, ``prf``, and every derived property on ``Score``) is the
-    imported original, so the two sides of the table cannot drift apart in the
-    arithmetic.  The result aggregates with ``aggregate`` unchanged.
-
-    Two fields on the returned ``Score`` describe the INTENT vocabulary and are
-    therefore meaningless here, and are left empty rather than faked:
-    ``confusion`` (the intent-keyed skeleton ``aggregate`` needs to sum -- the
-    network's confusion is square, predicted class x truth label, and
-    ``class_confusion`` builds it) and ``observed_intents``, which drives
-    ``expressible_classes`` and ``_structural``.  Those two answer "what can the
-    engine's vocabulary not say", and the answer for a model whose vocabulary IS
-    the label space is "nothing" -- so the report calls ``_structural`` on the
-    rule side only, and compares vocabularies through ``expressible_comparison``
-    instead.
-    """
     spec = SPACES[space]
     claims = claims or identity_claims(space)
     labels = track.labels[space]
@@ -270,12 +127,12 @@ def score_predicted(track: TrackBeats, space: str, predicted, *,
         score.scored_sec += weight
         claimed = claims[prediction]
         if label in claimed:
-            score.counts[label][0] += weight                    # tp
+            score.counts[label][_TP] += weight
         else:
-            score.counts[label][2] += weight                    # fn
+            score.counts[label][_FN] += weight
             share = weight / len(claimed)
             for target in claimed:
-                score.counts[target][1] += share                # fp, split if ambiguous
+                score.counts[target][_FP] += share
 
     decoded = [index for index, prediction in enumerate(predicted)
                if prediction != UNDECODED]
@@ -295,12 +152,6 @@ def score_predicted(track: TrackBeats, space: str, predicted, *,
     truth_by_label = {label: [t for t, new in truth if new == label]
                       for label in spec.labels}
 
-    # Same two streams the rule classifier is measured on, produced by the same
-    # differencer.  The intent stream differences the prediction and maps after;
-    # the class stream maps to the claim FIRST and differences that.  Under
-    # identity claims the two coincide -- which is the honest statement about a
-    # model that predicts label classes -- and under rule-equivalent claims they
-    # separate exactly where ATMOSPHERIC's ambiguity separates them.
     keys = tuple(UNDECODED if p == UNDECODED else _claim_key(claims, p)
                  for p in predicted)
     key_to_claim = {_claim_key(claims, label): claims[label] for label in claims}
@@ -334,12 +185,6 @@ def score_predicted(track: TrackBeats, space: str, predicted, *,
 
 
 def class_confusion(track: TrackBeats, space: str, predicted) -> dict:
-    """``predicted class -> truth label -> seconds``, the square matrix.
-
-    Time-weighted like the rule classifier's confusion so the two read in the
-    same unit (seconds of show), but square, because the network's vocabulary
-    and the annotator's are the same alphabet.
-    """
     labels = track.labels[space]
     weights, _clamped = beat_weights(track.times)
     matrix = {predicted_label: {label: 0.0 for label in SPACES[space].labels}
@@ -357,22 +202,8 @@ def merge_confusion(total: dict, addition: dict) -> dict:
     return total
 
 
-# --------------------------------------------------------------------------- #
-# Cached decode inputs
-# --------------------------------------------------------------------------- #
-
-
 @dataclasses.dataclass(frozen=True)
 class TrackInputs:
-    """Everything a sweep config needs about one track, decoded from disk once.
-
-    ``bar_observations`` depends only on ``min_coverage`` and
-    ``boundary_tolerance_sec``, so a cache built at one setting is valid for
-    every config that shares them -- which is what makes a config cost
-    milliseconds instead of a sidecar read.  ``sweep`` groups configs by that
-    pair rather than assuming it, so the cache cannot silently go stale.
-    """
-
     track_id: str
     youtube_id: str
     edges: np.ndarray
@@ -388,7 +219,6 @@ class TrackInputs:
 
 
 def build_decoder(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
-    """One decoder for a whole config: the trellis is built once, not per track."""
     return FixedLagViterbi(
         priors, params.lag_bars,
         class_prior_division=params.class_prior_division,
@@ -402,19 +232,12 @@ def build_decoder(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
 
 
 def decode_bars(inputs: TrackInputs, decoder: FixedLagViterbi) -> tuple:
-    """The committed class per bar.  ``decode`` resets, so instances are reusable."""
     return tuple(decision.label
                  for decision in decoder.decode(inputs.posteriors, inputs.boundary))
 
 
 def decode_beats(inputs: TrackInputs, decoder: FixedLagViterbi) -> tuple:
-    """The committed class per beat, ``UNDECODED`` off the bar grid."""
     return beat_classes(inputs.times, inputs.edges, decode_bars(inputs, decoder))
-
-
-# --------------------------------------------------------------------------- #
-# Loading
-# --------------------------------------------------------------------------- #
 
 
 def default_data_dir() -> Path:
@@ -422,11 +245,6 @@ def default_data_dir() -> Path:
 
 
 def split_ids(data_dir: Path, split: str) -> list:
-    """The split's youtube ids, in the frozen file's order.
-
-    Reads ``splits.json`` and nothing else -- in particular it never derives a
-    split, so a missing file is an error rather than a quiet reshuffle.
-    """
     path = Path(data_dir) / SPLITS_FILE
     if not path.exists():
         raise RuntimeError(f"no splits at {path} -- Task 1 writes it and it is "
@@ -438,14 +256,6 @@ def split_ids(data_dir: Path, split: str) -> list:
 
 
 def read_ids_file(path) -> list:
-    """An explicit youtube-id list: a JSON array, or one id per line.
-
-    Exists so a run over a hand-picked subset -- comparing two generations on
-    exactly the tracks one of them was already judged on, say -- is reachable
-    from the CLI instead of from a script that lives in someone's scratchpad and
-    cannot be re-run by a reader of the artifact.  Blank lines and ``#``
-    comments are ignored so a list can say why it exists.
-    """
     text = Path(path).read_text(encoding="utf-8").strip()
     if not text:
         raise RuntimeError(f"{path} is empty")
@@ -470,18 +280,15 @@ def read_ids_file(path) -> list:
 
 
 def sidecar_model_sha(path) -> str | None:
-    """The graph sha a posterior sidecar records, or ``None`` if it records none.
-
-    Read on its own rather than out of ``bar_observations`` because the identity
-    check has to happen BEFORE the expensive aggregation, and because a sidecar
-    predating the stamp must read as "unknown" rather than raise -- the caller
-    decides whether unknown is fatal.
-    """
     try:
         with np.load(path) as archive:
             return str(archive["model_sha"])
     except (OSError, KeyError, ValueError, zipfile.BadZipFile):
         return None
+
+
+def _youtube_id_of(track_id: str) -> str:
+    return track_id.split(".", 1)[-1]
 
 
 def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
@@ -491,31 +298,9 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
                 posteriors_dir: Path | None = None,
                 model_sha: str | None = None,
                 allow_missing: bool = False) -> tuple:
-    """``(inputs, skipped)`` for the given youtube ids, in id order.
-
-    A track missing any of its three inputs -- table rows, posterior sidecar,
-    beat grid -- **raises**.  It would otherwise drop out of *both* columns at
-    once, which keeps them comparable to each other while quietly making them
-    incomparable to the split they claim to cover: the header would still say
-    123 tracks.  A verdict measured over a silently different track set than it
-    names is worse than no verdict, so the default is fail-loud and
-    ``allow_missing`` is the deliberate, recorded override.
-
-    ``model_sha`` closes the reader half of the identity check.  The writer
-    stamps each sidecar with the graph that produced it (``infer.sidecar_is_current``
-    refuses to reuse another model's answers), but the generation and the sidecar
-    directory are independent arguments here, so a caller can name one
-    generation's priors and decoder while pointing at another's posteriors.
-    That combination loads cleanly, decodes, and writes a provenance block naming
-    a chain that never ran.  Given the expected sha, every sidecar must carry it
-    or the whole run is refused -- a mismatch is never a per-track skip, because
-    a partial answer to "which model is this" is not an answer.
-    """
     data_dir = Path(data_dir)
     table_path = Path(table_path) if table_path else data_dir / TABLE_FILE
-    # ``load_tracks`` keys by ``track_id`` ("NNNN.<youtube_id>"), which is also
-    # the beat CSV stem; youtube ids are [A-Za-z0-9_-]{11} so the split is exact.
-    by_youtube_id = {t.track_id.split(".", 1)[-1]: t for t in load_tracks(table_path)}
+    by_youtube_id = {_youtube_id_of(t.track_id): t for t in load_tracks(table_path)}
     beats_dir = annotations_dir(data_dir) / BEATS_DIR
     posteriors_dir = Path(posteriors_dir) if posteriors_dir else data_dir / POSTERIORS_DIR
 
@@ -574,20 +359,9 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
     return inputs, skipped
 
 
-# --------------------------------------------------------------------------- #
-# Running a config
-# --------------------------------------------------------------------------- #
-
-
 def evaluate_config(inputs, priors: Priors, params: DecodeParams, *,
                     space: str = DEFAULT_SPACE, claims: dict | None = None,
                     with_confusion: bool = False) -> dict:
-    """Decode every track under one config and aggregate the scores.
-
-    The returned dict carries the two numbers the selection rule reads
-    (``macro_f1``, ``flicker_per_min``) at the top level so a sweep never has to
-    reach into a ``Score``, plus the ``Score`` itself for the report.
-    """
     decoder = build_decoder(priors, params)
     scores: list = []
     matrix = ({predicted: {label: 0.0 for label in SPACES[space].labels}
@@ -610,13 +384,6 @@ def evaluate_config(inputs, priors: Priors, params: DecodeParams, *,
 
 
 def rule_baseline(inputs, space: str = DEFAULT_SPACE) -> dict:
-    """The shipping classifier scored on the SAME tracks, by its own rules.
-
-    ``intent_at_beat`` in the training table is the committed intent the live
-    engine produced for that beat, so this is the deployed system's timeline --
-    not a re-simulation of it -- and ``score_track`` is the function that
-    produced the committed corpus baseline.
-    """
     scores = [score_track(item.as_track_beats(), space) for item in inputs]
     total = aggregate(scores)
     return {
@@ -627,17 +394,11 @@ def rule_baseline(inputs, space: str = DEFAULT_SPACE) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# The side-by-side table
-# --------------------------------------------------------------------------- #
-
-
 def _round(value: float, digits: int = 6) -> float:
     return round(float(value), digits)
 
 
 def _side(score: Score, stream: str) -> dict:
-    """One column of the table: everything the plan asks to compare."""
     boundary = {}
     for tolerance in TOLERANCES_SEC:
         precision, recall, f1 = score.boundary_prf(stream, tolerance)
@@ -684,7 +445,6 @@ def _side(score: Score, stream: str) -> dict:
 
 
 def side_by_side(nn_score: Score, rule_score: Score, *, stream: str = "class") -> dict:
-    """NN column, rule column, and the deltas -- one dict, no prose."""
     nn = _side(nn_score, stream)
     rule = _side(rule_score, stream)
     return {
@@ -712,7 +472,6 @@ def side_by_side(nn_score: Score, rule_score: Score, *, stream: str = "class") -
 
 
 def restricted_macro_f1(score: Score, classes) -> float:
-    """Macro-F1 over a GIVEN class set, so two vocabularies can be compared fairly."""
     classes = tuple(classes)
     if not classes:
         return 0.0
@@ -720,28 +479,6 @@ def restricted_macro_f1(score: Score, classes) -> float:
 
 
 def expressible_comparison(nn_score: Score, rule_score: Score) -> dict:
-    """The comparison restricted to the classes both sides can actually contest.
-
-    **This is the honest comparable core, not a footnote.**  The rule classifier
-    scores exactly zero on ``intro`` and ``outro``, and the tempting reading --
-    "its vocabulary cannot express them" -- misattributes a property of the
-    HARNESS to the classifier.  ATMOSPHERIC, the intent that covers both, fires
-    from a beat-ABSENCE timer; the training table carries one row per DETECTED
-    BEAT.  So the only rows that exist are rows where a beat was just found,
-    which is precisely where the beat-absence trigger cannot be active.  Zero
-    atmospheric rows in 652,766 is what that construction guarantees, not a
-    measurement of the engine's vocabulary.
-
-    The consequence is quantitative and large: ``intro`` and ``outro`` carry
-    ~0.26 of the network's ~0.60 macro-F1 and ~64 % of the headline delta, and
-    the baseline is structurally unable to score on either. So the full
-    five-class macro-F1 is still reported -- a beat-indexed evaluation is a fair
-    description of what the *deployed system* does at beats, and the network's
-    intro/outro capability is real added value -- but it must never be quoted as
-    though the two sides contested those classes. This restricted number, over
-    the classes the baseline can actually reach, is the model-vs-model
-    comparison, and it is the one a per-track claim has to be read from.
-    """
     classes = list(rule_score.expressible_classes)
     return {
         "classes": classes,
@@ -755,32 +492,12 @@ def expressible_comparison(nn_score: Score, rule_score: Score) -> dict:
 
 
 def streams_identical(score: Score) -> bool:
-    """True when the intent and class streams are the same stream.
-
-    Under identity claims they always are, because every prediction claims a
-    distinct singleton -- so differencing before or after the map is the same
-    operation.  Asserted rather than assumed so the report can state it.
-    """
     return all(score.boundary["intent"][tolerance] == score.boundary["class"][tolerance]
                and score.flicker["intent"][tolerance] == score.flicker["class"][tolerance]
                for tolerance in TOLERANCES_SEC)
 
 
-# --------------------------------------------------------------------------- #
-# Report
-# --------------------------------------------------------------------------- #
-
-
 def _per_track_deltas(nn_scores, rule_scores, restricted_classes) -> list:
-    """Per-track NN-minus-rule macro-F1, in BOTH readings, ascending by the full one.
-
-    The restricted delta is the one that can actually go negative.  The full
-    reading gives the rule classifier a zero on every class the beat-indexed
-    table structurally prevents it from claiming, so "the NN wins on every
-    track" in that reading is close to a tautology and must not be quoted as
-    evidence that the win is universal.  Carrying both per track is what lets
-    the report say which claim is which.
-    """
     by_id = {score.track_id: score for score in rule_scores}
     rows = []
     for score in nn_scores:
@@ -804,13 +521,6 @@ def _per_track_deltas(nn_scores, rule_scores, restricted_classes) -> list:
 
 
 def _head_to_head(rows, key: str = "delta") -> dict:
-    """How the win is distributed across tracks, not just its average.
-
-    A corpus mean can be carried by a minority of tracks while the rest regress,
-    and a lighting rig is experienced one track at a time -- so "on how many
-    tracks is this actually better" is a different and more useful question than
-    "is the mean higher".
-    """
     deltas = [row[key] for row in rows]
     return {
         "tracks": len(rows),
@@ -826,7 +536,6 @@ def _head_to_head(rows, key: str = "delta") -> dict:
 def build_report(inputs, priors: Priors, params: DecodeParams, *,
                  space: str = DEFAULT_SPACE, split: str = "val",
                  skipped: list | None = None, provenance: dict | None = None) -> dict:
-    """The whole val verdict: both claim maps, both columns, the deltas."""
     strict = evaluate_config(inputs, priors, params, space=space,
                              claims=identity_claims(space), with_confusion=True)
     lenient = evaluate_config(inputs, priors, params, space=space,
@@ -880,7 +589,6 @@ def build_report(inputs, priors: Priors, params: DecodeParams, *,
 
 
 def render(report: dict) -> str:
-    """The table, as text, for a terminal and a PR description."""
     primary = report["primary"]
     nn, rule = primary["nn"], primary["rule"]
     lines = [
@@ -965,13 +673,7 @@ def render(report: dict) -> str:
     return "\n".join(lines)
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
 def write_json(path: Path, payload: dict) -> None:
-    """The eval pipeline's atomic writer, plus the parent directory."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(path, payload)
@@ -979,13 +681,6 @@ def write_json(path: Path, payload: dict) -> None:
 
 def artifact_provenance(data_dir: Path, model_version: str = MODEL_VERSION,
                         posteriors_dir: Path | None = None) -> dict:
-    """Which model, priors, splits and table produced these numbers.
-
-    A verdict table without this is unfalsifiable: the whole chain is content
-    addressed elsewhere, and the eval artifact is the one place a reader can
-    check that the numbers came from the exported model rather than a
-    checkpoint someone re-trained in between.
-    """
     data_dir = Path(data_dir)
     model_dir = data_dir / MODELS_DIR / model_version
     wanted = {
@@ -1006,15 +701,6 @@ def artifact_provenance(data_dir: Path, model_version: str = MODEL_VERSION,
 
 
 def default_output_name(split: str, ids_file=None) -> str:
-    """The filename a run writes to when ``--out`` was not given.
-
-    ``--split`` does not select anything once ``--ids-file`` is present -- it
-    only labels the run -- so both would otherwise land on ``eval_<split>.json``,
-    the published verdict for that whole split.  A subset scored over a handful
-    of hand-picked tracks would silently replace the artifact the generation is
-    judged by, in the model directory, with no flag involved.  The ids file's own
-    name distinguishes them, and distinguishes two subsets from each other.
-    """
     if ids_file is None:
         return EVAL_FILE.format(split=split)
     return EVAL_FILE.format(split=f"{split}_{Path(ids_file).stem}")
@@ -1077,9 +763,6 @@ def main(argv: list | None = None) -> int:
         provenance={"config_source": str(config_path)
                                      if Path(config_path).exists() else "defaults",
                     "requested_tracks": len(ids),
-                    # An explicit list is recorded in full: the artifact has to
-                    # say which tracks it covers, or a reader holding only the
-                    # report cannot reproduce the run it describes.
                     **({"ids_file": str(args.ids_file), "ids": list(ids)}
                        if args.ids_file else {}),
                     "artifacts": artifact_provenance(
