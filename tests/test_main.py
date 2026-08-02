@@ -8,15 +8,10 @@ from lib.main import SoundSwitchAutoPilot
 
 
 class _StopRun(Exception):
-    """Raised out of the first audio read, to end `run`'s loop after setup."""
+    ...
 
 
 def _app(enable_ui: bool, event_buffer):
-    """`run`'s setup path without the DSP stack the constructor builds.
-
-    The constructor is 1.3 GB of encoder and four hardware clients; the
-    question here is only which of two flags opens the Dash server.
-    """
     app = object.__new__(SoundSwitchAutoPilot)
     app.disable_os2l = True
     app.enable_ui = enable_ui
@@ -50,12 +45,6 @@ def _run(app):
 
 
 def test_report_without_ui_starts_no_dash_server(monkeypatch):
-    """`--report` needs the event buffer; it does not need a web server.
-
-    Gating the UI thread on the buffer's existence handed anyone who asked for
-    a session report a Dash server on 8050 they never asked for -- a port
-    taken, and a render loop competing with the audio thread on the venue box.
-    """
     started = _threads_started(monkeypatch)
     _run(_app(enable_ui=False, event_buffer=MagicMock()))
     assert started == []
@@ -68,7 +57,6 @@ def test_ui_starts_the_dash_server(monkeypatch):
 
 
 def test_report_without_ui_still_starts_the_event_buffer(monkeypatch):
-    """The half of the old gate that was doing real work."""
     _threads_started(monkeypatch)
     buffer = MagicMock()
     _run(_app(enable_ui=False, event_buffer=buffer))
@@ -82,15 +70,6 @@ def test_no_buffer_and_no_ui_starts_neither(monkeypatch):
 
 
 def test_a_raise_in_the_loop_still_blanks_the_rig_and_stops_every_thread(monkeypatch):
-    """The teardown used to sit after the loop, so anything that raised out of
-    it skipped all five closes.
-
-    `MidiClient.stop` is what sets the rig's intensities to zero, and
-    `Os2lSender`'s thread is NOT a daemon -- so the default failure was a
-    traceback, a venue rig left lit at whatever the last effect was, a resident
-    encoder, and an interpreter that then blocked at exit forever while the
-    OS2L thread went on driving VirtualDJ.
-    """
     _threads_started(monkeypatch)
     app = _app(enable_ui=False, event_buffer=None)
     app.section = MagicMock()
@@ -106,8 +85,6 @@ def test_a_raise_in_the_loop_still_blanks_the_rig_and_stops_every_thread(monkeyp
 
 
 def test_one_client_failing_to_close_does_not_strand_the_rest(monkeypatch):
-    """Ordered so the rig is blanked last; a wire that throws on the way out
-    must not be what leaves it lit."""
     _threads_started(monkeypatch)
     app = _app(enable_ui=False, event_buffer=None)
     app.os2l_client.stop.side_effect = OSError('socket already gone')
@@ -119,9 +96,6 @@ def test_one_client_failing_to_close_does_not_strand_the_rest(monkeypatch):
 
 
 def test_the_overlay_clear_is_transmitted_rather_than_queued(monkeypatch):
-    """`OverlayClient.stop` only sets a flush flag, and the only thing that
-    ever flushed was `LightEngine.on_cycle` -- inside the loop that has already
-    exited.  After a clean Ctrl-C the venue kept the last DMX frame."""
     _threads_started(monkeypatch)
     app = _app(enable_ui=False, event_buffer=None)
 
@@ -130,8 +104,6 @@ def test_the_overlay_clear_is_transmitted_rather_than_queued(monkeypatch):
     app.overlay_client.flush_messages.assert_called()
 
 def _built_buffer(monkeypatch, *, enable_ui, report_path):
-    """Construct the app with every hardware client and the 1.3 GB chain stubbed,
-    and hand back the `EventBuffer` it chose to build."""
     from lib import section_chain
 
     for module, name in (
@@ -152,14 +124,6 @@ def _built_buffer(monkeypatch, *, enable_ui, report_path):
 
 
 def test_a_session_report_keeps_the_whole_session(monkeypatch):
-    """`--report` promises the session; the default rolling window pruned it.
-
-    Every write prunes at twice the window, so a thirty-minute set reported six
-    of its sixty intent changes and a beat count pinned at the deque cap -- and
-    the branch's own soak artifact is one of those reports.  The simulation's
-    `_session_buffer` had already taken the window off for exactly this reason;
-    production never got the same treatment.
-    """
     from lib.clock import VirtualClock
     from lib.engine.event_buffer import EventBuffer
 
@@ -180,7 +144,5 @@ def test_a_session_report_keeps_the_whole_session(monkeypatch):
 
 
 def test_the_live_view_keeps_its_rolling_window(monkeypatch):
-    """The UI draws 30 s and never reads back past it, so it pays for the
-    window rather than holding a whole night of blocks."""
     buffer = _built_buffer(monkeypatch, enable_ui=True, report_path=None)
     assert buffer._window_sec == 60.0

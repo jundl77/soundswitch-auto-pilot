@@ -15,24 +15,17 @@ from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE  # noqa: E402
 from simulate.fake_audio_client import FileAudioClient  # noqa: E402
 from simulate.runner import run_fast_simulation  # noqa: E402
 
-# The eval set itself is committed, so this is safe at import time; only the
-# audio it names can be missing.
 EVAL_SET = load_eval_set(EVAL_SET_FILE)
 DATA_DIR = run_eval_set.corpus_dir()
 
-# Named through the selector rather than by literal id: if the set is ever
-# re-frozen, the wall-time budget these protect follows the new durations.
 SAMPLE_TRACK_ID = run_eval_set.shortest_track_ids(EVAL_SET, 1)[0]
 BENCH_TRACK_IDS = run_eval_set.shortest_track_ids(EVAL_SET, 3)
 
 
 def _require_audio(track_ids: list) -> list:
-    """The eval-set records for ``track_ids``, or one clear failure line."""
     tracks = run_eval_set.select_tracks(EVAL_SET, track_ids)
     problems = run_eval_set.missing_inputs(DATA_DIR, tracks)
     if problems:
-        # One line, everything that is missing: a fresh clone should not have to
-        # re-run the suite three times to learn it needs three files.
         pytest.fail("; ".join(problems))
     return tracks
 
@@ -60,14 +53,6 @@ async def _sample_run() -> dict:
 
 @pytest.mark.integration
 async def test_sample_song_evaluation_passes(nn_artifacts):
-    """The plumbing verdict -- "did anything happen at all".
-
-    It went strict-xfail through the demolition, because beats, silence and a
-    held intent were the whole show (D13) and this asks for two intent changes,
-    two distinct intents, two channels and one effect change.  The rewire makes
-    it true again, which is what the strictness was for: the marker could not be
-    left behind.
-    """
     from simulate.evaluator import evaluate
     run = await _sample_run()
     result = evaluate(run['report'])
@@ -76,21 +61,10 @@ async def test_sample_song_evaluation_passes(nn_artifacts):
 
 @pytest.mark.integration
 async def test_the_decoder_drives_the_show_on_a_real_track(nn_artifacts):
-    """The rewire's own reading, which the plumbing verdict cannot give.
-
-    "Two intents and an effect change" is satisfied by the silence timer plus
-    one commit.  What Task 9 has to show is a decoder committing repeatedly, on
-    the bar grid, into intents only a class could have produced -- and ATMOSPHERIC
-    among them, because `intro`/`outro` are classes now.  That last one closes a
-    named limitation: the retired engine could only reach ATMOSPHERIC through a
-    beat-absence timer, which mastered EDM never trips.
-    """
     run = await _sample_run()
     intents = [block['intent'] for block in run['report']['intents']]
     assert len(intents) >= 4, intents
     assert {'atmospheric', 'drop'} <= set(intents), intents
-    # Every block is stamped when the room hears it, one playback delay after
-    # the bar that caused it, so none may land past the audio.
     assert all(block['t'] <= run['report']['duration_sec'] + 1e-6
                for block in run['report']['intents'])
 
@@ -141,33 +115,6 @@ async def test_simulation_is_deterministic():
 
 @pytest.mark.integration
 def test_eval_set_head_matches_the_committed_baseline(nn_artifacts):
-    """Three eval-set tracks through the benchmark runner, compare mode.
-
-    This is the gate the old plumbing-PASS verdict used to be: it fails on a
-    changed report checksum (the pipeline behaves differently) and on a score
-    that fell below the committed baseline (the show got worse).  A subset run,
-    so the ten-track aggregate is not compared -- see run_eval_set.compare.
-
-    Read the printed table on failure: it names the track, the metric, and the
-    direction, and says whether re-cutting the baseline is the right answer.
-
-    It went strict-xfail through the demolition -- the report schema lost four
-    beat columns and one metric, so every checksum moved, and the engine
-    committed nothing, so every label-aligned score was 0.  Re-cutting there
-    would have blessed the intermediate state as the benchmark, which is why the
-    plan gave that job to Task 15 and gave it once.  The strictness is what
-    stopped the marker outliving the cut: it XPASSed the moment the baseline was
-    re-cut against the neural show, and came off in the same commit.
-
-    **`nn_artifacts`, because the baseline describes a neural show.**  The
-    audio and the labels are committed, but the 1.3 GB model is not -- and
-    without it the runner degrades to a held cold-start floor, which moves every
-    checksum and drops every score to near zero.  That is a FAIL, and its
-    message used to say "re-cut if the change is intended": on a machine with no
-    model, following it re-cuts all ten tracks against the degradation state and
-    destroys the benchmark.  So the gate now says it needs the model rather than
-    reporting its absence as a regression.
-    """
     _require_audio(BENCH_TRACK_IDS)
     exit_code = run_eval_set.main([
         "--only", ",".join(BENCH_TRACK_IDS),

@@ -1,17 +1,3 @@
-"""The online student's deployed step: a ring of cells in, one posterior out.
-
-The load-bearing test is phase-b's streaming-equivalence test, ported: the live
-path is not a re-implementation of the offline one, it is the same graph fed the
-same tensors, and this is where that claim is checked. A streaming path whose
-numbers are merely close to the offline model's is the defect the whole
-train==deploy discipline exists to prevent.
-
-The unit cases run a fake session with the deployed signature -- same input and
-output names, same carried state -- so the ring-buffer and state bookkeeping is
-exercised without the shipped 1.4 M-parameter student and without loading a
-graph at all. The real graph is checked under `integration`, and that is where
-the equivalence claim is actually settled.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -48,15 +34,6 @@ class _Port:
 
 
 class FakeSession:
-    """The deployed signature, as a pure function of (window, state).
-
-    Standing in for a synthetic ONNX graph, which cannot be built without the
-    `onnx` package -- not a dependency of the show, and not worth becoming one
-    to give a bookkeeping test a different arithmetic backend. What these tests
-    are about is the ring and the carried state; the real graph is checked
-    under `integration`, which is where a graph question belongs.
-    """
-
     def __init__(self, seed: int = 0) -> None:
         rng = np.random.default_rng(seed)
         self.into = rng.normal(size=(DIM, HIDDEN)).astype(np.float32) * 0.4
@@ -91,7 +68,6 @@ class FakeSession:
 
 @pytest.fixture
 def tiny(tmp_path):
-    """A file whose bytes hash to what its sidecar records."""
     path = tmp_path / "tiny_step.onnx"
     path.write_bytes(b"not a real graph, but a real sha")
     meta = {"sha256": S.sha256_file(path), "window_cells": WINDOW,
@@ -123,7 +99,6 @@ def _cells(count, seed=1):
 
 
 def _reference(path, geometry, cells, mean, session=None):
-    """The offline windowed pass: the same graph, windows built explicitly."""
     session = session or S.session(path)
     reach = geometry.conv_reach_cells
     padded = np.concatenate([np.repeat(np.asarray(mean)[None], reach, axis=0),
@@ -153,11 +128,6 @@ def _stream(model, cells):
     return out
 
 
-# --------------------------------------------------------------------------- #
-# TRAIN == DEPLOY
-# --------------------------------------------------------------------------- #
-
-
 def test_the_streaming_posteriors_reproduce_the_offline_windowed_pass(
         tiny, geometry, mean):
     cells = _cells(60)
@@ -171,7 +141,6 @@ def test_the_streaming_posteriors_reproduce_the_offline_windowed_pass(
 
 
 def test_the_forward_state_is_carried_across_steps(tiny, geometry, mean):
-    """Reset only at a song boundary -- a per-step reset is a different model."""
     cells = _cells(40)
     carried = _stream(_model(tiny, mean), cells)
 
@@ -184,8 +153,6 @@ def test_the_forward_state_is_carried_across_steps(tiny, geometry, mean):
 
 def test_the_feature_ring_is_primed_from_the_corpus_mean_not_zeros(
         tiny, geometry, mean):
-    """Zeros are not silence after the input affine -- they are a confident,
-    out-of-distribution input (D10)."""
     cells = _cells(30)
     primed = _stream(_model(tiny, mean), cells)
     zeroed = _reference(tiny, geometry, cells,
@@ -210,12 +177,6 @@ def test_flush_drains_the_tail_cells(tiny, mean):
 
 
 def test_a_flush_is_terminal_until_the_model_is_reset(tiny, mean):
-    """Pushes after a flush kept emitting -- from a ring holding the padding
-    rows the flush put there, at indices that carried straight on -- and the
-    next song's flush returned nothing, dropping its last four seconds. Two
-    silent failures where MertStream, the other half of the same pipeline,
-    raises.
-    """
     model = _model(tiny, mean)
     _stream(model, _cells(20))
     with pytest.raises(S.Flushed):
@@ -239,8 +200,6 @@ def test_reset_returns_the_model_to_its_cold_state(tiny, mean):
 
 
 def test_posteriors_are_stamped_at_the_end_of_their_cell(tiny, geometry, mean):
-    """The sidecars' convention (`label_t0 == label_frame_sec`), the same one
-    MertStream stamps cells with -- one grid across the pipeline, not two."""
     live = _stream(_model(tiny, mean), _cells(25))
     for item in live:
         assert item.time_sec == pytest.approx((item.index + 1)
@@ -256,11 +215,6 @@ def test_a_posterior_is_a_distribution_and_the_boundary_a_probability(
         assert 0.0 <= item.boundary <= 1.0
 
 
-# --------------------------------------------------------------------------- #
-# A posterior is stamped by the cell it decided, not by how many arrived
-# --------------------------------------------------------------------------- #
-
-
 def test_a_posterior_carries_the_index_of_the_cell_it_decided(tiny, mean):
     model = _model(tiny, mean)
     cells = _cells(FUTURE + 5)
@@ -271,15 +225,6 @@ def test_a_posterior_carries_the_index_of_the_cell_it_decided(tiny, mean):
 
 def test_a_skipped_cell_run_does_not_slide_the_posterior_clock(
         tiny, geometry, mean):
-    """The resync/push-counter disagreement, at the seam it lives on.
-
-    `MertStream.resync` abandons the cells the ring no longer holds and rejoins
-    the live edge, so its cell indices SKIP; a model counting its own pushes
-    stamps the first cell after the gap as if the gap had never happened, and
-    every posterior for the rest of the song is early by the length of the shed.
-    The decoder joins cells to bars by time, so that is not a cosmetic stamp --
-    it is the show reading the wrong part of the track, silently.
-    """
     model = _model(tiny, mean)
     for n, row in enumerate(_cells(FUTURE + 5)):
         model.push(row, index=n)
@@ -297,11 +242,6 @@ def test_the_flushed_tail_carries_on_from_the_last_cell_pushed(tiny, mean):
         model.push(row, index=500 + n)
     assert [item.index for item in model.flush()] \
         == list(range(500 + 20 - FUTURE, 520))
-
-
-# --------------------------------------------------------------------------- #
-# The graph is verified at startup, not at the first beat
-# --------------------------------------------------------------------------- #
 
 
 def test_the_head_geometry_is_read_from_the_shipped_json(geometry):
@@ -344,8 +284,6 @@ def test_a_json_missing_a_geometry_field_is_refused(tmp_path, tiny):
 
 
 def _retyped(tmp_path, tiny, **changes):
-    """The same graph bytes with an edited sidecar -- the sha covers only the
-    .onnx, so this is what a wrong-geometry model looks like from outside."""
     copy = tmp_path / "regeometried.onnx"
     copy.write_bytes(Path(tiny).read_bytes())
     meta = json.loads(Path(str(tiny) + ".json").read_text(encoding="utf-8"))
@@ -357,9 +295,6 @@ def _retyped(tmp_path, tiny, **changes):
 
 def test_a_window_the_graph_does_not_declare_is_refused_at_startup(
         tmp_path, tiny, mean):
-    """Reproduced against the shipped graph: window_cells 46 -> 45 constructed
-    cleanly and raised inside onnxruntime at push #44 -- mid-show, which is
-    exactly what verifying at construction is supposed to prevent."""
     with pytest.raises(ValueError, match="window_cells"):
         _model(_retyped(tmp_path, tiny, window_cells=WINDOW - 1), mean)
 
@@ -372,9 +307,6 @@ def test_a_state_width_the_graph_does_not_declare_is_refused_at_startup(
 
 def test_a_future_window_that_contradicts_its_own_seconds_is_refused(
         tmp_path, tiny, mean):
-    """The graph shape cannot see this one: future_cells 43 -> 41 on the shipped
-    model constructed AND ran, stamping every posterior two cells early and
-    moving probabilities by up to 0.155, with nothing raising anywhere."""
     with pytest.raises(ValueError, match="future_sec"):
         _model(_retyped(tmp_path, tiny, future_cells=FUTURE - 2), mean)
 
@@ -388,8 +320,6 @@ def test_a_window_that_cannot_hold_its_own_future_is_refused(
 
 def test_a_session_that_cannot_describe_itself_is_a_failure_not_a_skip(
         tiny, mean):
-    """The seam the reviewer used to demonstrate the hole is the one place the
-    check must not quietly turn itself off."""
     class _Mute(FakeSession):
         get_inputs = None
         get_outputs = None
@@ -409,23 +339,11 @@ def test_a_feature_row_of_the_wrong_width_is_refused(tiny, mean):
         model.push(np.zeros(DIM + 2, dtype=np.float32))
 
 
-# --------------------------------------------------------------------------- #
-# The determinism contract
-# --------------------------------------------------------------------------- #
-
-
 def test_the_session_is_pinned_to_one_thread_and_sequential_execution():
-    """A threaded reduction sums in whatever order the pool finishes in, and
-    float addition is not associative."""
     options = S.session_options()
     assert options.intra_op_num_threads == 1
     assert options.inter_op_num_threads == 1
     assert options.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
-
-
-# --------------------------------------------------------------------------- #
-# The shipped student (integration)
-# --------------------------------------------------------------------------- #
 
 
 SHIPPED_ONNX_SHA = ("f1fe6ef7c3cc0dede24a7d572841b3eb2c381f12"
@@ -496,14 +414,7 @@ def test_sha256_file_reads_the_bytes_on_disk(tmp_path):
     assert S.sha256_file(path) == hashlib.sha256(b"abc").hexdigest()
 
 
-# --------------------------------------------------------------------------- #
-# The two stages joined
-# --------------------------------------------------------------------------- #
-
-
 class _FakeStream:
-    """A MertStream-shaped source of cells."""
-
     def __init__(self, script):
         self.script = list(script)
         self.pushed = []
@@ -553,8 +464,6 @@ def _cell(index, features):
 
 
 def test_the_posterior_stream_runs_every_due_pass_before_it_returns():
-    """One buffer can complete more than one pass after a stall, and a pass left
-    un-run is a hop of audio the show never sees."""
     from lib.analyser.section_model import PosteriorStream
 
     stream = _FakeStream([[_cell(0, 'a'), _cell(1, 'b')], [_cell(2, 'c')]])
@@ -575,8 +484,6 @@ def test_cells_still_inside_the_future_window_produce_nothing_yet():
 
 
 def test_resetting_the_pair_resets_both_halves():
-    """A song boundary must clear both: the ring holds the previous track's
-    audio and the GRU state holds its whole structure."""
     from lib.analyser.section_model import PosteriorStream
 
     stream, model = _FakeStream([]), _FakeModel([])
@@ -585,8 +492,6 @@ def test_resetting_the_pair_resets_both_halves():
 
 
 def test_the_extractor_s_cell_index_is_what_the_model_is_stamped_with():
-    """The two halves must agree about song time across a gap, and only the
-    extractor knows there was one."""
     from lib.analyser.section_model import PosteriorStream
 
     stream = _FakeStream([[_cell(7, 'a')], [_cell(413, 'b')]])

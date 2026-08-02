@@ -1,31 +1,3 @@
-"""Tests for the downbeat ONNX export and the activation sidecars
-(``training/nn/downbeat_infer.py``).
-
-Everything Task 4 scores is read out of these ``.npz`` files, and a defect here
-is invisible downstream: the decoder will happily phase-label an activation that
-is shifted by a frame, averaged over the wrong windows, or produced by last
-week's checkpoint, and every number in the verdict will be wrong in a way no
-later assertion can catch.  So the checks are aimed at the parts that fail
-*silently*.
-
-**The graph.**  ``torch.onnx.export`` reports success even when the dynamo path
-has baked the traced time length into a GRU model, and this architecture has the
-same GRU the section head's pre-flight caught it on.  The declared axes are read
-back out of the file and the graph is run at a length it never saw.
-
-**The numbers.**  A golden inference against a committed reference pins torch,
-the exporter and onnxruntime together, on a model built from a numpy seed so it
-runs on a machine with no corpus.
-
-**The geometry.**  Stub sessions whose output encodes either the global frame
-index (so a one-frame shift is visible) or the position within the window (so a
-leaked window edge is visible).  Real inference cannot test this: every plausible
-bug still produces a plausible-looking activation.
-
-**The aggregation.**  Beat instants are jittered on purpose.  A tracker's beats
-do not land on the mel grid and do not land where the annotator put them, so a
-window that only works on exact instants is a window that only works offline.
-"""
 import json
 import math
 import sys
@@ -84,26 +56,15 @@ needs_corpus = pytest.mark.skipif(
 )
 
 
-# --------------------------------------------------------------------------- #
-# A reproducible stand-in for the trained model
-# --------------------------------------------------------------------------- #
-
-
 def seeded_model(seed: int = 20260727) -> DownbeatCRNN:
-    """The real architecture with weights drawn from a numpy seed.
-
-    Same recipe as the section head's golden model, and for the same reason:
-    numpy's ``default_rng`` stream is a documented, versioned guarantee, so the
-    reference survives exactly the torch upgrade it exists to notice.  The gain
-    is what keeps a random GRU from contracting to a constant, which would make
-    the reference pin nothing.
-    """
     model = DownbeatCRNN()
     state = model.state_dict()
     normalised = {name.rsplit(".", 1)[0] for name in state if name.endswith("running_mean")}
     moments = {"weight": (1.0, 0.25), "bias": (0.0, 0.25),
                "running_mean": (0.0, 0.25), "running_var": (1.0, 0.5)}
 
+    # numpy's default_rng stream is a versioned guarantee, so the golden
+    # reference survives exactly the torch upgrade it exists to notice.
     rng = np.random.default_rng(seed)
     with torch.no_grad():
         for name, tensor in sorted(state.items()):
@@ -115,7 +76,8 @@ def seeded_model(seed: int = 20260727) -> DownbeatCRNN:
                 centre, spread = moments[leaf]
                 draw = centre + spread * draw
             elif tensor.dim() > 1:
-                draw = GAIN * draw / math.sqrt(tensor[0].numel())     # fan-in
+                fan_in = tensor[0].numel()
+                draw = GAIN * draw / math.sqrt(fan_in)
             else:
                 draw = 0.05 * draw
             tensor.copy_(torch.from_numpy(draw.reshape(tensor.shape)).float())
@@ -123,7 +85,6 @@ def seeded_model(seed: int = 20260727) -> DownbeatCRNN:
 
 
 def seeded_mel(frames: int = WINDOW_FRAMES, seed: int = 4242) -> np.ndarray:
-    """A synthetic log-mel window on roughly the scale the sidecars carry."""
     rng = np.random.default_rng(seed)
     time = np.arange(frames, dtype=np.float64)[:, None]
     band = np.arange(MEL_BANDS, dtype=np.float64)[None, :]
@@ -142,13 +103,7 @@ def exported(tmp_path, model=None, **kwargs):
 
 @pytest.fixture(scope="session")
 def graph(tmp_path_factory):
-    """One export shared by the tests that are not testing the exporter."""
     return exported(tmp_path_factory.mktemp("downbeat_graph"))
-
-
-# --------------------------------------------------------------------------- #
-# Stub sessions -- the only way to see the window geometry
-# --------------------------------------------------------------------------- #
 
 
 def _logit(value):
@@ -157,21 +112,11 @@ def _logit(value):
 
 
 class IndexSession:
-    """Echoes the mel back as an activation, so a frame that moved is visible.
-
-    The caller writes the *global* frame index into the mel; the returned
-    activation is that value, so the stitched track must come back as the
-    identity.  A one-frame slice error anywhere in the window loop shows up as a
-    step in a straight line.
-    """
-
     def run(self, _outputs, feed):
         return [_logit(feed[INPUT_NAME][:, :, 0])]
 
 
 class PositionSession:
-    """Answers by *position inside the window*, so a leaked edge is visible."""
-
     def __init__(self, window_frames=WINDOW_FRAMES, edge_frames=EDGE_FRAMES):
         self.window_frames = window_frames
         self.edge_frames = edge_frames
@@ -183,19 +128,11 @@ class PositionSession:
 
 
 def index_mel(n_frames: int) -> np.ndarray:
-    """Mel whose every band carries the frame's own position in ``[0, 1)``."""
     return np.repeat((np.arange(n_frames) / n_frames)[:, None],
                      MEL_BANDS, axis=1).astype(np.float32)
 
 
-# --------------------------------------------------------------------------- #
-# Export: the graph
-# --------------------------------------------------------------------------- #
-
-
 def test_export_declares_a_dynamic_time_axis(tmp_path):
-    """The failure this guards is silent: the dynamo exporter bakes the traced
-    length into a GRU graph and still reports success."""
     path, _sess = exported(tmp_path)
 
     axes = declared_axes(path)
@@ -214,9 +151,6 @@ def test_exported_graph_runs_at_a_length_it_was_not_traced_at(graph, frames):
 
 
 def test_golden_onnx_inference_matches_the_saved_reference(tmp_path):
-    """One uncached export + inference against a committed reference, so an
-    exporter or onnxruntime upgrade fails here rather than as an unexplained
-    metric change in Task 4."""
     _path, sess = exported(tmp_path)
 
     logits = run_window(sess, seeded_mel())
@@ -225,11 +159,8 @@ def test_golden_onnx_inference_matches_the_saved_reference(tmp_path):
         assert logits.shape == tuple(reference["downbeat_logits"].shape)
         assert np.abs(logits - reference["downbeat_logits"]).max() < GOLDEN_TOLERANCE
 
-    # The reference is only worth its tolerance if the output moves when the
-    # input does; a contracted random net would pass the comparison above while
-    # pinning nothing at all.
-    other = run_window(sess, seeded_mel(seed=99))
-    assert np.abs(logits - other).max() > 1000 * GOLDEN_TOLERANCE
+    logits_for_a_different_input = run_window(sess, seeded_mel(seed=99))
+    assert np.abs(logits - logits_for_a_different_input).max() > 1000 * GOLDEN_TOLERANCE
 
 
 @pytest.mark.parametrize("frames", [WINDOW_FRAMES, 512, 64])
@@ -246,17 +177,11 @@ def test_torch_and_onnx_agree_on_synthetic_windows(graph, frames):
 
 
 def test_the_session_is_the_pinned_single_threaded_one(graph):
-    """The determinism contract is one definition, in ``export_onnx.session``."""
     from nn.export_onnx import session as section_session
 
     from nn.downbeat_infer import session as downbeat_session
 
     assert downbeat_session is section_session
-
-
-# --------------------------------------------------------------------------- #
-# The checkpoint payload -- pinned, because it differs from the section head's
-# --------------------------------------------------------------------------- #
 
 
 def make_checkpoint(tmp_path, **overrides):
@@ -270,11 +195,7 @@ def make_checkpoint(tmp_path, **overrides):
     return path
 
 
-def test_the_downbeat_checkpoint_payload_shape_is_pinned(tmp_path):
-    """``best.pt`` here is *flat* -- ``["metrics"]["f1"]`` and ``["f1"]`` are both
-    floats -- while the section head's nests one level deeper.  Nothing else in
-    the tree pins that, so a loader written against the wrong shape would read a
-    dict where it expects a number and only notice in a report."""
+def test_the_downbeat_checkpoint_payload_is_flat_where_the_section_head_nests(tmp_path):
     state = load_downbeat_checkpoint(make_checkpoint(tmp_path))
 
     assert isinstance(state["f1"], float)
@@ -296,10 +217,7 @@ def test_a_checkpoint_missing_a_required_field_is_named_not_guessed(tmp_path, mi
         load_downbeat_checkpoint(path)
 
 
-def test_build_from_checkpoint_accepts_the_json_round_tripped_arch(tmp_path):
-    """``arch`` survives a JSON round trip in ``config.json``, so it arrives with
-    lists where the constructor took tuples.  A constructor that reinterpreted
-    one of its fields would build a differently shaped net that still loads."""
+def test_build_from_checkpoint_accepts_an_arch_whose_tuples_became_json_lists(tmp_path):
     path = make_checkpoint(tmp_path)
     state = load_downbeat_checkpoint(path)
     state["arch"] = json.loads(json.dumps(state["arch"]))
@@ -318,11 +236,6 @@ def test_an_arch_the_weights_do_not_fit_is_refused(tmp_path):
         build_from_checkpoint(state)
 
 
-# --------------------------------------------------------------------------- #
-# Window geometry
-# --------------------------------------------------------------------------- #
-
-
 def test_every_frame_of_a_track_is_voted_on(graph):
     _path, sess = graph
 
@@ -334,8 +247,6 @@ def test_every_frame_of_a_track_is_voted_on(graph):
 
 
 def test_the_stitched_activation_is_the_identity_on_an_index_mel():
-    """A one-frame slice error anywhere in the window loop puts a step in what
-    must be a straight line."""
     n_frames = 1000
     track = infer_track(IndexSession(), index_mel(n_frames))
 
@@ -343,9 +254,6 @@ def test_the_stitched_activation_is_the_identity_on_an_index_mel():
 
 
 def test_no_window_edge_reaches_a_frame_another_window_could_have_voted_on():
-    """The spec forbids reading a window's outermost frames -- cold GRU state,
-    no context on one side.  The only frames allowed to see one are the track's
-    own first and last, which no window's interior can reach."""
     n_frames = 1200
     track = infer_track(PositionSession(), np.zeros((n_frames, MEL_BANDS), np.float32))
 
@@ -365,9 +273,7 @@ def test_a_track_shorter_than_one_window_is_padded_not_refused(graph):
     assert track.windows == 1
 
 
-def test_the_geometry_travels_with_the_result(graph):
-    """A sidecar that recorded the module defaults while holding non-default
-    numbers is worse than an unlabelled one -- the cache key would accept it."""
+def test_non_default_geometry_travels_with_the_result_rather_than_the_module_defaults(graph):
     _path, sess = graph
 
     track = infer_track(sess, seeded_mel(800)[0], hop_frames=8, edge_frames=10)
@@ -382,14 +288,7 @@ def test_a_hop_wider_than_the_window_interior_is_refused(graph):
         infer_track(sess, seeded_mel(800)[0], hop_frames=WINDOW_FRAMES)
 
 
-# --------------------------------------------------------------------------- #
-# Where the activation sits against the grid
-# --------------------------------------------------------------------------- #
-
-
 def test_lag_profile_finds_an_injected_shift():
-    """The instrument the aggregation window is chosen with: it has to be able to
-    see an offset before it is trusted to report that there is none."""
     activation = np.zeros(500, dtype=np.float64)
     marks = np.arange(20, 480, 16)
     activation[marks + 2] = 1.0
@@ -397,11 +296,6 @@ def test_lag_profile_finds_an_injected_shift():
     profile = lag_profile(activation, marks, radius=4)
 
     assert int(np.argmax(profile)) - 4 == 2
-
-
-# --------------------------------------------------------------------------- #
-# Sidecars
-# --------------------------------------------------------------------------- #
 
 
 def make_track(n_frames=300):
@@ -423,8 +317,6 @@ def make_arrays(model_sha="a" * 64):
 
 
 def test_two_writes_of_one_sidecar_are_byte_identical(tmp_path):
-    """np.savez's reproducibility is a CPython default, not an API promise, and
-    a determinism claim resting on it is a claim about this machine."""
     arrays = make_arrays()
     first = tmp_path / "a.npz"
     second = tmp_path / "b.npz"
@@ -447,10 +339,6 @@ def test_a_sidecar_round_trips_both_conditions(tmp_path):
 
 
 def test_the_stored_beat_scores_are_reproducible_from_the_stored_curve(tmp_path):
-    """The half-beat decode aggregates its own candidates off ``activation``, so
-    the cached per-beat scores and a fresh aggregation have to be the same thing.
-    If they ever diverge, a subdivision-1 and a subdivision-2 decode of one track
-    would be reading two different models."""
     path = tmp_path / "t.npz"
     track = make_track(600)
     beats = np.arange(2.0, 20.0, 0.47)
@@ -467,10 +355,7 @@ def test_the_stored_beat_scores_are_reproducible_from_the_stored_curve(tmp_path)
         assert np.array_equal(again, archive["live_beat_score"])
 
 
-def test_the_sidecar_carries_no_bar_phase():
-    """The expert *phase* is truth, and truth must not ride into a test-split
-    artifact.  Beat instants are the diagnostic condition's input; the phase is
-    what Task 4 scores against, read from the annotations."""
+def test_the_sidecar_carries_no_bar_phase_so_no_truth_rides_into_a_test_split_artifact():
     assert not any("phase" in key for key in make_arrays())
 
 
@@ -492,14 +377,7 @@ def test_a_geometry_change_invalidates_the_cache(tmp_path):
     assert not sidecar_is_current(path, "a" * 64)
 
 
-# --------------------------------------------------------------------------- #
-# The live beat stream
-# --------------------------------------------------------------------------- #
-
-
-def test_live_beats_are_read_from_the_cached_sim_report(tmp_path):
-    """The live condition's input is the production pipeline's own beat stream,
-    bit for bit -- not a re-derivation."""
+def test_live_beats_are_read_from_the_cached_sim_report_not_re_derived(tmp_path):
     import gzip
 
     reports = tmp_path / "reports"
@@ -511,13 +389,7 @@ def test_live_beats_are_read_from_the_cached_sim_report(tmp_path):
     assert live_beat_times(tmp_path, "abc").tolist() == [1.5, 2.0]
 
 
-# --------------------------------------------------------------------------- #
-# Split hygiene on the CLI
-# --------------------------------------------------------------------------- #
-
-
 def _val_only_ids(monkeypatch):
-    """Stand in for the corpus's splits so the guard is testable without one."""
     import nn.downbeat_infer as module
 
     monkeypatch.setattr(module, "split_ids",
@@ -530,11 +402,7 @@ def _val_only_ids(monkeypatch):
     ["--lag-profile", "--splits", "val", "test"],
     ["--lag-profile", "--ids", "t1"],
 ])
-def test_the_lag_profile_refuses_the_test_split(monkeypatch, argv):
-    """It reads annotated bar phase to *choose a decoder parameter*, which makes
-    it a tuning measurement -- and a bare run used to default to val+test.  The
-    guard checks split membership rather than the flag, because an explicit
-    ``--ids`` walks straight past a flag-level check."""
+def test_the_lag_profile_refuses_the_test_split_by_membership_not_by_flag(monkeypatch, argv):
     from nn.downbeat_infer import main
 
     _val_only_ids(monkeypatch)
@@ -546,7 +414,6 @@ def test_the_lag_profile_refuses_the_test_split(monkeypatch, argv):
 
 
 def test_the_lag_profile_defaults_to_val_alone(monkeypatch, capsys):
-    """The default is the thing that was wrong, so the default is what is pinned."""
     import nn.downbeat_infer as module
 
     _val_only_ids(monkeypatch)
@@ -564,9 +431,7 @@ def test_the_lag_profile_defaults_to_val_alone(monkeypatch, capsys):
     assert seen["ids"] == ["v1", "v2"]
 
 
-def test_generation_still_covers_val_and_test(monkeypatch):
-    """The quarantine is on the *tuning* read, not on producing inputs -- a
-    guard that also blocked sidecar generation would be the wrong fix."""
+def test_only_the_tuning_read_is_quarantined_so_generation_covers_val_and_test(monkeypatch):
     import nn.downbeat_infer as module
 
     _val_only_ids(monkeypatch)
@@ -588,11 +453,6 @@ def test_a_missing_report_names_the_track(tmp_path):
 
     with pytest.raises(RuntimeError, match="abc"):
         live_beat_times(tmp_path, "abc")
-
-
-# --------------------------------------------------------------------------- #
-# The real artifacts (skipped without the gitignored corpus)
-# --------------------------------------------------------------------------- #
 
 
 @needs_corpus

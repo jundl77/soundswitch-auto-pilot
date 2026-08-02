@@ -49,7 +49,6 @@ def _report(beats, **over):
 
 
 def _demolished(report):
-    """The same report with every column and metric the demolition deletes gone."""
     stripped = dict(report)
     stripped['beats'] = [{k: v for k, v in beat.items()
                           if k not in DOOMED_BEAT_COLUMNS} for beat in report['beats']]
@@ -87,12 +86,6 @@ def test_the_three_beat_column_sets_do_not_overlap():
 
 
 def test_the_live_beat_row_is_exactly_the_columns_that_survived():
-    """The partition was cut before the demolition; this is it settling.
-
-    A live row now carries the survivors and the rescaled one and nothing else,
-    so the doomed set is a statement about the past rather than about a column
-    still being produced.
-    """
     from lib.engine.event_buffer import EventBuffer
 
     buffer = EventBuffer(window_sec=float('inf'))
@@ -101,9 +94,6 @@ def test_the_live_beat_row_is_exactly_the_columns_that_survived():
     columns = set(buffer.to_report()['beats'][0].keys())
     assert columns == set(SURVIVING_BEAT_COLUMNS) | set(RESCALED_BEAT_COLUMNS)
     assert not columns & set(DOOMED_BEAT_COLUMNS)
-    # The synthetic row the rest of this module builds still carries the doomed
-    # columns, so the instrument keeps being exercised against a pre-demolition
-    # report shape as well as a post-demolition one.
     assert set(_beat(0.0).keys()) - set(DOOMED_BEAT_COLUMNS) == columns
 
 
@@ -155,18 +145,7 @@ def test_a_moved_os2l_field_moves_the_wire_hash():
     assert a['os2l']['stream_hash'] != b['os2l']['stream_hash']
 
 
-# --------------------------------------------------------------------------- #
-# The MIDI show is a relation, and the transcript that proves it is evidence
-# --------------------------------------------------------------------------- #
-
-
 def test_the_midi_transcript_is_not_gated_anywhere_in_survives():
-    """The finding this split exists to close.
-
-    Command counts, labels and the ordering hash are a function of the
-    classifier the demolition retires; equality-gating them would fail Task 4 on
-    exactly the fields it is required to move.
-    """
     midi = [{'label': 'set_autoloop', 'time': 1.0, 'channel': 'A'}]
     d = digest_report(_report([]), _streams(midi=midi))
     assert 'midi' not in d['survives']
@@ -175,7 +154,6 @@ def test_the_midi_transcript_is_not_gated_anywhere_in_survives():
 
 
 def test_a_show_that_changed_nothing_but_its_intents_keeps_every_survivor():
-    """The experiment the review ran: hold one intent, and only the show moves."""
     beats = [_beat(1.0), _beat(2.0)]
     streams = _streams(sound=[{'t': 0.3, 'playing': True}], os2l=[_os2l(1)],
                        overlay=[_overlay(1.0)])
@@ -254,11 +232,6 @@ def test_an_effect_lit_before_any_intent_was_committed_is_caught():
     assert d['midi_channels_come_from_the_intents_pool'] is False
 
 
-# --------------------------------------------------------------------------- #
-# D6: the overlay light bar has a supplier, and it is the one thing that says so
-# --------------------------------------------------------------------------- #
-
-
 def test_the_overlay_light_bar_is_pinned_as_a_liveness_relation():
     d = relations_digest(_report([]), _streams(overlay=[_overlay(1.0), _overlay(2.0)]))
     assert d['overlay_light_bar_fires'] is True
@@ -266,7 +239,6 @@ def test_the_overlay_light_bar_is_pinned_as_a_liveness_relation():
 
 
 def test_a_dark_overlay_light_bar_is_caught():
-    """D6's failure mode: the onset chain goes, the re-source is forgotten."""
     d = relations_digest(_report([]), _streams(overlay=[]))
     assert d['overlay_light_bar_fires'] is False
 
@@ -281,11 +253,6 @@ def test_overlay_time_running_backwards_is_caught():
     assert d['overlay_arrives_in_enqueue_order'] is False
 
 
-# --------------------------------------------------------------------------- #
-# Queue accuracy: the error is the survivor, the target it is measured from is not
-# --------------------------------------------------------------------------- #
-
-
 def test_timing_accuracy_is_the_queue_error_not_the_command_count():
     log = [{'label': 'beat', 'actual_delta_sec': 2.5040, 'target_delta_sec': 2.5},
            {'label': 'intent', 'actual_delta_sec': 2.4990, 'target_delta_sec': 2.5}]
@@ -296,8 +263,6 @@ def test_timing_accuracy_is_the_queue_error_not_the_command_count():
 
 
 def test_a_command_two_buffers_late_moves_the_survivor():
-    """The bound is a survivor because it is a real claim, not because it is
-    always true: dispatching a buffer later than the grid allows moves it."""
     period = BUFFER_SIZE / SAMPLE_RATE
     log = [{'label': 'beat', 'actual_delta_sec': 2.5 + 1.5 * period,
             'target_delta_sec': 2.5}]
@@ -305,7 +270,6 @@ def test_a_command_two_buffers_late_moves_the_survivor():
 
 
 def test_the_queues_target_is_recorded_but_never_gated():
-    """The look-ahead moves at the rewire; a survivor that is doomed is not one."""
     log = [{'label': 'beat', 'actual_delta_sec': 2.501, 'target_delta_sec': 2.5}]
     d = digest_report(_report([], timing_log=log))
     assert 'target_delta_sec' not in d['survives']['timing_accuracy']
@@ -313,16 +277,6 @@ def test_the_queues_target_is_recorded_but_never_gated():
 
 
 def test_a_moved_look_ahead_leaves_every_survivor_where_it_was():
-    """The rewire moves the delay, and the dispatch error moves WITH it.
-
-    The queue fires on the next buffer boundary, so in virtual time the error is
-    exactly ``ceil(D / buffer) * buffer - D`` -- a pure function of the delay,
-    and a different number for every delay.  Recording it in milliseconds made a
-    GATED survivor a fact about the look-ahead, which B1 is required to change:
-    2.5 s against a 5.805 ms buffer gives the 1.9501 ms the fixture was cut with,
-    and nothing about the pipeline has to move for that to stop being true.
-    What survives is the bound the field was really recording.
-    """
     import math
 
     period = BUFFER_SIZE / SAMPLE_RATE
@@ -342,13 +296,7 @@ def test_a_queue_that_missed_its_own_target_breaks_the_relation():
     assert d['queue_error_within_tolerance'] is False
 
 
-# --------------------------------------------------------------------------- #
-# The instrument outlives what it measures
-# --------------------------------------------------------------------------- #
-
-
 def test_the_digest_module_imports_nothing_the_demolition_deletes():
-    """It has to run on both sides of Task 4, so it may not name a doomed symbol."""
     import ast
 
     import training.pipeline_digest as digest
@@ -366,7 +314,6 @@ def test_the_digest_module_imports_nothing_the_demolition_deletes():
 
 
 def test_the_post_demolition_report_shape_still_computes_every_gated_field():
-    """Doomed columns and metrics gone, and the instrument still measures."""
     report = _demolished(_report([_beat(1.0), _beat(2.0)],
                                  timing_log=[{'label': 'beat',
                                               'actual_delta_sec': 2.501,
@@ -392,11 +339,6 @@ def test_the_doomed_density_evidence_is_dropped_rather_than_faked():
     assert informational['intent_changes_count'] == 0
 
 
-# --------------------------------------------------------------------------- #
-# The degradation reading
-# --------------------------------------------------------------------------- #
-
-
 def test_a_held_show_is_the_degradation_state():
     report = _report([_beat(1.0), _beat(2.0)],
                      intents=[{'t': 3.5, 'intent': 'breakdown', 'end': 10.0}])
@@ -409,12 +351,6 @@ def test_a_held_show_is_the_degradation_state():
 
 
 def test_the_surviving_silence_timer_does_not_disqualify_the_degradation_state():
-    """The plan's literal D13 state: beats, silence, one held intent.
-
-    ATMOSPHERIC is not classified -- it fires from the beat-absence timer, which
-    the demolition keeps.  A predicate that counted it would demand a stage that
-    stays dark from first beat to last, which the plan never asks for.
-    """
     report = _report([_beat(1.0)],
                      intents=[{'t': 3.5, 'intent': 'breakdown', 'end': 300.0},
                               {'t': 300.0, 'intent': 'atmospheric', 'end': 310.0}])
@@ -442,13 +378,6 @@ def test_a_show_that_re_rolled_its_effect_is_not_the_degradation_state():
 
 
 def test_a_mid_show_shed_is_not_this_predicate():
-    """A shed that happens mid-show carries every intent committed before it.
-
-    D11 holds the CURRENT intent, so a genuine NN_SHED report is a busy show
-    followed by a held one, and reads False here.  Saying so is the point: this
-    predicate is the whole-run reading, and reusing it as the shed check would
-    have made a working shed look like a broken one.
-    """
     report = _report([_beat(1.0)],
                      intents=[{'t': 1.0, 'intent': 'breakdown', 'end': 20.0},
                               {'t': 20.0, 'intent': 'drop', 'end': 40.0},
@@ -458,9 +387,6 @@ def test_a_mid_show_shed_is_not_this_predicate():
 
 
 def test_a_show_that_never_committed_is_dark_rather_than_held():
-    """The one report shape the degradation contract must refuse to bless: a
-    GPU dead at boot commits nothing, and "held" then described an unlit rig
-    all night."""
     assert not held_start_to_end(degradation_digest(_report([])))
 
 
@@ -485,11 +411,6 @@ def test_digest_survives_a_report_with_no_beats():
     assert d['degradation']['intent_blocks'] == 0
 
 
-# --------------------------------------------------------------------------- #
-# The committed fixture, and the comparison the CLI and the suite share
-# --------------------------------------------------------------------------- #
-
-
 def test_the_committed_fixture_covers_every_track_the_benchmark_subset_runs():
     import run_eval_set
     from select_eval_set import EVAL_SET_FILE, load_eval_set
@@ -511,7 +432,6 @@ def test_the_committed_fixture_holds_every_relation_true():
 
 
 def test_the_committed_fixture_pins_a_sound_stop_instant_somewhere():
-    """D5 changes the RMS gate; a fixture with no stop event cannot see it move."""
     stops = {name: [e for e in entry['survives']['sound_events'] if not e['playing']]
              for name, entry in json.loads(BASELINE.read_text()).items()}
     assert any(stops.values()), (
@@ -562,7 +482,6 @@ async def test_the_anchor_track_still_produces_its_committed_survivors(anchor_mp
 
 @pytest.mark.integration
 async def test_the_anchor_tracks_overlay_light_bar_is_actually_fed(anchor_mp3):
-    """D6's guard, on real audio: a supplier that stopped supplying is invisible."""
     actual = await _anchor_digest(anchor_mp3)
     assert actual['relations']['overlay_light_bar_fires'] is True
     assert actual['relations']['overlay_arrives_in_enqueue_order'] is True
@@ -583,13 +502,6 @@ def _non_anchor_fixture_tracks() -> list:
 @pytest.mark.integration
 @pytest.mark.parametrize('name, mp3', _non_anchor_fixture_tracks())
 async def test_every_fixture_track_still_produces_its_committed_survivors(name, mp3):
-    """The `--check` command, run by the suite rather than by a human.
-
-    The anchor never stops making sound, so it cannot see a D5 threshold that
-    matches sound-START instants and mis-times the stops.  The stop instant that
-    exists lives on a non-anchor track, and until now the only thing that read
-    it was somebody remembering to run the CLI over all three.
-    """
     from training.pipeline_digest import digest_track
 
     if not Path(mp3).exists():
@@ -600,17 +512,6 @@ async def test_every_fixture_track_still_produces_its_committed_survivors(name, 
 
 @pytest.mark.integration
 async def test_the_rewired_pipeline_has_left_the_degradation_state(anchor_mp3, nn_artifacts):
-    """The third and last reading of this predicate, from the side that holds now.
-
-    It has been asserted from both sides twice: True on master's rule engine was
-    the pre-registered failure, True after the demolition was D13, and False
-    here is the rewire.  Each flip was written the same commit the behaviour
-    moved in, which is what makes the predicate evidence rather than decoration.
-
-    The degradation contract itself is unchanged and still tested -- on
-    synthetic reports, where a held show can be constructed on demand.  What no
-    longer exists is a real track that produces one, and that is the point.
-    """
     actual = await _anchor_digest(anchor_mp3)
     assert not held_start_to_end(actual['degradation'])
     assert actual['degradation']['classified_blocks'] > 1

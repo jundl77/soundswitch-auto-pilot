@@ -8,8 +8,6 @@ pytestmark = pytest.mark.integration
 
 @functools.lru_cache(maxsize=None)
 def _beat_stage():
-    """The stage object the pipeline actually runs, not a rebuild from kwargs
-    copied into this file — a copy cannot fail when the shipped one changes."""
     from lib.analyser.madmom_rhythm import _BeatStage
     return _BeatStage()
 

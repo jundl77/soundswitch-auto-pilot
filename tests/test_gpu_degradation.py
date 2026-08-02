@@ -1,25 +1,3 @@
-"""D11/#144: what the show does when the GPU stops, and how loudly.
-
-There is no second classifier and none is wanted.  `NN_SHED` means: stop
-consuming posteriors, hold the intent the room is already looking at, keep
-beats and the silence timer running, say so at WARNING with a rate limit,
-reinitialise the extractor on a capped backoff, and resume by clearing every
-piece of stale state.  If the GPU never comes back, that state is the show for
-the rest of the night -- and it must be a show, not an outage.
-
-One drill per failure mode #143 names.  Three of the four are the same
-mechanism reached by different exceptions, and saying so is the point: the
-handling is uniform BECAUSE a raised CUDA fault cannot be told apart from an
-out-of-memory or a dead context without reading its message, and a policy that
-branched on message text would be a policy about strings.  The fourth -- a pass
-that never returns -- is genuinely different, because there is no exception to
-catch and nothing on the GPU thread left to notice it.
-
-Injection goes through seams that already exist: the encoder interface, the
-injectable session, the typed ring overrun, and the `reinit` callable the
-shipped chain passes `load_encoder` into.  No production path exists here only
-to be tested.
-"""
 from __future__ import annotations
 
 import logging
@@ -39,13 +17,6 @@ from tests.test_section_model import mean, tiny  # noqa: F401
 
 
 class FaultyEncoder(SlowEncoder):
-    """An encoder that fails the way a GPU does, and can be replaced.
-
-    ``fail_until`` is a generation number: a fresh encoder (what `reinit`
-    returns) carries a higher one, which is exactly how a dead CUDA context
-    behaves -- the objects are invalid and only rebuilding them helps.
-    """
-
     def __init__(self, error, *, generation=0, fail_until=10 ** 9, **kwargs):
         super().__init__(**kwargs)
         self.error = error
@@ -61,12 +32,6 @@ class FaultyEncoder(SlowEncoder):
 
 
 def faulty(tiny, mean, error, *, clock=None, repairable=True, **kwargs):  # noqa: F811
-    """A stage whose encoder fails.
-
-    ``repairable`` decides what `reinit` hands back: a working encoder (a dead
-    context, which a rebuild fixes) or another broken one (a GPU that is simply
-    gone, which is the case the backoff and the rate limit exist for).
-    """
     built = []
 
     def reinit():
@@ -91,7 +56,6 @@ def feed(worker, seconds=3.0, seed=0):
 
 
 def drain(worker, ticks=200, clock=None, step=0.0):
-    """Spin the consumer the way the audio loop does, optionally moving time."""
     out = []
     for _ in range(ticks):
         if clock is not None and step:
@@ -102,12 +66,6 @@ def drain(worker, ticks=200, clock=None, step=0.0):
 
 
 def wait_for_one_more_fault(worker, clock, sec, patience=1.0):
-    """Move the backoff clock by ``sec`` and give the worker time to act on it.
-
-    Fake time is the point -- a capped backoff at half a minute a try cannot be
-    waited out in a test -- but the worker runs on real time, so each step has
-    to be handed over rather than assumed.
-    """
     before = worker.faults
     clock.advance(sec)
     deadline = time.monotonic() + patience
@@ -124,11 +82,6 @@ OUT_OF_MEMORY = RuntimeError('CUDA out of memory. Tried to allocate 2.00 GiB '
                              '(GPU 0; 8.00 GiB total capacity)')
 
 
-# --------------------------------------------------------------------------- #
-# (a) a raised CUDA error mid-pass
-# --------------------------------------------------------------------------- #
-
-
 def test_a_cuda_error_mid_pass_holds_logs_and_comes_back(tiny, mean, caplog):  # noqa: F811
     clock = FakeClock()
     worker, watchdog, encoder, _built = faulty(tiny, mean, CUDA_ERROR,
@@ -137,8 +90,6 @@ def test_a_cuda_error_mid_pass_holds_logs_and_comes_back(tiny, mean, caplog):  #
         with caplog.at_level(logging.WARNING):
             feed(worker, 4.0)
             settle(lambda: worker.faults > 0, why='the fault never surfaced')
-            # `worker.faults > 0` is what `settle` just waited for, so the old
-            # disjunct could not fail and the shed itself went unchecked.
             settle(lambda: watchdog.level is ShedLevel.NN_SHED,
                    why='the fault never reached the ladder')
             drain(worker, 50, clock=clock, step=0.05)
@@ -153,18 +104,7 @@ def test_a_cuda_error_mid_pass_holds_logs_and_comes_back(tiny, mean, caplog):  #
     assert worker.resyncs >= 1, 'it resumed without clearing the gap'
 
 
-# --------------------------------------------------------------------------- #
-# (b) a pass that never returns
-# --------------------------------------------------------------------------- #
-
-
 def test_a_hung_pass_is_noticed_from_the_consumer_side(tiny, mean, caplog):  # noqa: F811
-    """The one mode with no exception to catch.
-
-    The GPU thread is inside the call, so nothing there can notice; the audio
-    thread is the only part of the show still running, and it is the part that
-    knows how long the pass has been in flight.
-    """
     clock = FakeClock()
     encoder = SlowEncoder()
     encoder.gate.clear()
@@ -196,8 +136,6 @@ def test_a_hung_pass_is_noticed_from_the_consumer_side(tiny, mean, caplog):  # n
 
 
 def test_a_pass_that_never_returns_leaves_a_show_running_on_beats(tiny, mean):  # noqa: F811
-    """The contract when the GPU is simply gone: hold forever, cost nothing,
-    and never make the audio thread wait for it."""
     clock = FakeClock()
     encoder = SlowEncoder()
     encoder.gate.clear()
@@ -224,15 +162,7 @@ def test_a_pass_that_never_returns_leaves_a_show_running_on_beats(tiny, mean):  
         worker.stop()
 
 
-# --------------------------------------------------------------------------- #
-# (c) sleep/resume: the encoder objects are invalid until they are rebuilt
-# --------------------------------------------------------------------------- #
-
-
 def test_a_lost_context_is_repaired_by_reinitialising_the_extractor(tiny, mean):  # noqa: F811
-    """Nothing but a new encoder helps, and nothing but the encoder may be new:
-    the ring, the schedule and the sample index are still true, and the sample
-    index is the clock every cell in the show is stamped against."""
     clock = FakeClock()
     worker, watchdog, encoder, built = faulty(tiny, mean, CONTEXT_LOST,
                                               clock=clock)
@@ -254,15 +184,7 @@ def test_a_lost_context_is_repaired_by_reinitialising_the_extractor(tiny, mean):
     assert worker.posteriors.stream.samples_seen > 0, 'the clock was restarted'
 
 
-# --------------------------------------------------------------------------- #
-# (d) VRAM pressure
-# --------------------------------------------------------------------------- #
-
-
-def test_an_allocation_failure_is_the_same_contract(tiny, mean, caplog):  # noqa: F811
-    """Deliberately the same handling as (a) and (c): an OOM cannot be told from
-    a dead context without reading its message, and a policy that branched on
-    message text would be a policy about strings."""
+def test_an_allocation_failure_gets_the_same_hold_and_reinit_contract_as_a_cuda_error(tiny, mean, caplog):  # noqa: F811
     clock = FakeClock()
     worker, watchdog, encoder, _built = faulty(tiny, mean, OUT_OF_MEMORY,
                                                clock=clock, fail_until=1)
@@ -277,11 +199,6 @@ def test_an_allocation_failure_is_the_same_contract(tiny, mean, caplog):  # noqa
         worker.stop()
     assert 'out of memory' in caplog.text
     assert worker.resyncs >= 1
-
-
-# --------------------------------------------------------------------------- #
-# A persistent fault is not its own outage
-# --------------------------------------------------------------------------- #
 
 
 def test_a_permanent_fault_logs_at_a_rate_not_at_a_frequency(tiny, mean, caplog):  # noqa: F811
@@ -322,26 +239,8 @@ def test_the_backoff_is_capped_so_retrying_never_stops(tiny, mean):  # noqa: F81
         worker.stop()
 
 
-# --------------------------------------------------------------------------- #
-# What the whole run looks like from the outside
-# --------------------------------------------------------------------------- #
-
-
 async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
         tiny, mean):  # noqa: F811
-    """D13's state, produced by a dead GPU instead of by a half-built branch.
-
-    `held_start_to_end` is the predicate the branch has already been asserted
-    from three sides -- False on master's rule engine, True after the
-    demolition, False once the decoder drove the show.  This is the fourth, and
-    the one it will keep meaning after the branch lands: it is what a live
-    NN_SHED looks like from the outside.
-
-    **The loop's 100 ms callback is part of the drill**, not scaffolding.  Both
-    of the engine's non-decoder producers live there, and without it this run
-    committed nothing at all -- an unlit rig that the predicate then blessed,
-    which is exactly the report shape the degradation contract must refuse.
-    """
     import sys
     from pathlib import Path
 
@@ -404,16 +303,7 @@ async def test_a_full_shed_run_is_the_degradation_state_the_digest_names(
         'a dead GPU produced something other than a held show'
 
 
-# --------------------------------------------------------------------------- #
-# The fifth mode: a card that works every other time
-# --------------------------------------------------------------------------- #
-
-
 class FlappingEncoder(SlowEncoder):
-    """Fails every other pass.  Not one of #143's four -- it is what those four
-    look like when the fault is intermittent, and it is the shape that disarmed
-    both of the mechanisms built for them."""
-
     def __init__(self, error, **kwargs):
         super().__init__(**kwargs)
         self.flap = error
@@ -438,11 +328,6 @@ def flapping(tiny, mean, error):  # noqa: F811
 
 
 def test_a_flapping_gpu_does_not_disarm_the_backoff(tiny, mean, caplog):  # noqa: F811
-    """`_attempts` used to reset on ANY pass that returned, and a card failing
-    every other pass returns one every other pass.  The backoff then restarted
-    from its immediate rung forever: 38 faults, 38 decoder resets and 76
-    watchdog transitions inside three seconds of a clock that never moved,
-    while both the backoff and the rate limit read as working."""
     caplog.set_level(logging.WARNING)
     worker, encoder = flapping(tiny, mean, CUDA_ERROR)
     try:
@@ -458,7 +343,6 @@ def test_a_flapping_gpu_does_not_disarm_the_backoff(tiny, mean, caplog):  # noqa
 
 
 def test_one_good_pass_is_not_a_recovery(tiny, mean):  # noqa: F811
-    """What "the GPU came back" has to mean, stated where it is decided."""
     from lib.analyser.gpu_stage import _HEALTHY_PASSES
 
     assert _HEALTHY_PASSES > 1
@@ -473,8 +357,6 @@ def test_one_good_pass_is_not_a_recovery(tiny, mean):  # noqa: F811
 
 
 def test_a_sustained_run_of_passes_does_clear_the_backoff(tiny, mean):  # noqa: F811
-    """The other side of it: a card that genuinely recovers must not stay on a
-    half-minute retry for the rest of the night."""
     from lib.analyser.gpu_stage import _HEALTHY_PASSES
 
     clock = FakeClock()

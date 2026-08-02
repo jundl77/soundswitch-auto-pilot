@@ -1,11 +1,3 @@
-"""The soak's verdict functions, which are the only part of it a test can run.
-
-Everything else in `training/soak_nn.py` needs a sound card, a virtual cable and
-half an hour.  What can be pinned is the arithmetic that turns a capture into a
-PASS or a FAIL -- and that arithmetic is the whole point of the exercise, so a
-soak that quietly reported PASS because its predicate was inverted would be
-worse than no soak.
-"""
 from __future__ import annotations
 
 import sys
@@ -30,8 +22,6 @@ def stop(t: float) -> dict:
 
 
 def test_a_shed_at_a_track_change_fails_the_boundary_verdict():
-    """The pass criterion for the settle-forgiveness fix: a rig that is working
-    perfectly must not shed because the show chose to wait 0.2 s."""
     outcome = boundary_verdict([stop(600.0)], [shed(602.0)])
     assert outcome["passed"] is False
     assert outcome["sheds_near_a_boundary"] == 1
@@ -39,8 +29,6 @@ def test_a_shed_at_a_track_change_fails_the_boundary_verdict():
 
 
 def test_a_shed_far_from_any_boundary_is_not_attributed_to_one():
-    """It is still a shed and still reported; it is not evidence about track
-    changes, which is what this verdict is about."""
     outcome = boundary_verdict([stop(600.0)], [shed(120.0)])
     assert outcome["passed"] is True
     assert outcome["boundaries"] == 1
@@ -52,21 +40,11 @@ def test_a_restore_is_not_a_shed():
 
 
 def test_a_shed_after_a_boundary_counts_for_longer_than_the_stall():
-    """The watchdog needs a full calm window to restore, so one 0.2 s stall is
-    visible for ten seconds -- the window has to be wider than the cause."""
     assert boundary_verdict([stop(600.0)], [shed(629.0)])["passed"] is False
     assert boundary_verdict([stop(600.0)], [shed(631.0)])["passed"] is True
 
 
 def test_a_run_with_no_boundaries_cannot_pass_by_having_nothing_to_fail():
-    """Five tracks back to back is the methodology; a capture that recorded no
-    boundary at all proves nothing and must be visible as such.
-
-    This used to assert only `outcome["boundaries"] == 0`, which is `len([])`
-    against the list the test itself passed in -- true for every possible
-    implementation, including the one that returned PASS here.  The claim in
-    the name was never the claim in the body.
-    """
     outcome = boundary_verdict([], [shed(10.0)])
     assert outcome["boundaries"] == 0
     assert outcome["passed"] is False

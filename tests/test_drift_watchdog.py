@@ -1,11 +1,3 @@
-"""The ladder after the demolition: one rung, and two inputs to it.
-
-`SECTION_DETECTION` and `ONSET_DETECTION` are both deleted work, so the ladder
-is rebuilt around its one remaining tenant -- the GPU feature stage -- and gains
-the input drift never had. A CUDA fault, a hung pass or a ring overrun costs the
-loop no wall time at all, so pacing is structurally blind to every failure mode
-#143 names; the stage reports those itself.
-"""
 import logging
 
 import pytest
@@ -124,8 +116,8 @@ def test_peak_and_total_drift_are_reported_for_the_soak_run():
 def test_total_drift_is_a_difference_of_totals_not_a_sum_of_excesses():
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
-    # A hardware-paced input alternates: one read returns instantly because a
-    # buffer was already queued, the next blocks for two buffer periods.
+    # A hardware-paced input alternates: one read returns a queued buffer
+    # instantly, the next blocks for two buffer periods.
     for _ in range(2000):
         clock.advance(0.0)
         dog.observe()
@@ -166,9 +158,6 @@ def test_a_deliberate_stall_sheds_unless_forgiven():
 
 
 def test_an_unforgiven_stall_costs_about_ten_seconds_of_shed():
-    """What makes a missed forgive a venue blocker rather than a nit: the exit
-    needs a whole calm window under the exit threshold, so one 0.2 s settle
-    buys ten seconds of held intent -- at every track change, all night."""
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 2000, BUF)
@@ -196,14 +185,7 @@ def test_forgiving_a_deliberate_stall_prevents_the_shed():
     assert abs(dog.total_drift_sec) < 0.05
 
 
-# --------------------------------------------------------------------------- #
-# Health: the input pacing cannot see
-# --------------------------------------------------------------------------- #
-
-
 def test_a_stage_fault_sheds_while_the_loop_keeps_perfect_time():
-    """The whole reason the second input exists: a dead GPU costs the audio
-    loop nothing, so drift stays at zero through every failure #143 names."""
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 2000, BUF)
@@ -222,7 +204,6 @@ def test_a_fault_holds_the_shed_until_the_stage_says_it_is_back():
 
 
 def test_the_two_inputs_are_two_locks_on_one_door():
-    """Either alone holds it shut, and clearing one is not clearing both."""
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     _feed(dog, clock, 1200, BUF * 1.1)
@@ -250,7 +231,6 @@ def test_the_fault_is_named_in_the_transition_log(caplog):
 
 
 def test_a_fault_reported_over_and_over_logs_one_transition(caplog):
-    """A persistent fault must not become its own outage in the log."""
     clock = FakeClock()
     dog = DriftWatchdog(BUF, clock=clock)
     with caplog.at_level(logging.WARNING):

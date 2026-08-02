@@ -1,20 +1,4 @@
-"""Frozen verbatim copy of the offline causal extractor's schedule and pooling.
-
-Source: `training/nn/ceiling/stream_extract.py` (`pass_schedule`, `_Accumulator`)
-and `training/nn/ceiling/features.py` (`encoder_frame_times`, `chunk_samples`,
-`LABEL_FRAME_SEC` and the encoder-grid constants), in the phase-b worktree, at
-the state the shipped `features_stream/MERT-v1-330M_L6-22_F3_hop1` sidecars and
-the student were cut from.
-
-`lib/analyser/mert_stream.py` is a port of that code, and the acceptance for the
-port used to run the port on both arms -- so a systematic off-by-one, whether
-introduced or already latent, was shared by every arm of every test and stayed
-green while the live features drifted away from the ones the student was trained
-on. This file is the independent side of that comparison. It is a FROZEN COPY:
-it is never refactored to share code with the module it checks, and it is
-updated only by re-copying from the offline extractor when that extractor
-itself changes.
-"""
+"""Frozen copy of training/nn/ceiling's extractor: never refactored to share code with the module it checks, re-copied only when that extractor changes."""
 from __future__ import annotations
 
 import math
@@ -51,7 +35,6 @@ def encoder_frame_times(n_frames: int, *,
 
 
 def encoder_frames(n_samples: int) -> int:
-    """The conv stack's frame count -- what the real encoder's output shape is."""
     if int(n_samples) < ENCODER_RECEPTIVE_FIELD:
         return 0
     return 1 + (int(n_samples) - ENCODER_RECEPTIVE_FIELD) // ENCODER_SAMPLES_PER_FRAME
@@ -80,8 +63,6 @@ def pass_schedule(n_samples: int, *, length: int, hop: int, margin_samples: dict
 
 
 class Accumulator:
-    """`stream_extract._Accumulator`, verbatim but for the leading underscore."""
-
     def __init__(self, n_pooled: int, n_layers: int, dim: int) -> None:
         self.sums = np.zeros((n_pooled, n_layers, dim), dtype=np.float64)
         self.counts = np.zeros(n_pooled, dtype=np.int64)
@@ -113,12 +94,6 @@ class Accumulator:
 
 def extract(encoder, audio, *, margin_sec: float, hop_sec: float,
             buffer_sec: float, n_pooled: int) -> np.ndarray:
-    """`encode_streaming`'s loop with the forward pass replaced by `encoder`.
-
-    Frame selection stays where the offline extractor put it -- a `wanted` mask
-    over every frame of the buffer -- so this side never borrows the port's own
-    selection arithmetic.
-    """
     length = chunk_samples(buffer_sec)
     hop = chunk_samples(hop_sec)
     margins = {float(margin_sec): chunk_samples(margin_sec)}

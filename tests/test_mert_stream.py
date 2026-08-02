@@ -1,16 +1,4 @@
-"""The live MERT extractor's geometry -- the part a show has to obey.
-
-Ported from phase-b's `test_ceiling_stream_extract.py`. The offline extractor
-knows the track length up front and can run `pass_schedule` as a generator; a
-live one is driven by audio arriving, so the same arithmetic is re-derived
-incrementally. These tests interrogate the geometry rather than the encoder:
-which audio an emitted cell was allowed to see, that emission tiles the stream
-exactly once, and that start-up does not quietly wait for audio it would not
-have. An off-by-one here is invisible in every downstream number.
-
-Running MERT needs a GPU and 1.3 GB of weights; those cases are marked
-integration and read the gitignored data directory.
-"""
+"""The live MERT extractor's geometry -- the part a show has to obey."""
 from __future__ import annotations
 
 import json
@@ -38,22 +26,11 @@ def _schedule(track_sec, *, margin=3.0, hop_sec=1.0, buffer_sec=30.0):
                                 hop=_samples(hop_sec), margin=_samples(margin)))
 
 
-# --------------------------------------------------------------------------- #
-# The resampler (D4)
-# --------------------------------------------------------------------------- #
-
-
 def _noise(n, seed=0):
     return np.random.default_rng(seed).normal(size=n).astype(np.float32)
 
 
 def test_the_streaming_resampler_reproduces_a_whole_array_resample():
-    """Block-by-block filtering must be the same filtering, sample for sample.
-
-    Not a nicety: it is what lets the live cells be compared against an offline
-    decode at all. A resampler that drifts at every block edge would put a
-    signature into the features that no offline measurement can see.
-    """
     audio = _noise(44100 * 7 + 913)
     resampler = M.StreamingResampler()
     out = [resampler.push(audio[i:i + 256]) for i in range(0, len(audio), 256)]
@@ -101,11 +78,6 @@ def test_the_resampler_ratio_comes_from_the_two_rates():
     assert (resampler.up, resampler.down) == (80, 147)
 
 
-# --------------------------------------------------------------------------- #
-# The ring buffer
-# --------------------------------------------------------------------------- #
-
-
 def test_the_ring_reports_a_monotonic_sample_index():
     ring = M.SampleRing(1000)
     assert ring.written == 0
@@ -151,14 +123,6 @@ def test_reset_restarts_the_sample_index():
 
 
 class _Probe(np.ndarray):
-    """A ring buffer that runs a hook the first time it is read, or written.
-
-    The two threads MertStream's docstring advertises, without threads: `write`
-    only ever assigns into the buffer and `snapshot` only ever reads it, so a
-    hook on one access kind fires exactly once, at a point inside the other
-    operation that no sleep could hit reliably.
-    """
-
     def __new__(cls, source, hook, *, on_read: bool):
         array = np.asarray(source).view(cls)
         array.hook = hook
@@ -188,15 +152,6 @@ class _Probe(np.ndarray):
 
 
 def test_a_write_is_published_before_it_touches_the_buffer():
-    """The check-then-copy hole, at its root.
-
-    A reader that re-reads `written` after its own copy is asking the writer a
-    question the writer has not answered yet: the samples are copied in first
-    and the index advances afterwards, so a snapshot taken mid-write clears a
-    span whose head is already gone. The claim is published before any byte
-    moves, so the span is refused even though the bytes are still intact at the
-    moment it is read.
-    """
     ring = M.SampleRing(1000)
     ring.write(np.zeros(1000, dtype=np.float32))
     caught = []
@@ -228,11 +183,6 @@ def test_a_snapshot_the_concurrent_write_did_not_reach_still_returns():
                           lambda: ring.write(np.ones(100, dtype=np.float32)),
                           on_read=True)
     assert np.array_equal(ring.snapshot(200, 1000), np.arange(200, 1000))
-
-
-# --------------------------------------------------------------------------- #
-# Future dependence -- the number the whole design is budgeted against
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("margin,hop", [(3.0, 1.0), (2.0, 2.5), (5.0, 1.0),
@@ -289,10 +239,6 @@ def test_a_track_shorter_than_one_hop_is_a_single_flush_pass():
     assert span == (0, _samples(0.4))
 
 
-# --------------------------------------------------------------------------- #
-# The cell accumulator
-# --------------------------------------------------------------------------- #
-
 CELL = 0.1
 
 
@@ -321,8 +267,6 @@ def test_a_cell_split_across_two_passes_is_still_its_own_mean():
 
 
 def test_an_unreached_cell_is_forward_filled_not_zeroed():
-    """A zero row is not "no information" to a network -- it is a confident,
-    out-of-distribution input."""
     accumulator = M.CellAccumulator(1, 1, CELL)
     accumulator.add(_frames([4.0, 9.0]), np.array([0.01, 0.31]), 0.0, 0.45)
     cells = accumulator.drain(0.45)
@@ -362,21 +306,7 @@ def test_a_final_drain_emits_the_partial_tail_cell():
     assert [index for index, _row in cells] == [0, 1]
 
 
-# --------------------------------------------------------------------------- #
-# The live driver against a fake encoder
-# --------------------------------------------------------------------------- #
-
-
 class FakeEncoder:
-    """Predictable from sample position, and dependent on the audio it was given.
-
-    The position term makes a cell's identity checkable; the content terms make
-    it a function of the samples the pass actually consumed. A transformer
-    attends over its whole input, so the whole-buffer digest is the honest
-    model: a frame that moves to a later pass is a frame computed from a
-    different buffer, and only a content-dependent fake can see that.
-    """
-
     sample_rate = SR
     do_normalize = False
     model_id = "fake"
@@ -402,9 +332,6 @@ class FakeEncoder:
         return self.frames(segment, offset_samples, keep), times
 
     def frames(self, segment, offset_samples, keep):
-        """The rows for `keep`, with no span filtering of its own -- the offline
-        extractor selects frames with its own mask, so the fixture comparison is
-        only independent if this side does not repeat that arithmetic."""
         step = M.ENCODER_SAMPLES_PER_FRAME
         segment = np.asarray(segment, dtype=np.float64)
         keep = np.asarray(keep, dtype=np.int64)
@@ -437,18 +364,11 @@ def _feed(stream, seconds, *, block=256):
 
 
 def _live_form(offline, *, n_samples, hop, margin):
-    """The offline schedule as a driver that cannot see the end must run it.
-
-    One stated divergence: when the track ends exactly on a hop boundary the
-    driver has already run that pass as a regular one, so the flush re-encodes
-    the same buffer to emit the residual margin. Removing it needs the whole
-    pass output kept in memory to save a pass that only ever happens once per
-    song, so it is pinned rather than fixed -- the emitted cells are identical
-    either way.
-    """
     flat = [(start, end, lo, hi) for start, end, (lo, hi) in offline]
     if n_samples % hop:
         return flat
+    # A track ending exactly on a hop boundary repeats its final pass, because
+    # the driver already ran that buffer before the flush asked for the margin.
     start, end, lo, hi = flat[-1]
     return flat[:-1] + [(start, end, lo, hi - margin),
                         (start, end, hi - margin, hi)]
@@ -456,12 +376,6 @@ def _live_form(offline, *, n_samples, hop, margin):
 
 @pytest.mark.parametrize("track_sec", [40.0, 40.3, 45.0, 9.5])
 def test_the_live_driver_reproduces_the_offline_pass_schedule(track_sec):
-    """The rule is not re-derived, it is checked against the offline generator.
-
-    Whole spans, not just pass boundaries: `hi` is where the future budget is
-    spent, and a driver that shifts it emits cells under a geometry the affine
-    was never fitted to while every boundary still lines up.
-    """
     encoder = FakeEncoder()
     stream = _stream(encoder, rate=SR)
     _drive(stream, track_sec)
@@ -474,14 +388,8 @@ def test_the_live_driver_reproduces_the_offline_pass_schedule(track_sec):
 
 
 def _cell_horizons(n_samples, *, margin=3.0, hop=1.0, buffer=30.0, cell=CELL):
-    """The last sample each cell's own passes were allowed to consume.
-
-    Read off the offline schedule: a pass ending at `end` encodes `audio[:end]`,
-    so every cell its emission span touches depends on the audio up to there and
-    on nothing later. The declared `margin + hop` budget is deliberately NOT
-    used -- it is a claim about the schedule, and a driver whose spans have
-    drifted still satisfies it while consuming different audio.
-    """
+    # Read off the schedule, never off the declared margin + hop budget: a
+    # driver whose spans drifted still meets the budget on different audio.
     horizons: dict = {}
     for _start, end, (lo, hi) in M.pass_schedule(
             n_samples, length=_samples(buffer), hop=_samples(hop),
@@ -511,13 +419,6 @@ def _run_cells(audio):
 
 @pytest.mark.parametrize("poison_sec", [8.0, 14.0, 25.0])
 def test_no_emitted_cell_is_moved_by_audio_its_own_passes_never_saw(poison_sec):
-    """The causality budget, as a property of the emitted values.
-
-    Every earlier form of this asserted against `audio_seen_sec`, which the
-    module computes -- so a driver that shifted its spans shifted the claim with
-    them and the test agreed. Here the audio past a cell's horizon is replaced
-    outright and the cell's bytes must not move.
-    """
     audio = _noise(30 * SR, seed=4)
     horizon = _cell_horizons(len(audio))
     clean = _run_cells(audio)
@@ -544,8 +445,6 @@ def test_the_stream_emits_every_cell_once_in_order():
 
 
 def test_a_cell_is_stamped_at_the_end_of_its_own_span():
-    """The sidecars' convention (`label_t0 == label_frame_sec`), so anything
-    joining on time -- Task 8's bar grid first -- reads one grid, not two."""
     stream = _stream(FakeEncoder())
     cells = _feed(stream, 12.0)
     for cell in cells:
@@ -553,8 +452,6 @@ def test_a_cell_is_stamped_at_the_end_of_its_own_span():
 
 
 def test_an_encoder_that_does_not_speak_the_geometrys_rate_is_refused():
-    """The ring, the hop and the margin are sized in 24 kHz samples while frame
-    times come from the extractor -- silent geometry corruption if they part."""
     encoder = FakeEncoder()
     encoder.sample_rate = 16000
     with pytest.raises(ValueError, match="16000"):
@@ -562,7 +459,6 @@ def test_an_encoder_that_does_not_speak_the_geometrys_rate_is_refused():
 
 
 def test_no_emitted_cell_saw_audio_beyond_the_margin_plus_hop():
-    """Measured from the END of the cell: a cell's own span is not its future."""
     stream = _stream(FakeEncoder(), margin=3.0, hop=1.0)
     cells = _feed(stream, 45.0)
     assert cells
@@ -581,8 +477,6 @@ def test_the_stream_reads_features_of_the_width_the_student_expects():
 
 
 def test_features_are_quantised_to_the_grid_the_student_trained_on():
-    """Offline sidecars are float16; a live path handing the model float32
-    precision is feeding it inputs it has never seen."""
     stream = _stream(FakeEncoder())
     cells = _feed(stream, 10.0)
     assert cells
@@ -635,10 +529,6 @@ def test_a_flush_is_terminal_until_the_stream_is_reset():
     stream.push_audio(np.zeros(256, dtype=np.float32))
 
 
-# --------------------------------------------------------------------------- #
-# The port is checked against the offline extractor, not against itself
-# --------------------------------------------------------------------------- #
-
 _SWEEP = [(track, margin, hop, buffer)
           for track in (0.4, 3.0, 9.5, 30.0, 40.0, 47.3)
           for margin in (0.0, 2.0, 3.0, 5.0)
@@ -647,12 +537,6 @@ _SWEEP = [(track, margin, hop, buffer)
 
 def test_the_schedule_generator_is_the_offline_one(
         ):
-    """The port kept `pass_schedule` as the generator it was; this says so.
-
-    Every other geometry claim on the branch -- including each cell's causal
-    horizon -- is read off this generator, so it is the one place the port and
-    the original have to be shown to agree rather than assumed to.
-    """
     for n_samples in (9600, 228000, 720000, 967200, 1135040):
         for margin in (0.0, 3.0, 5.0):
             mine = list(M.pass_schedule(n_samples, length=_samples(30.0),
@@ -670,14 +554,6 @@ def test_the_schedule_generator_is_the_offline_one(
 @pytest.mark.parametrize("track_sec,margin,hop,buffer", _SWEEP)
 def test_the_live_stage_pools_the_cells_the_offline_extractor_pools(
         track_sec, margin, hop, buffer):
-    """Bit-identical against a frozen copy of the offline extractor.
-
-    The acceptance for this port used to run the port on both arms, so an
-    off-by-one -- introduced or already latent -- was shared by every arm and
-    stayed green while the live features drifted from the ones the student was
-    trained on. The reference here is `tests/fixtures/offline_stream_extract.py`,
-    which is phase-b's own schedule and pooling, copied and never refactored.
-    """
     cell = OFFLINE.LABEL_FRAME_SEC
     audio = _noise(int(track_sec * SR), seed=int(track_sec * 10 + margin))
     stream = _stream(FakeEncoder(), margin=margin, hop=hop, buffer=buffer,
@@ -700,11 +576,6 @@ def test_the_live_stage_pools_the_cells_the_offline_extractor_pools(
         assert np.array_equal(item.features, expected), item.index
 
 
-# --------------------------------------------------------------------------- #
-# Backpressure: a stalled pass outrun by the audio
-# --------------------------------------------------------------------------- #
-
-
 def _drive(stream, seconds, *, rate=SR, block=None):
     audio = np.zeros(int(seconds * rate), dtype=np.float32)
     block = block or rate // 10
@@ -717,14 +588,12 @@ def _drive(stream, seconds, *, rate=SR, block=None):
 
 
 def _stalled(seconds=40.0):
-    """The Task 11 fault mode: the GPU thread hangs while the audio keeps coming."""
     stream = _stream(FakeEncoder(), rate=SR)
     stream.push_audio(np.zeros(int(seconds * SR), dtype=np.float32))
     return stream
 
 
 def _pump(stream):
-    """Task 10's documented consume loop, verbatim."""
     cells = []
     while stream.due():
         cells.extend(stream.run_pass())
@@ -737,7 +606,6 @@ def test_a_pass_whose_audio_was_overwritten_raises_a_typed_overrun():
 
 
 def test_an_overrun_is_not_the_type_a_programming_error_raises():
-    """Task 10 sheds on one and must not swallow the other."""
     assert not issubclass(M.RingOverrun, ValueError)
     ring = M.SampleRing(1000)
     ring.write(np.zeros(100, dtype=np.float32))
@@ -748,8 +616,6 @@ def test_an_overrun_is_not_the_type_a_programming_error_raises():
 
 
 def test_an_overrun_pass_is_not_recorded_as_taken():
-    """35 raises consumed 35 passes before -- the counter walked the schedule
-    forward on work that never happened."""
     stream = _stalled()
     with pytest.raises(M.RingOverrun):
         _pump(stream)
@@ -775,8 +641,6 @@ def test_resync_skips_to_the_live_edge_and_reports_the_audio_lost():
 
 
 def test_the_gap_a_resync_skipped_is_never_filled_from_later_audio():
-    """The reviewer's failure: the first pass back after the stall back-filled
-    36 s of cells out of audio recorded after them."""
     stalled = _stalled(40.0)
     with pytest.raises(M.RingOverrun):
         _pump(stalled)
@@ -799,11 +663,6 @@ def test_a_resync_leaves_the_stream_running_the_ordinary_schedule():
     cells.extend(_drive(stream, 5.0))
     assert [cell.index for cell in cells] == list(
         range(cells[0].index, cells[0].index + len(cells)))
-
-
-# --------------------------------------------------------------------------- #
-# Geometry is read from the shipped artifact, never retyped (D2)
-# --------------------------------------------------------------------------- #
 
 
 def _affine(tmp_path, *, geometry, dim=8, layers=(6, 22)):
@@ -832,8 +691,6 @@ def test_a_non_causal_affine_is_refused(tmp_path):
 
 
 def test_an_affine_that_names_no_encoder_layers_is_refused(tmp_path):
-    """It used to fall through to `layers=()` and die with an IndexError at the
-    first encode -- first use, not startup, which is not this module's rule."""
     path = tmp_path / "nolayers.npz"
     np.savez(path, mean=np.zeros(4, np.float32), std=np.ones(4, np.float32),
              geometry=np.str_(json.dumps({"causal": 1, "margin_sec": 3.0,
@@ -856,8 +713,6 @@ def test_an_encoder_whose_weights_hash_differs_is_refused():
 
 
 def test_an_unpinned_encoder_is_refused_rather_than_waved_through():
-    """The check used to compare against None on every shipped path, so the one
-    component fetched from the network was the one never verified."""
     with pytest.raises(ValueError, match="unpinned"):
         M.check_encoder_sha("aaaaaaaaaaaaaaaa", None)
 
@@ -910,8 +765,6 @@ def _pinned_geometry(**kwargs):
 
 
 def test_the_encoder_is_fetched_at_the_pinned_revision(monkeypatch):
-    """Weights AND the remote code it executes: `trust_remote_code` without a
-    revision is an unattended `git pull` from a repo we do not own."""
     calls: list = []
     _stub_transformers(monkeypatch, calls)
     sha = M.state_dict_sha(_StubEncoder())
@@ -948,11 +801,6 @@ def test_encoder_frame_times_sit_at_the_centre_of_the_receptive_field():
     assert times[1] - times[0] == pytest.approx(320.0 / SR)
 
 
-# --------------------------------------------------------------------------- #
-# The real stack (integration)
-# --------------------------------------------------------------------------- #
-
-
 def _phase_b_dir() -> Path:
     import run_eval_set
 
@@ -962,8 +810,6 @@ def _phase_b_dir() -> Path:
 def _require_artifacts():
     directory = _phase_b_dir()
     affine = directory / "input_affine_F3.npz"
-    # The shipped version, imported rather than retyped: a model bump used to
-    # turn every one of these integration checks into a silent skip.
     from lib.section_chain import MODEL_VERSION
 
     onnx = (directory / MODEL_VERSION / "online_step.onnx")
@@ -975,7 +821,6 @@ def _require_artifacts():
 
 @pytest.mark.integration
 def test_the_shipped_geometry_fits_the_eight_second_budget():
-    """F + hop + the head's own future, computed from the files (D2)."""
     from lib.analyser import section_model as S
 
     affine, onnx = _require_artifacts()
@@ -988,11 +833,6 @@ def test_the_shipped_geometry_fits_the_eight_second_budget():
 
 
 def _sidecar_track(geometry):
-    """A corpus track with both a stream sidecar at this geometry and its audio.
-
-    The directory name is derived from the geometry the affine records, so there
-    is no path constant here to go stale against a re-extraction.
-    """
     import run_eval_set
 
     corpus = Path(run_eval_set.corpus_dir())
@@ -1010,12 +850,6 @@ def _sidecar_track(geometry):
 
 @pytest.mark.integration
 def test_the_pinned_encoder_hash_is_the_one_the_sidecars_were_cut_with():
-    """The provenance the committed constant cannot carry on its own.
-
-    The offline features record which weights produced them; the affine does
-    not, and neither is committed. So the pin is a constant in `lib/` and this
-    is the check that ties it to the artifacts the student was trained on.
-    """
     affine, onnx = _require_artifacts()
     from lib.analyser import section_model as S
 
@@ -1060,13 +894,6 @@ def test_the_real_encoder_streams_the_same_cells_twice_in_one_process(
 @pytest.mark.integration
 def test_the_live_stage_reproduces_a_corpus_sidecar_for_a_track_prefix(
         real_stack, capsys):
-    """The real stack against features the student was actually trained on.
-
-    The fake-encoder sweep proves the schedule and the pooling; only this proves
-    that the real encoder, driven live, lands on the bytes the offline extractor
-    wrote. Compared over a prefix whose every cell's horizon is inside the audio
-    fed, so nothing here depends on where the track ends.
-    """
     encoder, geometry, _head = real_stack
     sidecar, audio_path = _sidecar_track(geometry)
     with np.load(sidecar) as archive:
@@ -1088,33 +915,6 @@ def test_the_live_stage_reproduces_a_corpus_sidecar_for_a_track_prefix(
 @pytest.mark.integration
 def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
         real_stack, anchor_mp3, capsys):
-    """D4: the offline features came out of ffmpeg's resampler, the live ones
-    out of a polyphase one. Nothing fails loudly if these disagree -- the
-    posteriors just get quietly worse -- so it is measured.
-
-    Two arms, because a naive live-versus-offline comparison measures the mp3
-    DECODER as well and the decoder is the larger term. The gated arm feeds both
-    sides ffmpeg's own bytes and differs only in the resampler, which is the
-    question D4 actually asks and the only one the show can answer -- live audio
-    arrives from PyAudio and no mp3 decoder is involved. The ungated arm is the
-    simulation path and is reported for Task 12.
-
-    The unit is the model's own: a delta divided by the input affine's std is a
-    delta in the space the network reads. The reference for "is that a lot" is
-    how far apart two ADJACENT cells of the same track already are.
-
-    Disagreements are counted where the show reads them -- the argmax of the
-    student's posterior, the class the decoder is handed. An argmax over the
-    2048 raw feature dimensions is not a decision, and measuring it instead is
-    not conservative: over this track's 646 cells it reported ZERO flips on both
-    arms, while the decisions those cells produce flip once on the gated arm and
-    85 times on the simulation one. The gated flip sits on a cell whose top two
-    classes are 0.002 apart -- a tie breaking the other way, which is what the
-    resampler being small looks like. The simulation arm's flips do not: many
-    sit on gaps of 0.1 to 0.2, so the mp3 decoder, not the resampler, moves real
-    decisions. That belongs to Task 12's sim=prod question and is reported, not
-    gated, here.
-    """
     encoder, geometry, _head = real_stack
     affine, onnx = _require_artifacts()
     mean, std = M.load_input_affine(affine)
@@ -1152,7 +952,6 @@ def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
 
 
 def _decisions(onnx, mean, cells) -> dict:
-    """The cells put through the deployed student -- the decision, not the input."""
     from lib.analyser import section_model as S
 
     model = S.SectionModel(onnx, mean=mean)
@@ -1169,9 +968,6 @@ def _decision_delta(arm: dict, reference: dict) -> dict:
     return {
         "class_cells": len(shared),
         "class_argmax_disagreements": len(flipped),
-        # How decided the flipped cells were on the reference side. A flip on a
-        # cell whose top two classes are a hair apart is the tie breaking the
-        # other way, not the resampler changing the model's mind.
         "flip_reference_top_two_gap": [
             round(float(np.diff(np.sort(reference[i].posterior)[-2:])[0]), 5)
             for i in flipped],

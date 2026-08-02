@@ -1,10 +1,3 @@
-"""The Dash view is acceptance surface (charter 11), so its couplings are pinned.
-
-Three of the four ways it touched the demolished rule engine fail *silently*: a
-chart that still renders, a legend that still draws, a health dot that is simply
-always the wrong colour.  Each one gets a test here rather than a look at the
-screen, because looking at the screen is how all three survived.
-"""
 import pytest
 
 from lib.engine.effect_definitions import LightIntent
@@ -33,7 +26,6 @@ def _snapshot(**overrides) -> dict:
 
 
 def _texts(node) -> list:
-    """Every string in a Dash component tree, in render order."""
     if isinstance(node, str):
         return [node]
     if isinstance(node, (list, tuple)):
@@ -60,14 +52,7 @@ def _colour_of(items, prefix: str) -> str:
                          f'{[".".join(_texts(i)) for i in items]}')
 
 
-# -- coupling 1: the beat marker's size ---------------------------------------- #
-
 def test_beat_marker_size_ignores_the_deleted_strength_channel():
-    """Onset density scaled this; the density chain is gone.
-
-    Reading the dead channel is what made the failure silent -- the markers went
-    to the clamp floor and the chart carried on looking like a chart.
-    """
     quiet = V._build_timeline(_snapshot(
         beats=[{'t': 9.0, 'bpm': 128.0, 'strength': 0.0}]))
     loud = V._build_timeline(_snapshot(
@@ -82,8 +67,6 @@ def test_beat_markers_render_when_the_channel_is_gone_from_the_buffer():
     assert fig.data[0].marker.size == (V.BEAT_MARKER_SIZE,) * 2
 
 
-# -- coupling 2: nothing advertises an intent the show cannot enter -------------- #
-
 def test_intent_config_covers_exactly_the_intents_the_show_can_enter():
     assert set(V.INTENT_CONFIG) == {intent.value for intent in LightIntent}
 
@@ -94,8 +77,6 @@ def test_the_legend_advertises_only_reachable_intents():
 
 
 def test_the_legend_pin_bites_on_an_intent_no_class_produces(monkeypatch):
-    """GROOVE is the one this was written for: `_intent_config` falls back to a
-    default for an unknown key, so a stale entry raises nothing at all."""
     monkeypatch.setitem(V.INTENT_CONFIG, 'groove', dict(V._DEFAULT_CONFIG,
                                                         label='GROOVE'))
     assert '■ GROOVE' in _texts(V._build_legend())
@@ -103,17 +84,11 @@ def test_the_legend_pin_bites_on_an_intent_no_class_produces(monkeypatch):
 
 
 def test_every_reachable_intent_lights_a_slot():
-    """A missing entry is the same silent failure the other way round: the stage
-    goes to the default's empty slot set and the rig reads as dark."""
     for intent in LightIntent:
         assert V.INTENT_CONFIG[intent.value]['slots'], intent.name
 
 
-# -- coupling 3: the timing health dot reads the queue's own targets ------------- #
-
 def _timing_stats(**streams) -> dict:
-    """Streams as ``label=(mean delay, mean error ms)`` -- four of them wait
-    four different amounts (B1), which is what the old literal could not see."""
     by_label = {label: {'samples': 8, 'mean_delta_sec': delay,
                         'mean_error_ms': error, 'max_error_ms': error * 2}
                 for label, (delay, error) in streams.items()}
@@ -124,8 +99,6 @@ def _timing_stats(**streams) -> dict:
 
 
 def test_timing_health_is_green_when_every_stream_matches_its_own_target():
-    """B1 moved the delay off 2.5 s and made it per-stream, so a fixed literal
-    would sit amber for the whole show while every command landed on time."""
     items = V._build_metrics(_snapshot(timing_stats=_timing_stats(
         beat=(14.0, 3.0), intent=(0.31, 2.0),
         overlay=(14.0, 3.0), refresh=(6.02, 1.0))))
@@ -140,8 +113,6 @@ def test_timing_health_is_amber_when_one_stream_misses_its_own_target():
 
 
 def test_timing_health_does_not_depend_on_how_long_a_stream_waits():
-    """The whole failure the literal caused: a stream that waits 14 s and one
-    that waits 0.3 s are both on time, and neither is 2.5."""
     slow = V._build_metrics(_snapshot(timing_stats=_timing_stats(beat=(14.0, 2.0))))
     fast = V._build_metrics(_snapshot(timing_stats=_timing_stats(intent=(0.31, 2.0))))
     assert (_colour_of(slow, 'cmd timing')
@@ -168,8 +139,6 @@ def test_the_event_buffer_splits_timing_by_stream():
     assert by_label['intent']['mean_delta_sec'] == pytest.approx(0.316)
     assert by_label['intent']['max_error_ms'] == pytest.approx(6.0)
 
-
-# -- D14: the decoder-state row ------------------------------------------------- #
 
 def _decoder_state(**overrides) -> dict:
     state = {
@@ -204,8 +173,6 @@ def test_the_decoder_row_shows_the_committed_cursor_and_its_lag():
 
 
 def test_the_decoder_row_says_a_stuck_decoder_is_not_a_quiet_passage():
-    """The whole reason D14 exists: from the stage view alone the two look the
-    same, so 'no posterior for this bar' has to be sayable."""
     text = ' '.join(_texts(V._build_decoder(_snapshot(
         decoder=_decoder_state(posterior=None, committed_bar=None,
                                committed_label=None, lag_bars=None)))))
@@ -233,11 +200,7 @@ def test_the_app_renders_every_panel_from_one_snapshot():
     assert _texts(V._build_metrics(snap))
 
 
-# -- coupling 4: the simulation builds the NN stages, not a monkeypatched YAMNet - #
-
 def test_build_simulation_wires_the_chain_into_the_engine(monkeypatch):
-    """The YAMNet detector used to be stubbed out here by hand.  What replaced
-    it is not a smaller monkeypatch, it is the real chain."""
     from simulate import runner
     from simulate.fake_audio_client import FileAudioClient
 
@@ -267,9 +230,6 @@ def test_the_simulation_runner_no_longer_patches_a_change_detector():
 
 @pytest.mark.integration
 def test_the_gpu_thread_runs_under_real_time_pacing(nn_artifacts, anchor_mp3):
-    """The `--ui` paths pace on the wall clock and run the extractor on its own
-    thread (D3); every other test of the chain runs it inline under a virtual
-    clock, which is the one arrangement the show never uses."""
     import asyncio
 
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
@@ -292,9 +252,6 @@ def test_the_gpu_thread_runs_under_real_time_pacing(nn_artifacts, anchor_mp3):
 
 
 def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
-    """The acceptance question is whether the view showed every intent the run
-    committed, and the fast sim's report is a different run -- real-time pacing
-    and a live GPU are not the virtual clock and a replay."""
     from lib.clock import VirtualClock
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.event_buffer import EventBuffer
@@ -318,9 +275,6 @@ def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
 
 
 def test_a_ui_file_session_keeps_the_whole_track():
-    """The live view only draws the last thirty seconds, but the report written
-    when the track ends is the acceptance evidence -- and a windowed buffer
-    drops every intent older than two minutes without saying so."""
     from lib.clock import VirtualClock
     from simulate import cli
 
@@ -336,15 +290,6 @@ def test_a_ui_file_session_keeps_the_whole_track():
 
 
 def test_the_pill_leaves_playing_when_the_audio_runs_out():
-    """The pill is the one widget that says whether anything is happening, and
-    it read PLAYING for 55 minutes after a track ended.
-
-    Sound state is written by the analyser's silence detector, which runs *per
-    audio buffer*.  When a file ends the buffers simply stop arriving, so the
-    detector never runs again and the last thing it wrote stands forever --
-    while the clock beside it is frozen by `mark_end`.  A pill sourced from a
-    field that can no longer be updated is not reporting the sound state.
-    """
     from lib.clock import VirtualClock
     from lib.engine.event_buffer import EventBuffer
 

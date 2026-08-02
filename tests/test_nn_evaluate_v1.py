@@ -1,34 +1,3 @@
-"""Tests for the offline NN evaluation adapter and the decoder sweep.
-
-The adapter is the join between two things that count time differently: the
-decoder commits per BAR, the evaluator scores per BEAT.  Everything that can go
-quietly wrong lives in that join, and each family below pins one way it could.
-
-**Undecoded is not wrong.**  ``decode_track`` deliberately says nothing about
-``[0, first_downbeat)`` -- there is no bar grid there -- and nothing past the
-final bar line.  Those beats carry no prediction, so scoring them as errors
-would charge the network for the annotation grid's origin and would land the
-charge almost entirely on ``intro`` and ``outro``, the two classes that own
-those regions.  The evaluator already has the concept (``NO_INTENT``: beats
-before the engine's first commit are excluded, not counted wrong), so the
-adapter reuses the sentinel rather than inventing a second one.
-
-**The claim map is the whole fairness argument.**  The rule classifier's
-ATMOSPHERIC is credited against ``intro`` OR ``outro``, because an intent cannot
-know where in the arrangement it sits.  A network predicting ``label_v1`` CAN,
-so it is scored with identity claims -- ``intro`` predicted over ``outro`` is a
-miss.  That is a genuinely higher bar, so the same run is also scored with
-rule-equivalent claims (intro/outro collapsed back into one ambiguous class),
-which is the comparison that answers "is the NN only winning because the two
-sides were scored differently?".  Both mappings are exercised here, and the
-stream tests pin the second-order consequence: an ambiguous claim also hides an
-intro -> outro switch from the class stream, exactly as it does for the rule.
-
-**The sweep's fast path must be the same decoder.**  A sweep that ran a
-different code path from ``decode_track`` would be tuning something the runtime
-never executes, so the equivalence is asserted directly -- including the part
-that makes it fast, reusing one decoder instance across tracks.
-"""
 import dataclasses
 import gzip
 import sys
@@ -93,17 +62,11 @@ from tests.test_nn_decoder import (  # noqa: E402
 BREAKDOWN, DROP = 2, 3
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-
 def steady(count, step=0.5, t0=0.0):
     return tuple(t0 + index * step for index in range(count))
 
 
 def track(times, labels, intents=None, track_id="t"):
-    """A ``TrackBeats`` whose v1 labels are also valid canonical labels."""
     labels = tuple(labels)
     return TrackBeats(
         track_id=track_id,
@@ -113,20 +76,12 @@ def track(times, labels, intents=None, track_id="t"):
     )
 
 
-# --------------------------------------------------------------------------- #
-# The bar -> beat adapter
-# --------------------------------------------------------------------------- #
-
-
 def test_beat_classes_reads_each_beat_off_the_bar_that_contains_it():
     got = beat_classes(steady(8), (0.0, 2.0, 4.0), ["intro", "drop"])
     assert got == ("intro",) * 4 + ("drop",) * 4
 
 
 def test_beat_classes_leaves_the_pre_downbeat_head_undecoded():
-    # The bar grid starts at the first downbeat, so the decoder emits nothing
-    # for the beats before it.  Undecoded, never misdecoded -- that head is
-    # almost always `intro`, and charging it would fake an intro failure.
     got = beat_classes((0.1, 0.4, 0.6, 1.2), (0.5, 2.5), ["drop"])
     assert got == (UNDECODED, UNDECODED, "drop", "drop")
 
@@ -143,11 +98,6 @@ def test_beat_classes_puts_a_beat_exactly_on_a_bar_line_in_the_new_bar():
 def test_beat_classes_refuses_more_labels_than_the_grid_has_bars():
     with pytest.raises(ValueError, match="bar"):
         beat_classes((0.0,), (0.0, 2.0), ["intro", "drop"])
-
-
-# --------------------------------------------------------------------------- #
-# Undecoded regions are excluded, not wrong
-# --------------------------------------------------------------------------- #
 
 
 def test_undecoded_beats_are_excluded_from_every_class_count():
@@ -169,7 +119,6 @@ def test_undecoded_beats_are_located_relative_to_the_decoded_ones():
 
 
 def test_undecoded_time_still_counts_as_show_time():
-    # Flicker is per audience-minute: the room is still there during the head.
     scored = score_predicted(track(steady(4), ["drop"] * 4),
                              "v1", (UNDECODED, UNDECODED, "drop", "drop"))
     assert scored.exposure_sec == pytest.approx(2.0)
@@ -182,11 +131,6 @@ def test_an_undecoded_gap_is_not_reported_as_a_state_change():
                                     "drop", "drop"))
     assert scored.boundary["class"][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"] == 0
     assert scored.no_intent_interior == 2
-
-
-# --------------------------------------------------------------------------- #
-# The claim map
-# --------------------------------------------------------------------------- #
 
 
 def test_identity_claims_map_every_class_to_exactly_itself():
@@ -216,15 +160,7 @@ def test_an_ambiguous_claims_false_positive_is_split_not_duplicated():
             == pytest.approx(scored.scored_sec))
 
 
-# --------------------------------------------------------------------------- #
-# The two change streams
-# --------------------------------------------------------------------------- #
-
-
 def test_identity_claims_make_the_intent_and_class_streams_identical():
-    # A model predicting in the label space emits a class stream by
-    # construction; under identity claims there is nothing for the intent
-    # stream to add, and the report says so rather than quoting two numbers.
     scored = score_predicted(track(steady(8), ["intro"] * 4 + ["outro"] * 4),
                              "v1", ("intro",) * 4 + ("outro",) * 4)
     for tolerance in TOLERANCES_SEC:
@@ -250,11 +186,6 @@ def test_a_change_far_from_any_boundary_counts_as_flicker():
         "one spurious bar is a change out and a change back"
 
 
-# --------------------------------------------------------------------------- #
-# Compatibility with the rule baseline's own accumulators
-# --------------------------------------------------------------------------- #
-
-
 def test_scores_aggregate_with_the_rule_baselines_aggregator():
     first = score_predicted(track(steady(4), ["drop"] * 4, track_id="a"),
                             "v1", ("drop",) * 4)
@@ -272,11 +203,6 @@ def test_a_perfect_prediction_scores_one_and_a_constant_one_does_not():
     lazy = score_predicted(track(steady(8), labels), "v1", ("drop",) * 8)
     assert perfect.macro_f1 == pytest.approx(1.0)
     assert lazy.macro_f1 < perfect.macro_f1
-
-
-# --------------------------------------------------------------------------- #
-# The sweep's fast path is the decoder the runtime runs
-# --------------------------------------------------------------------------- #
 
 
 def inputs_from(npz, beats, params, labels=("drop",), intents=(NO_INTENT,),
@@ -306,13 +232,6 @@ def test_the_cached_fast_path_decodes_exactly_like_decode_track(tmp_path):
 
 
 def test_the_cached_fast_path_decodes_like_decode_track_at_the_shipped_knobs(tmp_path):
-    """Parity at defaults is parity of the three knobs nobody set.
-
-    The shipping config carries floor_bars=(8, 8, 6, 9, 8) and
-    outro_escape=0.02, and this equivalence is what says the sweep tuned the
-    decoder the runtime runs.  Measured at the defaults it says nothing about
-    either, because both sides are then reading the same absent value.
-    """
     npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
     rows_npz(npz, graded_bars(24), frame_sec=0.25, label_pool=2, label_t0=0.5)
     write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
@@ -327,7 +246,6 @@ def test_the_cached_fast_path_decodes_like_decode_track_at_the_shipped_knobs(tmp
 
 
 def test_the_two_paths_disagree_when_one_of_them_drops_a_knob(tmp_path):
-    """The parity assertion above can only speak if the knobs move the decode."""
     npz, beats = tmp_path / "t.npz", tmp_path / "t.beat.csv"
     rows_npz(npz, graded_bars(24), frame_sec=0.25, label_pool=2, label_t0=0.5)
     write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
@@ -342,8 +260,6 @@ def test_the_two_paths_disagree_when_one_of_them_drops_a_knob(tmp_path):
 
 
 def test_one_decoder_instance_carries_nothing_between_tracks(tmp_path):
-    # Reusing the instance is what makes a sweep cost seconds; if any state
-    # leaked, every config's numbers would depend on track order.
     first, second = tmp_path / "a.npz", tmp_path / "b.npz"
     beats = tmp_path / "t.beat.csv"
     synthetic_npz(first, [DROP] * 200, thin_frames=4)
@@ -368,7 +284,6 @@ def test_decode_beats_places_the_bar_decisions_on_the_beat_grid(tmp_path):
 
     priors = toy_priors(floor=3)
     params = DecodeParams(lag_bars=2, boundary_weight=0.0)
-    # Beats at 0.0 and 1.0 sit before the first downbeat at 2.0.
     inputs = inputs_from(npz, beats, params, labels=("drop",) * 4,
                          intents=(NO_INTENT,) * 4, times=(0.0, 1.0, 3.0, 5.0))
     got = decode_beats(inputs, build_decoder(priors, params))
@@ -377,9 +292,6 @@ def test_decode_beats_places_the_bar_decisions_on_the_beat_grid(tmp_path):
 
 
 def test_a_missing_track_fails_loud_instead_of_shrinking_the_split(tmp_path):
-    # A missing sidecar drops out of BOTH columns at once, so they stay
-    # comparable to each other while quietly ceasing to cover the split the
-    # header names.  That is the failure mode worth a raise.
     table = tmp_path / "empty.csv.gz"
     with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
         handle.write("track_id,youtube_id,t_song,intent_at_beat,"
@@ -391,13 +303,7 @@ def test_a_missing_track_fails_loud_instead_of_shrinking_the_split(tmp_path):
     assert kept == [] and len(skipped) == 1, "the override still records the drop"
 
 
-# --------------------------------------------------------------------------- #
-# Sidecar identity: the reader half of the model-version check
-# --------------------------------------------------------------------------- #
-
-
 def loadable_track(data_dir, youtube_id="abc", model_sha=None):
-    """The three inputs `load_inputs` needs for one track, on disk."""
     track_id = f"0001.{youtube_id}"
     table = data_dir / "table.csv.gz"
     with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
@@ -423,11 +329,6 @@ def loadable_track(data_dir, youtube_id="abc", model_sha=None):
 
 
 def test_load_inputs_refuses_sidecars_written_by_a_different_model(tmp_path):
-    # `--model-version` and `--posteriors-dir` are independent flags, so naming
-    # one generation's priors while pointing at another's posteriors is a
-    # reachable mistake that otherwise decodes cleanly and files a provenance
-    # block describing a chain that never ran.  The writer already refuses to
-    # reuse another model's answers; this is the reader saying the same thing.
     table, _sidecar = loadable_track(tmp_path, model_sha="a" * 64)
 
     kept, _skipped = load_inputs(tmp_path, ["abc"], table_path=table,
@@ -439,10 +340,6 @@ def test_load_inputs_refuses_sidecars_written_by_a_different_model(tmp_path):
 
 
 def test_a_wrong_model_sidecar_is_never_downgraded_to_a_skip(tmp_path):
-    # `allow_missing` is the recorded override for a partial split.  A sidecar
-    # from the wrong model is not a partial split -- scoring the rest would
-    # answer "which model is this" with "mostly that one" -- so the override
-    # must not reach it.
     table, _sidecar = loadable_track(tmp_path, model_sha="a" * 64)
     with pytest.raises(RuntimeError, match="different model"):
         load_inputs(tmp_path, ["abc"], table_path=table, model_sha="b" * 64,
@@ -450,19 +347,12 @@ def test_a_wrong_model_sidecar_is_never_downgraded_to_a_skip(tmp_path):
 
 
 def test_an_unstamped_sidecar_reads_as_unknown_rather_than_raising(tmp_path):
-    # Sidecars predating the stamp must be *reportable* as unknown; whether
-    # unknown is fatal is the caller's call, and `load_inputs` says yes.
     table, sidecar = loadable_track(tmp_path)
     assert sidecar_model_sha(sidecar) is None
     with pytest.raises(RuntimeError, match="unstamped"):
         load_inputs(tmp_path, ["abc"], table_path=table, model_sha="a" * 64)
     kept, _ = load_inputs(tmp_path, ["abc"], table_path=table)
     assert len(kept) == 1, "no expected sha means no identity claim to check"
-
-
-# --------------------------------------------------------------------------- #
-# Explicit id lists
-# --------------------------------------------------------------------------- #
 
 
 def test_read_ids_file_accepts_both_shapes_and_refuses_ambiguity(tmp_path):
@@ -479,8 +369,6 @@ def test_read_ids_file_accepts_both_shapes_and_refuses_ambiguity(tmp_path):
                      encoding="utf-8")
     assert read_ids_file(lines) == ["one", "two"]
 
-    # A repeat would weight one track twice in an aggregate that reports a
-    # track count, which is the same class of lie as a silently short split.
     dupes = tmp_path / "d.json"
     dupes.write_text('["one", "two", "one"]', encoding="utf-8")
     with pytest.raises(RuntimeError, match="repeats"):
@@ -493,10 +381,6 @@ def test_read_ids_file_accepts_both_shapes_and_refuses_ambiguity(tmp_path):
 
 
 def test_a_subset_run_cannot_overwrite_the_splits_published_verdict(tmp_path):
-    """`--split` stops selecting anything once `--ids-file` is given -- it only
-    labels the run -- so without a distinct default both land on
-    `eval_test.json`, the artifact the generation is judged by, in the model
-    directory, with no flag involved."""
     published = default_output_name("test")
 
     assert published == EVAL_FILE.format(split="test")
@@ -509,11 +393,6 @@ def test_two_different_id_lists_do_not_land_on_each_other(tmp_path):
 
 
 def test_per_track_head_to_head_separates_the_two_readings():
-    # The full reading hands the rule a structural zero on classes the
-    # beat-indexed table stops it claiming, so only the restricted reading can
-    # go negative -- the artifact has to carry both or a universality claim
-    # gets read off the wrong one.  This fixture is that exact shape: the NN
-    # wins overall because it can name `intro`, and loses on `drop` itself.
     labels = ["intro"] * 2 + ["drop"] * 6
     nn = [score_predicted(track(steady(8), labels, track_id="a"), "v1",
                           ("intro",) * 2 + ("drop",) * 3 + ("breakdown",) * 3)]
@@ -525,11 +404,6 @@ def test_per_track_head_to_head_separates_the_two_readings():
         "on `drop` alone the always-drop stream has the better F1"
     assert _head_to_head(rows, "delta")["nn_better"] == 1
     assert _head_to_head(rows, "restricted_delta")["rule_better"] == 1
-
-
-# --------------------------------------------------------------------------- #
-# The sweep
-# --------------------------------------------------------------------------- #
 
 
 def test_enumerate_configs_is_a_deterministic_joint_grid():
@@ -582,8 +456,6 @@ def test_selection_refuses_rather_than_returning_a_config_that_flickers():
 
 
 def test_selection_will_not_choose_a_config_outside_the_latency_budget():
-    # The lag curve is a deliverable, so long lags are measured; a config that
-    # needs more future audio than the show has still cannot be shipped.
     chosen = select_config([result(0.99, 1.0, lag_bars=8),
                             result(0.50, 1.0, lag_bars=2)],
                            flicker_ceiling=3.0, budget_bars=3)
@@ -592,7 +464,7 @@ def test_selection_will_not_choose_a_config_outside_the_latency_budget():
 
 def test_sensitivity_reports_the_best_per_value_curve_and_its_spread():
     rows = [result(0.60, 1.0, prior_strength=0.0),
-            result(0.55, 1.0, prior_strength=0.0),      # worse at the same value
+            result(0.55, 1.0, prior_strength=0.0),
             result(0.70, 1.0, prior_strength=-0.5)]
     for row in rows:
         row["params"] = dataclasses.asdict(row["params"])
@@ -604,10 +476,6 @@ def test_sensitivity_reports_the_best_per_value_curve_and_its_spread():
 
 
 def test_refinement_reopens_the_trellis_axes_but_not_the_latency_policy():
-    # A staged search can only find a coordinate-wise optimum; the refinement
-    # has to move the axes together to prove the winner is not one.  lag_bars
-    # is excluded on purpose -- it is bounded by the look-ahead budget, not by
-    # macro-F1, so it gets its own stage and curve.
     axes = refinement_axes(DecodeParams(prior_strength=-0.5, drop_miss_cost=1.0,
                                         boundary_weight=1.0, boundary_ref=0.3,
                                         floor_scale=1.0))

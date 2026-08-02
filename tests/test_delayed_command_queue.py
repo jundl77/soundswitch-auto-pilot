@@ -70,7 +70,6 @@ async def test_undrained_commands_not_in_log():
 
 
 async def test_command_fires_only_after_delay_has_elapsed():
-    # No sleep-precision assertions here — scheduler jitter makes them flaky.
     delay = 0.05
     q = DelayedCommandQueue(delay)
     fired = []
@@ -147,20 +146,7 @@ async def test_pending_counts_unfired_commands():
     assert q.pending == 0
 
 
-# --------------------------------------------------------------------------- #
-# B1: one queue, one delay per STREAM
-# --------------------------------------------------------------------------- #
-
-
 async def test_a_command_may_carry_its_own_delay():
-    """The queue holds a command until the audience hears the audio that caused
-    it, and the two streams reach it at different ages.
-
-    A beat is detected as the audio arrives; a decoder decision is ~13.7 s
-    behind it.  Delaying both by the playback delay would put the OS2L wire a
-    whole chain-latency ahead of the room, so the delay is
-    ``playback_delay - chain_latency`` PER STREAM rather than per queue.
-    """
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -186,7 +172,6 @@ async def test_a_command_may_carry_its_own_delay():
 
 
 async def test_the_timing_log_records_the_delay_each_command_asked_for():
-    """A single queue-wide target would report every intent as 13.7 s late."""
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -211,13 +196,6 @@ async def test_the_timing_log_records_the_delay_each_command_asked_for():
 
 
 async def test_a_shrinking_delay_cannot_reorder_a_stream():
-    """The intent delay tracks the measured chain latency, so it moves.
-
-    If it shrinks by more than the gap between two commits, the later decision
-    would otherwise overtake the earlier one and the show would run backwards
-    for one change.  Order within a stream is preserved by clamping, which is
-    cheaper than being sorry.
-    """
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -234,8 +212,6 @@ async def test_a_shrinking_delay_cannot_reorder_a_stream():
 
 
 async def test_streams_are_clamped_independently():
-    """A beat enqueued long ago must not drag the next intent out to its own
-    fire time -- that is the whole point of the per-stream delay."""
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -250,8 +226,6 @@ async def test_streams_are_clamped_independently():
 
 
 async def test_dropping_pending_commands_takes_only_the_ones_after():
-    """The supersede primitive: a newer statement replaces what was queued for
-    later audio, and leaves everything about earlier audio alone."""
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -269,8 +243,6 @@ async def test_dropping_pending_commands_takes_only_the_ones_after():
 
 
 async def test_dropping_pending_commands_releases_the_clamp_they_were_holding():
-    """A cancelled command must not go on ordering the stream from the grave:
-    its fire time was the floor every later one was clamped to."""
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -293,16 +265,6 @@ def _record(sink, name):
 
 
 async def test_a_command_at_exactly_the_same_fire_time_is_a_predecessor_not_a_restatement():
-    """Equal fire times mean the clamp collapsed two different song instants,
-    not that two statements describe one.
-
-    A chain older than the playback delay clamps every decision to `now`.  In
-    production two `now` reads are microseconds apart and both decisions
-    survive; in virtual time they are the same float, so an "at or after" drop
-    deleted the predecessor and the simulation reported a show the venue would
-    never have played.  Both are kept, and the queue's own (fire time,
-    sequence) ordering delivers them in commit order.
-    """
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -319,14 +281,6 @@ async def test_a_command_at_exactly_the_same_fire_time_is_a_predecessor_not_a_re
 
 
 async def test_an_inclusive_drop_takes_the_equal_fire_time_the_default_keeps():
-    """One stream where equality IS a restatement, so the caller says which.
-
-    An effect refresh landing at the instant of an intent change is redundant
-    by construction -- the change re-picks the effect itself.  Strictly-after
-    let it survive, and because it was enqueued first the queue's (fire time,
-    sequence) ordering fired it BEFORE the change: a re-roll and an effect
-    change back to back, the flicker the drop exists to prevent.
-    """
     from lib.clock import VirtualClock
 
     clock = VirtualClock()
@@ -343,11 +297,6 @@ async def test_an_inclusive_drop_takes_the_equal_fire_time_the_default_keeps():
 
 
 async def test_one_failing_command_does_not_take_the_batch_or_the_show_with_it():
-    """The due batch is sliced off the queue before the first await, so a raise
-    used to lose every command behind it -- permanently, since they were
-    already gone from the queue -- and then propagate into `run`'s loop, which
-    has no handler.  A transient rtmidi or socket error is not a reason to end
-    the night."""
     clock = VirtualClock()
     queue = DelayedCommandQueue(0.0, clock=clock)
     fired: list = []

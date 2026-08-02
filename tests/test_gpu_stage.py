@@ -1,24 +1,3 @@
-"""The GPU stage on its own thread (D3/B3), and the shed ladder's one rung.
-
-Three claims, and they fail differently.
-
-**The audio thread never waits for the GPU.** That is the whole reason for the
-thread: a pass is ~81 ms against a 5.805 ms buffer period and ~210 ms at p95
-under contention, and the audio input drops rather than queues, so an inline
-pass throws away fourteen buffers of audio once a second. These tests hold a
-pass open far longer than any buffer and assert the loop walked past it.
-
-**Threading may move when a decision arrives, never which decision it is.** The
-same audio goes through the threaded stage and through the synchronous one and
-the committed decisions are compared whole -- a hand-off that dropped,
-duplicated or re-ordered one pass changes the observation a bar is assembled
-from, and nothing else here would see it.
-
-**A gap is a discontinuity, not a pause.** Audio from before a shed must never
-decode as current, so both edges clear; and the extractor's sample index IS song
-time, so it has to survive the shed or every later cell is stamped into the
-wrong part of the track, silently and for the rest of the song.
-"""
 from __future__ import annotations
 
 import logging
@@ -43,8 +22,6 @@ EMPTY = np.zeros(0, dtype=np.float32)
 
 
 class SlowEncoder(FakeEncoder):
-    """A pass that takes as long as it is told to, and records which thread ran it."""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.threads = []
@@ -91,11 +68,6 @@ def pump(worker, seconds, seed=0, sink=None):
 
 
 def quiesce(worker, sink=None, timeout=10.0):
-    """Let the thread finish what it started, draining as it goes.
-
-    An empty buffer is a pure drain: nothing is resampled and nothing reaches
-    the ring, so waiting cannot itself create the passes it is waiting for.
-    """
     sink = [] if sink is None else sink
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -116,14 +88,6 @@ def settle(predicate, timeout=10.0, why=''):
 
 
 class Pacing:
-    """Sheds and restores through the drift input, on a clock the test owns.
-
-    The other input cannot be used as a lever: a fault is the stage's own to
-    clear and it clears it on its own backoff, which is the behaviour the
-    degradation drills are about and the wrong instrument for asking what a
-    shed does to the stream.
-    """
-
     def __init__(self):
         self.clock = FakeClock()
         self.watchdog = DriftWatchdog(BUFFER_SEC, clock=self.clock)
@@ -155,11 +119,6 @@ def stage(tiny, mean):  # noqa: F811
     yield build
     for worker in started:
         worker.stop()
-
-
-# --------------------------------------------------------------------------- #
-# The audio thread never waits for the GPU
-# --------------------------------------------------------------------------- #
 
 
 def test_a_pass_runs_somewhere_other_than_the_thread_that_fed_the_audio(stage):
@@ -197,8 +156,6 @@ def test_whole_passes_arrive_in_order_and_only_once(stage):
 
 
 def test_the_hand_off_queue_is_bounded_and_overflow_is_a_shed(stage):
-    """A consumer that stopped draining must cost memory nothing and must be
-    visible; the one thing it may never do is stall the audio thread."""
     encoder = SlowEncoder()
     encoder.gate.clear()
     watchdog = DriftWatchdog(BUFFER_SEC)
@@ -209,14 +166,6 @@ def test_the_hand_off_queue_is_bounded_and_overflow_is_a_shed(stage):
     settle(lambda: worker.overflows > 0, why='the queue never overflowed')
     assert worker.queued <= 1
 
-    # Not `or worker.faults > 0`: `_fault` increments that counter on its way to
-    # raising the shed, so the old disjunct was true whatever the ladder did --
-    # and the ladder did nothing.  Reporting healthy on the line after the offer
-    # cancelled the fault before `_tick` could act on it, so the stage never
-    # shed, never dropped the queue and never raised `gap`; the consumer got the
-    # stale groups as current and then cells from much later in the song with
-    # nothing saying a hole had opened.  A resync happens only on the way OUT of
-    # a shed, so it is durable evidence the whole cycle ran.
     gaps: list = []
 
     def cycled() -> bool:
@@ -225,11 +174,6 @@ def test_the_hand_off_queue_is_bounded_and_overflow_is_a_shed(stage):
 
     settle(cycled, why='the overflow never became a shed')
     assert any(gaps), 'the consumer was never told about the hole'
-
-
-# --------------------------------------------------------------------------- #
-# Threading moves when, never what
-# --------------------------------------------------------------------------- #
 
 
 def test_the_threaded_stage_decides_exactly_what_the_synchronous_one_decides(
@@ -279,14 +223,7 @@ def test_the_threaded_stage_decides_exactly_what_the_synchronous_one_decides(
     assert found[0] == inline[0], 'the decisions diverged'
 
 
-# --------------------------------------------------------------------------- #
-# A song boundary
-# --------------------------------------------------------------------------- #
-
-
 def test_a_song_boundary_reset_is_marshalled_onto_the_gpu_thread(stage):
-    """The ring cannot be zeroed under a snapshot in flight, so the request is
-    handed over rather than performed on the caller's thread."""
     worker = stage()
     pump(worker, 4.0)
     settle(lambda: worker.passes > 0, why='no pass ran')
@@ -311,15 +248,7 @@ def test_no_audio_is_written_while_a_reset_is_pending(stage):
     encoder.gate.set()
 
 
-# --------------------------------------------------------------------------- #
-# Shed and restore
-# --------------------------------------------------------------------------- #
-
-
 def test_a_shed_keeps_feeding_the_ring_because_the_index_is_song_time(stage):
-    """The tempting economy that would break the show: a stage that stops taking
-    audio comes back with a clock the beat grid disagrees with, for the rest of
-    the song and with nothing to say so."""
     pacing = Pacing()
     worker = stage(watchdog=pacing.watchdog, buffer=20.0)
     pump(worker, 3.0)
@@ -365,9 +294,6 @@ def _gap_seen(worker, timeout=5.0):
 
 
 def test_restoring_rejoins_the_live_edge_rather_than_replaying_the_gap(stage):
-    """`resync` is why the recovered span is one ordinary hop: the cells the gap
-    swallowed would have seen the whole buffer of future audio, a geometry the
-    student was never trained under."""
     pacing = Pacing()
     worker = stage(watchdog=pacing.watchdog)
     pump(worker, 4.0)
@@ -387,8 +313,6 @@ def test_restoring_rejoins_the_live_edge_rather_than_replaying_the_gap(stage):
 
 
 def test_a_ring_overrun_is_a_shed_and_a_resync_rather_than_a_crash(stage):
-    """The typed overrun from Task 6, wired: a pass whose audio the ring no
-    longer holds is backpressure, and the way back is the live edge."""
     encoder = SlowEncoder()
     encoder.gate.clear()
     watchdog = DriftWatchdog(BUFFER_SEC)
@@ -421,15 +345,8 @@ def test_every_transition_is_logged(stage, caplog):
 
 
 @pytest.mark.integration
-def test_a_watchdog_is_what_puts_the_shipped_chain_on_a_thread(nn_artifacts,
-                                                              anchor_mp3):
-    """The wiring switch, and the WDDM measurement that goes with it.
-
-    Reserved bytes are recorded rather than merely bounded because the trap is
-    silent: under pressure the driver spills to host memory and raises no OOM at
-    all, so a run that has started crawling looks exactly like one that has not.
-    During the Tasks 8+9 acceptance this box reached 7.8 of 8.0 GB.
-    """
+def test_the_shipped_chain_runs_on_its_own_thread_and_its_vram_pool_settles(
+        nn_artifacts, anchor_mp3):
     from lib import section_chain
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.clients.pyaudio_client import PyAudioClient  # noqa: F401
@@ -438,6 +355,11 @@ def test_a_watchdog_is_what_puts_the_shipped_chain_on_a_thread(nn_artifacts,
     watchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE)
     chain = section_chain.build_section_chain(watchdog=watchdog)
     assert isinstance(chain.stream, GpuStage)
+
+    def wait_for_the_pass_the_disk_outran():
+        while not chain.stream.idle:
+            time.sleep(0.001)
+
     try:
         audio = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, anchor_mp3)
         audio.start_streams()
@@ -446,12 +368,7 @@ def test_a_watchdog_is_what_puts_the_shipped_chain_on_a_thread(nn_artifacts,
             if audio.exhausted:
                 break
             chain.stream.push_audio(audio.read())
-            # The file client hands over audio as fast as the disk allows, which
-            # is not a pace the GPU has to keep: unthrottled, the ring overruns
-            # inside four passes.  Live audio arrives at 1x; this waits for the
-            # pass instead, which is the same relation and finishes sooner.
-            while not chain.stream.idle:
-                time.sleep(0.001)
+            wait_for_the_pass_the_disk_outran()
             if chain.stream.passes > len(reserved) - 1:
                 reserved.append(_reserved())
         audio.close()
@@ -461,11 +378,6 @@ def test_a_watchdog_is_what_puts_the_shipped_chain_on_a_thread(nn_artifacts,
     assert chain.stream.passes > 20, 'not enough passes to say anything'
     assert watchdog.fault is None, f'the stage faulted: {watchdog.fault}'
 
-    # The pool is EXPECTED to climb while the ring fills: a pass encodes what
-    # the ring holds, so activations grow with the buffer until it reaches its
-    # 30 s length.  What must not happen is growth after that -- the WDDM trap
-    # is a pool that keeps climbing and spills to host memory without ever
-    # raising an OOM, so a run that has started crawling reads as a healthy one.
     settled = reserved[len(reserved) * 2 // 3:]
     print(f'\n[task10] {chain.stream.passes} passes | cuda reserved '
           f'{reserved[1] / 1e6:.0f}MB after pass 1, '

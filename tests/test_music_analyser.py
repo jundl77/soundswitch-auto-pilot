@@ -62,12 +62,6 @@ def test_silence_is_decided_on_the_rms_the_loop_already_computes(analyser):
 
 
 def test_the_silence_threshold_is_the_matched_one_not_the_retired_gates():
-    """The mel gate's 1e-4 was a level in band-energy units, not in RMS.
-
-    Reusing that number would have been the plausible pick the calibration
-    exists to refuse; the sweep put the fixture-matching band at
-    [1.4e-4, 1.66e-4] and this is inside it.
-    """
     from lib.analyser.music_analyser import _SILENCE_RMS
 
     assert 1.4e-4 <= _SILENCE_RMS <= 1.66e-4
@@ -115,7 +109,6 @@ def test_fold_bpm_zero_and_negative_return_zero():
 
 
 def test_fold_bpm_non_finite_returns_zero():
-    # Halving inf never terminates, and this runs on the live audio thread.
     assert MusicAnalyser._fold_bpm(float('inf')) == 0.0
     assert MusicAnalyser._fold_bpm(float('-inf')) == 0.0
     assert MusicAnalyser._fold_bpm(float('nan')) == 0.0
@@ -146,11 +139,6 @@ def test_an_unmeasured_bpm_is_not_a_bpm_change(analyser):
     assert analyser._has_bpm_changed(0.0) is False
 
 
-# `_track_note` drives the note EVENT, which the engine turns into the
-# 24-channel overlay light bar.  Its supplier moved from the onset stream to the
-# beat stream when the onset chain was deleted -- the same substitution the -d
-# click took earlier, and the reason the refractory still matters.
-
 async def test_a_note_event_fires_on_a_beat(analyser):
     now = analyser._clock.now()
     analyser.last_note_detected = now - datetime.timedelta(seconds=1)
@@ -163,8 +151,7 @@ async def test_no_beat_means_no_note_event(analyser):
     assert await analyser._track_note([], now) is False
 
 
-async def test_the_note_event_refractory_survived_the_re_source(analyser):
-    """Without it a burst of beats in one buffer would strobe the overlay bar."""
+async def test_a_burst_of_beats_in_one_buffer_cannot_strobe_the_overlay_bar(analyser):
     now = analyser._clock.now()
     analyser.last_note_detected = now - datetime.timedelta(seconds=1)
     assert await analyser._track_note([1.0], now) is True
@@ -173,8 +160,6 @@ async def test_the_note_event_refractory_survived_the_re_source(analyser):
 
 
 class _FakeRhythm:
-    """A rhythm stack that fires beats on demand and nothing else."""
-
     def __init__(self):
         from lib.analyser.madmom_rhythm import RhythmEvents
         self._events = RhythmEvents
@@ -191,11 +176,6 @@ class _FakeRhythm:
 
 
 async def test_the_overlay_note_event_follows_the_beat_stream():
-    """D6: the light bar advances once per beat, and only on a beat.
-
-    Its old supplier was the onset stream, so a re-source that was forgotten
-    would leave the bar permanently dark with every other test still green.
-    """
     class _Recorder(_StubHandler):
         def __init__(self):
             self.beats: list[int] = []
@@ -218,7 +198,7 @@ async def test_the_overlay_note_event_follows_the_beat_stream():
     loud = np.full(256, 0.2, dtype=np.float32)
     for i in range(120):
         handler.index = i
-        clock.advance(0.05)          # a beat period apart, past the refractory
+        clock.advance(0.05)
         await analyser.analyse(loud.copy())
 
     assert handler.beats == [5, 40, 90]
@@ -226,16 +206,6 @@ async def test_the_overlay_note_event_follows_the_beat_stream():
 
 
 async def test_the_fifteen_minute_roll_is_not_a_song_boundary():
-    """A club feed never goes silent, so the periodic roll is the ONLY boundary
-    the engine would ever see -- and it used to read as a brand new song.
-
-    `_reset_state` cleared `is_playing`, so the next buffer of the same
-    uninterrupted audio re-issued `on_sound_start` with no stop before it.
-    Downstream that zeroes the ring, starts the student cold, throws the bar
-    grid away and drops every queued intent, then re-arms the cold-start floor
-    -- so the room can be dropped to ATMOSPHERIC in the middle of a peak, four
-    times an hour, on audio that never stopped.
-    """
     class _Recorder(_StubHandler):
         def __init__(self):
             self.events: list[str] = []
@@ -328,14 +298,6 @@ async def test_the_heartbeat_rearms_rather_than_repeating_every_buffer(caplog):
 
 @pytest.mark.integration
 async def test_debug_clicks_are_mixed_into_the_returned_audio():
-    """`-d` is a feature the owner asked for by name, and the line implementing
-    it -- `audio_signal += self.click_sound` -- is otherwise untested: the
-    trigger and the refractory have coverage, so a change that stopped the click
-    reaching the audio would leave the suite green.
-
-    The click marks the BEAT (owner preference), so the assertion is against the
-    beat stream: it must fail if the trigger ever drifts off it.
-    """
     from lib.analyser.music_analyser import MusicAnalyser
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from lib.clock import VirtualClock

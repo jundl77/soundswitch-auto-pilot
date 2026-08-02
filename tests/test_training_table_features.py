@@ -1,10 +1,3 @@
-"""Tests for the NN mel-feature sidecar file.
-
-The exporter itself is gone: it rebuilt the analyser's aubio filterbank so the
-model would train on the stream the runtime produced, and the runtime no longer
-produces one.  The sidecars already on disk are still read by the dataset
-builder, so what stays under test is the file format and its generation stamp.
-"""
 import sys
 from pathlib import Path
 
@@ -27,11 +20,6 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
 )
 
 
-# --------------------------------------------------------------------------- #
-# Sidecar file
-# --------------------------------------------------------------------------- #
-
-
 def test_sidecar_roundtrips_the_arrays_the_spec_requires(tmp_path):
     rng = np.random.default_rng(20260726)
     mel = rng.standard_normal((3, MEL_BANDS)).astype(np.float32)
@@ -50,10 +38,6 @@ def test_sidecar_roundtrips_the_arrays_the_spec_requires(tmp_path):
 
 
 def test_a_new_sidecar_records_which_exporter_wrote_it(tmp_path):
-    """Geometry cannot answer "same features?": a different log transform or a
-    different pooling reduction keeps the frame rate and the band count and
-    changes every number.  The generation says so explicitly, and the cache
-    check reads it off the file rather than assuming."""
     path = tmp_path / "abc.npz"
     write_feature_sidecar(path, np.zeros((2, MEL_BANDS), dtype=np.float32), 0.046, 0.046)
 

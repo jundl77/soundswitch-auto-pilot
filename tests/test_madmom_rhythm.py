@@ -7,8 +7,7 @@ SR = 44100
 
 
 class FakeStage:
-    # Stamps events from its OWN frame count, exactly as madmom's decoders do —
-    # which is why a stage that is skipped for a while reports stale times.
+    # Stamps events from its OWN frame count, exactly as madmom's decoders do.
     def __init__(self):
         self.hops = []
         self.fire_on = set()
@@ -61,8 +60,8 @@ def test_events_are_reported_in_the_buffer_whose_hop_produced_them():
     for i in range(0, 256 * 20, 256):
         fired_beats.append(r.process(_ramp(256, i)).beats)
     assert sum(len(b) for b in fired_beats) == 1
-    # hop 2 completes in the first buffer that has accumulated three hops
-    assert fired_beats[-(-3 * HOP_SIZE // 256) - 1]
+    buffers_to_accumulate_three_hops = -(-3 * HOP_SIZE // 256)
+    assert fired_beats[buffers_to_accumulate_three_hops - 1]
 
 
 def test_a_buffer_that_completes_no_hop_reports_nothing():

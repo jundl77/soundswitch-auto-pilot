@@ -6,21 +6,11 @@ from lib.clients.midi_message import MidiChannel
 
 
 def test_groove_is_gone_because_no_path_can_produce_it():
-    """D7.  The model's class space is (intro, buildup, breakdown, drop, outro).
-
-    An enum member the show can never enter is a lie the visualizer's legend
-    would keep advertising, so it is removed rather than left unreachable.
-    """
     assert not hasattr(LightIntent, 'GROOVE')
     assert 'groove' not in {intent.value for intent in LightIntent}
 
 
 def test_grooves_banks_move_into_breakdown_rather_than_going_dark():
-    """The pool is three physical looks, not a label.
-
-    Deleting the intent would retire BANK_2F/G/H from the rig; folding them in
-    keeps six banks rotating behind the class the corpus actually labels.
-    """
     channels = [effect.midi_channel.name
                 for effect in INTENT_EFFECTS[LightIntent.BREAKDOWN]]
     assert channels == ['AUTOLOOP_BANK_2C', 'AUTOLOOP_BANK_2D',
@@ -33,8 +23,6 @@ def test_every_intent_the_show_can_enter_has_a_pool():
 
 
 def test_the_class_space_maps_onto_intents_and_nothing_is_unmapped():
-    """intro/outro -> ATMOSPHERIC: an intent cannot know where in the track it
-    is, and quiet at the start and quiet at the end are the same look."""
     assert SECTION_CLASS_INTENTS == {
         'intro': LightIntent.ATMOSPHERIC,
         'outro': LightIntent.ATMOSPHERIC,
@@ -46,18 +34,11 @@ def test_the_class_space_maps_onto_intents_and_nothing_is_unmapped():
 
 
 def test_a_class_the_map_does_not_know_is_refused_rather_than_defaulted():
-    """A silent default would light a plausible look for a class nobody wired.
-
-    The decoder's class space comes from the priors file, so a retrained model
-    with a sixth class must fail here rather than show breakdown for it.
-    """
     with pytest.raises(KeyError, match='cooldown'):
         intent_for_class('cooldown')
 
 
 def test_peak_is_reachable_only_by_promotion():
-    """D8.  No class maps to PEAK -- it is "a committed DROP that has lasted",
-    which is a temporal property the class space cannot express."""
     assert LightIntent.PEAK not in SECTION_CLASS_INTENTS.values()
 
 
