@@ -7,6 +7,9 @@ from simulate.runner import TIMING_TOLERANCE_SEC
 TITLE = 'SoundSwitch Visualizer'
 SLOT_LABELS = list('ABCDEFGH')
 TIMELINE_WINDOW_SEC = 30.0
+TIMELINE_LEAD_SEC = 0.5
+NOW_CURSOR_X = TIMELINE_WINDOW_SEC / (TIMELINE_WINDOW_SEC + TIMELINE_LEAD_SEC)
+GLOW_BASE_PX = 16
 DARK_BG   = '#0d1117'
 CARD_BG   = '#111827'
 BORDER    = '#1e2937'
@@ -91,25 +94,29 @@ def _song_and_room(snapshot: dict) -> tuple:
     return song, max(0.0, song - snapshot.get('look_ahead_sec', 0.0))
 
 
+def _anchor(snapshot: dict) -> dict:
+    beats = _room_events(snapshot.get('beats', []), snapshot)
+    song, room = _song_and_room(snapshot)
+    return {
+        'now':  snapshot.get('now', 0.0),
+        'beat': beats[-1]['t'] if beats else None,
+        'song': song,
+        'room': room,
+        'span': TIMELINE_WINDOW_SEC,
+        'lead': TIMELINE_LEAD_SEC,
+    }
+
+
 def _build_timeline(snapshot: dict) -> go.Figure:
     now   = snapshot['now']
     x0    = now - TIMELINE_WINDOW_SEC
-    x1    = now + 0.5
+    x1    = now + TIMELINE_LEAD_SEC
 
     shapes, annotations = [], []
 
-    t_grid = int(x0)
-    while t_grid <= x1:
-        shapes.append(dict(
-            type='line', xref='x', yref='paper',
-            x0=t_grid, x1=t_grid, y0=0, y1=1,
-            line=dict(color='#151e2b', width=0.8),
-        ))
-        t_grid += 1
-
     for entry in snapshot.get('intents', []):
         t_start = max(entry['t'], x0)
-        t_end   = min(entry.get('end', now), x1)
+        t_end   = min(entry.get('end', x1), x1)
         if t_end <= t_start:
             continue
         cfg   = _intent_config(entry['intent'])
@@ -150,8 +157,8 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
 
     shapes.append(dict(
-        type='line', xref='x', yref='paper',
-        x0=now, x1=now, y0=0, y1=1,
+        type='line', xref='paper', yref='paper',
+        x0=NOW_CURSOR_X, x1=NOW_CURSOR_X, y0=0, y1=1,
         line=dict(color='rgba(255,255,255,0.25)', width=1, dash='dot'),
     ))
 
@@ -177,6 +184,8 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             gridcolor='#1a2332',
             color='#6e7681',
             showline=False,
+            minor=dict(dtick=1.0, showgrid=True,
+                       gridcolor='#151e2b', gridwidth=0.8),
         ),
         yaxis=dict(range=[0, 1], showticklabels=False, showgrid=False),
         plot_bgcolor=DARK_BG, paper_bgcolor=DARK_BG,
@@ -187,39 +196,28 @@ def _build_timeline(snapshot: dict) -> go.Figure:
 
 
 def _build_stage(snapshot: dict) -> list:
-    cfg      = _intent_config(snapshot.get('intent'))
-    active   = set(cfg['slots'])
-    primary  = cfg['primary']
-    accent   = cfg['accent']
-    decay    = cfg['decay']
-    glow_m   = cfg['glow_mult']
-
-    now   = snapshot['now']
-    beats = _room_events(snapshot.get('beats', []), snapshot)
-    dt    = (now - beats[-1]['t']) if beats else 999.0
-    pulse = max(0.0, 1.0 - dt / decay)
-
-    base_glow  = 16
-    pulse_glow = int(base_glow + pulse * base_glow * glow_m)
+    cfg     = _intent_config(snapshot.get('intent'))
+    active  = sorted(cfg['slots'])
+    peak_px = int(GLOW_BASE_PX * (1 + cfg['glow_mult']))
 
     slots = []
     for i, label in enumerate(SLOT_LABELS):
         on = i in active
-        active_sorted = sorted(active)
-        pos_in_active = active_sorted.index(i) if on else -1
-        color = (accent if pos_in_active % 2 == 1 else primary) if on else None
+        color = (cfg['accent'] if active.index(i) % 2 else cfg['primary']) if on else None
 
-        glow_px = pulse_glow if on else 0
-        dim_bg  = '#161d27'
+        lamp = {
+            'width': '38px', 'height': '38px', 'borderRadius': '50%',
+            'background': color or '#161d27',
+            'margin': '0 auto 8px',
+        }
+        if on:
+            lamp.update({'--ss-lamp': color,
+                         '--ss-base': f'{GLOW_BASE_PX}px',
+                         '--ss-peak': f'{peak_px}px',
+                         '--ss-decay': f'{cfg["decay"]}s'})
 
         slots.append(html.Div([
-            html.Div(style={
-                'width': '38px', 'height': '38px', 'borderRadius': '50%',
-                'background': color or dim_bg,
-                'margin': '0 auto 8px',
-                'boxShadow': f'0 0 {glow_px}px {color}' if on and glow_px > 0 else 'none',
-                'transition': 'background 0.08s ease, box-shadow 0.08s ease',
-            }),
+            html.Div(className='ss-lamp ss-on' if on else 'ss-lamp', style=lamp),
             html.Div(label, style={
                 'color': '#ffffff' if on else '#2d3f52',
                 'fontSize': '12px', 'textAlign': 'center',
@@ -302,8 +300,8 @@ def _build_metrics(snapshot: dict) -> list:
 
     items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'room {room_text}', style={'color': '#e6edf3', 'fontWeight': 'bold', 'marginRight': '10px'}),
-        html.Span(f'song {song_text}', style={'color': MUTED, 'marginRight': '20px'}),
+        html.Span(f'room {room_text}', id='room-clock', style={'color': '#e6edf3', 'fontWeight': 'bold', 'marginRight': '10px'}),
+        html.Span(f'song {song_text}', id='song-clock', style={'color': MUTED, 'marginRight': '20px'}),
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
         html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
@@ -327,8 +325,96 @@ def _timing_health(stats: dict) -> tuple:
     return f'cmd timing: on target  │  {streams}', OK_COLOR
 
 
+STYLESHEET = '''
+.ss-lamp { transition: background 0.08s ease; }
+.ss-lamp.ss-on { box-shadow: 0 0 var(--ss-base) var(--ss-lamp); }
+@keyframes ss-pulse {
+    from { box-shadow: 0 0 var(--ss-peak) var(--ss-lamp); }
+    to   { box-shadow: 0 0 var(--ss-base) var(--ss-lamp); }
+}
+.ss-lamp.ss-on.ss-pulse { animation: ss-pulse var(--ss-decay) linear both; }
+'''
+
+INDEX_TEMPLATE = '''<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>''' + STYLESHEET + '''</style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>'''
+
+ANIMATION_JS = '''
+function(sync) {
+    const ds = window.dash_clientside;
+    const a = ds.ss = ds.ss || {};
+    if (!sync) return ds.no_update;
+
+    a.frozen = a.now === sync.now;
+    Object.assign(a, sync);
+    a.at = performance.now();
+    if (a.running) return ds.no_update;
+    a.running = true;
+
+    const clock = (s) => {
+        const t = Math.max(0, Math.floor(s));
+        const m = Math.floor(t / 60);
+        return m ? m + 'min ' + (t % 60) + 'sec' : t + 'sec';
+    };
+
+    const tick = (id, prefix, base, drift) => {
+        const el = document.getElementById(id);
+        if (el && base != null) el.textContent = prefix + clock(base + drift);
+    };
+
+    const scroll = (now) => {
+        const gd = document.querySelector('#timeline .js-plotly-plot');
+        if (!gd || !gd.layout || !window.Plotly) return;
+        const ax = gd.layout.xaxis;
+        const full = a.span + a.lead;
+        if (!ax.autorange && Math.abs(ax.range[1] - ax.range[0] - full) > full * 0.01) return;
+        window.Plotly.relayout(gd, {'xaxis.range': [now - a.span, now + a.lead]});
+    };
+
+    const pulse = (now) => {
+        if (a.beat == null || a.beat === a.pulsed) return;
+        a.pulsed = a.beat;
+        document.querySelectorAll('.ss-lamp.ss-on').forEach((el) => {
+            el.classList.remove('ss-pulse');
+            void el.offsetWidth;
+            el.style.animationDelay = Math.min(0, a.beat - now) + 's';
+            el.classList.add('ss-pulse');
+        });
+    };
+
+    const frame = () => {
+        const drift = a.frozen ? 0 : Math.min(1.5, (performance.now() - a.at) / 1000);
+        const now = a.now + drift;
+        scroll(now);
+        tick('room-clock', 'room ', a.room, drift);
+        tick('song-clock', 'song ', a.song, drift);
+        pulse(now);
+        requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    return ds.no_update;
+}
+'''
+
+
 def build_app(event_buffer) -> dash.Dash:
     app = dash.Dash(__name__, title=TITLE, eager_loading=True)
+    app.index_string = INDEX_TEMPLATE
     app.layout = html.Div([
         html.Div(_build_legend(), style={
             'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
@@ -349,20 +435,25 @@ def build_app(event_buffer) -> dash.Dash:
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
         dcc.Interval(id='tick', interval=250),
+        dcc.Store(id='sync'),
+        dcc.Store(id='anim'),
     ], style={'background': DARK_BG, 'minHeight': '100vh'})
 
     @app.callback(
         [Output('timeline', 'figure'),
          Output('stage', 'children'),
          Output('decoder', 'children'),
-         Output('metrics', 'children')],
+         Output('metrics', 'children'),
+         Output('sync', 'data')],
         Input('tick', 'n_intervals'),
     )
     def refresh(_):
         snap = event_buffer.snapshot()
         return (_build_timeline(snap), _build_stage(snap),
-                _build_decoder(snap), _build_metrics(snap))
+                _build_decoder(snap), _build_metrics(snap), _anchor(snap))
 
+    app.clientside_callback(ANIMATION_JS, Output('anim', 'data'),
+                            Input('sync', 'data'))
     return app
 
 
