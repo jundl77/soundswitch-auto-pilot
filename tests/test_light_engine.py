@@ -72,6 +72,7 @@ class FakeDecoder:
         self.beats: list = []
         self.cells: list = []
         self.resets = 0
+        self.cold_starts: list = []
         self.recent_observations = deque(maxlen=4)
         self._script = list(script or [])
 
@@ -86,8 +87,9 @@ class FakeDecoder:
     def _next(self):
         return self._script.pop(0) if self._script else []
 
-    def reset(self):
+    def reset(self, *, cold_start=True):
         self.resets += 1
+        self.cold_starts.append(cold_start)
 
 
 def engine(*, decoder=None, chain=None, playback_delay_sec=14.0, clock=None,
@@ -239,6 +241,51 @@ async def test_a_gap_from_the_feature_stage_clears_the_decoder_before_it_is_fed(
     await light.on_audio(np.zeros(256, dtype=np.float32))
     assert decoder.resets == 1
     assert decoder.cells == [(0.9288, 0.3)]
+    assert decoder.cold_starts == [False], \
+        'the feature stage gapped, not the beat source: madmom kept running and ' \
+        'pays no warm-up, so the grid must not re-apply the first-beat anchor'
+
+
+async def test_a_shed_and_unshed_cycle_leaves_the_grid_on_the_phase_it_had():
+    from tests.test_section_decoder import decoder as section
+
+    live, chain = section(lag_bars=2), FakeChain()
+    light, _, clock, _ = engine(decoder=live, chain=chain)
+
+    pushed = []
+    for index in range(12):
+        if index == 6:
+            chain.gap = True
+            await light.on_audio(np.zeros(0, dtype=np.float32))
+        await elapse(light, clock, 0.5)
+        await light.on_beat(index + 1, 128.0, False)
+        pushed.append(light.audio_sec)
+
+    uninterrupted = section(lag_bars=2)
+    for beat in pushed:
+        uninterrupted.push_beat(beat)
+
+    assert live.bar_edges == [pytest.approx(line)
+                              for line in uninterrupted.bar_edges
+                              if line > pushed[5]]
+
+
+async def test_a_beat_inside_the_sound_start_margin_leaves_the_anchor_alone():
+    """9 of 215 val tracks put their first beat under the 0.3 s margin."""
+    from tests.test_section_decoder import decoder as section
+
+    live = section(lag_bars=2)
+    light, _, clock, _ = engine(decoder=live, chain=FakeChain())
+
+    await elapse(light, clock, 0.2)
+    await light.on_beat(1, 128.0, False)
+    light.on_sound_start()
+
+    for index in range(4):
+        await elapse(light, clock, 0.5)
+        await light.on_beat(index + 2, 128.0, False)
+
+    assert live.bar_edges == [pytest.approx(2.0)]
 
 
 async def test_a_missing_chain_is_the_degradation_state_rather_than_a_crash():
@@ -991,3 +1038,12 @@ async def test_the_deliberate_stall_forgives_the_settle_and_not_the_rest():
         clock.advance(SETTLE_SEC * 10)
 
     assert forgiven == [SETTLE_SEC]
+
+
+def test_the_grid_never_tears_itself_down_before_the_show_has_gone_quiet():
+    from lib.engine import light_engine, section_decoder
+
+    assert section_decoder._BEAT_GAP_SEC > light_engine._BEAT_ABSENCE_SEC, \
+        'the bar grid re-anchors while the engine still believes a section is ' \
+        'playing: the decisions either side of the gap would name bars on two ' \
+        'different grids with nothing on screen saying the beat had stopped'

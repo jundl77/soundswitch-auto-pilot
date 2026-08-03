@@ -5,7 +5,7 @@
       "beat_times_hash": "17811ad9905a6dcf",
       "beats_detected": 701,
       "classified_blocks": 8,
-      "effect_changes": 22,
+      "effect_changes": 21,
       "intent_blocks": 9,
       "intents_held": [
         "atmospheric",
@@ -27,36 +27,39 @@
     },
     "informational": {
       "dominant_intent": "atmospheric",
-      "effect_changes_count": 22,
+      "effect_changes_count": 21,
       "intent_changes_count": 9,
       "intent_distribution_sec": {
-        "atmospheric": 149.96,
-        "breakdown": 81.15,
-        "buildup": 71.91,
+        "atmospheric": 147.67,
+        "breakdown": 82.12,
+        "buildup": 71.67,
         "drop": 16.42,
-        "peak": 30.99
+        "peak": 30.77
       },
       "midi": {
-        "commands": 23,
+        "commands": 22,
         "labels": [
           "set_autoloop",
-          "set_color_override"
+          "set_color_override",
+          "set_special_effect"
         ],
-        "ordering_hash": "f31432694184f6a0"
+        "ordering_hash": "7e874f6c5bb2206c"
       },
       "overlay": {
         "light_bar_updates": 701
       },
       "timing": {
-        "commands": 1426,
+        "commands": 1425,
         "target_delta_sec": [
           0.0,
-          0.0158,
-          0.0564,
-          0.0912,
-          0.3641,
-          0.5963,
-          0.8169,
+          0.0854,
+          0.277,
+          0.3002,
+          0.3757,
+          0.5034,
+          0.5092,
+          0.5905,
+          0.8343,
           6.0181,
           6.0762,
           6.1459,
@@ -67,7 +70,6 @@
           6.529,
           6.558,
           6.6625,
-          6.7147,
           6.8134,
           6.9005,
           14.0
@@ -83,7 +85,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+    "report_checksum": "1d7e9da42cf10760ccca0d3c3daae8c0b11cf2ef729e8ca889cb5e20c43b1405",
     "survives": {
       "beat_columns_hash": "9b23db785d730282",
       "beat_times_hash": "17811ad9905a6dcf",
@@ -162,7 +164,7 @@
       "beat_times_hash": "ad68746b34addf45",
       "beats_detected": 729,
       "classified_blocks": 9,
-      "effect_changes": 16,
+      "effect_changes": 17,
       "intent_blocks": 11,
       "intents_held": [
         "atmospheric",
@@ -179,40 +181,41 @@
     },
     "informational": {
       "dominant_intent": "breakdown",
-      "effect_changes_count": 16,
+      "effect_changes_count": 17,
       "intent_changes_count": 11,
       "intent_distribution_sec": {
-        "atmospheric": 20.68,
-        "breakdown": 96.89,
+        "atmospheric": 20.71,
+        "breakdown": 98.26,
         "drop": 33.09,
-        "peak": 92.56
+        "peak": 90.15
       },
       "midi": {
-        "commands": 16,
+        "commands": 17,
         "labels": [
-          "set_autoloop",
-          "set_special_effect"
+          "set_autoloop"
         ],
-        "ordering_hash": "fcb7d7de7bcd7573"
+        "ordering_hash": "fa8a2bfc8f006cdd"
       },
       "overlay": {
         "light_bar_updates": 729
       },
       "timing": {
-        "commands": 1475,
+        "commands": 1476,
         "target_delta_sec": [
-          1.9198,
-          2.0185,
-          2.0591,
-          2.0766,
+          1.5541,
+          1.8385,
           2.1114,
-          2.123,
-          2.3204,
-          2.7906,
-          2.8138,
+          2.1288,
+          2.1346,
+          2.3146,
+          2.3436,
+          2.4597,
+          2.6803,
+          2.7267,
           6.2155,
           6.3548,
           6.4129,
+          6.6335,
           6.8424,
           6.9121,
           14.0
@@ -228,7 +231,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+    "report_checksum": "c9d56d40cf14e51732619efada4903d5521a1371794fa1ae80aaab6c3b82a669",
     "survives": {
       "beat_columns_hash": "67e04f6846937dcd",
       "beat_times_hash": "ad68746b34addf45",
@@ -322,8 +325,8 @@
       "effect_changes_count": 9,
       "intent_changes_count": 3,
       "intent_distribution_sec": {
-        "atmospheric": 66.25,
-        "breakdown": 298.71,
+        "atmospheric": 64.84,
+        "breakdown": 299.08,
         "buildup": 24.02
       },
       "midi": {
@@ -340,8 +343,8 @@
       "timing": {
         "commands": 2000,
         "target_delta_sec": [
-          2.2449,
-          2.2681,
+          1.8734,
+          1.8966,
           6.2271,
           6.3258,
           6.378,
@@ -361,7 +364,7 @@
       "overlay_light_bar_fires": true,
       "queue_error_within_tolerance": true
     },
-    "report_checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+    "report_checksum": "6687711c308c92f037103c0ba1f39df88ebb322da85c7d785fa1071ac922ee70",
     "survives": {
       "beat_columns_hash": "e7841a1a5a6a9713",
       "beat_times_hash": "d12ee19b0c83e6c9",

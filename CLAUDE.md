@@ -178,26 +178,49 @@ successor to the veto, and its bounded backtrace is the successor to the vote
 buffer -- each of them fitted to the corpus rather than chosen. What remains in
 the engine is PEAK, and it is deliberately the same device it always was.
 
-**A bar is four beats from the first detected beat, and that is measured, not
-assumed.** There is no live downbeat tracker (see the follow-ups). Counting from
-the first beat is the fallback, and its price is written down: on the production
-madmom stream it costs **-0.1396 crispness@0.5 s** against an expert downbeat
-grid, and **all** of it is placement -- the class decisions are nearly
-grid-invariant (contested macro moves -0.0026, flicker's CI straddles zero); they
-land at a displaced instant. The dominant cause is phase slips (a median of two
-per track on the live stream), not beat timing (median absolute offset ~9 ms,
-rank correlation with the damage ~0). 57 of 215 val tracks slip zero times and
-pay nothing beyond the grid's own -0.038. The plan that commissioned this
-measurement is `docs/superpowers/plans/2026-08-01-nn-runtime-integration.md`
-(committed); the task-by-task record that produced the numbers is a session
-artifact and is **not** in the tree, which is why the figures worth keeping are
-written down here rather than referenced.
+**A bar is four beats, and the count starts one beat in.** There is no live
+downbeat tracker (see the follow-ups), so bars are counted off the beat stream.
+The thing that turned out to matter most about that count is where it *starts*:
+madmom's online warm-up costs the first annotated beat, so the first beat the
+runtime ever sees is already bar position 1, and the shipping rule called it
+position 0. That single rotation left the show on the correct phase for a median
+**0.7 %** of a track -- a grid wrong from beat one rather than slip damage
+accumulating -- and fixing it is worth about **4.5x** what repairing slips on the
+wrong anchor was worth. The constant is favourable rather than correct (right on
+147 of 215 val tracks); a *measured* live anchor would be strictly better.
+
+The price the fallback still pays is written down: at the old anchor, counting
+cost **-0.1396 crispness@0.5 s** against an expert downbeat grid, the anchor
+recovers **+0.0510** of that, and **all** of the remainder is placement -- the
+class decisions are nearly grid-invariant (contested macro moves within noise,
+flicker slightly better); they land at a displaced instant. A perfect live
+tracker would recover the rest and no more: a lag-0 phase oracle scores level
+with the annotated-beat ceiling, so phase is the *entire* cost of the live grid
+and beat-detection quality adds nothing on top. Closing it needs an audio-side
+cue that is not the boundary head, which has now lost three times: a third of
+slips carry no interval evidence at all, and interval repair as configured
+over-triggers 11x. The plan that commissioned the first measurement is
+`docs/superpowers/plans/2026-08-01-nn-runtime-integration.md` (committed); the
+anchor measurement is `training/phase_tracking/` plus its gate artifact in the
+corpus, and `tests/test_section_decoder_equivalence.py` is what holds the
+runtime's grid to the grid that was priced.
 
 **Beats can stop while audio keeps arriving**, and that is neither silence nor a
 song boundary -- heavy sidechain, a beatless passage, crowd noise between sets.
 The grid re-anchors at the next beat rather than closing one bar across the gap,
 because averaging minutes of audio into a single observation produces a confident
-decision about a section nobody played.
+decision about a section nobody played. **The warm-up anchor is not carried
+across that re-anchor**: madmom ran throughout and lost no beat to the gap, so
+there is no warm-up to re-pay, and the true bar position of the beat that ends a
+*beat* gap is measurably a coin toss, so there is nothing to anchor on either.
+
+**A restart has three flavours and they are not interchangeable.** A cold start
+re-applies the warm-up anchor, because the beat source really did begin from
+nothing. A beat gap re-anchors at position 0 (above). A gap in the *feature*
+stage -- a GPU shed and its recovery -- stopped neither madmom nor the count it
+produced, so that restart keeps the bar position it is holding and rebuilds only
+the grid, the pending cells and the committer; discarding a position that is
+still correct would trade it for a one-in-four guess.
 
 **PEAK is an engine-level promotion, not a class.** "A drop that has lasted" is a
 run length, which no window of audio can express, so the engine promotes an
@@ -280,8 +303,11 @@ headphone monitoring stays in sync.
   corpus at lag 2), so a slow track can be older than a constant playback delay.
   When that happens the intent commits as soon as it can -- late, not broken --
   and the engine logs it once per transition. This lateness is *accepted*
-  (owner ruling), is recorded per track by the benchmark, and is deliberately not
-  gated: it is a property of the music.
+  (owner ruling) rather than a defect, but it is not free to *move*: the
+  benchmark records it per track and compares it exactly, as a count fact rather
+  than a score with a tolerance. It is a property of the music and of the grid
+  the bars are drawn on, so a run in which it changed measured something
+  different, whatever the scores did.
 - **Everything the room can see waits; the engine's own bookkeeping does not.**
   Song-boundary resets and the OS2L wire (which talks to a DJ's software, not to
   the audience) happen immediately; MIDI, the overlay chase and the stage go
@@ -570,6 +596,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 | `nn/evaluate_v1.py` | decoded timelines + training table -> the verdict for one split at `<data-dir>/models/v1/eval_<split>.json` (`eval_val.json` is the tuned reading, `eval_test.json` the selection-clean one): NN and rule classifier side by side, scored by `evaluate_against_labels`' own functions |
 | `nn/sweep.py` | cached posteriors -> the decoder parameter search and `<data-dir>/models/v1/decoder_config.json` (best val macro-F1 subject to the baseline's flicker and the latency budget) |
 | `nn/downbeat_*.py`, `nn/evaluate_downbeat.py`, `nn/compare_runs.py` | the downbeat chain: a second head, a bar-phase decoder and their verdict harness. Offline and parked -- nothing in `lib/` imports any of it, and the show counts bars instead. Mapped in `training/nn/CLAUDE.md` |
+| `phase_tracking/*.py` | the live bar grid priced without a GPU: candidate phase trackers over the cached madmom streams, a no-decode sweep on phase accuracy, and a gate that decodes each candidate on the shipping config against the shipping fallback. It produced the anchor the runtime now uses; `tests/test_section_decoder_equivalence.py` holds the two grids together |
 
 `clean_manifest.csv` is the boundary between "audio we happen to have" and "audio we are willing to learn from". Only its `ok` rows may feed a training table or an evaluation run.
 
@@ -633,7 +660,7 @@ The simulation used to be judged against one bundled track and a plumbing-only P
 - **A benchmark that follows the corpus is not a benchmark.** The set is frozen: the selector refuses to overwrite it without `--force`, and the baseline records the eval set's own checksum so a re-freeze fails loudly instead of silently re-scoring a different ten tracks. Re-cutting the set and re-cutting the baseline is one change, never two.
 - **That checksum is over the file's bytes, so the checkout must not rewrite them.** Git on Windows defaults to `core.autocrlf=true` and materialises LF as CRLF, which changes the hash while changing nothing about the benchmark — the guard then passed in the worktree the file was written in and failed in every fresh clone, making its verdict a fact about the machine. `.gitattributes` pins the frozen artifacts to `eol=lf` so every checkout agrees with the writers, which already emit LF unconditionally. An older clone made before that pin keeps its CRLF copies until they are re-checked-out; rewriting them to LF is the remedy and leaves the index untouched.
 - **The benchmark is never learned from.** Neither the ten ids nor any track sharing an artist with one of them enters a training or validation split. This is stated twice on purpose — once here as policy, once in the split builder as code.
-- **Two gates, and they mean different things.** The *report checksum* says the pipeline's behaviour moved: a deterministic run over fixed audio can only change if the code did. The *label-aligned scores* say whether the show got better or worse. A deliberate improvement trips both, and that is the workflow — read the table, decide the change is wanted, re-cut the baseline in the same commit. A regression with no checksum change is impossible and would mean the determinism contract is broken. Beside the scores, the *count facts* each row records (beats joined, label boundaries, seconds scored) are compared exactly — a score tolerance wide enough to be useful absorbs a run that measured a different number of things.
+- **Two gates, and they mean different things.** The *report checksum* says the pipeline's behaviour moved: a deterministic run over fixed audio can only change if the code did. The *label-aligned scores* say whether the show got better or worse. A deliberate improvement trips both, and that is the workflow — read the table, decide the change is wanted, re-cut the baseline in the same commit. A regression with no checksum change is impossible and would mean the determinism contract is broken. Beside the scores, the *count facts* each row records (beats detected, beats joined, label boundaries, seconds scored, intent changes committed, intent blocks that landed late) are compared exactly — a score tolerance wide enough to be useful absorbs a run that measured a different number of things. The last three joined that list after the anchor re-cut moved lateness on four of ten tracks with nothing in the gate able to say so.
 - **Crispness@0.5 s is the fifth gated metric, and it is a headline rather than a diagnostic.** Boundary-F1 at the tightest tolerance the scorer computes asks whether the change landed *on* the section change, not merely near it — and it is the axis the shipped decoder was **selected** on. The 2.0 s lens it sits beside hides most of the spread: the post-decoder dwell configs that were rejected score 0.68 at 2 s and 0.01 at 0.5 s. A benchmark that cannot see the axis a model was chosen on cannot defend that choice. It is gated from its first cut with no historical value to compare against — the rule engine's baseline has no such column and one cannot be reconstructed, because the demolition's schema change makes those reports unreproducible — so the aggregate is a starting line.
 - **`late` is recorded and deliberately not gated.** On a track slow enough that the chain is older than the playback delay, a decision commits as soon as it can rather than on time. That is accepted lateness and a property of the music, so the benchmark shows it with its denominator (only a block that recorded its own instant can be measured at all) and does not stop a commit for it.
 - **The baseline is a neural show's baseline now, and it was cut exactly once.** All ten checksums moved, which a demolition plus a rewire makes certain. Aggregate macro-F1 nearly tripled, boundary-F1@2 s roughly quadrupled, flicker fell about fourfold, and the show changes intent about half as often — a better-scoring show made of fewer decisions, which is the whole argument for the decoder. Every track improved on macro-F1, boundary-F1 and flicker. Two rows carry the qualification and both are the decoder's known shape rather than surprises: one track *loses accuracy* while gaining macro-F1 (two committed runs against the annotator's ten boundaries — a committed classifier does not collect the partial credit a twitchy one does, and its flicker is the best on the set for the same reason), and one scores **zero** crispness at a healthy boundary-F1@2 s, i.e. every hit near and none on. The count facts (beats, rows joined, label boundaries, exposure seconds) are **identical on all ten tracks** across the two baselines, so the comparison is like for like and no score difference is an artifact of measuring a different number of things. Three of the ten checksums equal the determinism-proof and pipeline-digest anchors cut on separate runs from a separate commit, so those artifact families corroborate each other rather than merely coexisting.
@@ -697,17 +724,30 @@ order:
 
 1. **Live downbeat tracking still does not exist, and the show ships without
    it.** The decoder is bar-rate; offline it was handed an expert-annotated grid.
-   Live, bars are four beats counted from the first detected beat. That fallback
-   was chosen against measurement, not convenience: a boundary-logit phase vote
-   was built and **lost to it on every one of 120 configurations**, and the
-   deeper finding is that the production beat stream does not hold phase at all
-   -- it slips a median of twice per track, and an *oracle* frozen phase covers
-   only about two thirds of a track. So this is a phase-**tracking** problem, not
-   a one-shot phase **decision**, which is a materially larger piece of work than
+   Live, bars are four beats counted off the beat stream, starting one beat in.
+   That fallback was chosen against measurement, not convenience: a
+   boundary-logit phase vote was built and **lost to it on every one of 120
+   configurations** -- then lost again, monotonically in the weight given to the
+   head, on a structurally different continuous-filter design. The deeper
+   finding is that the production beat stream does not hold phase at all -- it
+   slips a median of twice per track, and an *oracle* frozen phase covers only
+   about two thirds of a track. So this is a phase-**tracking** problem, not a
+   one-shot phase **decision**, which is a materially larger piece of work than
    the earlier reading suggested. The price is written down (-0.1396
-   crispness@0.5 s, all of it placement) and re-quoting the older -0.0377 figure
-   is a mistake: that one was measured on annotated beats, and its caveat was
-   hiding most of the cost. 57 of 215 val tracks need nothing at all.
+   crispness@0.5 s at the old anchor, +0.0510 of it recovered by the anchor
+   fix, the rest all placement) and re-quoting the older -0.0377 figure is a
+   mistake: that one was measured on annotated beats, and its caveat was hiding
+   most of the cost. 57 of 215 val tracks slip zero times.
+
+   **Slip repair is banked with a measured ceiling and a measured blocker.**
+   Perfect live phase would recover the whole remaining gap and no more, so
+   about +0.09 crispness is sitting there. Every arm that actually repairs slips
+   buys some of it and pays contested macro, because aggressive repair makes bar
+   *lengths* irregular and irregular bars fail the decoder's coverage and
+   duration expectations; the best arm fires 8,985 false slip detections against
+   812 true ones. A precision-tuned version is the obvious next experiment, and
+   a third of slips carry no interval evidence at all, so closing the gap needs
+   an audio-side cue that is not the boundary head.
 
    **The offline machinery from the downbeat branch is still in `training/nn/`,
    and it is parked training work rather than a deployment prerequisite.** A
@@ -786,7 +826,7 @@ session is therefore not a clean read of what the headless pipeline does.
 ## Known Issues / Gotchas
 
 - **Hardcoded overlay IP** â€” must change per venue in `overlay_client.py`.
-- **MusicAnalyser rolls its state** every 15 min to stop the rolling windows growing without bound. It is a statement about memory and says nothing about the music — and that distinction is load-bearing, because a continuous venue feed never trips the 0.3 s silence gate, so this horizon is the *only* boundary the engine would otherwise see. It used to go through the same reset that clears `is_playing`, which made the next buffer of uninterrupted audio announce a new song: the extractor ring, the student, the bar grid, the queued intents and the cold-start floor all restarted, four times an hour, for a track that never changed. The roll now keeps the show's own state; only the rolling windows are rebuilt.
+- **MusicAnalyser rolls its state** every 15 min to stop the rolling windows growing without bound. It is a statement about memory and says nothing about the music — and that distinction is load-bearing, because a continuous venue feed never trips the 0.3 s silence gate, so this horizon is the *only* boundary the engine would otherwise see. It used to go through the same reset that clears `is_playing`, which made the next buffer of uninterrupted audio announce a new song: the extractor ring, the student, the bar grid, the queued intents and the cold-start floor all restarted, four times an hour, for a track that never changed. The roll now keeps the show's own state; only the rolling windows are rebuilt. **It does still reset the beat tracker, and after the anchor fix that is no longer free.** The roll re-locks madmom's DBN mid-audio while the bar grid keeps counting and nobody tells it, so any beat the re-lock gains or loses rotates the grid permanently. Probed at five instants in one clip: the next beat lands 0.13-0.26 s late every time (less than a beat period -- this is *not* the whole-beat warm-up a cold start pays), and on two of the five the beat count moved (+2, +1). So it is an intermittent rotation, not a guaranteed one. It was invisible before the anchor fix, because the grid was rotated from beat one anyway, and it is invisible to every gate we have: no eval-set or corpus track reaches the horizon and a live set crosses it four times an hour. The candidate fix is to stop resetting the rhythm tracker on a roll at all -- it holds no unbounded state, and re-locking tempo four times an hour was never the point of the horizon -- but that is a change to the beat source and was deliberately out of scope of the anchor change.
 - **10 ms delays** between MIDI commands give SoundSwitch hardware time to settle.
 - **Os2lSender** runs in a separate thread, and so does the GPU stage; the audio/DSP path is async on the main thread â€” mixing threading models requires care when touching shared state. The design answer is that show state is *not* shared: the consumer of the GPU stage's output is the audio loop, where the command queue, MIDI client and event buffer already live.
 - **`PLAYBACK_DELAY_SEC` (14.0 s) must match `playback_delay_seconds` in dmx-enttec-node.** It is defined in `lib/main.py` and mirrored in `simulate/runner.py`, and the engine logs the reconciliation line at startup and every ten seconds: chain latency, its two halves, the derived queue delay, and a reminder to check the other system. Changing `lag_bars` changes this number.

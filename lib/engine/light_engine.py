@@ -161,7 +161,7 @@ class LightEngine(IMusicAnalyserHandler):
             return
         drained = self.section_chain.push_audio(audio_signal)
         if drained.gap:
-            self.section_decoder.reset()
+            self.section_decoder.reset(cold_start=False)
             self._last_refresh_sec = float('-inf')
             self._committed = None
             self._publish_decoder_state(None)

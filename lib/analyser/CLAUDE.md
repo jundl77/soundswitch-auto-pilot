@@ -406,14 +406,19 @@ both have moved:
 ## Known Limitations
 
 - **There is no live downbeat tracker, and the bar grid is counted.** Bars are
-  four beats from the first detected beat. Measured on the production beat
-  stream that costs about 0.14 crispness@0.5 s against an expert grid, and **all
-  of it is placement** -- the class decisions are nearly grid-invariant; they
-  land at a displaced instant. The cause is phase slips (a median of two per
-  track), not beat timing, whose correlation with the damage is approximately
-  zero. This is a phase-*tracking* problem, not a one-shot phase *decision*: an
-  oracle frozen phase covers only about two thirds of a track, and a
-  boundary-logit phase vote lost to plain counting on every configuration tried.
+  four beats, counted from one beat into the stream rather than from its first
+  beat: madmom's online warm-up costs the first annotated beat, so the first
+  beat the runtime sees is already bar position 1 and calling it 0 rotated the
+  grid before a single slip had happened. Measured on the production beat stream
+  the count costs about 0.14 crispness@0.5 s against an expert grid, the anchor
+  recovers about a third of that, and **all** the rest is placement -- the class
+  decisions are nearly grid-invariant; they land at a displaced instant. The
+  remaining cause is phase slips (a median of two per track), not beat timing,
+  whose correlation with the damage is approximately zero. This is a
+  phase-*tracking* problem, not a one-shot phase *decision*: an oracle frozen
+  phase covers only about two thirds of a track, and a boundary-logit phase vote
+  lost to plain counting on every configuration tried, twice, on two unrelated
+  designs.
   An offline downbeat head and bar-phase decoder do exist in `training/nn/`,
   unwired and parked: their v1 scoring ran on the aubio beat stream and was
   removed when madmom replaced it (owner decisions #81/#133), so
