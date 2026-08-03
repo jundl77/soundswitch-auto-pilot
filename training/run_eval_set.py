@@ -74,7 +74,8 @@ GUARDED_METRICS = {
 DEFAULT_SCORE_TOLERANCE = 0.02
 DEFAULT_FLICKER_TOLERANCE = 0.20
 
-COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec")
+COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec", "beats",
+               "changes_intent", "late")
 
 AUDIO_MISSING_HINT = (
     "eval-set audio missing -- expected the committed copy in "

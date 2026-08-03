@@ -81,7 +81,8 @@ def result_document(tracks: dict, aggregate: dict | None = None,
 def entry(checksum="cafe", **overrides) -> dict:
     record = {"youtube_id": "yt", "checksum": checksum, "beats": 100, "rows": 90,
               "song_sec": 300.0, "exposure_sec": 280.0,
-              "changes_intent": 20, "changes_class": 15, "label_boundaries": 12}
+              "changes_intent": 20, "changes_class": 15, "label_boundaries": 12,
+              "late": 1, "blocks_measurable": 14}
     record.update(metrics())
     record.update(overrides)
     return record
@@ -360,6 +361,9 @@ def test_the_aggregate_row_is_gated_too():
     ("rows", 89),
     ("label_boundaries", 13),
     ("exposure_sec", 279.5),
+    ("late", 2),
+    ("beats", 101),
+    ("changes_intent", 21),
 ])
 def test_a_moved_count_fact_fails_even_when_every_score_holds(fact, moved):
     baseline = result_document({"a.1": entry()})
@@ -627,10 +631,10 @@ def test_the_committed_baseline_records_the_crispness_tolerance():
     assert committed_baseline()["crispness_tolerance_sec"] == CRISPNESS_TOLERANCE_SEC
 
 
-def test_lateness_is_disclosed_and_deliberately_not_gated():
+def test_lateness_is_a_count_fact_rather_than_a_score_with_a_tolerance():
     from run_eval_set import COUNT_FACTS, GUARDED_METRICS
 
-    assert "late" not in GUARDED_METRICS and "late" not in COUNT_FACTS
+    assert "late" not in GUARDED_METRICS and "late" in COUNT_FACTS
     for track_id, row in committed_baseline()["tracks"].items():
         assert "late" in row and "blocks_measurable" in row, track_id
         assert row["late"] <= row["blocks_measurable"], track_id
