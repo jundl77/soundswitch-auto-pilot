@@ -2,6 +2,7 @@ import argparse
 import http.client
 import json
 import logging
+import threading
 
 import dash
 from dash import dcc, html, Input, Output
@@ -502,28 +503,35 @@ class SnapshotPoller:
         self._connection = None
         self._last = dict(BLANK_SNAPSHOT)
         self._answering = True
+        # Dash answers callbacks on threads and they share this poller, so two
+        # polls can be in flight at once. An HTTPConnection cannot carry both.
+        self._lock = threading.Lock()
 
     @property
     def url(self) -> str:
         return f'http://{self._host}:{self._port}{SNAPSHOT_PATH}'
 
     def snapshot(self) -> dict:
-        try:
-            if self._connection is None:
-                self._connection = http.client.HTTPConnection(
-                    self._host, self._port, timeout=self._timeout)
-            self._connection.request('GET', SNAPSHOT_PATH)
-            self._last = json.loads(self._connection.getresponse().read())
-            if not self._answering:
-                logging.info('[viewer] the show is answering again')
-                self._answering = True
-        except (OSError, http.client.HTTPException, ValueError) as error:
-            self._connection = None
-            if self._answering:
-                logging.warning(f'[viewer] the show stopped answering on '
-                                f'{self.url} ({error!r}) — holding the last frame')
-                self._answering = False
-        return self._last
+        with self._lock:
+            try:
+                # Held locally: a failing poll clears the attribute, and reading
+                # it back mid-request is how this used to raise past the handler.
+                connection = self._connection
+                if connection is None:
+                    connection = self._connection = http.client.HTTPConnection(
+                        self._host, self._port, timeout=self._timeout)
+                connection.request('GET', SNAPSHOT_PATH)
+                self._last = json.loads(connection.getresponse().read())
+                if not self._answering:
+                    logging.info('[viewer] the show is answering again')
+                    self._answering = True
+            except (OSError, http.client.HTTPException, ValueError) as error:
+                self._connection = None
+                if self._answering:
+                    logging.warning(f'[viewer] the show stopped answering on '
+                                    f'{self.url} ({error!r}) — holding the last frame')
+                    self._answering = False
+            return self._last
 
 
 def build_app(snapshot_source) -> dash.Dash:

@@ -480,6 +480,76 @@ def test_the_snapshot_carries_the_delay_the_display_shifts_by():
     assert buffer.snapshot()['look_ahead_sec'] == pytest.approx(14.0)
 
 
+def test_the_payload_window_stays_wider_than_the_span_it_has_to_fill():
+    # Two constants in two processes: widen the timeline past the snapshot's
+    # reach and the left of the window silently empties.
+    from lib.engine.event_buffer import EventBuffer
+
+    assert V.TIMELINE_WINDOW_SEC < EventBuffer.SNAPSHOT_WINDOW_SEC
+
+
+class _FakeConnection:
+    """Stands in for http.client.HTTPConnection, with a hook mid-request."""
+
+    live = []
+
+    def __init__(self, *args, **kwargs):
+        self.interfere = None
+
+    def request(self, *args):
+        _FakeConnection.live.append(self)
+        if self.interfere is not None:
+            self.interfere()
+
+    def getresponse(self):
+        _FakeConnection.live.remove(self)
+        return self
+
+    def read(self):
+        return b'{"now": 1.0}'
+
+
+def _poller(monkeypatch):
+    monkeypatch.setattr(V.http.client, 'HTTPConnection', _FakeConnection)
+    _FakeConnection.live.clear()
+    return V.SnapshotPoller(port=1)
+
+
+def test_a_poll_survives_a_sibling_dropping_the_connection_underneath_it(
+        monkeypatch):
+    # Dash answers callbacks on threads, so two polls share one poller.  A poll
+    # that fails clears the connection; if the other reads the attribute again
+    # after its own request it finds None, and AttributeError is not in the
+    # caught set -- the callback 500s and every panel stops updating.
+    poller = _poller(monkeypatch)
+    poller.snapshot()
+    poller._connection.interfere = lambda: setattr(poller, '_connection', None)
+    assert poller.snapshot() == {'now': 1.0}
+
+
+def test_polls_from_several_callback_threads_stay_one_at_a_time(monkeypatch):
+    import threading
+
+    poller = _poller(monkeypatch)
+    peak, failures = [0], []
+
+    def poll():
+        for _ in range(40):
+            try:
+                poller.snapshot()
+            except BaseException as error:
+                failures.append(repr(error))
+            peak[0] = max(peak[0], len(_FakeConnection.live))
+
+    threads = [threading.Thread(target=poll) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert failures == []
+    assert peak[0] <= 1
+
+
 def test_intent_config_covers_exactly_the_intents_the_show_can_enter():
     assert set(V.INTENT_CONFIG) == {intent.value for intent in LightIntent}
 

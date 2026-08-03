@@ -9,6 +9,10 @@ _UNMEASURED_BEAT_STRENGTH = 0.0
 
 
 class EventBuffer:
+    # What the viewer can draw, and therefore all the snapshot ships. It must
+    # stay wider than the viewer's timeline span; a test pins that.
+    SNAPSHOT_WINDOW_SEC = 35.0
+
     def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK,
                  look_ahead_sec: float = 0.0):
         self._lock = threading.Lock()
@@ -114,23 +118,39 @@ class EventBuffer:
                     by_label={label: cls._delivery(entries)
                               for label, entries in sorted(labels.items())})
 
+    def _beats_since(self, cutoff: float) -> list:
+        """Walked from the newest end: the session's length must not price a poll."""
+        recent = []
+        for beat in reversed(self._beats):
+            if beat['t'] < cutoff:
+                break
+            recent.append(beat)
+        recent.reverse()
+        return recent
+
     def snapshot(self) -> dict:
         with self._lock:
             now = self._now()
-            cutoff = now - self._window_sec
+            # Records are stamped when detected and drawn one look-ahead later,
+            # so the payload reaches that much further back than it fills. The
+            # storage window stays whatever it is -- the report reads that.
+            cutoff = now - min(self._window_sec,
+                               self.SNAPSHOT_WINDOW_SEC + self._look_ahead_sec)
             timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
                 'look_ahead_sec': self._look_ahead_sec,
                 'is_playing': self._is_playing and self._end_time is None,
-                'beats': [b for b in self._beats if b['t'] >= cutoff],
+                'beats': self._beats_since(cutoff),
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
                 'intents': [e for e in self._intents if e.get('end', now) >= cutoff],
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
                 'intent': self._current_intent,
-                'sound_events': [e for e in self._sound_events if e['t'] >= cutoff],
+                # Never windowed: one record per track boundary rather than per
+                # second, and the song the display counts from can be an hour old.
+                'sound_events': list(self._sound_events),
                 'timing_stats': timing_stats,
                 'decoder': dict(self._decoder_state),
             }
