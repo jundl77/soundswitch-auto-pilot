@@ -1,7 +1,13 @@
+import argparse
+import http.client
+import json
+import logging
+
 import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 
+from lib.ui_bridge import SNAPSHOT_HOST, SNAPSHOT_PATH, snapshot_port
 from simulate.runner import TIMING_TOLERANCE_SEC
 
 TITLE = 'SoundSwitch Visualizer'
@@ -434,7 +440,50 @@ function(sync) {
 '''
 
 
-def build_app(event_buffer) -> dash.Dash:
+BLANK_SNAPSHOT = {
+    'now': 0.0, 'look_ahead_sec': 0.0, 'is_playing': False,
+    'beats': [], 'effects': [], 'intents': [], 'sound_events': [],
+    'current_effect': None, 'bpm': 0.0, 'beats_detected': 0, 'intent': None,
+    'timing_stats': {}, 'decoder': {},
+}
+
+POLL_TIMEOUT_SEC = 1.0
+
+
+class SnapshotPoller:
+    """The show over a socket, in place of the EventBuffer this used to hold."""
+
+    def __init__(self, host: str = SNAPSHOT_HOST, port: int = 8051,
+                 timeout: float = POLL_TIMEOUT_SEC):
+        self._host, self._port, self._timeout = host, port, timeout
+        self._connection = None
+        self._last = dict(BLANK_SNAPSHOT)
+        self._answering = True
+
+    @property
+    def url(self) -> str:
+        return f'http://{self._host}:{self._port}{SNAPSHOT_PATH}'
+
+    def snapshot(self) -> dict:
+        try:
+            if self._connection is None:
+                self._connection = http.client.HTTPConnection(
+                    self._host, self._port, timeout=self._timeout)
+            self._connection.request('GET', SNAPSHOT_PATH)
+            self._last = json.loads(self._connection.getresponse().read())
+            if not self._answering:
+                logging.info('[viewer] the show is answering again')
+                self._answering = True
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            self._connection = None
+            if self._answering:
+                logging.warning(f'[viewer] the show stopped answering on '
+                                f'{self.url} ({error!r}) — holding the last frame')
+                self._answering = False
+        return self._last
+
+
+def build_app(snapshot_source) -> dash.Dash:
     app = dash.Dash(__name__, title=TITLE, eager_loading=True)
     app.index_string = INDEX_TEMPLATE
     app.layout = html.Div([
@@ -484,7 +533,7 @@ def build_app(event_buffer) -> dash.Dash:
         Input('tick', 'n_intervals'),
     )
     def refresh(_):
-        snap = event_buffer.snapshot()
+        snap = snapshot_source.snapshot()
         return (_build_timeline(snap), _build_stage(snap),
                 _build_decoder(snap), _build_metrics(snap), _anchor(snap))
 
@@ -493,7 +542,28 @@ def build_app(event_buffer) -> dash.Dash:
     return app
 
 
-def run_app(event_buffer, port: int = 8050) -> None:
-    app = build_app(event_buffer)
+def run_app(snapshot_source, port: int = 8050) -> None:
+    app = build_app(snapshot_source)
     print(f'\n  Visualizer → http://localhost:{port}\n')
     app.run(host='0.0.0.0', port=port, debug=False)
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(
+        description='The lighting visualizer, in its own process: it polls the '
+                    'show for snapshots and owns every pixel and every callback.')
+    parser.add_argument('--port', type=int, default=8050,
+                        help='Dash server port (default: 8050)')
+    parser.add_argument('--snapshot-port', type=int, default=None,
+                        help='Port the show serves /snapshot on '
+                             '(default: --port + 1)')
+    args = parser.parse_args(argv)
+    logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s',
+                        level=logging.INFO)
+    port = (args.snapshot_port if args.snapshot_port is not None
+            else snapshot_port(args.port))
+    run_app(SnapshotPoller(port=port), port=args.port)
+
+
+if __name__ == '__main__':
+    main()

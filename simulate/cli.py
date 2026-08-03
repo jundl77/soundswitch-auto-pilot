@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import sys
-import threading
 import time
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
@@ -86,6 +85,23 @@ def _session_buffer(look_ahead_sec: float, clock=None):
                        look_ahead_sec=look_ahead_sec)
 
 
+def _with_viewer(event_buffer, port, run):
+    from lib import ui_bridge
+
+    ui = ui_bridge.start(event_buffer, port)
+    try:
+        run()
+        if ui is not None:
+            print('[simulate] the track is over — the viewer is still up on '
+                  f'http://localhost:{port}; Ctrl-C to close it')
+            ui.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if ui is not None:
+            ui.stop()
+
+
 def _run_file_realtime_ui(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
@@ -103,14 +119,6 @@ def _run_file_realtime_ui(args):
 
     event_buffer.start()
 
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, duration_sec, event_buffer, command_queue, True,
-              args.report),
-        daemon=True,
-    )
-    thread.start()
-
     if args.play_audio:
         try:
             import sounddevice as sd
@@ -121,15 +129,15 @@ def _run_file_realtime_ui(args):
         except ImportError as e:
             print(f'[simulate] warning: {e} — audio playback skipped')
 
-    from simulate.visualizer_app import run_app
-    run_app(event_buffer, port=args.port)
+    _with_viewer(event_buffer, args.port,
+                 lambda: _run_pipeline(components, duration_sec, event_buffer,
+                                       command_queue, True, args.report))
 
 
 def run_realtime(args):
     from lib.engine.event_buffer import EventBuffer
     from lib.clients.pyaudio_client import PyAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
-    from simulate.visualizer_app import run_app
 
     audio_client = PyAudioClient(
         sample_rate=SAMPLE_RATE,
@@ -141,14 +149,9 @@ def run_realtime(args):
                                                  threaded=True)
     event_buffer.start()
 
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, float('inf'), event_buffer, command_queue, False),
-        daemon=True,
-    )
-    thread.start()
-
-    run_app(event_buffer, port=args.port)
+    _with_viewer(event_buffer, args.port,
+                 lambda: _run_pipeline(components, float('inf'), event_buffer,
+                                       command_queue, False))
 
 
 def add_simulate_subparser(subparsers):

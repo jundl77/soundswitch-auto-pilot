@@ -180,13 +180,49 @@ def test_the_anchor_leaves_the_clocks_blank_before_the_first_sound_start():
     assert anchor['song'] is None and anchor['room'] is None
 
 
-def _app():
+class _FakePoller:
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+        self.reads = 0
+
+    def snapshot(self) -> dict:
+        self.reads += 1
+        return self._snapshot
+
+
+def _app(source=None):
     from lib.clock import VirtualClock
     from lib.engine.event_buffer import EventBuffer
 
-    buffer = EventBuffer(clock=VirtualClock())
-    buffer.start()
-    return V.build_app(buffer)
+    if source is None:
+        source = EventBuffer(clock=VirtualClock())
+        source.start()
+    return V.build_app(source)
+
+
+_REFRESH = ('..timeline.figure...stage.children...decoder.children...'
+            'metrics.children...sync.data..')
+
+
+def test_the_app_reads_its_data_through_a_snapshot_call_and_nothing_else():
+    poller = _FakePoller(_snapshot(bpm=131.0, beats_detected=7))
+    app = _app(poller)
+
+    figure, stage, decoder, metrics, anchor = app.callback_map[
+        _REFRESH]['callback'].__wrapped__(1)
+
+    assert poller.reads == 1
+    assert '131 BPM' in ''.join(_texts(metrics))
+    assert '7 beats' in ''.join(_texts(metrics))
+    assert anchor['now'] == 10.0
+    assert figure is not None and stage and decoder
+
+
+def test_one_poll_feeds_every_panel_so_they_cannot_disagree():
+    poller = _FakePoller(_snapshot())
+    app = _app(poller)
+    app.callback_map[_REFRESH]['callback'].__wrapped__(1)
+    assert poller.reads == 1
 
 
 def test_the_layout_publishes_the_anchor_the_browser_interpolates():

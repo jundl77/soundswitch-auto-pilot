@@ -40,6 +40,7 @@ class SoundSwitchAutoPilot:
         self.disable_os2l: bool = disable_os2l
         self.enable_ui: bool = enable_ui
         self._ui_port: int = ui_port
+        self._ui = None
         self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
@@ -107,15 +108,8 @@ class SoundSwitchAutoPilot:
         if self.event_buffer is not None:
             self.event_buffer.start()
         if self.enable_ui:
-            import threading
-            from simulate.visualizer_app import run_app
-            ui_thread = threading.Thread(
-                target=run_app,
-                args=(self.event_buffer, self._ui_port),
-                daemon=True,
-            )
-            ui_thread.start()
-            logging.info(f'[main] visualizer started → http://localhost:{self._ui_port}')
+            from lib import ui_bridge
+            self._ui = ui_bridge.start(self.event_buffer, self._ui_port)
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
@@ -156,7 +150,9 @@ class SoundSwitchAutoPilot:
 
     def _shut_down(self) -> None:
         self.is_running = False
-        for what, close in (('audio', self.audio_client.close),
+        for what, close in (('visualizer',
+                             None if self._ui is None else self._ui.stop),
+                            ('audio', self.audio_client.close),
                             ('section chain',
                              None if self.section is None else self.section.stop),
                             ('os2l', self.os2l_client.stop),
