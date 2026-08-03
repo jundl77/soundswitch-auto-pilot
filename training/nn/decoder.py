@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import json
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,7 +211,7 @@ class FixedLagViterbi:
         self._psi: list = [None] * (self.lag_bars + 1)
         self._bars = 0
         self._next_commit = 0
-        self._log_initial = self._cold_initial
+        self._log_initial = self._cold_initial.copy()
 
     def restart(self, carried: int | None = None) -> None:
         """A birth: reset, and be born already old.
@@ -223,8 +224,13 @@ class FixedLagViterbi:
         the class the previous committer left off in and narrows the birth to
         that one class; ``None`` is a cold start and spreads the start-of-track
         prior.  Holds until the next ``reset``.
+
+        The caller owes one virtual predecessor bar (``push(None, None)``)
+        before the first real one.  A carry with no predecessor cannot be
+        refused on the bar it is born on, which is the arm ruling #199 forbids.
         """
         self.reset()
+        carried = self._carryable(carried)
         final = self._final_state
         initial = np.full(len(self._state_class), -np.inf, dtype=np.float64)
         if carried is None:
@@ -233,6 +239,25 @@ class FixedLagViterbi:
             initial[final[carried]] = (self.priors.log_initial[carried]
                                        + self._entry_bonus[carried])
         self._log_initial = initial
+
+    def _carryable(self, carried: int | None) -> int | None:
+        """A class the priors say never starts a track cannot be born into.
+
+        Its whole row would be ``-inf``, ``argmax`` would answer state 0, and
+        the committer would commit that class forever -- silently, and with no
+        evidence able to move it.  The corpus's smoothing puts every class above
+        zero, so this is a structural guard rather than a live path; the priors
+        are a file a future refit writes, and ``Priors.from_dict`` checks only
+        its version.  Degrade to the cold spread, never raise: this runs on the
+        show's thread.
+        """
+        if carried is None or np.isfinite(self.priors.log_initial[carried]):
+            return carried
+        logging.warning(
+            f'[decoder] the priors give {self.classes[carried]!r} no way to '
+            f'start a track, so a birth cannot carry it -- spreading the '
+            f'start-of-track prior instead')
+        return None
 
     @property
     def backtrace_rows(self) -> int:

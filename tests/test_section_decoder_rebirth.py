@@ -159,6 +159,31 @@ def test_a_restart_does_not_follow_the_decoder_into_the_next_offline_decode():
         "from bar zero of that track"
 
 
+def test_neither_side_is_born_into_a_class_the_priors_never_start_a_track_in(caplog):
+    never = list(STARTS_AT_INTRO)
+    never[DROP] = 0.0
+    rows = [one_hot(BREAKDOWN)] * 10
+
+    runtime = FixedLagViterbi(priors(initial=never), 1)
+    with caplog.at_level(logging.WARNING):
+        runtime.restart(DROP)
+    assert any("no way to start a track" in record.message
+               for record in caplog.records), "the birth was silent about it"
+    committed = [d.label for d in push_all(runtime, rows)]
+    assert "breakdown" in committed, \
+        f"a carry the priors cannot start left every state at -inf, argmax " \
+        f"answered state zero, and the committer said intro forever against " \
+        f"ten bars of breakdown: {committed}"
+
+    reference = FixedLagViterbi(priors(initial=never), 1)
+    born = RB.LiveCommitter(reference, RB.R1_R2)
+    born._carried = DROP
+    born.birth(0)
+    assert [d.label for d in push_all(reference, rows)] == committed, \
+        "the gate's reference and the runtime disagree about an unstartable " \
+        "carry, so the equivalence they are measured by would be a fiction"
+
+
 def test_a_restart_carrying_a_class_believes_nothing_else():
     decoder = viterbi(floor=4)
     decoder.restart(BREAKDOWN)
@@ -277,6 +302,18 @@ def test_the_runtime_decides_what_the_gates_reference_decides():
     assert stage.decisions, "the runtime committed nothing to compare"
     assert [(d.bar, d.label) for d in stage.decisions] == \
            [(d.bar, reference[d.bar]) for d in stage.decisions]
+
+    committed = {d.bar for d in stage.decisions}
+    decided = {bar for bar, label in enumerate(reference) if label}
+    assert not committed - decided, \
+        f"the runtime named bars the reference left undecided: " \
+        f"{sorted(committed - decided)}"
+    last = max(committed)
+    assert sorted(decided - committed) == [last + 1, last + 2, last + 3], \
+        f"the reference should lead by exactly the fixed lag the streaming " \
+        f"committer has not flushed ({stage.params.lag_bars} bars) plus the " \
+        f"one bar the offline grid closes with a synthetic edge the runtime " \
+        f"never draws; it leads by {sorted(decided - committed)}"
 
 
 CASE_DIR = Path("models/phase_b/decoder_rebirth/case_inputs")

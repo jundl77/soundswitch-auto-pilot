@@ -239,9 +239,27 @@ rejected on the bar it is born on, and forcing every val birth to carry every
 class in turn, carry-alone accepted 85 of 85 wrong beliefs against 37 of 85 with
 the virtual bar. Priced on val in `models/phase_b/decoder_rebirth/`; the runtime
 is held to that reference's own decisions by
-`tests/test_section_decoder_rebirth.py`. The third birth -- the committer
-restarted because the grid outran it -- is unreachable offline, so it is correct
-by construction rather than measured.
+`tests/test_section_decoder_rebirth.py`.
+
+**A cold start is a birth too, and that is the change with the widest reach.**
+The gate is named after re-anchors, but pre-aging and the virtual bar apply at
+the opening of *every* track, so the first run no longer owes its duration floor:
+a probe track's `intro` now ends after one bar where the floor is eight. Only 13
+of 215 val tracks re-anchor at all, yet every track's report moves, and that --
+not the gap repair -- is the dominant reason a benchmark re-cut touches all ten
+checksums. Read a moved checksum against that before assuming a gap was involved.
+
+**Two of the four births are unmeasured, and both are deliberate.** The third --
+the committer restarted because the grid outran it -- is unreachable offline (the
+harness holds the whole grid), so it is correct by construction rather than
+measured. The fourth is a feature-stage gap: it carries for the same reason the
+other three do, and resetting a mid-track committer to the start-of-track prior
+is precisely the defect this package removes, so it was approved on the failure
+ranking rather than on a measurement. Both are pinned by unit tests and both are
+one line to withdraw. A class the fitted priors never start a track in cannot be
+carried into at all -- its whole initial row is `-inf`, and a birth into it would
+commit that class forever with nothing able to move it -- so a birth degrades to
+the cold spread and says so, rather than raising on the show's thread.
 
 **PEAK is an engine-level promotion, not a class.** "A drop that has lasted" is a
 run length, which no window of audio can express, so the engine promotes an

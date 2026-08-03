@@ -25,6 +25,7 @@ principle is about.
 """
 from __future__ import annotations
 
+import logging
 from typing import NamedTuple
 
 import numpy as np
@@ -115,6 +116,12 @@ class LiveCommitter:
         carried = self._carried if self._policy.carry else None
         if carried is not None and self._override is not None:
             carried = self._override
+        if carried is not None and not np.isfinite(viterbi.priors.log_initial[carried]):
+            logging.warning(
+                f'[rebirth] the priors give {viterbi.classes[carried]!r} no way '
+                f'to start a track, so a birth cannot carry it -- spreading the '
+                f'start-of-track prior instead')
+            carried = None
         states = viterbi._final_state if self._policy.preaged else viterbi._entry_state
         initial = np.full(len(viterbi._state_class), -np.inf, dtype=np.float64)
         if carried is None:
