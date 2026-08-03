@@ -207,10 +207,17 @@ song boundary -- heavy sidechain, a beatless passage, crowd noise between sets.
 The grid re-anchors at the next beat rather than closing one bar across the gap,
 because averaging minutes of audio into a single observation produces a confident
 decision about a section nobody played. **The warm-up anchor is not carried
-across that re-anchor**, nor across a feature-stage gap: a gap mid-stream is not
-a cold start, madmom has been running throughout and loses no beat to it, and
-the true bar position of the beat that ends one is measurably a coin toss. Only
-a genuine restart of the beat source re-applies the anchor.
+across that re-anchor**: madmom ran throughout and lost no beat to the gap, so
+there is no warm-up to re-pay, and the true bar position of the beat that ends a
+*beat* gap is measurably a coin toss, so there is nothing to anchor on either.
+
+**A restart has three flavours and they are not interchangeable.** A cold start
+re-applies the warm-up anchor, because the beat source really did begin from
+nothing. A beat gap re-anchors at position 0 (above). A gap in the *feature*
+stage -- a GPU shed and its recovery -- stopped neither madmom nor the count it
+produced, so that restart keeps the bar position it is holding and rebuilds only
+the grid, the pending cells and the committer; discarding a position that is
+still correct would trade it for a one-in-four guess.
 
 **PEAK is an engine-level promotion, not a class.** "A drop that has lasted" is a
 run length, which no window of audio can express, so the engine promotes an

@@ -389,7 +389,24 @@ def test_reset_makes_the_decoder_indistinguishable_from_a_fresh_one():
            [tuple(d) for d in fresh.decisions]
 
 
-def test_a_warm_restart_does_not_re_apply_the_beat_sources_warm_up():
+def test_a_warm_restart_keeps_the_bar_position_the_beat_stream_never_lost():
+    uninterrupted = decoder(lag_bars=2)
+    for beat in beats(12, period=0.5):
+        uninterrupted.push_beat(beat)
+
+    shed = decoder(lag_bars=2)
+    for beat in beats(6, period=0.5):
+        shed.push_beat(beat)
+    shed.reset(cold_start=False)
+    for beat in beats(6, period=0.5, start=3.0):
+        shed.push_beat(beat)
+
+    assert shed.bar_edges == [pytest.approx(line)
+                              for line in uninterrupted.bar_edges
+                              if line >= 3.0]
+
+
+def test_a_beat_gap_across_a_warm_restart_still_re_anchors():
     section = decoder(lag_bars=2)
     for beat in beats(6, period=0.5):
         section.push_beat(beat)

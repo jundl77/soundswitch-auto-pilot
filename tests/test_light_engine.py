@@ -246,6 +246,30 @@ async def test_a_gap_from_the_feature_stage_clears_the_decoder_before_it_is_fed(
         'pays no warm-up, so the grid must not re-apply the first-beat anchor'
 
 
+async def test_a_shed_and_unshed_cycle_leaves_the_grid_on_the_phase_it_had():
+    from tests.test_section_decoder import decoder as section
+
+    live, chain = section(lag_bars=2), FakeChain()
+    light, _, clock, _ = engine(decoder=live, chain=chain)
+
+    pushed = []
+    for index in range(12):
+        if index == 6:
+            chain.gap = True
+            await light.on_audio(np.zeros(0, dtype=np.float32))
+        await elapse(light, clock, 0.5)
+        await light.on_beat(index + 1, 128.0, False)
+        pushed.append(light.audio_sec)
+
+    uninterrupted = section(lag_bars=2)
+    for beat in pushed:
+        uninterrupted.push_beat(beat)
+
+    assert live.bar_edges == [pytest.approx(line)
+                              for line in uninterrupted.bar_edges
+                              if line > pushed[5]]
+
+
 async def test_a_missing_chain_is_the_degradation_state_rather_than_a_crash():
     """#144: missing artifacts are a degraded show, not a reason to die."""
     light, _, _, _ = engine(decoder=None, chain=None)

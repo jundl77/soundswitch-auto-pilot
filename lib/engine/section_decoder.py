@@ -34,9 +34,11 @@ _EDGE_RETAIN_BARS = 64
 _BAR_MEDIAN_BARS = 25
 
 # madmom's online warm-up costs the first annotated beat, so the first beat the
-# runtime sees is bar position 1 on 147 of 215 val tracks and 0 on 51; a gap
-# mid-stream is not a cold start and carries no such evidence, so the beat that
-# ends one opens a bar.  models/phase_b/phase_tracking/phase_tracking_gate.json.
+# runtime sees is bar position 1 on 147 of 215 val tracks and 0 on 51.  A beat
+# gap carries no such evidence -- the true position of the beat that ends one is
+# measurably flat -- so it opens a bar instead.  A gap in the *feature* stage
+# stops neither madmom nor the count, so that path keeps the position it holds
+# and only the grid restarts.  models/phase_b/phase_tracking/phase_tracking_gate.json.
 _FIRST_BEAT_BAR_POSITION = 1
 _RE_ANCHOR_BAR_POSITION = 0
 
@@ -87,9 +89,9 @@ class SectionDecoder:
                                               self.params.lag_bars + 4))
         self._edge_base: int = 0
         self._bar_offset: int = 0
-        self._bar_position: int = (_FIRST_BEAT_BAR_POSITION if cold_start
-                                   else _RE_ANCHOR_BAR_POSITION)
-        self._last_beat_sec: float | None = None
+        if cold_start:
+            self._bar_position: int = _FIRST_BEAT_BAR_POSITION
+            self._last_beat_sec: float | None = None
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf
         self._next_bar: int = 0
