@@ -24,15 +24,16 @@ from lib.engine.section_decoder import (  # noqa: E402
 
 GATE_ARTIFACT = Path("models/phase_b/phase_tracking/phase_tracking_gate.json")
 CANDIDATE = "D_anchor"
+PROBE = "fallback|anchor1"
 MIN_TRACKS = 20
 
 
 class RecordingDecoder(SectionDecoder):
     """``SectionDecoder`` with an unbounded record of every line it ever drew."""
 
-    def reset(self):
+    def reset(self, *, cold_start: bool = True):
         self.drawn: list = []
-        super().reset()
+        super().reset(cold_start=cold_start)
 
     def _append_edge(self, at_sec: float) -> None:
         self.drawn.append(float(at_sec))
@@ -155,5 +156,17 @@ def test_the_gates_anchor_is_the_one_the_runtime_ships():
 
     report, _ = gate()
     spec = next(c for c in report["candidates"] if c["name"] == CANDIDATE)
-    assert spec["primary"] and spec["family"] == "fallback"
+    assert spec["probe"] == PROBE
     assert int(spec["anchor"]) == _FIRST_BEAT_BAR_POSITION
+
+
+def test_the_stand_in_takes_the_reset_the_runtime_would_call_on_it():
+    section = RecordingDecoder(_priors(), DecodeParams(lag_bars=2, min_coverage=1))
+    for beat in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5):
+        section.push_beat(beat)
+
+    section.reset(cold_start=False)
+    for beat in (3.0, 3.5):
+        section.push_beat(beat)
+
+    assert section.drawn == [3.5]

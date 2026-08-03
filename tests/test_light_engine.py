@@ -270,6 +270,24 @@ async def test_a_shed_and_unshed_cycle_leaves_the_grid_on_the_phase_it_had():
                               if line > pushed[5]]
 
 
+async def test_a_beat_inside_the_sound_start_margin_leaves_the_anchor_alone():
+    """9 of 215 val tracks put their first beat under the 0.3 s margin."""
+    from tests.test_section_decoder import decoder as section
+
+    live = section(lag_bars=2)
+    light, _, clock, _ = engine(decoder=live, chain=FakeChain())
+
+    await elapse(light, clock, 0.2)
+    await light.on_beat(1, 128.0, False)
+    light.on_sound_start()
+
+    for index in range(4):
+        await elapse(light, clock, 0.5)
+        await light.on_beat(index + 2, 128.0, False)
+
+    assert live.bar_edges == [pytest.approx(2.0)]
+
+
 async def test_a_missing_chain_is_the_degradation_state_rather_than_a_crash():
     """#144: missing artifacts are a degraded show, not a reason to die."""
     light, _, _, _ = engine(decoder=None, chain=None)
