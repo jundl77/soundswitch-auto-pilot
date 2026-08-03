@@ -43,6 +43,7 @@ class LightEngine(IMusicAnalyserHandler):
                  section_chain=None,
                  section_decoder=None,
                  watchdog=None,
+                 silence_monitor=None,
                  clock: Clock = SYSTEM_CLOCK):
         self.midi_client: MidiClient = midi_client
         self.os2l_client: Os2lClient = os2l_client
@@ -54,6 +55,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.section_chain = section_chain
         self.section_decoder = section_decoder
         self._watchdog = watchdog
+        self._silence_monitor = silence_monitor
         self._playback_delay_sec: float = playback_delay_sec
         self._clock: Clock = clock
         self._note_counter: int = 0
@@ -104,6 +106,8 @@ class LightEngine(IMusicAnalyserHandler):
         self.effect_controller.reset_state()
         if self.event_buffer:
             self.event_buffer.set_playing(False)
+        if self._silence_monitor is not None:
+            self._silence_monitor()
         self._at_the_room('sound', self._show_sound_stop)
 
     def _show_sound_start(self) -> None:

@@ -229,9 +229,9 @@ def test_the_first_song_holds_the_axis_at_zero_until_the_room_reaches_it():
     assert _axis(fig) == pytest.approx(_ZEROED_AXIS)
 
 
-def test_the_room_hearing_the_stop_empties_the_timeline_and_zeroes_it():
+def test_a_detected_stop_empties_the_timeline_and_zeroes_it():
     fig = V._build_timeline(_snapshot(
-        now=80.0, look_ahead_sec=14.0,
+        now=60.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
         beats=[{'t': 40.0, 'bpm': 128.0}],
         intents=[{'t': 50.0, 'intent': 'drop'}]))
@@ -242,18 +242,19 @@ def test_the_room_hearing_the_stop_empties_the_timeline_and_zeroes_it():
 
 def test_both_clocks_go_blank_between_songs():
     items = V._build_metrics(_snapshot(
-        now=80.0, look_ahead_sec=14.0,
+        now=60.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}]))
     assert _metric(items, 'song') == 'song —'
     assert _metric(items, 'room') == 'room —'
 
 
-def test_the_old_song_survives_a_stop_the_room_has_not_reached():
+def test_the_old_song_ends_at_the_stop_rather_than_playing_out():
     fig = V._build_timeline(_snapshot(
         now=70.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
         beats=[{'t': 55.0, 'bpm': 128.0}]))
-    assert fig.data[0].x == (55.0,)
+    assert fig.data == ()
+    assert _axis(fig) == pytest.approx(_ZEROED_AXIS)
 
 
 def test_a_start_the_room_has_not_reached_does_not_end_the_gap():
@@ -490,30 +491,51 @@ def _stopping(**overrides) -> dict:
                      **overrides)
 
 
-def test_the_show_keeps_playing_until_the_room_hears_the_stop():
-    assert 'PLAYING' in _metric(V._build_metrics(_stopping(now=70.0)), '●')
+def _mid_play(**overrides) -> dict:
+    return _snapshot(look_ahead_sec=14.0,
+                     sound_events=[{'t': 0.0, 'playing': True}], **overrides)
 
 
-def test_the_show_pauses_the_moment_the_room_hears_the_stop():
-    assert 'PAUSED' in _metric(V._build_metrics(_stopping(now=74.0)), '◌')
+def test_the_show_stops_the_instant_a_stop_is_detected():
+    assert 'PAUSED' in _metric(V._build_metrics(_stopping(now=60.0)), '◌')
 
 
-def test_the_reset_lands_one_look_ahead_after_the_stop_was_detected():
-    stop = 60.0
-    delay = 14.0
-    assert V._song_origin(_stopping(now=stop + delay - 0.01)) is not None
-    assert V._song_origin(_stopping(now=stop + delay)) is None
+def test_the_show_is_still_playing_the_moment_before_that():
+    playing = dict(_stopping(now=59.99), is_playing=True)
+    assert 'PLAYING' in _metric(V._build_metrics(playing), '●')
+
+
+def test_the_timeline_resets_the_instant_a_stop_is_detected():
+    assert V._song_origin(_stopping(now=59.99)) is not None
+    assert V._song_origin(_stopping(now=60.0)) is None
+
+
+def test_a_start_still_waits_for_the_room_although_a_stop_does_not():
+    resuming = _snapshot(look_ahead_sec=14.0,
+                         sound_events=[{'t': 0.0, 'playing': True},
+                                       {'t': 60.0, 'playing': False},
+                                       {'t': 80.0, 'playing': True}])
+    assert V._song_origin(dict(resuming, now=93.99)) is None
+    assert V._song_origin(dict(resuming, now=94.0)) == pytest.approx(94.0)
+
+
+def test_the_beats_still_in_the_air_at_a_stop_are_never_heard():
+    silenced = _stopping(now=70.0, beats_detected=900,
+                         beats=[{'t': 50.0, 'bpm': 128.0},
+                                {'t': 55.0, 'bpm': 128.0}])
+    assert V._heard_beats(silenced) == []
+    assert _metric(V._build_metrics(silenced), '898') == '898 beats'
 
 
 def test_the_tempo_is_the_last_beat_the_room_heard():
-    items = V._build_metrics(_stopping(
+    items = V._build_metrics(_mid_play(
         now=70.0, bpm=0.0,
         beats=[{'t': 50.0, 'bpm': 128.0}, {'t': 62.0, 'bpm': 174.0}]))
     assert _metric(items, '128') == '128 BPM'
 
 
 def test_the_beat_count_is_what_the_room_has_heard():
-    items = V._build_metrics(_stopping(
+    items = V._build_metrics(_mid_play(
         now=70.0, beats_detected=900,
         beats=[{'t': 50.0, 'bpm': 128.0}, {'t': 62.0, 'bpm': 128.0},
                {'t': 64.0, 'bpm': 128.0}]))
@@ -558,6 +580,30 @@ def test_a_poll_survives_a_sibling_dropping_the_connection_underneath_it(
     poller.snapshot()
     poller._connection.interfere = lambda: setattr(poller, '_connection', None)
     assert poller.snapshot() == {'now': 1.0}
+
+
+def test_a_poll_already_in_flight_hands_back_the_held_frame(monkeypatch):
+    import threading
+    import time
+
+    poller = _poller(monkeypatch)
+    poller.snapshot()
+    result = {}
+
+    def beside():
+        started = time.monotonic()
+        result['frame'] = poller.snapshot()
+        result['waited'] = time.monotonic() - started
+
+    def interfere():
+        thread = threading.Thread(target=beside)
+        thread.start()
+        thread.join(timeout=3.0)
+
+    poller._connection.interfere = interfere
+    poller.snapshot()
+    assert result['waited'] < 0.5
+    assert result['frame'] == {'now': 1.0}
 
 
 def test_polls_from_several_callback_threads_stay_one_at_a_time(monkeypatch):

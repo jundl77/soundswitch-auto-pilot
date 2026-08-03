@@ -1047,3 +1047,16 @@ def test_the_grid_never_tears_itself_down_before_the_show_has_gone_quiet():
         'the bar grid re-anchors while the engine still believes a section is ' \
         'playing: the decisions either side of the gap would name bars on two ' \
         'different grids with nothing on screen saying the beat had stopped'
+
+
+def test_a_detected_stop_silences_the_monitor_without_waiting_for_the_room():
+    light, queue, _, _ = engine()
+    cut = []
+    light._silence_monitor = lambda: cut.append(queue.pending)
+    light.on_sound_stop()
+    assert cut == [0]
+
+
+def test_a_show_with_no_monitor_still_stops_cleanly():
+    light, _, _, _ = engine()
+    light.on_sound_stop()

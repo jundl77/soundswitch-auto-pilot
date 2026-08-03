@@ -435,14 +435,25 @@ step in the anchor is a re-base rather than elapsed time and must not be
 extrapolated from (the existing re-seat guard then absorbs it), and the
 last-pulsed beat stamp is cleared at a boundary because song times repeat.
 
-**The snapshot ships the window, never the session.** The `--ui` buffer stores
-without a window on purpose -- the report written at the end has to cover the
-whole track -- and the snapshot used to read that same unbounded store, so a poll
-cost the length of the set rather than the length of the view. It now carries
-only what the viewer can draw: the timeline's span plus the look-ahead, because a
-record is stamped when it is detected and drawn one look-ahead later. Storage is
-untouched. Sound events are exempt and stay whole: one record per track boundary
-rather than per second, and the song the display counts from can be an hour old.
+**The snapshot ships the window, never the session.** It carries only what the
+viewer can draw: the timeline's span plus the look-ahead, because a record is
+stamped when it is detected and drawn one look-ahead later. Storage keeps its own
+window -- unbounded when a report is being written, since that has to cover the
+whole track -- and the snapshot no longer reads the whole of it, so a poll costs
+the length of the view rather than the length of the set. Sound events are exempt
+from *both* windows and stay whole: one record per track boundary rather than per
+second, and the song the display counts from can be an hour old. Pruning them
+from storage is the subtle version of the same bug -- a live run keeps a finite
+window, so the stop that ends a long song would evict the start it is measured
+from and the axis would jump rather than reset.
+
+**Stops are immediate; starts wait for the room.** The asymmetry is the spec, not
+an oversight: music starting has to travel the playback delay before anyone hears
+it, so a start and everything after it stays room-aligned -- but silence needs no
+look-ahead, because there is nothing left to hear. A detected stop therefore ends
+the song on the display at once, cuts the monitored output's buffered tail
+instead of playing it out, and discards the beats still in flight, which were
+never going to reach the room. Everything mid-play keeps the room alignment.
 
 **Dash answers callbacks on threads, and the poller they share is one
 connection.** A failing poll clears it; a poll running beside it then re-read

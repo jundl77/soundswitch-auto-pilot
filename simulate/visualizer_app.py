@@ -84,12 +84,25 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
-def _room_events(events: list, snapshot: dict) -> list:
-    """Detection-stamped records moved onto the room clock; unheard ones dropped."""
+def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    return [dict(event, t=event['t'] + delay) for event in events
-            if event['t'] + delay <= now]
+    moved = [dict(event, t=event['t'] + delay if event['playing'] else event['t'])
+             for event in snapshot.get('sound_events', [])]
+    return [event for event in moved if event['t'] <= now]
+
+
+def _heard_beats(snapshot: dict) -> list:
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    now = snapshot.get('now', 0.0)
+    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    heard = []
+    for beat in snapshot.get('beats', []):
+        reaches_room_at = beat['t'] + delay
+        cut = any(beat['t'] < stop <= reaches_room_at for stop in stops)
+        if reaches_room_at <= now and not cut:
+            heard.append(dict(beat, t=reaches_room_at))
+    return heard
 
 
 def _clock_text(seconds: float) -> str:
@@ -98,7 +111,7 @@ def _clock_text(seconds: float) -> str:
 
 
 def _song_origin(snapshot: dict) -> float | None:
-    heard = _room_events(snapshot.get('sound_events', []), snapshot)
+    heard = _room_sound_events(snapshot)
     if heard:
         return heard[-1]['t'] if heard[-1]['playing'] else None
     starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
@@ -108,21 +121,20 @@ def _song_origin(snapshot: dict) -> float | None:
 
 
 def _room_is_playing(snapshot: dict) -> bool:
-    events = snapshot.get('sound_events', [])
-    heard = _room_events(events, snapshot)
-    stop_still_in_flight = len(heard) < len(events)
-    return bool(snapshot.get('is_playing')) or (
-        stop_still_in_flight and bool(heard) and heard[-1]['playing'])
+    heard = _room_sound_events(snapshot)
+    if heard:
+        return heard[-1]['playing'] and bool(snapshot.get('is_playing'))
+    return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
 
 
 def _room_bpm(snapshot: dict) -> float:
-    heard = _room_events(snapshot.get('beats', []), snapshot)
+    heard = _heard_beats(snapshot)
     return heard[-1]['bpm'] if heard else snapshot.get('bpm', 0.0)
 
 
 def _room_beat_count(snapshot: dict) -> int:
     beats = snapshot.get('beats', [])
-    unheard = len(beats) - len(_room_events(beats, snapshot))
+    unheard = len(beats) - len(_heard_beats(snapshot))
     return max(0, snapshot.get('beats_detected', 0) - unheard)
 
 
@@ -145,7 +157,7 @@ def _song_and_room(snapshot: dict) -> tuple:
 def _anchor(snapshot: dict) -> dict:
     origin = _song_origin(snapshot)
     beats = [] if origin is None else [
-        b['t'] - origin for b in _room_events(snapshot.get('beats', []), snapshot)
+        b['t'] - origin for b in _heard_beats(snapshot)
         if b['t'] - origin >= 0.0]
     song, room = _song_and_room(snapshot)
     return {
@@ -190,7 +202,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             ))
 
     if origin is not None:
-        for ev in _room_events(snapshot.get('sound_events', []), snapshot):
+        for ev in _room_sound_events(snapshot):
             t = ev['t'] - origin
             if t < left:
                 continue
@@ -209,8 +221,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 xanchor='left',
             ))
 
-        beat_x = [b['t'] - origin
-                  for b in _room_events(snapshot.get('beats', []), snapshot)
+        beat_x = [b['t'] - origin for b in _heard_beats(snapshot)
                   if b['t'] - origin >= left]
 
     beat_y = [0.25] * len(beat_x)
@@ -529,7 +540,9 @@ class SnapshotPoller:
         return f'http://{self._host}:{self._port}{SNAPSHOT_PATH}'
 
     def snapshot(self) -> dict:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return self._last
+        try:
             try:
                 connection = self._connection
                 if connection is None:
@@ -547,6 +560,8 @@ class SnapshotPoller:
                                     f'{self.url} ({error!r}) — holding the last frame')
                     self._answering = False
             return self._last
+        finally:
+            self._lock.release()
 
 
 def build_app(snapshot_source) -> dash.Dash:

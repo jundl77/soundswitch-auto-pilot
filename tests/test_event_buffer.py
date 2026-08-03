@@ -55,6 +55,30 @@ def test_the_snapshot_reaches_back_far_enough_to_fill_the_display():
     assert reach >= EventBuffer.SNAPSHOT_WINDOW_SEC + 14.0 - 1.0
 
 
+def test_a_sound_event_outlives_the_storage_window_it_was_recorded_in():
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buffer.start()
+    buffer.set_playing(True)
+    clock.advance(900.0)
+    buffer.set_playing(False)
+    clock.advance(20.0)
+    buffer.set_playing(True)
+    assert [e['t'] for e in buffer.snapshot()['sound_events']] == [0.0, 900.0, 920.0]
+
+
+def test_a_song_outlasting_the_storage_window_still_knows_where_it_started():
+    from simulate import visualizer_app as V
+
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buffer.start()
+    buffer.set_playing(True)
+    clock.advance(900.0)
+    buffer.add_beat(bpm=128.0, change=False)
+    assert V._song_origin(buffer.snapshot()) == pytest.approx(14.0)
+
+
 def test_the_sound_events_are_never_windowed():
     buffer, clock = _ui_session(minutes=20.0)
     assert buffer.snapshot()['sound_events'][0]['t'] == 0.0

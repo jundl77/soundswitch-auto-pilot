@@ -70,8 +70,6 @@ class EventBuffer:
             self._is_playing = is_playing
             now = self._now()
             self._sound_events.append({'t': now, 'playing': is_playing})
-            cutoff = now - self._window_sec * 2
-            self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
     def set_intent(self, intent: str, song_sec: float | None = None) -> None:
         with self._lock:
