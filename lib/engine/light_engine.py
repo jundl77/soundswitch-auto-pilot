@@ -139,6 +139,9 @@ class LightEngine(IMusicAnalyserHandler):
         else:
             action()
 
+        self._restart_for_the_next_song()
+
+    def _restart_for_the_next_song(self) -> None:
         self._atmospheric_sent = False
         self._current_intent = None
         self._bars_in_current_intent = 0

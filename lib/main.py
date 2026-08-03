@@ -71,7 +71,6 @@ class SoundSwitchAutoPilot:
                             'will light the quiet cold-start floor and hold it '
                             '(beats and silence still run)')
 
-        self._audio_delay_buf: deque = deque()
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
@@ -89,7 +88,9 @@ class SoundSwitchAutoPilot:
         self.os2l_client.set_analyser(self.music_analyser)
 
     def _silence_monitor(self) -> None:
-        self._audio_delay_buf.clear()
+        buffered = getattr(self, '_audio_delay_buf', None)
+        if buffered is not None:
+            buffered.clear()
 
     def list_devices(self):
         self.audio_client.list_devices()
@@ -122,6 +123,7 @@ class SoundSwitchAutoPilot:
         last_100ms_callback_execution: datetime.datetime = datetime.datetime.now()
         last_1sec_callback_execution: datetime.datetime = datetime.datetime.now()
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
+        self._audio_delay_buf = deque()
         audio_delay_buf: deque = self._audio_delay_buf
         _audio_playback_started = False
         _playback_ready_at: float = time.monotonic() + PLAYBACK_DELAY_SEC
