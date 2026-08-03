@@ -1,40 +1,34 @@
-"""Notices when the analyser stops keeping up, and sheds work cheapest-loss-first."""
+"""Notices when the show's one sheddable stage should stop, from either side."""
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from enum import IntEnum
 
 from lib.clock import SYSTEM_CLOCK, Clock
 
 _WINDOW_SEC = 5.0
-_ENTER_SEC = (0.15, 0.75)
-# Positive, not negative: a hardware-paced input hands over exactly one buffer
-# per buffer period, so the loop can never consume audio faster than it arrives
-# and drift can never go negative however much headroom there is. Requiring
-# negative drift to recover leaves the watchdog latched for the whole show.
-_EXIT_SEC = (0.05, 0.30)
+_ENTER_SEC = 0.15
+# Positive: a hardware-paced input hands over one buffer per period, so drift never goes negative.
+_EXIT_SEC = 0.05
+
+_LOG_INTERVAL_SEC = 30.0
 
 
 class ShedLevel(IntEnum):
     NONE = 0
-    SECTION_DETECTION = 1
-    ONSET_DETECTION = 2
+    NN_SHED = 1
 
 
 class DriftWatchdog:
-    """Tracks lost lead over a rolling window and picks a shed level.
-
-    `observe()` is called once per processed audio buffer, from the same thread
-    that does the processing.
-    """
-
     def __init__(self, buffer_sec: float, clock: Clock = SYSTEM_CLOCK,
                  window_sec: float = _WINDOW_SEC):
         self._buffer_sec = buffer_sec
         self._clock = clock
         self._window_sec = window_sec
+        self._settling = threading.Lock()
         self.reset()
 
     def reset(self) -> None:
@@ -42,17 +36,24 @@ class DriftWatchdog:
         self._stream_sec = 0.0
         self._level = ShedLevel.NONE
         self._drift_sec = 0.0
+        self._drift_shed = False
+        self._fault: str | None = None
         self.peak_drift_sec = 0.0
         self.total_drift_sec = 0.0
         self._first_wall: float | None = None
         self._calm_since: float | None = None
+        self._said: dict = {}
+        self._suppressed: dict = {}
 
     @property
     def level(self) -> ShedLevel:
         return self._level
 
+    @property
+    def fault(self) -> str | None:
+        return self._fault
+
     def forgive(self, sec: float) -> None:
-        """Deliberate stalls (the MIDI settle at a song boundary) are not lost lead."""
         if sec <= 0:
             return
         self._samples = deque((w + sec, s) for w, s in self._samples)
@@ -63,8 +64,21 @@ class DriftWatchdog:
 
     @property
     def drift_sec(self) -> float:
-        """Lead lost inside the rolling window. Negative means catching up."""
         return self._drift_sec
+
+    def report_fault(self, kind: str) -> ShedLevel:
+        if self._fault != kind:
+            was = self._fault
+            self._fault = kind
+            self._settle(f'stage fault: {kind}' if was is None
+                         else f'stage fault: {was} -> {kind}')
+        return self._level
+
+    def report_healthy(self) -> ShedLevel:
+        if self._fault is not None:
+            self._fault = None
+            self._settle('stage healthy')
+        return self._level
 
     def observe(self) -> ShedLevel:
         wall = self._clock.monotonic()
@@ -85,30 +99,43 @@ class DriftWatchdog:
         stream_span = self._stream_sec - self._samples[0][1]
         self._drift_sec = wall_span - stream_span
         self.peak_drift_sec = max(self.peak_drift_sec, self._drift_sec)
-        self._update_level(wall)
+        self._update_drift(wall)
         return self._level
 
-    def _update_level(self, wall: float) -> None:
-        target = self._level
-        for level in (ShedLevel.ONSET_DETECTION, ShedLevel.SECTION_DETECTION):
-            if self._drift_sec > _ENTER_SEC[level - 1]:
-                target = max(target, level)
-                break
-
-        if target is self._level and self._level is not ShedLevel.NONE:
-            if self._drift_sec < _EXIT_SEC[self._level - 1]:
-                if self._calm_since is None:
-                    self._calm_since = wall
-                elif wall - self._calm_since >= self._window_sec:
-                    target = ShedLevel(self._level - 1)
-            else:
-                self._calm_since = None
-
-        if target is not self._level:
+    def _update_drift(self, wall: float) -> None:
+        if self._drift_sec > _ENTER_SEC:
             self._calm_since = None
+            if not self._drift_shed:
+                self._drift_shed = True
+                self._settle(f'drift {self._drift_sec:+.3f}s over a '
+                             f'{self._window_sec:.0f}s window, peak '
+                             f'{self.peak_drift_sec:.3f}s')
+        elif self._drift_shed:
+            if self._drift_sec >= _EXIT_SEC:
+                self._calm_since = None
+            elif self._calm_since is None:
+                self._calm_since = wall
+            elif wall - self._calm_since >= self._window_sec:
+                self._drift_shed = False
+                self._calm_since = None
+                self._settle(f'pacing recovered ({self._drift_sec:+.3f}s)')
+
+    def _settle(self, reason: str) -> None:
+        with self._settling:
+            target = (ShedLevel.NN_SHED if self._drift_shed or self._fault
+                      else ShedLevel.NONE)
+            if target is self._level:
+                return
             direction = 'degrading' if target > self._level else 'recovering'
-            logging.warning(
-                f'[drift] {direction}: {self._level.name} -> {target.name} '
-                f'(drift {self._drift_sec:+.3f}s over {self._window_sec:.0f}s window, '
-                f'peak {self.peak_drift_sec:.3f}s)')
+            message = (f'[drift] {direction}: {self._level.name} -> '
+                       f'{target.name} ({reason})')
             self._level = target
+            now = self._clock.monotonic()
+            last = self._said.get(direction)
+            if last is not None and now - last < _LOG_INTERVAL_SEC:
+                self._suppressed[direction] = self._suppressed.get(direction, 0) + 1
+                return
+            self._said[direction] = now
+            more = self._suppressed.pop(direction, 0)
+            logging.warning(message + (f' [+{more} more since the last line]'
+                                       if more else ''))

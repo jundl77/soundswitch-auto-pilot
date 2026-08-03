@@ -1,34 +1,4 @@
-"""The numbers a downbeat F1 has to be read against.
-
-    uv run python -m training.nn.downbeat_baselines --data-dir <corpus> \
-        --checkpoint <run>/best.pt
-
-An F1 without its baseline is a decoration, and *which* baseline decides whether
-a result is impressive or trivial.  Three references are computed here, on the
-same split and through the same committed peak-picking path the trainer scores
-itself with, so none of them is a separate implementation that has to be trusted:
-
-**The informative null: a perfect but PHASE-BLIND beat detector.**  Gaussian
-bumps at every annotated beat, no bar knowledge at all, scored against the
-annotated *downbeats*.  This is the number that matters, because it is what a
-system that has solved beat tracking and learned nothing about bars already
-scores.  Structureless nulls (noise, an untrained net) are much weaker and
-flatter the model by a factor of three; they are computed too, precisely so the
-difference is visible rather than a matter of which one someone quoted.
-
-**The calibration floor.**  The de-weighted ECE is computed against *binarised*
-labels while the target is a soft Gaussian, so even an oracle whose de-weighted
-probability IS the training target scores well above zero.  That value is the
-floor, and an ECE below it says the model is closer to the binary labels than
-the target is -- not that it is well calibrated.  Reporting the number without
-the floor invites exactly the wrong reading.
-
-**The phase histogram of predicted peaks.**  Where the model's false positives
-land, by bar phase.  This is a diagnosis, not a score: a flat distribution over
-phases 2/3/4 would mean noise, while a concentration on phase 3 means a half-bar
-ambiguity -- a structured error a cyclic phase decoder can remove, and the
-strongest single hint about which decoder knob is worth tuning.
-"""
+"""The numbers a downbeat F1 has to be read against."""
 from __future__ import annotations
 
 import argparse
@@ -36,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401
 
 from .dataset import FRAME_SEC, candidate_tracks, make_splits
 from .downbeat_dataset import (
@@ -50,6 +20,7 @@ from .downbeat_train import (
     MIN_PEAK_DISTANCE_SEC,
     POSITIVE_THRESHOLD,
     TOLERANCE_SEC,
+    UNSUPERVISED_SCORE,
     binary_ece,
     deweighted,
     frame_times,
@@ -64,11 +35,6 @@ from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
 
 def gaussian_at(instants: np.ndarray, times: np.ndarray,
                 sigma: float = DOWNBEAT_SIGMA_SEC) -> np.ndarray:
-    """Gaussian of the distance to the nearest instant -- the target's own recipe.
-
-    Two binary searches rather than one exp per instant, and identical in form to
-    ``track_downbeat_targets`` so the null is built the way the truth is.
-    """
     if not instants.size or not times.size:
         return np.zeros(len(times), dtype=np.float64)
     right = np.searchsorted(instants, times)
@@ -79,25 +45,21 @@ def gaussian_at(instants: np.ndarray, times: np.ndarray,
 
 
 def phase_blind_activation(targets: DownbeatTargets) -> np.ndarray:
-    """What a perfect beat tracker with no bar knowledge would emit."""
     times = frame_times(np.arange(len(targets.downbeat)))
     return gaussian_at(targets.beat_time[targets.beat_frame >= 0], times)
 
 
 def reference_downbeats(targets: DownbeatTargets, live: np.ndarray) -> np.ndarray:
-    """Annotated downbeat instants inside the supervised region."""
     on_grid = (targets.beat_phase == 1) & (targets.beat_frame >= 0)
     return targets.beat_time[on_grid & live[np.maximum(targets.beat_frame, 0)]]
 
 
 def pick_live(activation: np.ndarray, live: np.ndarray, min_distance: int) -> np.ndarray:
-    """The trainer's own picker, restricted to supervised frames."""
-    picked = peak_candidates(np.where(live, activation, -1.0), min_distance)
+    picked = peak_candidates(np.where(live, activation, UNSUPERVISED_SCORE), min_distance)
     return picked[live[picked]] if picked.size else picked
 
 
 def score_activations(dataset, activations: dict, min_distance: int) -> dict:
-    """Whole-track activations -> the same swept peak F1 the trainer reports."""
     per_track = []
     for youtube_id in dataset.track_ids():
         targets = dataset.targets_for(youtube_id)
@@ -110,12 +72,6 @@ def score_activations(dataset, activations: dict, min_distance: int) -> dict:
 
 
 def ece_floor(dataset, pos_weight: float) -> float:
-    """De-weighted ECE of an oracle whose de-weighted probability IS the target.
-
-    The floor exists because the ECE labels binarise a *soft* target: a frame
-    whose target is 0.4 is labelled negative, so an oracle emitting 0.4 there is
-    scored as 0.4 of over-confidence.  Nothing about the model can go below this.
-    """
     soft, labels = [], []
     for youtube_id in dataset.track_ids():
         targets = dataset.targets_for(youtube_id)
@@ -124,21 +80,14 @@ def ece_floor(dataset, pos_weight: float) -> float:
         labels.append(targets.downbeat[live] >= POSITIVE_THRESHOLD)
     soft = np.concatenate(soft)
     labels = np.concatenate(labels)
-    # deweighted(inflate(target)) == target exactly, so the floor is just the
-    # soft target's own ECE against the binarised labels.
-    logit = np.log(np.clip(soft, 1e-12, 1 - 1e-12) / (1 - np.clip(soft, 1e-12, 1 - 1e-12)))
-    inflated = 1.0 / (1.0 + np.exp(-(logit + np.log(pos_weight))))
+    bounded = np.clip(soft, 1e-12, 1 - 1e-12)
+    oracle_logit = np.log(bounded / (1 - bounded))
+    inflated = 1.0 / (1.0 + np.exp(-(oracle_logit + np.log(pos_weight))))
     return binary_ece(deweighted(inflated, pos_weight), labels)
 
 
 def peak_phase_histogram(dataset, activations: dict, threshold: float,
                          min_distance: int) -> dict:
-    """Bar phase of every predicted peak, plus how many land on a beat at all.
-
-    ``phase[0]`` counts peaks further than the tolerance from *any* annotated
-    beat.  The rest are the phase the nearest beat carries -- so ``phase[1]`` is
-    (essentially) the true positives and ``phase[3]`` is the half-bar error.
-    """
     counts = np.zeros(BEATS_PER_BAR + 1, dtype=np.int64)
     for youtube_id in dataset.track_ids():
         targets = dataset.targets_for(youtube_id)
@@ -168,17 +117,6 @@ def peak_phase_histogram(dataset, activations: dict, threshold: float,
 
 
 def model_activations(checkpoint, dataset, device, batch_size: int = 128) -> dict:
-    """Stitched whole-track activations from a trained checkpoint.
-
-    Torch is imported here rather than at module scope, but **that buys deferral,
-    not independence**: this module already pulls torch through
-    ``downbeat_train`` at import, and the dataset it is handed comes from
-    ``DownbeatWindowDataset``.  So the local import only delays the *model* and
-    CUDA initialisation until a checkpoint is actually being scored -- the nulls
-    above cannot be computed on a machine without torch, and an earlier version
-    of this docstring claimed they could.  The module that genuinely runs
-    torch-free is ``downbeat_decoder``, and a test pins it.
-    """
     import torch
 
     from .downbeat_model import DownbeatCRNN
@@ -212,20 +150,6 @@ def model_activations(checkpoint, dataset, device, batch_size: int = 128) -> dic
 
 
 def tunable_split_ids(splits: dict, split: str) -> list:
-    """The split's ids -- and never the test split's.
-
-    The phase histogram this module exists to produce is a *tuning instrument*
-    (its own docstring says so: it names which decoder knob is worth turning), so
-    reading it on test would be a tuning read of the split the verdict spends
-    once.  Guarded on split **membership** rather than on the flag that usually
-    selects it, which is the rule `training/nn/CLAUDE.md` states -- and refused
-    before the corpus is touched, so the refusal costs nothing and needs nothing.
-
-    Deliberately an inline check rather than a call to
-    ``evaluate_downbeat.split_guard``: that module imports the inference chain,
-    and the nulls path should not grow an ONNX dependency to ask one question
-    about a dict.
-    """
     if str(split) == "test":
         raise RuntimeError(
             "downbeat_baselines reads annotated bar phase to say which decoder "

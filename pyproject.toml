@@ -15,13 +15,9 @@ requires-python = ">=3.11"
 dependencies = [
     "python-rtmidi>=1.5,<2",
     "cython",
-    "aubio",
     "madmom",
     "numpy>=1.26,<2",
     "pyaudio",
-    "pandas",
-    "tensorflow>=2.16,<2.22",
-    "tensorflow-hub>=0.16,<0.17",
     "scipy",
     "python-osc",
     "scikit-learn",
@@ -30,6 +26,11 @@ dependencies = [
     "zeroconf",
     "netifaces",
     "setuptools<71",
+    # torch stays at 2.11: only the legacy TorchScript ONNX exporter keeps a GRU's
+    # time axis dynamic, and it is deprecated from 2.9. Pin provenance is the PR body.
+    "torch>=2.11,<2.12",
+    "transformers>=4.57,<5",
+    "onnxruntime>=1.28,<2",
 ]
 
 [project.optional-dependencies]
@@ -37,31 +38,25 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "jupyterlab",
+    # The downbeat tests export ONNX graphs; without it they fail to collect.
+    "onnx>=1.22,<2",
 ]
 visualizer = [
     "dash>=2.14",
     "sounddevice",
 ]
-# Offline NN work only (training/nn/): never imported by lib/ or simulate/.
-# Versions validated end-to-end on the RTX 3070 -- see
-# .superpowers/sdd/2026-07-26-nn-classifier-v1-offline/cuda-preflight-report.md.
-# torch is pinned to 2.11 because the legacy TorchScript ONNX exporter (the only
-# path that keeps a dynamic time axis for a GRU) is deprecated from 2.9 onward;
-# tensorboard is deliberately loose because TensorFlow pins it to its own version.
+# Training the acoustic model only -- the show imports nn.decoder, so training/nn/
+# is not offline-only. torch and onnxruntime are base deps and are not repeated here.
 training = [
-    "torch>=2.11,<2.12",
     "onnx>=1.22,<2",
-    "onnxruntime>=1.28,<2",
     "tensorboard>=2.16",
-    # tensorboard's image summaries encode through PIL and it is not a hard
-    # dependency of tensorboard itself; without it the per-epoch confusion
-    # matrix raises mid-epoch, an hour into a run.
+    # tensorboard's image summaries encode through PIL, which tensorboard does not
+    # require; without it the per-epoch confusion matrix raises an hour into a run.
     "pillow>=10",
 ]
 
-# The CUDA wheel index, bound to torch alone.  `explicit = true` is load-bearing:
-# without it uv consults this index for every package and shadows PyPI with an
-# incomplete mirror.
+# `explicit = true` is load-bearing: without it uv consults this index for every
+# package and shadows PyPI with an incomplete mirror.
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
@@ -69,22 +64,11 @@ explicit = true
 
 [tool.uv]
 link-mode = "copy"
-extra-build-variables = { aubio = { CFLAGS = "-Wno-incompatible-function-pointer-types" } }
-# Resolve only for the environment this project actually runs in.  uv resolves
-# universally across `requires-python`, and on the py3.13 branch ml-dtypes
-# (pulled in by onnx) demands numpy>=2.1, which is unsatisfiable against the
-# numpy<2 pin TensorFlow needs.  Removing this line breaks `uv lock`.
+# Removing this breaks `uv lock`: uv resolves universally, and on py3.13 ml-dtypes
+# (via onnx) demands numpy>=2.1 against this project's numpy<2 pin.
 environments = ["sys_platform == 'win32' and python_full_version < '3.12'"]
-# tensorflow-io-gcs-filesystem>=0.34 has no Windows wheels; pin to 0.31.0 on Windows
-override-dependencies = [
-    "tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'",
-]
-# madmom's last PyPI release (0.16.1, 2018) cannot be imported on Python >= 3.10
-# — `from collections import MutableSequence`. Git main fixed that and carries a
-# pyproject.toml, so it builds on py3.11/MSVC; there is no tagged release with
-# the fix, hence a SHA. Build isolation is off because the Cython/numpy build
-# needs this environment's numpy ABI, and the build deps are named explicitly
-# rather than inherited from whatever happens to be installed.
+# madmom builds from a SHA because no release imports on py3.10+, and from this
+# environment's numpy ABI because the Cython build links against it.
 no-build-isolation-package = ["madmom"]
 extra-build-dependencies = { madmom = ["cython", "numpy>=1.26,<2", "setuptools<71"] }
 
@@ -96,5 +80,5 @@ madmom = { git = "https://github.com/CPJKU/madmom.git", rev = "27f032e8947204902
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: full-pipeline simulation tests (slow, requires aubio and madmom)",
+    "integration: full-pipeline simulation tests (slow, requires madmom)",
 ]

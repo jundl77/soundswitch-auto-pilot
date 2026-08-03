@@ -1,39 +1,17 @@
-"""Prove two training runs are the same run.
-
-    uv run python -m training.nn.compare_runs --data-dir <corpus> \
-        --model-version downbeat_v1 downbeat_smoke_a downbeat_smoke_b
-
-The determinism claim both heads make -- *two runs of one config in fresh
-processes produce bitwise-identical weights* -- is only worth as much as the
-check behind it, and a weight hash alone is a weak check: it says the endpoints
-agree while saying nothing about the path, so a run that diverged at step 3 and
-reconverged would pass.  This walks **every logged number** in both
-``training_report.json`` files instead, and prints the first differences rather
-than a boolean.
-
-Wall-clock fields are excluded and nothing else is.  A determinism claim about
-elapsed seconds would be nonsense, so ``wall_seconds``, ``steps_per_second``,
-per-epoch ``seconds``, ``started_at``, ``run_name`` and the GPU peaks are dropped;
-every loss, learning rate, metric, weight and configuration value is compared.
-
-The expected non-zero result: comparing an uninterrupted run against a
-crashed-and-resumed one differs in exactly one field, ``config.resume`` -- the
-flag itself.  Anything else is a real divergence.
-"""
+"""Prove two training runs are the same run."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
-from . import _TRAINING_DIR  # noqa: F401  (puts training/ + training/raveform/ on sys.path)
+from . import _TRAINING_DIR  # noqa: F401
 
 from build_training_table import default_data_dir  # noqa: E402
 
 MODELS_DIR = "models"
 REPORT_FILE = "training_report.json"
 
-# Everything that is allowed to differ between two identical runs.
 VOLATILE = frozenset({
     "wall_seconds", "steps_per_second", "seconds", "started_at", "run_name",
     "run_dir", "gpu_peak_alloc_mb", "gpu_peak_reserved_mb",
@@ -41,7 +19,6 @@ VOLATILE = frozenset({
 
 
 def strip(node):
-    """Drop volatile keys anywhere in the tree."""
     if isinstance(node, dict):
         return {key: strip(value) for key, value in node.items() if key not in VOLATILE}
     if isinstance(node, list):
@@ -50,7 +27,6 @@ def strip(node):
 
 
 def differences(left, right, path: str = "") -> list:
-    """Every mismatch between two JSON trees, as readable paths."""
     if type(left) is not type(right):
         return [f"TYPE  {path}: {type(left).__name__} vs {type(right).__name__}"]
     if isinstance(left, dict):

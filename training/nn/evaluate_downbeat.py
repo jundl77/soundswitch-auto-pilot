@@ -1,47 +1,4 @@
-"""The downbeat verdict: what the live condition can reach, and what it costs.
-
-Three questions, in the order the plan asks them, because the second and third
-are only readable in the light of the first.
-
-**1. What does the live beat stream do to the bar grid?**  The decoder can only
-place a downbeat where its candidate grid has an instant, so the live condition is
-bounded by its beat stream before any model or decoder is involved.
-``alignment_row`` measures that stream against the annotator's (offset, jitter,
-missed and extra beats, tempo ratio) and ``reach_labels`` splits the *unreachable*
-downbeats into named causes -- outside the stream, a dropout, a tempo mismatch, a
-steady off-grid lock, or an unsteady one.  That split is the evidence any decision
-about this component rests on: a shortfall caused by the stream dropping beats and
-one caused by it locking a quarter beat off have different fixes and neither of
-them is "tune the decoder harder".
-
-**2. How well does the decoder do inside that bound?**  ``score_downbeats`` is
-the plan's F1@+-70 ms through the committed matcher, ``phase_scores`` is bar-phase
-accuracy against the annotated grid, and stability gets *two* numbers because the
-obvious one is wrong: ``phase_flips`` at subdivision 2 counts every beat the
-stream inserts or drops, which is a property of the input, not of the grid.  So the two
-reported are ``beat_anchored_flips`` (did the bar position advance by exactly one
-beat between consecutive real beats) and ``interval_deviation`` (do the emitted
-downbeats keep a steady spacing).  The first is the plan's unit -- flips per
-track -- and is what the gate is read against; the second is the grid-direct
-measurement and is reported beside it.
-
-**3. Does a predicted grid still carry a show?**  ``ablation_rows`` decodes
-sections on the *predicted* bar grid and on the expert one with everything else
-held fixed, so the boundary-F1 and flicker deltas are attributable to the grid
-alone.  That is the go/no-go number for live bar-snapping, and it is the only
-number here that speaks the audience's language rather than the metric's.
-
-**Every matcher is imported.**  ``match_events``, ``prf``, the decoder, the
-candidate grid and the section chain's own ``bar_observations`` are used as
-shipped; a verdict measured by a second implementation of its metrics is a
-verdict about the two implementations.  The one thing this module defines for
-itself is the *grid* it hands the section decoder, and it builds that by the same
-rule ``decoder.bar_grid`` uses on the annotated one.
-
-**The test split is read once**, by ``--verdict --split test``, and only against a
-config file that already exists on disk -- so the choice provably predates the
-read.  Every other mode is guarded on split *membership*, not on a flag.
-"""
+"""The downbeat verdict: grid reachability, decode quality, and the show ablation."""
 from __future__ import annotations
 
 import argparse
@@ -69,88 +26,42 @@ from .downbeat_train import MODEL_VERSION, TOLERANCE_SEC, match_events, prf
 MODELS_DIR = "models"
 CONFIG_FILE = "downbeat_decoder_config.json"
 ALIGNMENT_FILE = "downbeat_alignment_{split}.json"
-# Named after the split it scored, following the section chain's precedent: a
-# `--split test` run without `--out` must not overwrite the val reading, because
-# the two answer different questions and both have to survive on disk.
 EVAL_FILE = "downbeat_eval_{split}.json"
 SPLITS_FILE = "splits.json"
 
-# Bars of look-ahead the runtime can afford: the section decoder commits three
-# bars behind, and the show's own delay is 2.5 s, so a bar-grid commit that costs
-# more than ~2 s of its own pushes the chain past the 8 s budget the section spec
-# set.  Longer lags are still measured -- the lag curve is the evidence for
-# whether the budget should move -- but a selected config has to fit.
 LOOK_AHEAD_BUDGET_BEATS = 4
 
-# Downbeat F1 a reachability ceiling has to clear to be worth decoding on.  The
-# plan's original 0.85 is retired: it sits above published offline SOTA on general
-# music.  Recommended replacement, at a median of two phase flips per track or
-# fewer (owner decisions #81/#133).
+# Owner decisions #81/#133; the plan's original 0.85 sat above published offline SOTA.
 GATE_F1 = 0.55
 
-# A predicted bar interval this far from the track's own running median is a
-# grid instability rather than a tempo ride.  15 % of a bar at 128 BPM is 280 ms
-# -- far larger than any real tempo change between adjacent bars, far smaller
-# than the half-bar (50 %) or beat (25 %) errors a lost phase produces.
 INTERVAL_DEVIATION = 0.15
 INTERVAL_WINDOW = 9
 
-# Residual (in beats) below which a stream's off-grid offset counts as *steady*.
-# The distinction is the actionable one: a steady offset is a lock, which a
-# different candidate grid could capture; an unsteady one is jitter, which only a
-# better beat tracker fixes.
 LOCK_IQR_BEATS = 0.06
 
-# Local period agreement, after folding onto the nearest half/double octave: a
-# stream running at exactly half or double the annotated tempo still puts beats
-# on the annotated instants, so it is not a mismatch.  Anything that does not
-# fold onto one of those within 2 % is tracking a different pulse.
 TEMPO_TOLERANCE = 0.02
 TEMPO_MULTIPLES = (0.5, 1.0, 2.0)
 
-# Phase-confidence cut points for the spec's beat-snap fall-back.  0.25 is chance
-# on a four-position cycle and 0.125 on eight, so the low end is "no information
-# at all" and the high end is where a grid would actually be trusted.
 CONFIDENCE_THRESHOLDS = (0.0, 0.3, 0.5, 0.7, 0.9)
 
 REACH_LABELS = ("beat", "midpoint", "coast", "no_coverage", "dropout",
                 "tempo_mismatch", "fraction_lock", "jitter")
 REACHED = ("beat", "midpoint", "coast")
 
-# Where in the beat an unreachable downbeat sits.  The bins are 1/20 of a beat so
-# a quarter-beat lock (0.25) and a triplet feel (0.33) land in different ones --
-# the two have different fixes and a histogram that merged them would hide that.
 RESIDUAL_BINS = tuple(round(0.05 * step, 2) for step in range(11))
 
 CONDITIONS = ("live", "expert")
 
 
-# --------------------------------------------------------------------------- #
-# Small pure helpers
-# --------------------------------------------------------------------------- #
-
-
 def lag_for(look_ahead_beats: int, subdivision: int) -> int:
-    """Candidates of lag that buy ``look_ahead_beats`` beats of wall clock.
-
-    The one place allowed to know that ``lag_beats`` counts *candidates*: at
-    subdivision 2 a lag of 4 is two beats, not four, so a sweep that varies the
-    grid at a fixed lag is measuring the lag and calling it the grid.
-    """
     return int(look_ahead_beats) * int(subdivision)
 
 
 def rolling_median(values, window: int = INTERVAL_WINDOW) -> np.ndarray:
-    """Centred running median, edge-clamped, same length as the input.
-
-    Running rather than global so a track that rides its tempo is measured
-    against what it is doing *there* -- a global median would report the ride
-    itself as instability.
-    """
     values = np.asarray(values, dtype=np.float64).reshape(-1)
     if values.size == 0:
         return values.copy()
-    window = max(1, int(window)) | 1                      # centring needs it odd
+    window = max(1, int(window)) | 1
     half = window // 2
     padded = np.pad(values, half, mode="edge")
     view = np.lib.stride_tricks.sliding_window_view(padded, window)
@@ -158,7 +69,6 @@ def rolling_median(values, window: int = INTERVAL_WINDOW) -> np.ndarray:
 
 
 def nearest_index(query, reference) -> np.ndarray:
-    """Index of the nearest ``reference`` entry for each ``query``; -1 if empty."""
     query = np.asarray(query, dtype=np.float64).reshape(-1)
     reference = np.asarray(reference, dtype=np.float64).reshape(-1)
     if reference.size == 0:
@@ -171,11 +81,6 @@ def nearest_index(query, reference) -> np.ndarray:
 
 
 def nearest_offset(query, reference) -> np.ndarray:
-    """Signed ``query - nearest(reference)``; NaN where there is no reference.
-
-    NaN rather than 0: a track whose beat stream is empty is not a track that is
-    perfectly aligned, and the two must not average together.
-    """
     query = np.asarray(query, dtype=np.float64).reshape(-1)
     reference = np.asarray(reference, dtype=np.float64).reshape(-1)
     if reference.size == 0:
@@ -184,12 +89,6 @@ def nearest_offset(query, reference) -> np.ndarray:
 
 
 def fold_to_beats(offset_sec, period_sec) -> np.ndarray:
-    """Offsets in seconds -> position within the beat, in ``(-0.5, +0.5]``.
-
-    Half a beat late and half a beat early are the same place, so the interval is
-    closed at ``+0.5``: a half-beat lock must read as one number rather than
-    splitting into two whose median is zero.
-    """
     offset = np.asarray(offset_sec, dtype=np.float64).reshape(-1)
     period = np.asarray(period_sec, dtype=np.float64).reshape(-1)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -199,13 +98,6 @@ def fold_to_beats(offset_sec, period_sec) -> np.ndarray:
 
 
 def local_periods(times, window: int = INTERVAL_WINDOW) -> np.ndarray:
-    """Running beat period at each instant (one entry per instant).
-
-    A median of adjacent intervals: local enough to follow a tempo ride and
-    unmoved by a dropout, which is what a *gap* test needs.  It is not precise
-    enough to compare two tempi against a few-percent tolerance -- that is what
-    ``pulse_period`` is for.
-    """
     times = np.asarray(times, dtype=np.float64).reshape(-1)
     if times.size < 2:
         return np.full(times.size, np.nan, dtype=np.float64)
@@ -215,19 +107,6 @@ def local_periods(times, window: int = INTERVAL_WINDOW) -> np.ndarray:
 
 def pulse_period(times, window: int = 2 * INTERVAL_WINDOW - 1,
                  gap_factor: float = 1.5) -> np.ndarray:
-    """Running *pulse* period: elapsed time over beats elapsed, dropouts counted.
-
-    Two properties ``local_periods`` does not have, both needed to compare a
-    stream's tempo against the annotator's at a few-percent tolerance:
-
-    * **The timing noise telescopes.**  Summing a window of intervals is the
-      difference of its two endpoints, so per-beat jitter divides by the window
-      length instead of contributing in full.  A stream that wobbles +-100 ms per
-      beat still reports its tempo to about a percent.
-    * **A dropout is counted, not averaged.**  Each interval is credited with the
-      whole number of beats it plausibly spans, so a gap of four missing beats
-      adds four to the denominator rather than reading as a tempo change.
-    """
     times = np.asarray(times, dtype=np.float64).reshape(-1)
     if times.size < 3:
         return np.full(times.size, np.nan, dtype=np.float64)
@@ -236,13 +115,11 @@ def pulse_period(times, window: int = 2 * INTERVAL_WINDOW - 1,
     with np.errstate(invalid="ignore", divide="ignore"):
         steps = np.where(scale > 0, np.rint(intervals / scale), 1.0)
     steps = np.maximum(np.nan_to_num(steps, nan=1.0), 1.0)
-    # A gap this large is a discontinuity rather than a dropout; crediting it
-    # with its implied beats would fold a track boundary into the tempo.
-    keep = intervals <= gap_factor * scale * steps
+    continuous = intervals <= gap_factor * scale * steps
     window = max(1, int(window)) | 1
     half = window // 2
-    padded_time = np.pad(np.where(keep, intervals, 0.0), half, mode="edge")
-    padded_steps = np.pad(np.where(keep, steps, 0.0), half, mode="edge")
+    padded_time = np.pad(np.where(continuous, intervals, 0.0), half, mode="edge")
+    padded_steps = np.pad(np.where(continuous, steps, 0.0), half, mode="edge")
     kernel = np.ones(window)
     elapsed = np.convolve(padded_time, kernel, mode="valid")
     beats = np.convolve(padded_steps, kernel, mode="valid")
@@ -259,21 +136,8 @@ def _iqr(values) -> float:
     return float(np.percentile(values, 75) - np.percentile(values, 25))
 
 
-# --------------------------------------------------------------------------- #
-# 1. Alignment: what the live stream does to the grid
-# --------------------------------------------------------------------------- #
-
-
 def alignment_row(live, expert, downbeats, *,
                   tolerance: float = TOLERANCE_SEC) -> dict:
-    """One track's live-vs-expert beat alignment.
-
-    ``median_abs_phase`` is the *lock* -- how far off a beat the stream sits, in
-    beats -- and ``phase_iqr`` is the *jitter* around it.  Reporting both is what
-    separates "the stream is half a beat off, steadily" (a state a denser grid can
-    occupy) from "the stream is all over the place" (which nothing downstream
-    fixes).
-    """
     live = np.asarray(live, dtype=np.float64).reshape(-1)
     expert = np.asarray(expert, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
@@ -313,13 +177,6 @@ def alignment_row(live, expert, downbeats, *,
 
 
 def _tempo_residual(live_period: float, expert_period: float) -> float:
-    """Relative period error after folding onto the nearest half/double octave.
-
-    A stream at exactly half or double the annotated tempo still has beats *on*
-    the annotated instants, so it is not tracking a different pulse and must not
-    be counted as one.  What this catches is a pulse that fits no octave of the
-    grid: a drift, a triplet feel, a mistracked tempo.
-    """
     if not (np.isfinite(live_period) and np.isfinite(expert_period)) or expert_period <= 0:
         return float("nan")
     ratio = live_period / expert_period
@@ -327,20 +184,6 @@ def _tempo_residual(live_period: float, expert_period: float) -> float:
 
 
 def decoder_instants(beat_times, params: PhaseParams | None = None) -> np.ndarray:
-    """Every instant the decoder would place a decision on, coasting included.
-
-    Measured *through the decoder* -- a NaN-scored decode emits exactly the
-    candidates it would have decoded, with the coasted ones in place -- rather
-    than by a second implementation of the coasting rule.  Two different things
-    are read off this: which downbeats are reachable at all, and how many
-    candidates a bar's worth of music actually produces.
-
-    The result does not depend on ``lag_beats``, ``flip_penalty`` or
-    ``downbeat_ref``: those decide *which position* each instant gets, and this
-    asks only which instants exist.  It does depend on the coasting parameters
-    and on ``subdivision``, which is why it takes the whole ``PhaseParams``
-    rather than a subdivision.
-    """
     params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
     dense = candidate_grid(beat_times, params.subdivision)
     if dense.size == 0:
@@ -350,17 +193,6 @@ def decoder_instants(beat_times, params: PhaseParams | None = None) -> np.ndarra
 
 
 def bar_rate_ratio(beat_times, downbeats, params: PhaseParams | None = None) -> float:
-    """Candidates per bar, over the cycle length -- 1.0 is a correctly paced grid.
-
-    **The second ceiling, and the one nobody looked for.**  A cyclic decoder that
-    never flips emits exactly one downbeat per cycle, so the *rate* of the
-    emitted bar grid is set by the rate of the candidate stream, not by the
-    music.  If the stream produces more candidates per bar than the cycle is long
-    -- by inserting beats, or by the decoder coasting extra ones through a gap --
-    the grid runs fast and the surplus downbeats are false positives no phase
-    model can retract.  Above 1 this bounds precision at ``coverage / ratio`` for
-    a flip-free decode, which is what the plan's stability gate demands.
-    """
     params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     if downbeats.size == 0:
@@ -371,25 +203,6 @@ def bar_rate_ratio(beat_times, downbeats, params: PhaseParams | None = None) -> 
 
 def reach_labels(live, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
                  params: PhaseParams | None = None) -> list:
-    """Why each annotated downbeat is, or is not, reachable from this beat stream.
-
-    One label per downbeat, from ``REACH_LABELS``, tested in a fixed order so the
-    categories are mutually exclusive and a total is a partition rather than a
-    tally of overlapping conditions:
-
-    ``beat`` / ``midpoint``   reachable on the shipped candidate grid
-    ``coast``                 reachable only because the decoder fills the gap
-    ``no_coverage``           outside the beat stream entirely
-    ``dropout``               inside a gap the decoder will not fill
-    ``tempo_mismatch``        the local pulse fits no octave of the annotated one
-    ``fraction_lock``         a STEADY off-grid offset -- a lock a different grid
-                              could capture
-    ``jitter``                an UNSTEADY offset -- only a better tracker helps
-
-    The coast row is measured through the decoder itself (a NaN-scored decode
-    emits exactly the candidates it would have decoded), never by a second
-    implementation of the coasting rule.
-    """
     params = params or PhaseParams(subdivision=2, lag_beats=lag_for(1, 2))
     live = np.asarray(live, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
@@ -410,13 +223,12 @@ def reach_labels(live, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
     live_pulse = pulse_period(live)
     expert_pulse = pulse_period(expert) if expert.size > 2 else None
     near = nearest_index(downbeats, live)
-    # Signed residual of every live-stream beat against the annotated grid, in beats:
-    # its local spread is what separates a lock from jitter.
     if expert.size:
-        beat_phase = fold_to_beats(nearest_offset(live, expert),
-                                   local_periods(expert)[nearest_index(live, expert)])
+        beat_phase_residual = fold_to_beats(
+            nearest_offset(live, expert),
+            local_periods(expert)[nearest_index(live, expert)])
     else:
-        beat_phase = np.full(live.size, np.nan)
+        beat_phase_residual = np.full(live.size, np.nan)
 
     labels: list = []
     for index, moment in enumerate(downbeats):
@@ -453,22 +265,14 @@ def reach_labels(live, downbeats, expert, *, tolerance: float = TOLERANCE_SEC,
 
         lo = max(0, anchor - BEATS_PER_BAR * 2)
         hi = min(live.size, anchor + BEATS_PER_BAR * 2 + 1)
-        labels.append("fraction_lock" if _iqr(beat_phase[lo:hi]) <= LOCK_IQR_BEATS
+        labels.append("fraction_lock"
+                      if _iqr(beat_phase_residual[lo:hi]) <= LOCK_IQR_BEATS
                       else "jitter")
     return labels
 
 
 def subdivided_grid(beat_times, subdivision: int) -> np.ndarray:
-    """A uniformly subdivided beat stream -- **for ceiling analysis only**.
-
-    ``candidate_grid`` is what decodes, and it refuses anything past 2 on purpose
-    (a third or a quarter is a claim about the metre that nothing has measured).
-    This function exists to answer the different question the owner package
-    needs: *if* the grid were denser, how much of the shortfall would become
-    reachable at all?  A bound, never a result -- nothing here decodes on it, and
-    a denser grid also multiplies the ways to be wrong, which a ceiling cannot
-    see.  Pinned equal to ``candidate_grid`` at subdivision 2 by test.
-    """
+    """Ceiling analysis only; pinned equal to ``candidate_grid`` at subdivision 2 by test."""
     times = np.asarray(beat_times, dtype=np.float64).reshape(-1)
     subdivision = int(subdivision)
     if subdivision <= 1 or times.size < 2:
@@ -480,7 +284,6 @@ def subdivided_grid(beat_times, subdivision: int) -> np.ndarray:
 
 def grid_ceiling(live, downbeats, subdivision: int,
                  tolerance: float = TOLERANCE_SEC) -> float:
-    """Share of annotated downbeats a subdivided beat stream can even reach."""
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     if downbeats.size == 0:
         return 0.0
@@ -491,14 +294,6 @@ def grid_ceiling(live, downbeats, subdivision: int,
 
 
 def downbeat_residuals(live, downbeats, expert) -> np.ndarray:
-    """Where in the beat each annotated downbeat falls, relative to the live grid.
-
-    ``|position|`` in beats, folded into ``[0, 0.5]``: 0 is on a live beat,
-    0.5 is exactly between two.  The shape of this distribution is what says
-    whether the unreachable downbeats are a quarter-beat lock, a triplet feel or
-    a spread -- three different upstream problems that a single "not reachable"
-    count cannot tell apart.
-    """
     live = np.asarray(live, dtype=np.float64).reshape(-1)
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     expert = np.asarray(expert, dtype=np.float64).reshape(-1)
@@ -510,29 +305,13 @@ def downbeat_residuals(live, downbeats, expert) -> np.ndarray:
     return np.abs(fold_to_beats(nearest_offset(downbeats, live), periods))
 
 
-# --------------------------------------------------------------------------- #
-# 2. Scoring a decode
-# --------------------------------------------------------------------------- #
-
-
 def score_downbeats(predicted, truth, tolerance: float = TOLERANCE_SEC) -> dict:
-    """Downbeat P/R/F1 at the plan's tolerance, through the committed matcher."""
     return prf(*match_events(np.asarray(predicted, dtype=np.float64),
                              np.asarray(truth, dtype=np.float64), tolerance))
 
 
 def confidence_sweep(decisions, truth, thresholds=CONFIDENCE_THRESHOLDS,
                      tolerance: float = TOLERANCE_SEC) -> dict:
-    """P/R/F1 of the emitted grid when only confident downbeats are kept.
-
-    The spec's fall-back -- "bar-snap when the grid is sure, beat-snap when it is
-    not" -- is exactly this filter, so this is the measurement that says whether
-    the fall-back is worth building: if confidence carries information, precision
-    rises as the threshold does, and the retained share says how much of the show
-    would still get bars.  Scored through the committed matcher on the filtered
-    prediction set rather than by a per-instant correctness flag, so the numbers
-    are comparable with every other F1 in this report.
-    """
     times = np.asarray([d.time for d in decisions if d.phase == 1], dtype=np.float64)
     confidence = np.asarray([d.confidence for d in decisions if d.phase == 1],
                             dtype=np.float64)
@@ -547,17 +326,6 @@ def confidence_sweep(decisions, truth, thresholds=CONFIDENCE_THRESHOLDS,
 
 def phase_scores(decisions, subdivision: int, expert_times, expert_phases,
                  tolerance: float = TOLERANCE_SEC) -> dict:
-    """Bar-phase accuracy against the annotated grid, with its own coverage.
-
-    Scored per *annotated beat*, because that is what carries a truth phase.  A
-    beat with no committed candidate within the tolerance is **uncovered**, not
-    wrong -- and the coverage is reported beside the accuracy rather than folded
-    into it, since on the live condition the two move in opposite directions.
-
-    A candidate committed to an interstitial half-beat position has no bar phase
-    at all (``bar_phase`` returns 0).  It is counted **wrong**, not skipped:
-    excluding it would flatter a decoder that locked onto the stream's off-beats.
-    """
     expert_times = np.asarray(expert_times, dtype=np.float64).reshape(-1)
     expert_phases = np.asarray(expert_phases, dtype=np.int64).reshape(-1)
     times = np.asarray([d.time for d in decisions], dtype=np.float64)
@@ -585,13 +353,6 @@ def phase_scores(decisions, subdivision: int, expert_times, expert_phases,
 
 def interval_deviation(downbeats, *, deviation: float = INTERVAL_DEVIATION,
                        window: int = INTERVAL_WINDOW) -> dict:
-    """Grid-direct stability: bar intervals that jump away from the running one.
-
-    The metric review recommended, and the reason is worth keeping: at
-    subdivision 2 ``phase_flips`` counts every candidate the stream inserts or drops,
-    so a *perfectly steady* bar grid over a noisy beat stream can read as
-    hundreds of flips.  This reads the emitted grid instead of its input.
-    """
     downbeats = np.asarray(downbeats, dtype=np.float64).reshape(-1)
     if downbeats.size < 3:
         return {"events": 0, "intervals": max(int(downbeats.size) - 1, 0),
@@ -611,18 +372,6 @@ def interval_deviation(downbeats, *, deviation: float = INTERVAL_DEVIATION,
 
 
 def beat_anchored_flips(decisions, subdivision: int) -> dict:
-    """Did the bar position advance by exactly one beat between real beats?
-
-    The plan's stability unit -- flips per track -- restricted to the candidates
-    that are actual beats, which is what makes it comparable across subdivisions.
-    At subdivision 1 it is ``phase_flips`` (proved by test); at 2 it ignores the
-    interstitial candidates, so a stream locked half a beat off the music reads
-    as *stable*, which it is: it produces a perfectly steady bar grid.
-
-    A pair with a coasted candidate between its members is a **break**, not a
-    flip.  Coasting is the decoder's answer to dropped beats; counting the
-    phase it walks through as instability would charge the decoder for its input.
-    """
     cycle = BEATS_PER_BAR * int(subdivision)
     records: list = []
     grid_index = 0
@@ -648,19 +397,7 @@ def beat_anchored_flips(decisions, subdivision: int) -> dict:
             "beats": len(records)}
 
 
-# --------------------------------------------------------------------------- #
-# 3. The show ablation's grid adapter
-# --------------------------------------------------------------------------- #
-
-
 def edges_from_downbeats(downbeats) -> np.ndarray:
-    """Predicted downbeats -> bar edges, by ``decoder.bar_grid``'s own rule.
-
-    ``B`` bars need ``B + 1`` edges and a decoded grid ends on a downbeat, so the
-    last bar is closed at the median interval -- the same closing rule the
-    annotated grid gets, because the ablation must differ in the *grid* and in
-    nothing else.
-    """
     edges = np.unique(np.asarray(downbeats, dtype=np.float64).reshape(-1))
     if edges.size < 2:
         raise RuntimeError(
@@ -669,19 +406,8 @@ def edges_from_downbeats(downbeats) -> np.ndarray:
     return np.append(edges, edges[-1] + float(np.median(np.diff(edges))))
 
 
-# --------------------------------------------------------------------------- #
-# Provenance and split hygiene
-# --------------------------------------------------------------------------- #
-
-
 def config_fingerprint(params: PhaseParams, condition: str, *,
                        refine: bool) -> dict:
-    """A stable identity for "which decoder produced this number".
-
-    Both halves matter: the sha is what a report quotes and what a frozen config
-    is checked against, and the JSON beside it is what a reader can actually
-    audit.  A hash nobody can invert is provenance theatre.
-    """
     payload = {**{key: (float(value) if isinstance(value, float) else value)
                   for key, value in asdict(params).items()},
                "condition": str(condition), "refine": bool(refine),
@@ -692,14 +418,6 @@ def config_fingerprint(params: PhaseParams, condition: str, *,
 
 
 def split_guard(data_dir, ids, split: str = "val", *, reason: str | None = None) -> list:
-    """Refuse ids outside ``split`` -- membership, not the flag that selected it.
-
-    Task 3's lesson: a guard that only covers the default path is not a guard,
-    because an explicit id list walks straight past a flag-level check.  Two
-    modes need it for different reasons, so the reason is a parameter: a tuning
-    mode must not *read* another split's truth, and the verdict must not *label*
-    an artifact with a split it did not score.
-    """
     reason = reason or ("this mode reads annotated truth to choose a value, "
                         "which is a tuning read")
     path = Path(data_dir) / SPLITS_FILE
@@ -726,11 +444,6 @@ def file_sha256(path) -> str:
     return digest.hexdigest()
 
 
-# --------------------------------------------------------------------------- #
-# Corpus plumbing
-# --------------------------------------------------------------------------- #
-
-
 def model_dir(data_dir) -> Path:
     return Path(data_dir) / MODELS_DIR / MODEL_VERSION
 
@@ -740,11 +453,7 @@ def sidecar_path(data_dir, youtube_id: str) -> Path:
 
 
 def load_truth(data_dir, ids) -> dict:
-    """``{youtube_id: (beat_times, beat_phases, downbeat_times)}`` from the grids.
-
-    Imported lazily: ``downbeat_dataset`` pulls the training dataset and with it
-    torch, and every pure helper above must stay importable without either.
-    """
+    # Lazy: downbeat_dataset pulls torch, which the helpers above must import without.
     from .downbeat_dataset import load_beat_grids
 
     grids, missing = load_beat_grids(Path(data_dir), ids)
@@ -759,7 +468,6 @@ def load_truth(data_dir, ids) -> dict:
 
 
 def read_sidecar(path) -> dict:
-    """The arrays a decode and an alignment need, read once per track."""
     with np.load(Path(path)) as archive:
         data = {"activation": np.asarray(archive["activation"], dtype=np.float64),
                 "frame_sec": float(archive["frame_sec"]),
@@ -774,13 +482,6 @@ def read_sidecar(path) -> dict:
 
 
 def refine_decisions(decisions, sidecar: dict) -> list:
-    """De-quantise emitted instants against the stored activation curve.
-
-    Its own function so the sweep can score refined and unrefined *from one
-    decode* without a second code path deciding what refinement means -- the
-    plan requires the two to be attributed separately, and separate attribution
-    of two things computed by two implementations is not attribution.
-    """
     from .downbeat_decoder import refine_instants
 
     return refine_instants(decisions, sidecar["activation"], sidecar["frame_sec"],
@@ -789,14 +490,7 @@ def refine_decisions(decisions, sidecar: dict) -> list:
 
 def decode_evidence(sidecar: dict, condition: str, params: PhaseParams, *,
                     refine: bool = False) -> list:
-    """``decode_track`` off arrays already in memory.
-
-    Identical by construction -- the subdivision-1 branch reuses the cached
-    per-beat scores and the subdivision-2 branch re-aggregates off the stored
-    curve, exactly as the shipped function does -- and pinned to it by a test on
-    a real sidecar, because "identical by construction" is what every drifted
-    copy said about itself.
-    """
+    """``decode_track`` off arrays already in memory; pinned equal to it by test."""
     from .downbeat_decoder import aggregate_at_beats
 
     beats = sidecar[f"{condition}_beat_time"]
@@ -811,7 +505,6 @@ def decode_evidence(sidecar: dict, condition: str, params: PhaseParams, *,
 
 
 def score_decisions(decisions, truth: tuple, subdivision: int) -> dict:
-    """Every metric this module reports, for one decode."""
     beat_times, beat_phases, downbeats = truth
     predicted = downbeat_times(decisions)
     score = score_downbeats(predicted, downbeats)
@@ -827,13 +520,6 @@ def score_decisions(decisions, truth: tuple, subdivision: int) -> dict:
 
 
 def aggregate_rows(rows: dict) -> dict:
-    """Micro totals plus the per-track distribution.
-
-    Micro because a nine-minute track carries more bars than a ninety-second one
-    and the corpus verdict counts bars; the medians beside it because a micro
-    number cannot say whether a corpus is uniformly mediocre or bimodal, and this
-    one is bimodal.
-    """
     values = list(rows.values())
     if not values:
         return {}
@@ -857,12 +543,7 @@ def aggregate_rows(rows: dict) -> dict:
         "f1_mean": float(np.mean(per_track_f1)),
         "phase_accuracy": phase_correct / phase_covered if phase_covered else 0.0,
         "phase_coverage": phase_covered / phase_total if phase_total else 0.0,
-        # How often a real beat was committed to a half-beat position, which has
-        # no bar phase at all.  Reported because it is the *mechanism* behind a
-        # low phase accuracy on the half-beat grid, not a second symptom of it.
         "phase_interstitial_share": interstitial / phase_covered if phase_covered else 0.0,
-        # The emitted-to-annotated downbeat ratio: the direct read on whether a
-        # precision shortfall is wrong placement or simply too many bars.
         "predicted_per_truth": ((tp + fp) / (tp + fn)) if (tp + fn) else 0.0,
         "flips_median": float(np.median(flips)),
         "flips_mean": float(np.mean(flips)),
@@ -885,12 +566,6 @@ def aggregate_rows(rows: dict) -> dict:
 
 
 def _track_job(args) -> tuple:
-    """Every config for one track, off one sidecar read and one decode each.
-
-    Parallelism is per *track* rather than per config, which is what makes the
-    numbers independent of the worker count: no track's row is ever split across
-    processes, and a decode is a pure function of the arrays it is handed.
-    """
     youtube_id, path, truth, specs = args
     sidecar = read_sidecar(path)
     rows: list = []
@@ -904,7 +579,6 @@ def _track_job(args) -> tuple:
 
 def evaluate_configs(data_dir, ids, truth: dict, specs, *,
                      workers: int = 1) -> list:
-    """``[{youtube_id: row}]`` -- two entries per spec, refine off then on."""
     data_dir = Path(data_dir)
     specs = list(specs)
     jobs = [(youtube_id, sidecar_path(data_dir, youtube_id), truth[youtube_id],
@@ -924,19 +598,12 @@ def evaluate_configs(data_dir, ids, truth: dict, specs, *,
 
 def evaluate_ids(data_dir, ids, truth: dict, condition: str, params: PhaseParams,
                  *, refine: bool = False, workers: int = 1) -> dict:
-    """One config over a set of tracks; ``{youtube_id: row}``, id order."""
     both = evaluate_configs(data_dir, ids, truth, [(condition, params)],
                             workers=workers)
     return both[1 if refine else 0]
 
 
-# --------------------------------------------------------------------------- #
-# CLI modes
-# --------------------------------------------------------------------------- #
-
-
 def run_alignment(data_dir, ids, truth: dict) -> dict:
-    """The corpus-wide live-vs-expert analysis and the residual decomposition."""
     data_dir = Path(data_dir)
     rows: dict = {}
     reach: dict = {label: 0 for label in REACH_LABELS}
@@ -959,7 +626,6 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
             "beats": counts["beat"] / len(labels) if labels else 0.0,
             "grid": (counts["beat"] + counts["midpoint"]) / len(labels) if labels else 0.0,
             "decoder": found / len(labels) if labels else 0.0,
-            # Bounds only: nothing decodes on these grids today (see subdivided_grid).
             "quarter_bound": grid_ceiling(live, downbeats, 4),
             "eighth_bound": grid_ceiling(live, downbeats, 8),
         }
@@ -1004,15 +670,12 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
                             dtype=np.float64)
         weights = np.asarray([row["n_downbeats"] for row in rows.values()],
                              dtype=np.float64)
-        micro = float(np.sum(values * weights) / downbeat_total) if downbeat_total else float("nan")
-        summary[f"bar_rate_{key}_micro"] = micro
+        bar_rate_micro = float(np.sum(values * weights) / downbeat_total) if downbeat_total else float("nan")
+        summary[f"bar_rate_{key}_micro"] = bar_rate_micro
         summary[f"bar_rate_{key}_median"] = float(np.median(values))
-        # What a flip-free decode can reach given BOTH ceilings: it can only place
-        # a downbeat where a candidate is (coverage) and it emits one per cycle
-        # (rate), so F1 <= 2 * coverage / (1 + rate).
         coverage = (summary["ceiling_decoder"] if key == "half_beat_grid"
                     else summary["ceiling_beats"])
-        summary[f"f1_ceiling_{key}"] = 2.0 * coverage / (1.0 + micro)
+        summary[f"f1_ceiling_{key}"] = 2.0 * coverage / (1.0 + bar_rate_micro)
     summary["residual_histogram"] = {
         label: np.histogram(values, bins=RESIDUAL_BINS)[0].tolist() if values else []
         for label, values in residuals.items()}
@@ -1025,12 +688,6 @@ def run_alignment(data_dir, ids, truth: dict) -> dict:
 
 
 def sweep_rows(data_dir, ids, truth: dict, specs, *, workers: int = 1) -> list:
-    """Every ``(condition, params)`` spec, aggregated, refinement off and on.
-
-    Refinement is always reported as its own row off the *same* decode: the plan
-    requires de-quantisation to be attributable separately from the phase model,
-    and two rows that shared no decode could differ for a second reason.
-    """
     specs = list(specs)
     per_config = evaluate_configs(data_dir, ids, truth, specs, workers=workers)
     rows: list = []
@@ -1049,14 +706,6 @@ def sweep_rows(data_dir, ids, truth: dict, specs, *, workers: int = 1) -> list:
 
 
 def naive_grids(data_dir, ids) -> dict:
-    """Bars from every fourth beat of the live stream -- the show's null.
-
-    The engine could do this today with no model at all: take the beat stream,
-    call every fourth one a bar line.  It is wrong about *phase* by construction
-    (it starts wherever the stream started) but it is right about *rate* whenever
-    the stream is, so it is the baseline any claim about the downbeat model's
-    value to a show has to clear.  A number without its null is a decoration.
-    """
     data_dir = Path(data_dir)
     return {youtube_id: read_sidecar(sidecar_path(data_dir, youtube_id))
                         ["live_beat_time"][::BEATS_PER_BAR]
@@ -1065,14 +714,6 @@ def naive_grids(data_dir, ids) -> dict:
 
 def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
                   models_subdir: str, naive: dict | None = None) -> dict:
-    """Section decoding on the predicted bar grid vs the expert one.
-
-    Everything except the grid is held fixed: the same posterior sidecars, the
-    same priors, the same frozen decoder config, the same tracks, the same
-    scoring functions.  The delta is therefore attributable to the grid, which is
-    the only claim the plan asks this to support.  ``naive`` adds the third
-    column that says whether the model earned its place at all.
-    """
     from .decoder import DecodeParams, bar_grid
     from .evaluate_v1 import (
         DEFAULT_SPACE,
@@ -1133,9 +774,6 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
     def column(inputs) -> dict:
         result = evaluate_config(inputs, priors, params, space=DEFAULT_SPACE)
         score = result["score"]
-        # The bar count is reported because it is the mechanism: a grid with
-        # twice the downbeats gives the section decoder twice the bars, so its
-        # 3-bar lag and its bar-counted duration priors are quietly re-scaled.
         bars = int(sum(item.edges.size - 1 for item in inputs))
         boundary = {}
         for tolerance in SECTION_TOLERANCES_SEC:
@@ -1181,11 +819,6 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
     }
 
 
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
-
-
 def default_data_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "training" / "data" / "raveform"
 
@@ -1197,13 +830,6 @@ def read_split(data_dir, split: str) -> list:
 
 
 def sweep_grid(look_ahead, penalties, subdivisions) -> list:
-    """The committed sweep grid, in wall-clock look-ahead rather than in lag.
-
-    The axis is *beats of look-ahead*; the lag in candidates is derived from it
-    and the subdivision.  Stated this way round because the other way round is
-    the confound Task 3 measured: at a fixed lag, doubling the grid halves the
-    look-ahead, and the sweep then reads a lag effect as a grid effect.
-    """
     return [PhaseParams(lag_beats=lag_for(beats_ahead, subdivision),
                         subdivision=subdivision, flip_penalty=float(penalty))
             for subdivision in subdivisions
@@ -1244,9 +870,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "--verdict reads it)")
     parser.add_argument("--ablate", action="store_true",
                         help="with --verdict: the show ablation on the same tracks")
-    # Comma-separated and zipped: the ablation can run against more than one
-    # generation of the section chain inside ONE test read, which is the only way
-    # to report a robustness check without spending a second read on it.
     parser.add_argument("--section-dir", default="posteriors")
     parser.add_argument("--section-models", default="v1")
     return parser
@@ -1260,12 +883,8 @@ def main(argv: list | None = None) -> int:
         ids = ids[:args.limit]
 
     if args.align or args.sweep:
-        # Both read annotated truth to choose a value.  Val, by membership.
         ids = split_guard(data_dir, ids, "val")
     elif args.verdict:
-        # Not a contamination guard -- a labelling one.  The artifact is named
-        # after its split and its header says how many tracks it scored; ids from
-        # somewhere else would make both statements false, quietly.
         ids = split_guard(data_dir, ids, args.split,
                           reason=f"a --split {args.split} verdict is labelled "
                                  f"{args.split} and must score only {args.split}")
@@ -1306,9 +925,6 @@ def main(argv: list | None = None) -> int:
                              subdivision=args.subdivision,
                              flip_penalty=float(args.flip_penalty))
         payload = {"frozen_at": stamp,
-                   # The role is written into the file, not decided afterwards:
-                   # a pre-registration that does not say which config is the
-                   # headline is not a pre-registration.
                    "role": args.role,
                    "chosen_on": "val", "condition": "live",
                    "refine": bool(args.refine),

@@ -1,17 +1,3 @@
-"""Split hygiene for the downbeat nulls (``training/nn/downbeat_baselines.py``).
-
-The module computes the baselines a downbeat F1 has to be read against, and one
-of them -- the phase histogram of predicted peaks -- reads the annotated bar
-phase to say *which decoder knob is worth tuning*.  That makes it a tuning
-instrument by the branch's own rule, and tuning instruments do not touch the test
-split.  The rule is guarded on split **membership** rather than on the flag that
-usually selects it, because an explicit ``--split`` walks straight past a
-help-text warning.
-
-Deliberately tested against a plain dict rather than the corpus: the refusal
-happens before anything is loaded, and a guard that needed 1,400 tracks to prove
-itself would not be run.
-"""
 import sys
 from pathlib import Path
 
@@ -31,9 +17,7 @@ def test_the_test_split_is_refused_by_name_before_anything_is_read():
         tunable_split_ids(SPLITS, "test")
 
 
-def test_the_refusal_needs_no_corpus_at_all():
-    # Nothing about the refusal may depend on the splits document, or a caller
-    # with a hand-built one walks past it.
+def test_the_test_split_is_refused_even_when_the_splits_document_is_empty():
     with pytest.raises(RuntimeError, match="read once, by the verdict"):
         tunable_split_ids({}, "test")
 

@@ -1,233 +1,433 @@
 {
-  "PNpXKsge4xM.mp3": {
-    "at_beats": {
-      "columns_hash": "7b31c5692adbc1f2",
-      "kick_strength_mean": 2.386861,
-      "rms_mean": 0.324296,
-      "sub_bass_ratio_mean": 0.319193
-    },
-    "filterbank": {
-      "grid_hash": "b9fad5028f79360a",
-      "grid_seconds": 258,
-      "grid_shape": [
-        258,
-        40
+  "NyEKXA7_6z0.mp3": {
+    "degradation": {
+      "atmospheric_blocks": 1,
+      "beat_times_hash": "17811ad9905a6dcf",
+      "beats_detected": 701,
+      "classified_blocks": 8,
+      "effect_changes": 22,
+      "intent_blocks": 9,
+      "intents_held": [
+        "atmospheric",
+        "breakdown",
+        "buildup",
+        "drop",
+        "peak"
       ],
-      "grid_sum": 1589.4661
-    },
-    "report_checksum": "5c61e6fd7f80075fb870c2fced906630ff56417bad0b6167055eb4825625f315",
-    "rhythm": {
-      "beat_times_hash": "35d5d4e3703a2baa",
-      "beats_detected": 527,
-      "bpm_median": 87.8861,
-      "columns_hash": "80bd1bd0a447dec4",
-      "onset_density_mean": 4.717268,
-      "onset_density_median": 5.333333
-    },
-    "schema": {
-      "beat_keys": [
-        "bpm",
-        "centroid_trend",
-        "change",
-        "kick_strength",
-        "onset_density",
-        "rms",
-        "strength",
-        "sub_bass_ratio",
-        "t"
-      ],
-      "metric_keys": [
-        "avg_effect_duration_sec",
-        "beats_detected",
-        "bpm_last",
-        "dominant_intent",
-        "effect_changes_count",
-        "intent_changes_count",
-        "intent_distribution_sec",
-        "look_ahead_sec",
-        "onset_density_mean",
-        "timing_error_max_ms",
-        "timing_error_mean_ms",
-        "unique_channels",
-        "unique_effects_count",
-        "unique_intents_count"
-      ],
-      "report_keys": [
-        "beats",
-        "duration_sec",
-        "effects",
-        "intents",
-        "metrics",
-        "timing_log"
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.604
+        },
+        {
+          "playing": false,
+          "t": 362.353
+        }
       ]
     },
-    "show": {
-      "dominant_intent": "groove",
-      "duration_sec": 257.643,
-      "effect_changes_count": 28,
-      "intent_changes_count": 28,
+    "informational": {
+      "dominant_intent": "atmospheric",
+      "effect_changes_count": 22,
+      "intent_changes_count": 9,
       "intent_distribution_sec": {
-        "breakdown": 44.47,
-        "buildup": 38.24,
-        "drop": 5.68,
-        "groove": 167.46
+        "atmospheric": 149.96,
+        "breakdown": 81.15,
+        "buildup": 71.91,
+        "drop": 16.42,
+        "peak": 30.99
       },
-      "timing_error_max_ms": 1.9501,
-      "unique_intents_count": 4
-    }
-  },
-  "generate_eric_prydz_192k.mp3": {
-    "at_beats": {
-      "columns_hash": "1a177555a5023bd0",
-      "kick_strength_mean": 2.48799,
-      "rms_mean": 0.201187,
-      "sub_bass_ratio_mean": 0.221019
-    },
-    "filterbank": {
-      "grid_hash": "d4349ee883d38263",
-      "grid_seconds": 165,
-      "grid_shape": [
-        165,
-        40
-      ],
-      "grid_sum": 766.9173
-    },
-    "report_checksum": "0ec9f471113a117ea9cfedca81f6f54329d49211c488dcc8477a4415e809b912",
-    "rhythm": {
-      "beat_times_hash": "2b1e2add2116ce26",
-      "beats_detected": 344,
-      "bpm_median": 127.9894,
-      "columns_hash": "8c64108e6d8c6815",
-      "onset_density_mean": 3.627907,
-      "onset_density_median": 4.0
-    },
-    "schema": {
-      "beat_keys": [
-        "bpm",
-        "centroid_trend",
-        "change",
-        "kick_strength",
-        "onset_density",
-        "rms",
-        "strength",
-        "sub_bass_ratio",
-        "t"
-      ],
-      "metric_keys": [
-        "avg_effect_duration_sec",
-        "beats_detected",
-        "bpm_last",
-        "dominant_intent",
-        "effect_changes_count",
-        "intent_changes_count",
-        "intent_distribution_sec",
-        "look_ahead_sec",
-        "onset_density_mean",
-        "timing_error_max_ms",
-        "timing_error_mean_ms",
-        "unique_channels",
-        "unique_effects_count",
-        "unique_intents_count"
-      ],
-      "report_keys": [
-        "beats",
-        "duration_sec",
-        "effects",
-        "intents",
-        "metrics",
-        "timing_log"
-      ]
-    },
-    "show": {
-      "dominant_intent": "breakdown",
-      "duration_sec": 165.094,
-      "effect_changes_count": 23,
-      "intent_changes_count": 23,
-      "intent_distribution_sec": {
-        "breakdown": 46.87,
-        "buildup": 7.76,
-        "drop": 37.77,
-        "groove": 44.45,
-        "peak": 26.66
+      "midi": {
+        "commands": 23,
+        "labels": [
+          "set_autoloop",
+          "set_color_override"
+        ],
+        "ordering_hash": "f31432694184f6a0"
       },
-      "timing_error_max_ms": 1.9501,
+      "overlay": {
+        "light_bar_updates": 701
+      },
+      "timing": {
+        "commands": 1426,
+        "target_delta_sec": [
+          0.0,
+          0.0158,
+          0.0564,
+          0.0912,
+          0.3641,
+          0.5963,
+          0.8169,
+          6.0181,
+          6.0762,
+          6.1459,
+          6.2155,
+          6.4593,
+          6.4767,
+          6.4883,
+          6.529,
+          6.558,
+          6.6625,
+          6.7147,
+          6.8134,
+          6.9005,
+          14.0
+        ]
+      },
       "unique_intents_count": 5
+    },
+    "relations": {
+      "midi_arrives_in_enqueue_order": true,
+      "midi_channels_come_from_the_intents_pool": true,
+      "midi_matches_the_report_effects": true,
+      "overlay_arrives_in_enqueue_order": true,
+      "overlay_light_bar_fires": true,
+      "queue_error_within_tolerance": true
+    },
+    "report_checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+    "survives": {
+      "beat_columns_hash": "9b23db785d730282",
+      "beat_times_hash": "17811ad9905a6dcf",
+      "beats_detected": 701,
+      "bpm_last": 117.64705882353151,
+      "bpm_median": 117.6471,
+      "duration_sec": 365.093,
+      "os2l": {
+        "beats": 701,
+        "positions": [
+          1,
+          701
+        ],
+        "stream_hash": "aa90e84e1359e338",
+        "strengths": [
+          0.5
+        ],
+        "wire_keys": [
+          "bpm",
+          "change",
+          "pos",
+          "strength"
+        ]
+      },
+      "rms_mean": 0.161608,
+      "schema": {
+        "beat_keys": [
+          "bpm",
+          "change",
+          "rms",
+          "strength",
+          "t"
+        ],
+        "metric_keys": [
+          "avg_effect_duration_sec",
+          "beats_detected",
+          "bpm_last",
+          "dominant_intent",
+          "effect_changes_count",
+          "intent_changes_count",
+          "intent_distribution_sec",
+          "look_ahead_sec",
+          "timing_error_max_ms",
+          "timing_error_mean_ms",
+          "unique_channels",
+          "unique_effects_count",
+          "unique_intents_count"
+        ],
+        "report_keys": [
+          "beats",
+          "duration_sec",
+          "effects",
+          "intents",
+          "metrics",
+          "timing_log"
+        ]
+      },
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.604
+        },
+        {
+          "playing": false,
+          "t": 362.353
+        }
+      ],
+      "timing_accuracy": {
+        "max_error_buffers": 1
+      }
     }
   },
-  "hzIFjGcOKbg.mp3": {
-    "at_beats": {
-      "columns_hash": "bd364e4a2d6ce5db",
-      "kick_strength_mean": 3.199389,
-      "rms_mean": 0.172837,
-      "sub_bass_ratio_mean": 0.289734
-    },
-    "filterbank": {
-      "grid_hash": "f9d1208b07cef607",
-      "grid_seconds": 473,
-      "grid_shape": [
-        473,
-        40
+  "PNpXKsge4xM.mp3": {
+    "degradation": {
+      "atmospheric_blocks": 2,
+      "beat_times_hash": "ad68746b34addf45",
+      "beats_detected": 729,
+      "classified_blocks": 9,
+      "effect_changes": 16,
+      "intent_blocks": 11,
+      "intents_held": [
+        "atmospheric",
+        "breakdown",
+        "drop",
+        "peak"
       ],
-      "grid_sum": 1699.4833
-    },
-    "report_checksum": "ffd3669d8e7781e31215d7ff0c7de4f82a3959e0ac9c25442af38fb9980f793f",
-    "rhythm": {
-      "beat_times_hash": "47ac28bd239327ca",
-      "beats_detected": 839,
-      "bpm_median": 85.6641,
-      "columns_hash": "4700e4289427ec00",
-      "onset_density_mean": 8.459277,
-      "onset_density_median": 8.666667
-    },
-    "schema": {
-      "beat_keys": [
-        "bpm",
-        "centroid_trend",
-        "change",
-        "kick_strength",
-        "onset_density",
-        "rms",
-        "strength",
-        "sub_bass_ratio",
-        "t"
-      ],
-      "metric_keys": [
-        "avg_effect_duration_sec",
-        "beats_detected",
-        "bpm_last",
-        "dominant_intent",
-        "effect_changes_count",
-        "intent_changes_count",
-        "intent_distribution_sec",
-        "look_ahead_sec",
-        "onset_density_mean",
-        "timing_error_max_ms",
-        "timing_error_mean_ms",
-        "unique_channels",
-        "unique_effects_count",
-        "unique_intents_count"
-      ],
-      "report_keys": [
-        "beats",
-        "duration_sec",
-        "effects",
-        "intents",
-        "metrics",
-        "timing_log"
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.302
+        }
       ]
     },
-    "show": {
-      "dominant_intent": "groove",
-      "duration_sec": 473.054,
-      "effect_changes_count": 41,
-      "intent_changes_count": 41,
+    "informational": {
+      "dominant_intent": "breakdown",
+      "effect_changes_count": 16,
+      "intent_changes_count": 11,
       "intent_distribution_sec": {
-        "breakdown": 20.31,
-        "buildup": 71.95,
-        "groove": 379.16
+        "atmospheric": 20.68,
+        "breakdown": 96.89,
+        "drop": 33.09,
+        "peak": 92.56
       },
-      "timing_error_max_ms": 1.9501,
+      "midi": {
+        "commands": 16,
+        "labels": [
+          "set_autoloop",
+          "set_special_effect"
+        ],
+        "ordering_hash": "fcb7d7de7bcd7573"
+      },
+      "overlay": {
+        "light_bar_updates": 729
+      },
+      "timing": {
+        "commands": 1475,
+        "target_delta_sec": [
+          1.9198,
+          2.0185,
+          2.0591,
+          2.0766,
+          2.1114,
+          2.123,
+          2.3204,
+          2.7906,
+          2.8138,
+          6.2155,
+          6.3548,
+          6.4129,
+          6.8424,
+          6.9121,
+          14.0
+        ]
+      },
+      "unique_intents_count": 4
+    },
+    "relations": {
+      "midi_arrives_in_enqueue_order": true,
+      "midi_channels_come_from_the_intents_pool": true,
+      "midi_matches_the_report_effects": true,
+      "overlay_arrives_in_enqueue_order": true,
+      "overlay_light_bar_fires": true,
+      "queue_error_within_tolerance": true
+    },
+    "report_checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+    "survives": {
+      "beat_columns_hash": "67e04f6846937dcd",
+      "beat_times_hash": "ad68746b34addf45",
+      "beats_detected": 729,
+      "bpm_last": 86.95652173913072,
+      "bpm_median": 86.9565,
+      "duration_sec": 257.643,
+      "os2l": {
+        "beats": 729,
+        "positions": [
+          1,
+          729
+        ],
+        "stream_hash": "13f8f671181122b0",
+        "strengths": [
+          0.5
+        ],
+        "wire_keys": [
+          "bpm",
+          "change",
+          "pos",
+          "strength"
+        ]
+      },
+      "rms_mean": 0.360068,
+      "schema": {
+        "beat_keys": [
+          "bpm",
+          "change",
+          "rms",
+          "strength",
+          "t"
+        ],
+        "metric_keys": [
+          "avg_effect_duration_sec",
+          "beats_detected",
+          "bpm_last",
+          "dominant_intent",
+          "effect_changes_count",
+          "intent_changes_count",
+          "intent_distribution_sec",
+          "look_ahead_sec",
+          "timing_error_max_ms",
+          "timing_error_mean_ms",
+          "unique_channels",
+          "unique_effects_count",
+          "unique_intents_count"
+        ],
+        "report_keys": [
+          "beats",
+          "duration_sec",
+          "effects",
+          "intents",
+          "metrics",
+          "timing_log"
+        ]
+      },
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.302
+        }
+      ],
+      "timing_accuracy": {
+        "max_error_buffers": 1
+      }
+    }
+  },
+  "SBnxzXkc_qw.mp3": {
+    "degradation": {
+      "atmospheric_blocks": 1,
+      "beat_times_hash": "d12ee19b0c83e6c9",
+      "beats_detected": 1050,
+      "classified_blocks": 2,
+      "effect_changes": 9,
+      "intent_blocks": 3,
+      "intents_held": [
+        "atmospheric",
+        "breakdown",
+        "buildup"
+      ],
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.906
+        }
+      ]
+    },
+    "informational": {
+      "dominant_intent": "breakdown",
+      "effect_changes_count": 9,
+      "intent_changes_count": 3,
+      "intent_distribution_sec": {
+        "atmospheric": 66.25,
+        "breakdown": 298.71,
+        "buildup": 24.02
+      },
+      "midi": {
+        "commands": 10,
+        "labels": [
+          "set_autoloop",
+          "set_color_override"
+        ],
+        "ordering_hash": "dd707ce2544bdd22"
+      },
+      "overlay": {
+        "light_bar_updates": 1050
+      },
+      "timing": {
+        "commands": 2000,
+        "target_delta_sec": [
+          2.2449,
+          2.2681,
+          6.2271,
+          6.3258,
+          6.378,
+          6.529,
+          6.5986,
+          6.8424,
+          14.0
+        ]
+      },
       "unique_intents_count": 3
+    },
+    "relations": {
+      "midi_arrives_in_enqueue_order": true,
+      "midi_channels_come_from_the_intents_pool": true,
+      "midi_matches_the_report_effects": true,
+      "overlay_arrives_in_enqueue_order": true,
+      "overlay_light_bar_fires": true,
+      "queue_error_within_tolerance": true
+    },
+    "report_checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+    "survives": {
+      "beat_columns_hash": "e7841a1a5a6a9713",
+      "beat_times_hash": "d12ee19b0c83e6c9",
+      "beats_detected": 1050,
+      "bpm_last": 162.16216216216017,
+      "bpm_median": 160.0,
+      "duration_sec": 409.896,
+      "os2l": {
+        "beats": 1050,
+        "positions": [
+          1,
+          1050
+        ],
+        "stream_hash": "7409ac4e09d73af0",
+        "strengths": [
+          0.5
+        ],
+        "wire_keys": [
+          "bpm",
+          "change",
+          "pos",
+          "strength"
+        ]
+      },
+      "rms_mean": 0.12106,
+      "schema": {
+        "beat_keys": [
+          "bpm",
+          "change",
+          "rms",
+          "strength",
+          "t"
+        ],
+        "metric_keys": [
+          "avg_effect_duration_sec",
+          "beats_detected",
+          "bpm_last",
+          "dominant_intent",
+          "effect_changes_count",
+          "intent_changes_count",
+          "intent_distribution_sec",
+          "look_ahead_sec",
+          "timing_error_max_ms",
+          "timing_error_mean_ms",
+          "unique_channels",
+          "unique_effects_count",
+          "unique_intents_count"
+        ],
+        "report_keys": [
+          "beats",
+          "duration_sec",
+          "effects",
+          "intents",
+          "metrics",
+          "timing_log"
+        ]
+      },
+      "sound_events": [
+        {
+          "playing": true,
+          "t": 0.906
+        }
+      ],
+      "timing_accuracy": {
+        "max_error_buffers": 1
+      }
     }
   }
 }

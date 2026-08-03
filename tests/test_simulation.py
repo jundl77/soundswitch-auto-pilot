@@ -15,24 +15,17 @@ from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE  # noqa: E402
 from simulate.fake_audio_client import FileAudioClient  # noqa: E402
 from simulate.runner import run_fast_simulation  # noqa: E402
 
-# The eval set itself is committed, so this is safe at import time; only the
-# audio it names can be missing.
 EVAL_SET = load_eval_set(EVAL_SET_FILE)
 DATA_DIR = run_eval_set.corpus_dir()
 
-# Named through the selector rather than by literal id: if the set is ever
-# re-frozen, the wall-time budget these protect follows the new durations.
 SAMPLE_TRACK_ID = run_eval_set.shortest_track_ids(EVAL_SET, 1)[0]
 BENCH_TRACK_IDS = run_eval_set.shortest_track_ids(EVAL_SET, 3)
 
 
 def _require_audio(track_ids: list) -> list:
-    """The eval-set records for ``track_ids``, or one clear failure line."""
     tracks = run_eval_set.select_tracks(EVAL_SET, track_ids)
     problems = run_eval_set.missing_inputs(DATA_DIR, tracks)
     if problems:
-        # One line, everything that is missing: a fresh clone should not have to
-        # re-run the suite three times to learn it needs three files.
         pytest.fail("; ".join(problems))
     return tracks
 
@@ -59,11 +52,21 @@ async def _sample_run() -> dict:
 
 
 @pytest.mark.integration
-async def test_sample_song_evaluation_passes():
+async def test_sample_song_evaluation_passes(nn_artifacts):
     from simulate.evaluator import evaluate
     run = await _sample_run()
     result = evaluate(run['report'])
     assert result['passed'], f'sample-song evaluation failed: {result["criteria"]}'
+
+
+@pytest.mark.integration
+async def test_the_decoder_drives_the_show_on_a_real_track(nn_artifacts):
+    run = await _sample_run()
+    intents = [block['intent'] for block in run['report']['intents']]
+    assert len(intents) >= 4, intents
+    assert {'atmospheric', 'drop'} <= set(intents), intents
+    assert all(block['t'] <= run['report']['duration_sec'] + 1e-6
+               for block in run['report']['intents'])
 
 
 @pytest.mark.integration
@@ -111,17 +114,7 @@ async def test_simulation_is_deterministic():
 
 
 @pytest.mark.integration
-def test_eval_set_head_matches_the_committed_baseline():
-    """Three eval-set tracks through the benchmark runner, compare mode.
-
-    This is the gate the old plumbing-PASS verdict used to be: it fails on a
-    changed report checksum (the pipeline behaves differently) and on a score
-    that fell below the committed baseline (the show got worse).  A subset run,
-    so the ten-track aggregate is not compared -- see run_eval_set.compare.
-
-    Read the printed table on failure: it names the track, the metric, and the
-    direction, and says whether re-cutting the baseline is the right answer.
-    """
+def test_eval_set_head_matches_the_committed_baseline(nn_artifacts):
     _require_audio(BENCH_TRACK_IDS)
     exit_code = run_eval_set.main([
         "--only", ",".join(BENCH_TRACK_IDS),
@@ -130,6 +123,9 @@ def test_eval_set_head_matches_the_committed_baseline():
     ])
     assert exit_code == 0, (
         f"eval-set benchmark failed on {', '.join(BENCH_TRACK_IDS)} -- see the "
-        f"table above; re-cut with 'uv run python training/run_eval_set.py "
-        f"--write-baseline' if the change is intended"
+        f"table above.  If the pipeline change is intended, re-cut with "
+        f"'uv run python training/run_eval_set.py --write-baseline' -- but only "
+        f"from a machine that HAS the shipped model, and read the table first: "
+        f"a run that degraded moves every checksum and zeroes every score, and "
+        f"re-cutting that blesses a dark show as the benchmark"
     )

@@ -8,6 +8,9 @@ from lib.clients.midi_message import MidiChannel
 from typing import List
 from enum import Enum
 
+# SoundSwitch hardware drops the pause message unless the previous one has settled.
+SETTLE_SEC = 0.2
+
 
 class EffectAction(Enum):
     ACTIVATE = 1,
@@ -65,7 +68,7 @@ class MidiClient:
     def on_sound_stop(self):
         self.set_all_intensities(0)
         if not self.soundswitch_is_paused:
-            time.sleep(0.2)  # SoundSwitch drops this message unless the previous one has settled
+            time.sleep(SETTLE_SEC)
             self.midi_out.send_message(mm.get_midi_msg_on(MidiChannel.PLAY_PAUSE))
             self.soundswitch_is_paused = True
 

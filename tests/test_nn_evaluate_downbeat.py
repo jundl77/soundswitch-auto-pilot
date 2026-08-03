@@ -1,29 +1,3 @@
-"""Tests for the downbeat verdict evaluator (``training/nn/evaluate_downbeat.py``).
-
-This module produces the numbers a gate is read against, so the failure it must
-not have is a *plausible* number.  Three shapes of that, and one test group each:
-
-**A ceiling attributed to the wrong cause.**  The live condition is bounded by
-where its beat stream puts beats, and the whole owner decision rests on splitting
-that bound into dropped beats, other-fraction locks, tempo mismatch and jitter.  Each
-category is therefore tested against a beat stream *built* to exhibit exactly
-that failure and nothing else -- a classifier that answered "fraction lock" to
-everything would pass any single-case test.
-
-**A stability metric that measures the input instead of the grid.**
-``phase_flips`` at subdivision 2 counts the stream's own insertions and
-deletions, so
-this module reports the two metrics review recommended instead.  Both are tested
-for the property that matters: a *stable* grid on a *noisy* beat stream must read
-as stable.
-
-**A metric that agrees with the truth for the wrong reason.**  Phase accuracy on
-a decode shifted by one beat must be 0, not 0.75; an interval-deviation rate on a
-perfectly regular grid must be exactly 0 rather than merely small.
-
-Everything here is synthetic and pure numpy: the corpus measurements live behind
-the CLI, and a test that needs 215 sidecars is not a test.
-"""
 import json
 import sys
 from pathlib import Path
@@ -78,7 +52,6 @@ def grid_phases(n: int) -> np.ndarray:
 
 def clean_decisions(n: int, *, subdivision: int = 1, period: float = PERIOD,
                     start: float = 1.0, first_phase: int = 1) -> list:
-    """A decode that never flips, at the given subdivision."""
     cycle = BEATS_PER_BAR * subdivision
     step = period / subdivision
     return [PhaseDecision(index, start + index * step,
@@ -86,14 +59,7 @@ def clean_decisions(n: int, *, subdivision: int = 1, period: float = PERIOD,
             for index in range(n)]
 
 
-# --------------------------------------------------------------------------- #
-# Small pure helpers
-# --------------------------------------------------------------------------- #
-
-
 def test_the_lag_holds_wall_clock_look_ahead_constant_across_subdivisions():
-    # The trap Task 3 fell into: lag counts CANDIDATES, so a fixed lag halves the
-    # look-ahead when the grid doubles.  This is the one function allowed to know.
     assert lag_for(4, 1) == 4
     assert lag_for(4, 2) == 8
     assert lag_for(2, 2) == 4
@@ -106,7 +72,6 @@ def test_nearest_offset_is_signed_and_points_from_query_to_reference():
 
 
 def test_nearest_offset_of_an_empty_reference_is_nan_not_zero():
-    # Zero would read as "perfectly aligned" for a track with no beats at all.
     offsets = nearest_offset(beats(4), np.zeros(0))
     assert offsets.shape == (4,) and np.isnan(offsets).all()
 
@@ -127,11 +92,6 @@ def test_the_rolling_median_follows_a_tempo_ride_instead_of_averaging_it():
     assert len(rolled) == len(values)
 
 
-# --------------------------------------------------------------------------- #
-# Alignment: what the live stream does to the grid
-# --------------------------------------------------------------------------- #
-
-
 def test_a_perfectly_aligned_beat_stream_reports_no_offset_and_full_coverage():
     expert = beats(64)
     row = alignment_row(expert, expert, expert[::BEATS_PER_BAR])
@@ -142,7 +102,6 @@ def test_a_perfectly_aligned_beat_stream_reports_no_offset_and_full_coverage():
 
 
 def test_a_half_beat_locked_stream_is_reported_as_a_lock_not_as_jitter():
-    # The measured failure mode: a steady offset of half a beat with no spread.
     expert = beats(64)
     row = alignment_row(expert + 0.5 * PERIOD, expert, expert[::BEATS_PER_BAR])
     assert abs(row["median_abs_phase"]) == pytest.approx(0.5, abs=0.01)
@@ -164,14 +123,8 @@ def test_a_half_tempo_stream_is_visible_in_the_ibi_ratio():
     expert = beats(64)
     row = alignment_row(expert[::2], expert, expert[::BEATS_PER_BAR])
     assert row["ibi_ratio"] == pytest.approx(2.0, abs=0.01)
-    # Every live-stream beat is on the grid; half the expert beats are uncovered.
     assert row["live_on_grid"] == pytest.approx(1.0)
     assert row["expert_covered"] == pytest.approx(0.5, abs=0.02)
-
-
-# --------------------------------------------------------------------------- #
-# The residual decomposition -- the heart of the owner package
-# --------------------------------------------------------------------------- #
 
 
 def test_an_aligned_stream_reaches_every_downbeat_on_the_beat_grid():
@@ -184,14 +137,13 @@ def test_a_half_beat_lock_is_unreachable_on_beats_and_reached_by_midpoints():
     expert = beats(64)
     live = expert + 0.5 * PERIOD
     labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
-    # Every interior downbeat sits exactly on a midpoint of the live stream.
     assert labels.count("midpoint") >= 14
     assert "beat" not in labels
 
 
 def test_a_quarter_beat_lock_is_reachable_by_neither_and_named_as_a_fraction():
     expert = beats(64)
-    live = expert + 0.25 * PERIOD          # 117 ms -- outside the 70 ms tolerance
+    live = expert + 0.25 * PERIOD
     labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert set(labels) <= {"fraction_lock"}
     assert labels.count("fraction_lock") == len(labels)
@@ -199,22 +151,15 @@ def test_a_quarter_beat_lock_is_reachable_by_neither_and_named_as_a_fraction():
 
 def test_a_dropout_the_decoder_cannot_coast_is_named_a_dropout():
     expert = beats(128)
-    live = np.concatenate([expert[:20], expert[60:]])     # 40 beats missing
+    live = np.concatenate([expert[:20], expert[60:]])
     labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert "dropout" in labels
-    # and the reached ones are still reached: a hole is local, not global.
     assert "beat" in labels
 
 
 def test_a_dropout_short_enough_to_coast_is_not_charged_as_a_miss():
-    """The decoder's own coasting rebuilds a whole-multiple gap exactly.
-
-    Worth pinning as a *ceiling* property and not only as decoder behaviour: a
-    residual analysis that ignored coasting would attribute recall the live
-    condition actually has to a cause it does not have.
-    """
     expert = beats(64)
-    live = np.concatenate([expert[:20], expert[26:]])     # 6 beats missing
+    live = np.concatenate([expert[:20], expert[26:]])
     labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
     assert "dropout" not in labels
     assert "coast" in labels
@@ -228,8 +173,6 @@ def test_a_downbeat_outside_the_beat_stream_is_named_no_coverage():
 
 
 def test_a_drifting_tempo_is_named_a_tempo_mismatch():
-    # 3 % fast: the offset slides through every fraction of the beat, so no fixed
-    # candidate grid can hold it.  This is the category the plan calls tempo drift.
     expert = beats(96)
     live = beats(96, period=PERIOD * 1.03)
     labels = reach_labels(live, expert[::BEATS_PER_BAR], expert)
@@ -237,16 +180,12 @@ def test_a_drifting_tempo_is_named_a_tempo_mismatch():
 
 
 def test_a_stream_at_exactly_double_tempo_is_not_a_tempo_mismatch():
-    # It puts beats ON the annotated instants, so every downbeat is reachable --
-    # calling that a mismatch would attribute a cost that does not exist.
     expert = beats(64)
     labels = reach_labels(beats(128, period=PERIOD / 2), expert[::BEATS_PER_BAR], expert)
     assert set(labels) == {"beat"}
 
 
 def test_an_unsteady_residual_is_jitter_and_a_steady_one_is_a_lock():
-    # The actionable split: a steady off-grid offset is a lock a different
-    # candidate grid could capture; an unsteady one is only fixed upstream.
     rng = np.random.default_rng(11)
     expert = beats(96)
     steady = reach_labels(expert + 0.25 * PERIOD, expert[::BEATS_PER_BAR], expert)
@@ -268,9 +207,6 @@ def test_a_correctly_paced_beat_stream_has_a_bar_rate_ratio_of_one():
 
 
 def test_inserted_beats_raise_the_bar_rate_and_that_is_a_precision_ceiling():
-    """The second ceiling: a flip-free decode emits one downbeat per cycle, so a
-    beat stream with surplus beats produces surplus downbeats no phase model can
-    retract.  Half again as many beats is half again as many bars."""
     from nn.evaluate_downbeat import bar_rate_ratio
 
     expert = beats(64)
@@ -286,17 +222,12 @@ def test_a_coasted_gap_counts_toward_the_bar_rate_because_the_decoder_emits_it()
     expert = beats(64)
     holed = np.concatenate([expert[:20], expert[26:]])
     params = PhaseParams(subdivision=1, lag_beats=4)
-    # The coasted instants are back in the stream, so the rate is ~1 again --
-    # measuring the raw beat count instead would report a grid running slow.
     assert decoder_instants(holed, params).size > holed.size
     assert bar_rate_ratio(holed, expert[::BEATS_PER_BAR], params) == pytest.approx(
         1.0, abs=0.05)
 
 
 def test_the_ceiling_grid_is_the_shipped_candidate_grid_at_subdivision_two():
-    # The bound analysis and the decoder must agree about what "the grid" is at
-    # the subdivision that actually decodes, or the bound is about a different
-    # system than the result.
     from nn.evaluate_downbeat import subdivided_grid
 
     times = beats(32)
@@ -309,16 +240,12 @@ def test_a_quarter_beat_lock_is_unreachable_at_two_and_reachable_at_four():
 
     expert = beats(64)
     live = expert + 0.25 * PERIOD
-    # Interior downbeats only: the first one lies before the shifted stream
-    # starts, which is a coverage question rather than a grid-density one.
-    downbeats = expert[::BEATS_PER_BAR][1:]
-    assert grid_ceiling(live, downbeats, 2) == pytest.approx(0.0)
-    assert grid_ceiling(live, downbeats, 4) == pytest.approx(1.0)
+    interior_downbeats = expert[::BEATS_PER_BAR][1:]
+    assert grid_ceiling(live, interior_downbeats, 2) == pytest.approx(0.0)
+    assert grid_ceiling(live, interior_downbeats, 4) == pytest.approx(1.0)
 
 
 def test_the_residual_says_where_in_the_beat_the_downbeat_fell():
-    # The number that separates a quarter-beat lock from a triplet feel; a bare
-    # "unreachable" count cannot tell the two apart and they have different fixes.
     from nn.evaluate_downbeat import downbeat_residuals
 
     expert = beats(64)
@@ -338,15 +265,10 @@ def test_every_reach_label_is_declared():
 
 def test_coasting_is_credited_only_when_the_decoder_would_actually_coast():
     expert = beats(96)
-    short = np.concatenate([expert[:20], expert[23:]])      # 3 beats -- coastable
-    long = np.concatenate([expert[:20], expert[60:]])       # 40 beats -- a discontinuity
+    short = np.concatenate([expert[:20], expert[23:]])
+    long = np.concatenate([expert[:20], expert[60:]])
     assert "coast" in reach_labels(short, expert[::BEATS_PER_BAR], expert)
     assert "coast" not in reach_labels(long, expert[::BEATS_PER_BAR], expert)
-
-
-# --------------------------------------------------------------------------- #
-# Scoring a decode
-# --------------------------------------------------------------------------- #
 
 
 def test_downbeat_scoring_matches_at_the_tolerance_and_not_a_millisecond_past():
@@ -382,8 +304,6 @@ def test_phase_accuracy_reports_its_own_coverage_rather_than_hiding_a_gap():
 
 
 def test_an_interstitial_position_is_scored_wrong_not_skipped():
-    # At subdivision 2 a beat committed to a half-beat position has NO bar phase.
-    # Dropping those would flatter a decoder that locked to the stream's off-beats.
     expert = beats(32)
     phases = grid_phases(32)
     decisions = [PhaseDecision(i, t, 2, 1.0, False) for i, t in enumerate(expert)]
@@ -393,21 +313,12 @@ def test_an_interstitial_position_is_scored_wrong_not_skipped():
     assert scores["interstitial"] == 32
 
 
-# --------------------------------------------------------------------------- #
-# Stability, in the two units review asked for
-# --------------------------------------------------------------------------- #
-
-
 def test_confidence_gating_keeps_fewer_downbeats_and_scores_only_those():
-    """The spec's beat-snap fall-back, measured: the filter is on the prediction
-    set and the score comes from the committed matcher, so a confidence sweep is
-    comparable with every other F1 here rather than a second metric."""
     from nn.evaluate_downbeat import confidence_sweep
 
     truth = beats(8, period=BAR)
     decisions = [PhaseDecision(index, time, 1, 0.9 if index % 2 else 0.2, False)
                  for index, time in enumerate(truth)]
-    # Every prediction is right, so gating can only cost recall, never precision.
     rows = confidence_sweep(decisions, truth, thresholds=(0.0, 0.5))
     assert rows[0.0]["tp"] == 8 and rows[0.0]["fp"] == 0
     assert rows[0.5]["tp"] == 4 and rows[0.5]["fn"] == 4
@@ -436,7 +347,7 @@ def test_a_perfectly_regular_grid_has_exactly_zero_interval_deviations():
 
 def test_one_short_bar_is_one_interval_deviation_event():
     downbeats = beats(64, period=BAR)
-    downbeats[32:] -= 0.5 * BAR              # one bar swallowed: two bad intervals meet
+    downbeats[32:] -= 0.5 * BAR
     result = interval_deviation(downbeats)
     assert result["events"] >= 1
     assert result["per_minute"] > 0.0
@@ -446,7 +357,6 @@ def test_the_deviation_threshold_is_relative_to_the_track_not_absolute():
     slow = interval_deviation(beats(64, period=2 * BAR))
     fast = interval_deviation(beats(64, period=BAR))
     assert slow["events"] == fast["events"] == 0
-    # A ride within the threshold is not an event at either tempo.
     ride = beats(64, period=BAR) * (1.0 + 0.5 * INTERVAL_DEVIATION)
     assert interval_deviation(ride)["events"] == 0
 
@@ -467,9 +377,6 @@ def test_beat_anchored_flips_agree_with_phase_flips_when_nothing_was_coasted():
 
 
 def test_a_stable_off_beat_lock_reads_as_stable_at_beat_rate():
-    # The whole point of the metric: a stream locked half a beat off produces a
-    # perfectly steady bar grid, and `phase_flips` at subdivision 2 must not be
-    # the number the gate reads.
     decisions = clean_decisions(128, subdivision=2, first_phase=2)
     assert beat_anchored_flips(decisions, 2)["flips"] == 0
     assert beat_anchored_flips(decisions, 2)["pairs"] == 63
@@ -479,14 +386,9 @@ def test_a_coasted_candidate_breaks_the_pair_instead_of_faking_a_flip():
     decisions = clean_decisions(16, subdivision=1)
     decisions[8] = decisions[8]._replace(virtual=True)
     result = beat_anchored_flips(decisions, 1)
-    assert result["breaks"] == 1                # the one pair the coast sits inside
+    assert result["breaks"] == 1
     assert result["flips"] == 0
-    assert result["pairs"] == 13                # 15 beats -> 14 pairs, minus the break
-
-
-# --------------------------------------------------------------------------- #
-# The show ablation's grid adapter
-# --------------------------------------------------------------------------- #
+    assert result["pairs"] == 13
 
 
 def test_predicted_edges_close_the_last_bar_at_the_median_interval():
@@ -504,11 +406,6 @@ def test_predicted_edges_refuse_a_grid_too_short_to_decode_on():
 def test_predicted_edges_are_sorted_even_if_the_decoder_emitted_out_of_order():
     edges = edges_from_downbeats(np.array([3.0, 1.0, 2.0]))
     assert np.all(np.diff(edges) > 0)
-
-
-# --------------------------------------------------------------------------- #
-# Provenance and split hygiene
-# --------------------------------------------------------------------------- #
 
 
 def test_the_config_fingerprint_changes_with_every_knob_that_changes_a_number():
@@ -536,27 +433,13 @@ def test_a_tuning_mode_refuses_test_ids_by_membership_not_by_flag(tmp_path):
     assert split_guard(tmp_path, ["v1", "v2"], "val") == ["v1", "v2"]
     with pytest.raises(RuntimeError, match="tuning read"):
         split_guard(tmp_path, ["v1", "x1"], "val")
-    # The verdict needs the same check for a different reason -- an artifact
-    # labelled with a split it did not score is a quiet lie, not a leak.
     assert split_guard(tmp_path, ["x1"], "test", reason="labelled test") == ["x1"]
     with pytest.raises(RuntimeError, match="labelled test"):
         split_guard(tmp_path, ["x1", "v1"], "test", reason="labelled test")
 
 
-# --------------------------------------------------------------------------- #
-# The deck-transition proxy
-# --------------------------------------------------------------------------- #
-
-
 def synthetic_stream(n_bars: int, *, period: float, start: float,
                      phase_offset: int = 0) -> tuple:
-    """Beat times, a confident-on-the-downbeat score, and where those downbeats are.
-
-    The truth comes back from the same expression that built the scores on
-    purpose: a re-lock test whose expectation is derived separately can assert
-    the wrong instants and look like a decoder failure, which is exactly what the
-    first draft of this test did.
-    """
     times = start + period * np.arange(4 * n_bars, dtype=np.float64)
     index = (np.arange(4 * n_bars) + phase_offset) % BEATS_PER_BAR
     scores = np.where(index == 0, 0.95, 0.05)
@@ -565,7 +448,6 @@ def synthetic_stream(n_bars: int, *, period: float, start: float,
 
 def relock_bars(params, *, gap_beats: float, new_period: float,
                 phase_offset: int) -> int | None:
-    """Bars of deck B before the grid is right and stays right; None if never."""
     first, first_scores, _ = synthetic_stream(16, period=PERIOD, start=1.0)
     start = first[-1] + PERIOD * (1.0 + gap_beats)
     second, second_scores, truth = synthetic_stream(
@@ -587,21 +469,6 @@ def relock_bars(params, *, gap_beats: float, new_period: float,
 
 
 def test_re_lock_after_a_deck_transition_is_bought_with_the_flip_penalty():
-    """The deck-transition proxy, over three configs, because the answer is a trade.
-
-    The corpus is single tracks, so this is the only evidence the plan can offer
-    about a real set.  Three cuts: a new tempo with a gap, the same tempo with a
-    gap, and a hard cut with no gap at all -- the last two differ from the first
-    only in what evidence the decoder gets for free.
-
-    At the low penalty the grid re-locks immediately in all three.  At the high
-    penalty -- which is what the plan's stability gate forces -- it re-locks only
-    when the tempo changes, because a phase-only cut has to be paid for out of
-    the look-ahead and a 9-nat penalty is more than a two-beat window can raise.
-    **That asymmetry is pinned as a measured limitation, not as a preference:**
-    if a future change makes the high-penalty decoder re-lock, this test goes red
-    and the trade gets re-decided deliberately.
-    """
     cuts = (dict(gap_beats=1.9, new_period=0.5, phase_offset=2),
             dict(gap_beats=1.9, new_period=PERIOD, phase_offset=1),
             dict(gap_beats=0.0, new_period=0.5, phase_offset=3))
@@ -609,25 +476,19 @@ def test_re_lock_after_a_deck_transition_is_bought_with_the_flip_penalty():
     responsive = PhaseParams(lag_beats=4, subdivision=2, flip_penalty=2.0)
     assert [relock_bars(responsive, **cut) for cut in cuts] == [0, 0, 0]
 
+    # A measured limitation, not a preference: a phase-only cut never re-locks here.
     committed = PhaseParams(lag_beats=2, subdivision=1, flip_penalty=9.0)
     tempo_change, same_tempo, hard_cut = (relock_bars(committed, **cut) for cut in cuts)
     assert tempo_change == 0
     assert same_tempo is None and hard_cut is None
 
-    # The shipped default is stiffer still, and the runtime will meet it first.
     shipped = PhaseParams()
     assert [relock_bars(shipped, **cut) for cut in cuts] == [0, None, None]
 
 
 def test_the_phase_re_locks_after_a_deck_transition_to_a_new_tempo_and_offset():
-    """A cut from one deck to another: new tempo, new bar phase, small gap.
-
-    The corpus is single tracks, so this is the only evidence the plan can offer
-    that the decoder survives a real set.  The claim is bounded on purpose: it
-    must re-lock *within a few bars*, not instantly, and it must then STAY locked.
-    """
     first, first_scores, _ = synthetic_stream(16, period=PERIOD, start=1.0)
-    gap = first[-1] + 0.9                                  # a beat and a half of silence
+    gap = first[-1] + 0.9
     second, second_scores, second_downbeats = synthetic_stream(
         16, period=0.5, start=gap, phase_offset=2)
     times = np.concatenate([first, second])
@@ -640,11 +501,9 @@ def test_the_phase_re_locks_after_a_deck_transition_to_a_new_tempo_and_offset():
     late = predicted[predicted >= second_downbeats[0] - 0.05]
     matched = [t for t in second_downbeats
                if np.any(np.abs(late - t) <= TOLERANCE_SEC)]
-    # Allow the first two bars of deck B to be wrong; everything after must be right.
     assert len(matched) >= len(second_downbeats) - 2
-    # And the re-lock must be a re-lock, not a coincidence: deck A's phase, run
-    # forward through the cut, would have put the downbeats somewhere else.
-    assert not np.allclose(np.diff(late), PERIOD * BEATS_PER_BAR)
+    deck_a_bar = PERIOD * BEATS_PER_BAR
+    assert not np.allclose(np.diff(late), deck_a_bar)
 
 
 def test_a_stopped_deck_does_not_manufacture_downbeats_across_the_silence():
@@ -659,13 +518,6 @@ def test_a_stopped_deck_does_not_manufacture_downbeats_across_the_silence():
 
 
 def test_decoding_from_memory_is_the_shipped_decode_track_exactly(tmp_path):
-    """The sweep decodes off arrays it already holds; that must not be a fork.
-
-    Every level in this report comes out of ``decode_evidence``, so if it and
-    ``decode_track`` ever disagree the report is measuring a decoder that does
-    not exist.  Checked at both subdivisions and with refinement on, because the
-    two branches read different fields of the sidecar.
-    """
     from nn.downbeat_decoder import decode_track
     from nn.evaluate_downbeat import decode_evidence, read_sidecar
 
@@ -690,7 +542,6 @@ def test_decoding_from_memory_is_the_shipped_decode_track_exactly(tmp_path):
 
 
 def test_the_candidate_grid_the_ceiling_is_measured_on_is_the_one_that_decodes():
-    # A ceiling measured on a different grid than the decoder uses is not a ceiling.
     times = beats(32)
     dense = candidate_grid(times, 2)
     params = PhaseParams(lag_beats=lag_for(4, 2), subdivision=2)

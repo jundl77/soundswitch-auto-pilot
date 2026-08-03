@@ -1,36 +1,38 @@
-import asyncio
 import json
 import logging
 import os
 import sys
-import threading
 import time
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 
-def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
-                  pace_real_time: bool):
-    from simulate.runner import run_simulation
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+async def _run_pipeline(components, duration_sec: float, event_buffer,
+                        command_queue, pace_real_time: bool,
+                        report_path: str | None = None):
+    from simulate import runner
     try:
-        loop.run_until_complete(
-            run_simulation(components, duration_sec, pace_real_time=pace_real_time)
-        )
+        await runner.run_simulation(components, duration_sec,
+                                    pace_real_time=pace_real_time)
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
-        loop.close()
+        if report_path:
+            _write_report(event_buffer, command_queue, report_path)
 
 
-def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
-    from simulate.evaluator import evaluate, print_evaluation, report_checksum
+def _write_report(event_buffer, command_queue, report_path: str) -> dict:
+    from simulate.evaluator import report_checksum
     report = event_buffer.to_report(command_queue.get_timing_log())
     report['checksum'] = report_checksum(report)
     with open(report_path, 'w') as f:
         json.dump(report, f, indent=2, default=str)
     print(f'[simulate] report written → {report_path}  (sha256 {report["checksum"][:16]})')
-    result = evaluate(report)
+    return report
+
+
+def _write_report_and_evaluate(event_buffer, command_queue, report_path: str) -> bool:
+    from simulate.evaluator import evaluate, print_evaluation
+    result = evaluate(_write_report(event_buffer, command_queue, report_path))
     print_evaluation(result)
     return result['passed']
 
@@ -44,7 +46,7 @@ async def run_file(args):
               '(audio cannot play at fast-simulation speed)')
         sys.exit(2)
     if args.ui:
-        _run_file_realtime_ui(args)
+        await _run_file_realtime_ui(args)
     else:
         await _run_file_fast(args)
 
@@ -53,7 +55,6 @@ async def _run_file_fast(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import run_fast_simulation
 
-    # Per-beat INFO lines cost more wall time than the DSP at fast-sim speed.
     logging.getLogger().setLevel(logging.WARNING)
 
     wall_start = time.monotonic()
@@ -70,14 +71,40 @@ async def _run_file_fast(args):
     sys.exit(0 if passed else 1)
 
 
-def _run_file_realtime_ui(args):
+def _session_buffer(look_ahead_sec: float, clock=None):
+    from lib.clock import SYSTEM_CLOCK
     from lib.engine.event_buffer import EventBuffer
+
+    return EventBuffer(window_sec=float('inf'),
+                       clock=clock or SYSTEM_CLOCK,
+                       look_ahead_sec=look_ahead_sec)
+
+
+async def _with_viewer(event_buffer, port, run):
+    from lib import ui_bridge
+
+    ui = ui_bridge.start(event_buffer, port)
+    try:
+        await run()
+        if ui is not None:
+            print('[simulate] the track is over — the viewer is still up on '
+                  f'http://localhost:{port}; Ctrl-C to close it')
+            ui.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if ui is not None:
+            ui.stop()
+
+
+async def _run_file_realtime_ui(args):
     from simulate.fake_audio_client import FileAudioClient
-    from simulate.runner import build_simulation, LOOK_AHEAD_SEC
+    from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
-    event_buffer = EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC)
-    components, command_queue = build_simulation(audio_client, event_buffer)
+    event_buffer = _session_buffer(PLAYBACK_DELAY_SEC)
+    components, command_queue = build_simulation(audio_client, event_buffer,
+                                                 threaded=True)
 
     try:
         import librosa
@@ -86,13 +113,6 @@ def _run_file_realtime_ui(args):
         duration_sec = float('inf')
 
     event_buffer.start()
-
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, duration_sec, event_buffer, command_queue, True),
-        daemon=True,
-    )
-    thread.start()
 
     if args.play_audio:
         try:
@@ -104,34 +124,30 @@ def _run_file_realtime_ui(args):
         except ImportError as e:
             print(f'[simulate] warning: {e} — audio playback skipped')
 
-    from simulate.visualizer_app import run_app
-    run_app(event_buffer, port=args.port)
+    await _with_viewer(event_buffer, args.port,
+                       lambda: _run_pipeline(components, duration_sec,
+                                             event_buffer, command_queue, True,
+                                             args.report))
 
 
-def run_realtime(args):
+async def run_realtime(args):
     from lib.engine.event_buffer import EventBuffer
     from lib.clients.pyaudio_client import PyAudioClient
-    from simulate.runner import build_simulation, LOOK_AHEAD_SEC
-    from simulate.visualizer_app import run_app
+    from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
 
     audio_client = PyAudioClient(
         sample_rate=SAMPLE_RATE,
         buffer_size=BUFFER_SIZE,
         input_device_index=args.device_index,
     )
-    event_buffer = EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC)
-    components, command_queue = build_simulation(audio_client, event_buffer)
+    event_buffer = EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC)
+    components, command_queue = build_simulation(audio_client, event_buffer,
+                                                 threaded=True)
     event_buffer.start()
 
-    # Microphone input is hardware-paced — no artificial pacing needed.
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, float('inf'), event_buffer, command_queue, False),
-        daemon=True,
-    )
-    thread.start()
-
-    run_app(event_buffer, port=args.port)
+    await _with_viewer(event_buffer, args.port,
+                       lambda: _run_pipeline(components, float('inf'),
+                                             event_buffer, command_queue, False))
 
 
 def add_simulate_subparser(subparsers):
@@ -148,7 +164,8 @@ def add_simulate_subparser(subparsers):
     fp.add_argument('--play-audio', action='store_true',
                     help='Play audio from speakers (requires --ui and sounddevice)')
     fp.add_argument('--report', default='report.json',
-                    help='Report output path for fast mode (default: report.json)')
+                    help='Report output path (default: report.json); under --ui '
+                         'it is written when the track ends')
     fp.add_argument('--port', type=int, default=8050, help='Dash server port (--ui only)')
 
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')
@@ -163,4 +180,4 @@ async def simulate_cmd(args):
     if args.sim_mode == 'file':
         await run_file(args)
     elif args.sim_mode == 'realtime':
-        run_realtime(args)
+        await run_realtime(args)

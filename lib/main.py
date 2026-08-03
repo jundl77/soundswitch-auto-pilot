@@ -10,8 +10,9 @@ import time
 from collections import deque
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
-# Must match playback_delay_seconds in dmx-enttec-node/app_audio_receiver/audio_receiver.json.
-LOOK_AHEAD_SEC = 2.5
+# Must match playback_delay_seconds in dmx-enttec-node and simulate/runner.py's copy.
+PLAYBACK_DELAY_SEC = 14.0
+_UI_ONLY_WINDOW_SEC = 60.0
 logging.basicConfig(format='%(asctime)s [%(levelname)s ] %(message)s', level=logging.INFO)
 global_app = None
 
@@ -26,7 +27,6 @@ class SoundSwitchAutoPilot:
                  enable_ui: bool = False,
                  ui_port: int = 8050,
                  report_path: str | None = None):
-        # Imported here, not at module scope: hoisting these makes `--help` pay the TensorFlow import.
         from lib.clients.pyaudio_client import PyAudioClient
         from lib.clients.midi_client import MidiClient
         from lib.clients.os2l_client import Os2lClient
@@ -40,11 +40,11 @@ class SoundSwitchAutoPilot:
         self.disable_os2l: bool = disable_os2l
         self.enable_ui: bool = enable_ui
         self._ui_port: int = ui_port
+        self._ui = None
         self._report_path: str | None = report_path
         self.is_running: bool = False
         self.loop = asyncio.get_event_loop()
-        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(LOOK_AHEAD_SEC)
-        logging.info(f'[main] look-ahead delay: {LOOK_AHEAD_SEC:.2f}s — ensure dmx-enttec-node playback_delay_seconds matches')
+        self.command_queue: DelayedCommandQueue = DelayedCommandQueue(PLAYBACK_DELAY_SEC)
 
         self._enable_playback: bool = debug_mode or output_device_index is not None
         self.audio_client: PyAudioClient = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, input_device_index, output_device_index)
@@ -54,17 +54,35 @@ class SoundSwitchAutoPilot:
 
         from lib.engine.event_buffer import EventBuffer
         self.event_buffer: EventBuffer | None = (
-            EventBuffer(look_ahead_sec=LOOK_AHEAD_SEC) if (enable_ui or report_path) else None
+            EventBuffer(look_ahead_sec=PLAYBACK_DELAY_SEC,
+                        window_sec=(float('inf') if report_path
+                                    else _UI_ONLY_WINDOW_SEC))
+            if (enable_ui or report_path) else None
         )
+
+        from lib import section_chain
+        from lib.analyser.drift_watchdog import DriftWatchdog
+
+        self.drift_watchdog: DriftWatchdog = DriftWatchdog(BUFFER_SIZE / SAMPLE_RATE)
+        self.section = (section_chain.build_section_chain(watchdog=self.drift_watchdog)
+                        if section_chain.artifacts_present() else None)
+        if self.section is None:
+            logging.warning('[main] no NN artifacts on this machine — the show '
+                            'will light the quiet cold-start floor and hold it '
+                            '(beats and silence still run)')
 
         self.effect_controller: EffectController = EffectController(self.midi_client, event_buffer=self.event_buffer)
         self.light_engine: LightEngine = LightEngine(self.midi_client, self.os2l_client, self.overlay_client,
                                                      self.effect_controller,
                                                      self.command_queue, event_buffer=self.event_buffer,
-                                                     look_ahead_sec=LOOK_AHEAD_SEC)
+                                                     playback_delay_sec=PLAYBACK_DELAY_SEC,
+                                                     section_chain=None if self.section is None else self.section.stream,
+                                                     section_decoder=None if self.section is None else self.section.decoder,
+                                                     watchdog=self.drift_watchdog)
 
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
-                                                           note_clicks=debug_mode)
+                                                           note_clicks=debug_mode,
+                                                           watchdog=self.drift_watchdog)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
 
@@ -74,25 +92,24 @@ class SoundSwitchAutoPilot:
 
     async def run(self):
         logging.info("[main] setting up auto pilot..")
+        try:
+            await self._run()
+        finally:
+            self._shut_down()
+
+    async def _run(self):
         self.audio_client.start_streams(start_stream_out=self._enable_playback)
         self.midi_client.start()
         self.overlay_client.start()
-        self.music_analyser.start()
         if self.disable_os2l:
             logging.info("[main] OS2L is disabled")
         else:
             self.os2l_client.start()
         if self.event_buffer is not None:
             self.event_buffer.start()
-            import threading
-            from simulate.visualizer_app import run_app
-            ui_thread = threading.Thread(
-                target=run_app,
-                args=(self.event_buffer, self._ui_port),
-                daemon=True,
-            )
-            ui_thread.start()
-            logging.info(f'[main] visualizer started → http://localhost:{self._ui_port}')
+        if self.enable_ui:
+            from lib import ui_bridge
+            self._ui = ui_bridge.start(self.event_buffer, self._ui_port)
         self.is_running = True
 
         logging.info("[main] auto pilot is ready, starting")
@@ -102,11 +119,12 @@ class SoundSwitchAutoPilot:
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
         audio_delay_buf: deque = deque()
         _audio_playback_started = False
-        _playback_ready_at: float = time.monotonic() + LOOK_AHEAD_SEC
+        _playback_ready_at: float = time.monotonic() + PLAYBACK_DELAY_SEC
 
         while self.is_running:
             now = datetime.datetime.now()
             audio_signal = self.audio_client.read()
+            await self.light_engine.on_audio(audio_signal)
             new_audio_signal = await self.music_analyser.analyse(audio_signal)
             await self.command_queue.drain()
 
@@ -130,10 +148,23 @@ class SoundSwitchAutoPilot:
                 last_10sec_callback_execution = now
                 await self._do_10s_callback()
 
-        self.audio_client.close()
-        self.os2l_client.stop()
-        self.midi_client.stop()
-        self.overlay_client.stop()
+    def _shut_down(self) -> None:
+        self.is_running = False
+        for what, close in (('visualizer',
+                             None if self._ui is None else self._ui.stop),
+                            ('audio', self.audio_client.close),
+                            ('section chain',
+                             None if self.section is None else self.section.stop),
+                            ('os2l', self.os2l_client.stop),
+                            ('overlay', self.overlay_client.stop),
+                            ('overlay flush', self.overlay_client.flush_messages),
+                            ('midi', self.midi_client.stop)):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as error:
+                logging.exception(f'[main] {what} did not close cleanly ({error!r})')
         logging.info("[main] auto pilot stopped, clean shutdown")
 
     def stop(self):
@@ -184,8 +215,11 @@ async def run_cmd(args: argparse.Namespace):
 
 
 async def list_cmd(args: argparse.Namespace):
-    app = SoundSwitchAutoPilot(0)
-    app.list_devices()
+    from lib.clients.pyaudio_client import PyAudioClient
+    from lib.clients.midi_client import MidiClient
+
+    PyAudioClient(SAMPLE_RATE, BUFFER_SIZE, None, None).list_devices()
+    MidiClient(0).list_devices()
 
 
 def death_handler(signum, frame):

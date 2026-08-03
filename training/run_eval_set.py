@@ -1,78 +1,5 @@
 #!/usr/bin/env python
-"""Run the frozen eval set through the simulation and score it against labels.
-
-This is the benchmark.  It replaces the single bundled Generate track -- and the
-plumbing-only PASS gate that judged it -- with the ten expert-labeled Raveform
-tracks frozen in ``training/eval_set.json``, and it asks a musical question
-instead of a plumbing one: *does the show still land on the music?*
-
-Each track goes through the SAME code path production uses -- ``FileAudioClient``
-into ``run_fast_simulation`` on the virtual clock -- and the resulting report is
-judged two ways:
-
-**Behaviour change.**  ``simulate.evaluator.report_checksum`` over the report.
-Identical pipeline + identical audio => identical bytes.  Any change to that
-hash means the pipeline now behaves differently; the runner says which track and
-exits nonzero.  Nothing else in the suite detects a behaviour change this
-cheaply, and on ten tracks of real music it is hard to change anything that
-matters without moving one.
-
-**Musical quality.**  The report is joined to the annotation with
-``build_training_table.join_track`` -- the same join the training table uses, so
-the look-ahead realignment (``realign_intents``) happens here exactly once and
-exactly the way the corpus does it -- and scored with
-``evaluate_against_labels.score_track`` in the ``v1`` space.  Four numbers are
-gated: macro-F1, time-weighted accuracy, boundary-F1 of the intent stream at the
-primary tolerance, and flicker per audience-minute.  The first three regress
-downward; flicker regresses UPWARD, because it counts changes the audience had
-no musical reason for.  Beside them, the recorded COUNT facts (rows,
-label boundaries, scored seconds) are compared exactly: they cost nothing and
-they move for causes a 0.02 score tolerance absorbs.
-
-**The same question.**  Scores are only comparable against the labels they were
-cut over.  The ten tracks' labels are COMMITTED (``training/eval_labels.json``,
-cut by ``eval_assets``) and carry the sha256 of the ``annotations/segments.json``
-they came out of, so the run proves the slice belongs to the frozen set before
-scoring anything.  A machine without the slice falls back to the gitignored
-corpus file, which a re-fetch can move, and is checked against the sha the eval
-set recorded at freeze time.  Either way the run refuses outright on a mismatch.
-
-Both gates fire together on a deliberate improvement (better scores still move
-the checksums), and that is the intended workflow: read the table, decide the
-change is wanted, re-cut the baseline in the same commit.
-
-Two modes::
-
-    # cut the baseline (COMMITTED: training/eval_set_baseline.json)
-    uv run python training/run_eval_set.py --write-baseline
-
-    # compare against it -- the gate; nonzero on drift or regression
-    uv run python training/run_eval_set.py
-
-    # a subset, by track_id or youtube_id (what the integration test runs)
-    uv run python training/run_eval_set.py --only 0096.PNpXKsge4xM,0834.NyEKXA7_6z0
-
-A subset run compares only its own tracks and does NOT compare the aggregate: an
-aggregate over three tracks is not the ten-track number, and pretending
-otherwise would either fail every subset run or gate on nothing.  For the same
-reason a subset run REFUSES to overwrite the committed baseline: a three-track
-baseline at that path passes by construction and the other seven tracks stop
-being gated with nothing to say so.  ``--allow-partial-baseline`` is the
-deliberate override; an explicit ``--baseline PATH`` is the experiment.
-
-**Decode caches are kept.**  Every other consumer of the corpus deletes the
-``<mp3>.<rate>.npy`` a simulation leaves behind (it is ~7.7x the mp3's size), but
-the eval set is ten tracks and it is re-run constantly -- by the integration
-suite on every ``uv run pytest``.  Keeping the caches costs under a gigabyte and
-removes the decode (several seconds a track) from every run after the first.
-This is deliberate, and ``build_training_table`` already honours it: its
-``keep_cache`` rule leaves behind any cache that existed before its batch.  They
-now land in ``training/eval_audio/`` beside the committed mp3s, where the
-repository's ``*.npy`` rule keeps them out of git.
-
-Exit codes: 0 clean, 1 the gate failed, 2 an input is missing or the command was
-refused.
-"""
+"""Run the frozen eval set through the simulation and score it against labels."""
 
 from __future__ import annotations
 
@@ -126,40 +53,29 @@ from select_eval_set import EVAL_SET_FILE, load_eval_set, verify_inputs  # noqa:
 
 BASELINE_FILE = REPO_ROOT / "training" / "eval_set_baseline.json"
 
-# The scoring configuration the baseline is cut under.  Recorded in the file so
-# a baseline can never be read under different assumptions than it was written.
-SPACE = "v1"                    # the space the NN trains on -- the primary one
-STREAM = "intent"               # every lighting change: the show as the room sees it
+SPACE = "v1"
+STREAM = "intent"
 BOUNDARY_TOLERANCE_SEC = PRIMARY_TOLERANCE_SEC
 
-# metric -> the direction that is a REGRESSION.
+# The tolerance the shipped decoder was selected on (#141(a)).
+CRISPNESS_TOLERANCE_SEC = 0.5
+
+REGRESSES_DOWN = "down"
+REGRESSES_UP = "up"
 GUARDED_METRICS = {
-    "macro_f1": "down",
-    "accuracy": "down",
-    "boundary_f1": "down",
-    "flicker_per_min": "up",
+    "macro_f1": REGRESSES_DOWN,
+    "accuracy": REGRESSES_DOWN,
+    "boundary_f1": REGRESSES_DOWN,
+    "crispness": REGRESSES_DOWN,
+    "flicker_per_min": REGRESSES_UP,
 }
 
-# How far a number may move before it is a regression.  Runs are deterministic,
-# so this is not noise headroom -- it is the size of a score change worth
-# stopping a commit for.  F1/accuracy live in [0, 1]; flicker is changes per
-# audience-minute and sits near 1-3 on this corpus, so it gets its own slack.
+# Not noise headroom: runs are deterministic. The size of a change worth stopping a commit for.
 DEFAULT_SCORE_TOLERANCE = 0.02
 DEFAULT_FLICKER_TOLERANCE = 0.20
 
-# Facts, not scores: how many beats survived the join, how many boundaries the
-# annotation carries, and how much show time was scored.  Compared for EXACT
-# equality, because a tolerance on a count means nothing and because they fail
-# for causes the four gated scores cannot see -- a join that starts dropping
-# beats, or an annotation that gained a section, moves these while macro-F1
-# stays comfortably inside its 0.02.  Free: they are already in every row.
 COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec")
 
-# The one line a machine with neither copy must see.  The ten mp3s are COMMITTED
-# (owner-authorised, under derived names -- see eval_assets), so this is no
-# longer an ordinary state of a fresh clone; it means the committed dir was
-# pruned and the corpus is not there either.  Still loud, never a silent skip: a
-# skipped benchmark that nobody notices is the same as no benchmark.
 AUDIO_MISSING_HINT = (
     "eval-set audio missing -- expected the committed copy in "
     f"{EVAL_AUDIO_DIR.relative_to(REPO_ROOT).as_posix()}/ (re-cut it with "
@@ -169,51 +85,12 @@ AUDIO_MISSING_HINT = (
 
 SCHEMA_VERSION = 1
 
-# Where the corpus is, when it is not where the code is.
 DATA_DIR_ENV = "RAVEFORM_DATA_DIR"
 
-
-# --------------------------------------------------------------------------- #
-# Inputs
-# --------------------------------------------------------------------------- #
-
-
-def corpus_dir() -> Path:
-    """The corpus root: ``$RAVEFORM_DATA_DIR``, else the repo's, else the main
-    worktree's.
-
-    The corpus is gitignored, so there is exactly ONE copy of it on a machine and
-    it does not follow ``git worktree add``: branch work in a linked worktree
-    still has to reach the audio sitting in the main checkout.  Resolving that
-    here -- rather than making every caller pass ``--data-dir`` -- is what lets
-    the integration suite run green from any worktree.  The environment variable
-    wins for the case this cannot guess (a corpus on another drive).
-    """
-    override = os.environ.get(DATA_DIR_ENV)
-    if override:
-        return Path(override).resolve()
-    local = default_data_dir()
-    if local.exists():
-        return local
-    # `--git-common-dir` is the main checkout's .git even from a linked worktree.
-    common = _git(REPO_ROOT, "rev-parse", "--path-format=absolute",
-                  "--git-common-dir")
-    if common:
-        shared = Path(common).parent / local.relative_to(REPO_ROOT)
-        if shared.exists():
-            return shared
-    return local
+from corpus_root import corpus_dir  # noqa: E402,F401
 
 
 def audio_path(data_dir: Path, youtube_id: str) -> Path:
-    """The mp3 this run will read: the committed copy first, else the corpus.
-
-    Committed first because that is the copy every machine has, and because the
-    two are byte-identical by construction (``eval_assets.copy_audio`` re-hashes
-    every copy), so which one is read cannot move a report checksum.  When
-    neither exists the CORPUS path is returned: it is the one a human can act
-    on, and it is what the missing-input line prints.
-    """
     committed = committed_audio_path(youtube_id)
     if committed.exists():
         return committed
@@ -221,12 +98,6 @@ def audio_path(data_dir: Path, youtube_id: str) -> Path:
 
 
 def labels_source(data_dir: Path, labels: Path | None = None) -> tuple:
-    """``(path, committed)`` -- the section labels this run scores against.
-
-    One resolver for the three things that need the answer (is it there, is it
-    the right one, read it), because a run that CHECKED the corpus file and
-    SCORED against the committed slice would be checking nothing.
-    """
     committed = Path(labels or EVAL_LABELS_FILE)
     if committed.exists():
         return committed, True
@@ -234,7 +105,6 @@ def labels_source(data_dir: Path, labels: Path | None = None) -> tuple:
 
 
 def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
-    """``track_id -> [(start, end, label)]`` from whichever labels resolved."""
     path, committed = labels_source(data_dir, labels)
     if committed:
         return sections_from_slice(load_labels(path))
@@ -242,13 +112,6 @@ def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
 
 
 def select_tracks(document: dict, only: list | None = None) -> list:
-    """The eval-set track records to run, in the frozen document's order.
-
-    ``only`` accepts either identifier a human has to hand -- the ``track_id``
-    that names the corpus row or the ``youtube_id`` that names the file -- and
-    refuses anything outside the frozen set, because a benchmark that silently
-    runs a track the baseline never saw is not a benchmark.
-    """
     tracks = list(document.get("tracks") or [])
     if only is None:
         return tracks
@@ -267,15 +130,6 @@ def select_tracks(document: dict, only: list | None = None) -> list:
 
 
 def shortest_track_ids(document: dict, count: int) -> list:
-    """The ``count`` shortest tracks, returned in the frozen document's order.
-
-    The integration test names its tracks through this function rather than by
-    literal id: the budget it is protecting is wall time, so the selection has
-    to follow the durations if the set is ever re-frozen.  Ties break on
-    ``track_id`` so the answer is a function of the document and not of the
-    order anything happened to be written in.  A library entry point, not a
-    flag: ``--only`` already spells any subset a human wants from the shell.
-    """
     tracks = list(document.get("tracks") or [])
     by_length = sorted(tracks, key=lambda track: (float(track["duration_sec"]),
                                                   track["track_id"]))
@@ -284,12 +138,6 @@ def shortest_track_ids(document: dict, count: int) -> list:
 
 
 def missing_inputs(data_dir: Path, tracks: list, labels: Path | None = None) -> list:
-    """Everything the run needs and does not have, one human line each.
-
-    Reported all at once rather than raising on the first: a machine missing
-    both should learn it needs the annotations AND three mp3s from one run, not
-    three.  On a fresh clone this is empty -- both are committed.
-    """
     problems = []
     segments, committed = labels_source(data_dir, labels)
     if not committed and not segments.exists():
@@ -304,26 +152,21 @@ def missing_inputs(data_dir: Path, tracks: list, labels: Path | None = None) -> 
     return problems
 
 
+def missing_model(data_dir: Path) -> str | None:
+    from lib import section_chain
+
+    if section_chain.artifacts_present(data_dir):
+        return None
+    return ("the shipped model is not on this machine: "
+            f"{', '.join(section_chain.artifacts(data_dir).missing())}\n"
+            "the benchmark scores a neural show; without the model every track "
+            "runs the degradation state, so its checksums and scores describe "
+            "nothing.  This is a missing download, not a regression -- do not "
+            "re-cut the baseline from here.")
+
+
 def verify_ground_truth(document: dict, data_dir: Path,
                         labels: Path | None = None) -> None:
-    """Refuse to score against labels the eval set was not frozen against.
-
-    Re-fetching the annotations can move a section boundary under a baseline
-    that was cut before the move, and every number in this run would then be
-    measuring a different question while the gate reported "MATCHES BASELINE".
-
-    Two ways to be sure, one per source.  The COMMITTED slice cannot move
-    behind git's back, so what has to be proved of it is provenance: it records
-    the sha256 of the ``segments.json`` it was cut from, and that must be the
-    sha the eval set froze against.  The CORPUS file is gitignored and nothing
-    in the repository pins it, so it is hashed on every run.
-
-    Fatal rather than a warning, and checked here rather than at the freeze:
-    the freeze can survive a corpus that has moved on (that is what freezing
-    is for), a *score* cannot.  ``clean_manifest.csv`` is deliberately not
-    checked -- it chose which tracks are in the set and grows with every
-    download batch, and it feeds no number in this file.
-    """
     path, committed = labels_source(data_dir, labels)
     if committed:
         frozen = ((document.get("selected_from") or {}).get("inputs")
@@ -350,7 +193,6 @@ def verify_ground_truth(document: dict, data_dir: Path,
 
 
 def same_path(left: Path, right: Path) -> bool:
-    """Do two paths name the same file, spelled differently or not yet existing?"""
     try:
         return Path(left).resolve() == Path(right).resolve()
     except OSError:                                             # pragma: no cover
@@ -359,17 +201,6 @@ def same_path(left: Path, right: Path) -> bool:
 
 def partial_baseline_refusal(selected: list, document: dict, baseline_path: Path,
                              allowed: bool = False) -> str | None:
-    """Why a subset run must not overwrite the COMMITTED baseline, or ``None``.
-
-    The tripwire must not be allowed to rewrite its own reference to whatever it
-    happened to run.  A three-track baseline at the committed path is green by
-    construction -- the integration test compares the tracks it ran against the
-    tracks in the file, so the other seven simply stop being checked, and
-    nothing fails to say so.  A warning is not enough for that: it scrolls past.
-
-    Writing a subset to an EXPLICIT other path stays allowed.  That is an
-    experiment, and no gate reads it.
-    """
     total = len(document.get("tracks") or [])
     if allowed or len(selected) >= total or not same_path(baseline_path, BASELINE_FILE):
         return None
@@ -387,7 +218,6 @@ def partial_baseline_refusal(selected: list, document: dict, baseline_path: Path
 
 
 def load_baseline(path: Path) -> dict:
-    """Read the committed baseline, refusing anything that is not one."""
     try:
         with open(path, "r", encoding="utf-8") as handle:
             document = json.load(handle)
@@ -402,29 +232,15 @@ def load_baseline(path: Path) -> dict:
     return document
 
 
-# --------------------------------------------------------------------------- #
-# One track
-# --------------------------------------------------------------------------- #
-
-
 class TrackRun(NamedTuple):
-    """One simulated + scored track."""
-
     track_id: str
     youtube_id: str
-    entry: dict          # what goes in the baseline
-    score: object        # evaluate_against_labels.Score, for the aggregate
+    entry: dict
+    score: object
     wall_sec: float
 
 
 def simulate_report(mp3_path: str) -> tuple:
-    """Fast-sim one file; returns ``(report, song_sec, wall_sec)``.
-
-    Identical to what ``auto_pilot simulate file`` does and to what
-    ``build_training_table`` does per corpus track -- the point of the benchmark
-    is that there is no benchmark-only code path.  The DSP imports stay local so
-    the pure-logic half of this module (and its unit tests) never pay for aubio.
-    """
     from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import run_fast_simulation
@@ -437,16 +253,7 @@ def simulate_report(mp3_path: str) -> tuple:
 
 
 def score_report(track_id: str, youtube_id: str, report: dict, sections: list):
-    """``(Score, rows)`` for one report against one track's annotation.
-
-    The join is ``build_training_table``'s, not a copy of it: intent blocks come
-    out of the report stamped in AUDIENCE time by the delayed command queue
-    (except the immediate commits, which are already song-stamped), and
-    ``realign_intents`` is the one piece of code that knows how to tell those
-    apart.  Re-deriving that here would give the benchmark a different notion of
-    when the lights changed than the training table has.
-    """
-    rows, _stats = join_track(track_id, youtube_id, report, sections)
+    rows, stats = join_track(track_id, youtube_id, report, sections)
     track = TrackBeats(
         track_id=track_id,
         times=tuple(row["t_song"] for row in rows),
@@ -454,30 +261,24 @@ def score_report(track_id: str, youtube_id: str, report: dict, sections: list):
         labels={name: tuple(row[spec.column] for row in rows)
                 for name, spec in SPACES.items()},
     )
-    return score_track(track, SPACE), len(rows)
+    return score_track(track, SPACE), len(rows), stats
 
 
 def track_metrics(score) -> dict:
-    """The four gated numbers, read off a ``Score``."""
     return {
         "macro_f1": round(score.macro_f1, 6),
         "accuracy": round(score.accuracy, 6),
         "boundary_f1": round(
             score.boundary_prf(STREAM, BOUNDARY_TOLERANCE_SEC)[2], 6),
+        "crispness": round(
+            score.boundary_prf(STREAM, CRISPNESS_TOLERANCE_SEC)[2], 6),
         "flicker_per_min": round(
             score.flicker_per_minute[STREAM][BOUNDARY_TOLERANCE_SEC], 6),
     }
 
 
 def track_entry(report: dict, score, rows: int, youtube_id: str,
-                song_sec: float) -> dict:
-    """One track's row of the baseline: identity, size, speed-free facts, scores.
-
-    Wall time and x-realtime are deliberately NOT in here.  They are printed on
-    every run and they are the whole reason the caches are kept, but they are a
-    property of the machine, and a committed file that changes with the CPU load
-    of the laptop that wrote it is a file nobody can diff.
-    """
+                song_sec: float, stats=None) -> dict:
     from simulate.evaluator import report_checksum
 
     entry = {
@@ -494,49 +295,33 @@ def track_entry(report: dict, score, rows: int, youtube_id: str,
         "label_boundaries":
             score.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_truth"],
     }
+    if stats is not None:
+        entry["late"] = int(stats.intent_blocks_late)
+        entry["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
     entry.update(track_metrics(score))
     return entry
 
 
 class Job(NamedTuple):
-    """One track to simulate and score.  Picklable: crosses the process pool.
-
-    Carries only its OWN annotation, not the corpus-wide map: the map is every
-    annotated track in the corpus and shipping it to each worker would cost more
-    than the simulation saves.
-    """
-
     data_dir: str
     track: dict
     sections: list
 
 
 def run_job(job: Job) -> TrackRun:
-    """Simulate and score one eval-set track.  The pool's work unit."""
     track_id, youtube_id = job.track["track_id"], job.track["youtube_id"]
     report, song_sec, wall_sec = simulate_report(
         audio_path(Path(job.data_dir), youtube_id))
-    score, rows = score_report(track_id, youtube_id, report, job.sections)
+    score, rows, stats = score_report(track_id, youtube_id, report, job.sections)
     return TrackRun(track_id, youtube_id,
-                    track_entry(report, score, rows, youtube_id, song_sec),
+                    track_entry(report, score, rows, youtube_id, song_sec, stats),
                     score, wall_sec)
-
-
-# --------------------------------------------------------------------------- #
-# The document
-# --------------------------------------------------------------------------- #
 
 
 def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
                    aggregate_metrics: dict,
                    score_tolerance: float = DEFAULT_SCORE_TOLERANCE,
                    flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> dict:
-    """The committed baseline, and the shape every run is compared in.
-
-    No timestamp: two runs of the same pipeline over the same corpus must
-    produce a byte-identical file, so that re-cutting the baseline with nothing
-    changed is a no-op diff rather than a line of noise.
-    """
     return {
         "schema": SCHEMA_VERSION,
         "eval_set": eval_set,
@@ -544,6 +329,7 @@ def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
         "space": SPACE,
         "stream": STREAM,
         "boundary_tolerance_sec": BOUNDARY_TOLERANCE_SEC,
+        "crispness_tolerance_sec": CRISPNESS_TOLERANCE_SEC,
         "gate": {"score_tolerance": score_tolerance,
                  "flicker_tolerance": flicker_tolerance,
                  "metrics": dict(GUARDED_METRICS)},
@@ -553,7 +339,6 @@ def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
 
 
 def eval_set_identity(path: Path, document: dict) -> dict:
-    """The frozen set this run is against -- checksummed, so a re-freeze shows."""
     path = Path(path)
     try:
         name = str(path.resolve().relative_to(REPO_ROOT)).replace("\\", "/")
@@ -567,21 +352,14 @@ def eval_set_identity(path: Path, document: dict) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# The gate
-# --------------------------------------------------------------------------- #
-
-
 class Comparison(NamedTuple):
-    """Why a run did or did not match the baseline, split by what it means."""
-
-    desync: list        # the baseline is not about this eval set at all
-    unbaselined: list   # a track the baseline has never seen
-    ungated: list       # a guarded metric one side does not carry
+    desync: list
+    unbaselined: list
+    ungated: list
     checksum_drift: list
     regressions: list
-    fact_drift: list    # a recorded count moved: the run measured something else
-    subset: bool        # fewer tracks than the baseline: aggregate not compared
+    fact_drift: list
+    subset: bool
 
     @property
     def failed(self) -> bool:
@@ -591,9 +369,8 @@ class Comparison(NamedTuple):
 
 def _regression(name: str, metric: str, before: float, after: float,
                 tolerance: float) -> str | None:
-    """One metric of one row, or ``None`` if it is within tolerance."""
     delta = after - before
-    if GUARDED_METRICS[metric] == "down":
+    if GUARDED_METRICS[metric] == REGRESSES_DOWN:
         if delta >= -tolerance:
             return None
         arrow = "fell"
@@ -606,12 +383,6 @@ def _regression(name: str, metric: str, before: float, after: float,
 
 
 def _fact_drift(name: str, before: dict, after: dict) -> list:
-    """Count facts of one row that stopped agreeing, exactly.
-
-    Only compared where BOTH sides carry the fact: the aggregate row is four
-    scores and nothing else, and inventing a failure for a field that row was
-    never supposed to have would make the tripwire noise.
-    """
     return [
         f"{name}: {fact} {before[fact]} -> {after[fact]}"
         for fact in COUNT_FACTS
@@ -621,13 +392,6 @@ def _fact_drift(name: str, before: dict, after: dict) -> list:
 
 def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: float,
                      flicker_tolerance: float) -> tuple:
-    """``(ungated, regressions, facts)`` for one row of the table.
-
-    A guarded metric that either side does not carry is a FAILURE, not a skip.
-    Skipping it is silent un-gating: an old-schema or hand-edited baseline would
-    keep passing while the number it was supposed to protect drifted anywhere it
-    liked, and nothing on the way out would say so.
-    """
     ungated, regressions = [], []
     for metric in GUARDED_METRICS:
         if metric not in before or metric not in after:
@@ -647,16 +411,6 @@ def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: floa
 def compare(baseline: dict, current: dict,
             score_tolerance: float = DEFAULT_SCORE_TOLERANCE,
             flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> Comparison:
-    """Judge a run against the committed baseline.
-
-    Five independent failures, kept apart because they mean different things: a
-    DESYNC says the baseline describes a different benchmark (re-cut it), an
-    UNGATED metric says the baseline cannot judge this run at all, a CHECKSUM
-    DRIFT says the pipeline's behaviour moved (look at the scores, then accept
-    or fix), a REGRESSION says the show got worse (fix it), and a FACT DRIFT
-    says a recorded count moved, i.e. the run scored something other than what
-    the baseline scored.
-    """
     desync, unbaselined, ungated, drift, regressions, facts = [], [], [], [], [], []
 
     baseline_sha = (baseline.get("eval_set") or {}).get("sha256")
@@ -693,8 +447,6 @@ def compare(baseline: dict, current: dict,
         regressions += row_regressions
         facts += row_facts
 
-    # A subset run's aggregate is an aggregate of the subset; comparing it to
-    # the ten-track number would be comparing two different quantities.
     if not subset:
         row_ungated, row_regressions, row_facts = _compare_metrics(
             "(aggregate)", baseline.get("aggregate") or {},
@@ -707,32 +459,29 @@ def compare(baseline: dict, current: dict,
                       subset)
 
 
-# --------------------------------------------------------------------------- #
-# Report
-# --------------------------------------------------------------------------- #
-
-WIDTH = 100
+WIDTH = 116
 
 
 def render_table(runs: list, aggregate_entry: dict, total_song: float,
                  total_wall: float, workers: int = 1) -> str:
-    """The per-track table every run prints, baseline or not."""
     lines = [
         f'  {"track_id":<20}{"song":>7}{"wall":>7}{"x-rt":>7}{"beats":>7}'
-        f'{"rows":>7}{"macroF1":>9}{"acc":>7}{"bF1":>7}{"flick/m":>9}'
-        f'{"chg i/c":>10}  checksum',
+        f'{"rows":>7}{"macroF1":>9}{"acc":>7}{"bF1":>7}{"crisp":>7}'
+        f'{"flick/m":>9}{"chg i/c":>10}{"late":>8}  checksum',
         "  " + "-" * (WIDTH - 2),
     ]
     for run in runs:
         entry = run.entry
         speed = entry["song_sec"] / run.wall_sec if run.wall_sec > 0 else 0.0
         changes = f'{entry["changes_intent"]}/{entry["changes_class"]}'
+        late = f'{entry.get("late", "-")}/{entry.get("blocks_measurable", "-")}'
         lines.append(
             f'  {run.track_id:<20}{entry["song_sec"] / 60.0:>6.1f}m'
             f'{run.wall_sec:>6.1f}s{speed:>6.0f}x{entry["beats"]:>7}'
             f'{entry["rows"]:>7}{entry["macro_f1"]:>9.3f}{entry["accuracy"]:>7.3f}'
-            f'{entry["boundary_f1"]:>7.3f}{entry["flicker_per_min"]:>9.2f}'
-            f'{changes:>10}  {entry["checksum"][:12]}'
+            f'{entry["boundary_f1"]:>7.3f}{entry["crispness"]:>7.3f}'
+            f'{entry["flicker_per_min"]:>9.2f}{changes:>10}{late:>8}  '
+            f'{entry["checksum"][:12]}'
         )
     lines.append("  " + "-" * (WIDTH - 2))
     speed = total_song / total_wall if total_wall > 0 else 0.0
@@ -740,11 +489,17 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
         f'  {"(aggregate)":<20}{total_song / 60.0:>6.1f}m{total_wall:>6.1f}s'
         f'{speed:>6.0f}x{"":>7}{"":>7}{aggregate_entry["macro_f1"]:>9.3f}'
         f'{aggregate_entry["accuracy"]:>7.3f}{aggregate_entry["boundary_f1"]:>7.3f}'
+        f'{aggregate_entry["crispness"]:>7.3f}'
         f'{aggregate_entry["flicker_per_min"]:>9.2f}'
     )
     lines.append(
         f'  macro-F1 and accuracy in the {SPACE} space; boundary-F1 and flicker on '
-        f'the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s'
+        f'the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s, crispness at '
+        f'+/-{CRISPNESS_TOLERANCE_SEC}s'
+    )
+    lines.append(
+        f'  late = intent blocks committed more than the playback delay after '
+        f'the audio they name, of those that can be measured (#154, accepted)'
     )
     if workers > 1 and len(runs) > 1:
         lines.append(
@@ -788,13 +543,7 @@ def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
     return "\n".join(lines)
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
 def build_jobs(data_dir: Path, tracks: list, sections_by_track: dict) -> list:
-    """One ``Job`` per selected track, in eval-set order."""
     jobs = []
     for track in tracks:
         sections = sections_by_track.get(track["track_id"])
@@ -806,13 +555,6 @@ def build_jobs(data_dir: Path, tracks: list, sections_by_track: dict) -> list:
 
 
 def execute(jobs: list, workers: int, quiet: bool = False) -> list:
-    """Run every job, results in job order.
-
-    Parallel is safe and changes nothing: each run seeds its own RNG and drives
-    its own ``VirtualClock``, so a track's report is a pure function of its
-    audio.  The pool exists purely so the integration suite -- which runs three
-    of these on every ``uv run pytest`` -- fits its wall-time budget.
-    """
     total = len(jobs)
 
     def announce(index: int, result: TrackRun) -> None:
@@ -842,11 +584,6 @@ def execute(jobs: list, workers: int, quiet: bool = False) -> list:
 
 def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
         workers: int = 1, quiet: bool = False) -> tuple:
-    """Simulate and score the selected eval-set tracks.
-
-    Returns ``(document, runs, total_song_sec, total_wall_sec)``.  Raises
-    ``RuntimeError`` with a one-line explanation if an input is missing.
-    """
     eval_document = load_eval_set(Path(eval_set_path))
     tracks = select_tracks(eval_document, only)
     if not tracks:
@@ -860,8 +597,6 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
     jobs = build_jobs(data_dir, tracks, load_sections(data_dir))
     started = time.monotonic()
     runs = execute(jobs, workers, quiet=quiet)
-    # Elapsed, not the sum of the tracks': under a pool they overlap, and the
-    # aggregate x-realtime has to describe the run a human waited through.
     total_wall = time.monotonic() - started
     total_song = sum(result.entry["song_sec"] for result in runs)
 
@@ -910,8 +645,10 @@ def main(argv: list | None = None) -> int:
         only = None
         if args.only:
             only = [item for item in args.only.split(",") if item.strip()]
-        # Refused BEFORE the simulations run: a two-minute run that ends in a
-        # refusal teaches the same lesson two minutes later.
+        absent = missing_model(Path(args.data_dir))
+        if absent:
+            print(absent, file=sys.stderr)
+            return 2
         if args.write_baseline:
             refusal = partial_baseline_refusal(
                 select_tracks(document, only), document, Path(args.baseline),
@@ -960,7 +697,6 @@ def main(argv: list | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # Only when run as a script: under pytest, sys.stdout is the capture object
-    # and main() has to stay a plain library call.
+    # Not at module scope: under pytest sys.stdout is the capture object.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main())

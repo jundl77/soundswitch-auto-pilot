@@ -1,0 +1,243 @@
+{
+  "buffer_budget_ms": 5.804988662131519,
+  "track": "training/eval_audio/kjxyhFKv6r.mp3",
+  "rows": [
+    {
+      "label": "madmom rhythm",
+      "samples": 31006,
+      "mean_ms": 0.5833687997411968,
+      "p50_ms": 0.8747999963816255,
+      "p90_ms": 1.0959000210277736,
+      "p99_ms": 1.5634850307833406,
+      "max_ms": 4.379200050607324,
+      "core_share_pct": 10.049439089291711,
+      "realtime_factor": 9.950804130606263,
+      "over_budget_pct": 0.0
+    },
+    {
+      "label": "engine.on_audio",
+      "samples": 31005,
+      "mean_ms": 0.09397996430979298,
+      "p50_ms": 0.0371999922208488,
+      "p90_ms": 0.09839999256655574,
+      "p99_ms": 0.7675800216384228,
+      "max_ms": 1.7398000345565379,
+      "core_share_pct": 1.618951728930418,
+      "realtime_factor": 61.768364190862144,
+      "over_budget_pct": 0.0
+    },
+    {
+      "label": "analyser.analyse",
+      "samples": 31005,
+      "mean_ms": 0.8738539461958856,
+      "p50_ms": 1.1501000262796879,
+      "p90_ms": 1.7219599802047016,
+      "p99_ms": 2.6279880432412024,
+      "max_ms": 5.328800005372614,
+      "core_share_pct": 15.053499620015062,
+      "realtime_factor": 6.642973562575475,
+      "over_budget_pct": 0.0
+    },
+    {
+      "label": "queue.drain",
+      "samples": 31005,
+      "mean_ms": 0.0021456605100719185,
+      "p50_ms": 0.001400010660290718,
+      "p90_ms": 0.002600019797682762,
+      "p99_ms": 0.031200004741549492,
+      "max_ms": 0.36500004353001714,
+      "core_share_pct": 0.03696235488053578,
+      "realtime_factor": 2705.4553294346397,
+      "over_budget_pct": 0.0
+    },
+    {
+      "label": "AUDIO LOOP (all three)",
+      "samples": 31005,
+      "mean_ms": 0.9699795710157505,
+      "p50_ms": 1.1928000021725893,
+      "p90_ms": 1.8822200130671267,
+      "p99_ms": 2.8009960241615772,
+      "max_ms": 5.825200001709163,
+      "core_share_pct": 16.709413703826016,
+      "realtime_factor": 5.9846504355268095,
+      "over_budget_pct": 0.0032252862441541686
+    }
+  ],
+  "paced": {
+    "wall_sec": 179.99,
+    "buffers": 31005,
+    "loop": {
+      "label": "AUDIO LOOP (all three)",
+      "samples": 31005,
+      "mean_ms": 0.9699795710157505,
+      "p50_ms": 1.1928000021725893,
+      "p90_ms": 1.8822200130671267,
+      "p99_ms": 2.8009960241615772,
+      "max_ms": 5.825200001709163,
+      "core_share_pct": 16.709413703826016,
+      "realtime_factor": 5.9846504355268095,
+      "over_budget_pct": 0.0032252862441541686
+    },
+    "gpu_pass_ms": {
+      "samples": 179,
+      "mean": 157.34801341014702,
+      "p50": 135.5545000405982,
+      "p90": 307.40491999313235,
+      "p99": 333.78378997789696,
+      "max": 349.5912999496795
+    },
+    "gpu_hop_ms": 1000.0,
+    "gpu_passes": 179,
+    "gpu_faults": 0,
+    "gpu_overflows": 0,
+    "gpu_reinits": 0,
+    "gpu_resyncs": 0,
+    "queue_depth": {
+      "samples": 31005,
+      "mean": 0.0055152394775036286,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p99": 0.0,
+      "max": 1.0
+    },
+    "queue_capacity": 4,
+    "pacing_error_ms": {
+      "samples": 31005,
+      "mean": 0.2818810683780243,
+      "p50": 0.28268329333513975,
+      "p90": 0.48300375929102307,
+      "p99": 0.5780151952058076,
+      "max": 1.8289578729309142
+    },
+    "reserved_bytes_curve": [
+      {
+        "audio_sec": 5.8,
+        "bytes": 782237696
+      },
+      {
+        "audio_sec": 11.6,
+        "bytes": 1166016512
+      },
+      {
+        "audio_sec": 17.4,
+        "bytes": 1776287744
+      },
+      {
+        "audio_sec": 23.2,
+        "bytes": 2657091584
+      },
+      {
+        "audio_sec": 29.0,
+        "bytes": 3802136576
+      },
+      {
+        "audio_sec": 34.8,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 40.6,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 46.4,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 52.2,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 58.0,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 63.9,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 69.7,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 75.5,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 81.3,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 87.1,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 92.9,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 98.7,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 104.5,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 110.3,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 116.1,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 121.9,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 127.7,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 133.5,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 139.3,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 145.1,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 150.9,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 156.7,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 162.5,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 168.3,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 174.1,
+        "bytes": 4242538496
+      },
+      {
+        "audio_sec": 180.0,
+        "bytes": 4242538496
+      }
+    ],
+    "peak_drift_sec": 0.0016,
+    "shed_level_at_end": "NONE"
+  },
+  "core_share_pct": 16.709413703826016,
+  "verdict": "PASS"
+}

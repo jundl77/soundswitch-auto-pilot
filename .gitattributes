@@ -11,6 +11,10 @@
 # The writers already emit LF unconditionally (write_json uses newline="\n"),
 # so eol=lf makes the checkout agree with the writer rather than the platform.
 training/*.json text eol=lf
+# The shipped decoder config is read by the runtime and hashed by nothing today,
+# which is exactly when a CRLF drift is cheapest to fix.  Same rule, one level
+# down: `training/*.json` does not match a subdirectory.
+training/nn/*.json text eol=lf
 
 # The committed eval-set audio must check out byte-identical to the corpus mp3s
 # it was copied from, or the two paths decode differently and the benchmark's

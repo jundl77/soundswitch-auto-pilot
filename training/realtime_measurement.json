@@ -1,4 +1,5 @@
 {
+  "note": "The madmom migration's record, kept verbatim and no longer re-cuttable: two of its three rows measure code the NN integration deleted, and the row labelled 'aubio filterbank (STAYS)' does not. measure_realtime.py now times one stage and writes 'total_ms'; this file predates that and carries the two-total 'old_total_ms'/'new_total_ms' schema, so it cannot be diffed against a fresh run.",
   "buffer_budget_ms": 5.804988662131519,
   "rows": [
     {
