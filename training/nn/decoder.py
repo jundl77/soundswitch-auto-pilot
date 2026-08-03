@@ -167,9 +167,9 @@ class FixedLagViterbi:
 
         self._transition = transition
         self._switch = switch
-        self._log_initial = np.full(n_states, -np.inf, dtype=np.float64)
-        self._log_initial[self._entry_state] = (self.priors.log_initial
-                                                + self._entry_bonus)
+        self._cold_initial = np.full(n_states, -np.inf, dtype=np.float64)
+        self._cold_initial[self._entry_state] = (self.priors.log_initial
+                                                 + self._entry_bonus)
 
     ESCAPE_TARGETS = ("breakdown", "drop")
 
@@ -210,6 +210,29 @@ class FixedLagViterbi:
         self._psi: list = [None] * (self.lag_bars + 1)
         self._bars = 0
         self._next_commit = 0
+        self._log_initial = self._cold_initial
+
+    def restart(self, carried: int | None = None) -> None:
+        """A birth: reset, and be born already old.
+
+        The mass sits on each class's FINAL duration state rather than its
+        entry state, so the run being joined is treated as one the floor has
+        already been paid for -- a committer born mid-set never charges a
+        minimum duration for time it was not alive to witness, while every
+        transition it observes after the birth pays in full.  ``carried`` is
+        the class the previous committer left off in and narrows the birth to
+        that one class; ``None`` is a cold start and spreads the start-of-track
+        prior.  Holds until the next ``reset``.
+        """
+        self.reset()
+        final = self._final_state
+        initial = np.full(len(self._state_class), -np.inf, dtype=np.float64)
+        if carried is None:
+            initial[final] = self.priors.log_initial + self._entry_bonus
+        else:
+            initial[final[carried]] = (self.priors.log_initial[carried]
+                                       + self._entry_bonus[carried])
+        self._log_initial = initial
 
     @property
     def backtrace_rows(self) -> int:

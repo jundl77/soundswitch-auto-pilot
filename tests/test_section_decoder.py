@@ -212,17 +212,23 @@ def test_a_config_asking_for_overlap_coverage_is_refused():
         SectionDecoder(toy_priors(), DecodeParams(min_coverage=2))
 
 
-def test_the_streaming_push_equals_the_offline_decode_up_to_the_bars_the_lag_still_holds():
+def test_the_streaming_push_equals_the_offline_decode_of_the_same_birth():
     labels = [0] * 6 + [1] * 6 + [3] * 8 + [4] * 6
     driver = feed(decoder(lag_bars=2), bars=len(labels), labels=labels,
                   boundary=0.3)
 
     offline = FixedLagViterbi(toy_priors(), 2)
-    expected = offline.decode([obs.posterior for obs in driver.observations],
-                              [obs.boundary for obs in driver.observations])
+    offline.restart()
+    offline.push(None, None)
+    expected = []
+    for observation in driver.observations:
+        expected.extend(offline.push(observation.posterior,
+                                     observation.boundary))
+    expected.extend(offline.flush())
+    expected = [d for d in expected if d.bar >= 1]
 
     assert [(d.bar, d.label) for d in driver.decisions] == \
-           [(d.bar, d.label) for d in expected[:len(driver.decisions)]]
+           [(d.bar - 1, d.label) for d in expected[:len(driver.decisions)]]
     assert len(expected) - len(driver.decisions) == 2
 
 

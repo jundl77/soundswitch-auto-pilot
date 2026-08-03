@@ -1,4 +1,15 @@
-"""The live bar grid, and the committer that runs on it."""
+"""The live bar grid, the committer that runs on it, and how it is reborn.
+
+A live grid is not a track: it re-anchors when the beat stream stops, it is
+restarted when it outruns the committer, and it is restarted again when the
+feature stage loses time.  Each of those is a birth, and a birth that took the
+corpus's start-of-track prior believed it was at bar zero of an imaginary
+track -- so it could commit ``intro``, which no fitted transition can enter, and
+owed a whole duration floor before it was allowed to leave.  Every birth here
+carries the class the show was already in, is born already old, and is preceded
+by one virtual bar so the belief it carries can be refused on the first real
+bar.  The three are one change: models/phase_b/decoder_rebirth/rebirth_gate.json.
+"""
 from __future__ import annotations
 
 import logging
@@ -42,6 +53,8 @@ _BAR_MEDIAN_BARS = 25
 _FIRST_BEAT_BAR_POSITION = 1
 _RE_ANCHOR_BAR_POSITION = 0
 
+_VIRTUAL_PREDECESSOR_BARS = 1
+
 
 class BarDecision(NamedTuple):
     bar: int
@@ -84,18 +97,16 @@ class SectionDecoder:
         self.reset()
 
     def reset(self, *, cold_start: bool = True) -> None:
-        self._decoder.reset()
         self._edges: deque = deque(maxlen=max(_EDGE_RETAIN_BARS,
                                               self.params.lag_bars + 4))
         self._edge_base: int = 0
-        self._bar_offset: int = 0
         if cold_start:
             self._bar_position: int = _FIRST_BEAT_BAR_POSITION
             self._last_beat_sec: float | None = None
+            self._committed_class: int | None = None
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf
-        self._next_bar: int = 0
-        self.recent_observations.clear()
+        self._restart_committer_at(0)
 
     @property
     def bar_edges(self) -> list:
@@ -185,7 +196,11 @@ class SectionDecoder:
             self._next_bar += 1
             for decision in self._decoder.push(observation.posterior,
                                                observation.boundary):
-                bar = decision.bar + self._bar_offset
+                lived = decision.bar - self._virtual_bars
+                if lived < 0:
+                    continue
+                bar = self._bar_offset + lived
+                self._committed_class = decision.class_index
                 decisions.append(BarDecision(bar, decision.label,
                                              self._edge(bar)))
         self._prune()
@@ -205,8 +220,12 @@ class SectionDecoder:
     def _restart_committer_at(self, bar: int) -> None:
         self._next_bar = bar
         self._bar_offset = bar
-        self._decoder.reset()
+        self._virtual_bars = 0
+        self._decoder.restart(self._committed_class)
         self.recent_observations.clear()
+        for _ in range(_VIRTUAL_PREDECESSOR_BARS):
+            self._decoder.push(None, None)
+            self._virtual_bars += 1
 
     def _observable(self, bar: int) -> bool:
         if not self._have_edge(bar + 1):
