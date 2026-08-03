@@ -98,23 +98,35 @@ def _clock_text(seconds: float) -> str:
 
 
 def _song_origin(snapshot: dict) -> float | None:
-    """The timeline's zero: the instant the room heard the current song start.
-
-    None while the room is between songs.  The display describes what the room
-    hears, so a stop the detector saw a look-ahead ago has not happened yet, and
-    the start of the next song has not either.
-    """
     heard = _room_events(snapshot.get('sound_events', []), snapshot)
     if heard:
         return heard[-1]['t'] if heard[-1]['playing'] else None
     starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
     if not starts:
-        return 0.0  # nothing ever claimed a boundary, so the session is the song
+        return 0.0
     return starts[-1] + snapshot.get('look_ahead_sec', 0.0)
 
 
+def _room_is_playing(snapshot: dict) -> bool:
+    events = snapshot.get('sound_events', [])
+    heard = _room_events(events, snapshot)
+    stop_still_in_flight = len(heard) < len(events)
+    return bool(snapshot.get('is_playing')) or (
+        stop_still_in_flight and bool(heard) and heard[-1]['playing'])
+
+
+def _room_bpm(snapshot: dict) -> float:
+    heard = _room_events(snapshot.get('beats', []), snapshot)
+    return heard[-1]['bpm'] if heard else snapshot.get('bpm', 0.0)
+
+
+def _room_beat_count(snapshot: dict) -> int:
+    beats = snapshot.get('beats', [])
+    unheard = len(beats) - len(_room_events(beats, snapshot))
+    return max(0, snapshot.get('beats_detected', 0) - unheard)
+
+
 def _display_now(snapshot: dict, origin: float | None) -> float:
-    """How far into the song the room is — the axis, the cursor and the window."""
     if origin is None:
         return 0.0
     return max(0.0, snapshot.get('now', 0.0) - origin)
@@ -152,8 +164,6 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     now    = _display_now(snapshot, origin)
     x0     = now - TIMELINE_WINDOW_SEC
     x1     = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
-    # The window opens a span before a song that may be seconds old, and nothing
-    # from the previous one may show up in that gap.
     left   = max(x0, 0.0)
 
     shapes, annotations, beat_x = [], [], []
@@ -327,8 +337,8 @@ def _build_legend() -> list:
 
 
 def _build_metrics(snapshot: dict) -> list:
-    bpm         = snapshot.get('bpm', 0.0)
-    beats       = snapshot.get('beats_detected', 0)
+    bpm         = _room_bpm(snapshot)
+    beats       = _room_beat_count(snapshot)
     song, room  = _song_and_room(snapshot)
     song_text   = '—' if song is None else _clock_text(song)
     room_text   = '—' if room is None else _clock_text(room)
@@ -336,7 +346,7 @@ def _build_metrics(snapshot: dict) -> list:
     cfg         = _intent_config(intent_key)
     intent_lbl  = cfg['label']
     intent_col  = cfg['primary']
-    is_playing  = snapshot.get('is_playing', False)
+    is_playing  = _room_is_playing(snapshot)
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
@@ -404,9 +414,6 @@ function(sync) {
     const a = ds.ss = ds.ss || {};
     if (!sync) return ds.no_update;
 
-    // Equal: the show's clock has stalled.  Backward: a song boundary re-based
-    // the axis, and the session clock never goes back.  Extrapolating from
-    // either invents time the room has not had.
     a.frozen = a.now === sync.now || sync.now < a.now;
     Object.assign(a, sync);
     a.at = performance.now();
@@ -457,7 +464,6 @@ function(sync) {
     };
 
     const pulse = (now) => {
-        // Song times repeat across a reset, so the stamp goes with its song.
         if (a.beat == null) { a.pulsed = null; return; }
         if (a.beat === a.pulsed) return;
         a.pulsed = a.beat;
@@ -469,6 +475,18 @@ function(sync) {
         });
     };
 
+    const meter = () => {
+        a.ticks = (a.ticks || 0) + 1;
+        const at = performance.now();
+        if (a.meteredAt == null) { a.meteredAt = at; return; }
+        const span = at - a.meteredAt;
+        if (span < 1000) return;
+        const el = document.getElementById('fps');
+        if (el) el.textContent = Math.round(a.ticks * 1000 / span) + ' fps';
+        a.ticks = 0;
+        a.meteredAt = at;
+    };
+
     const frame = () => {
         const drift = a.frozen ? 0 : Math.min(1.5, (performance.now() - a.at) / 1000);
         const now = a.now + drift;
@@ -476,6 +494,7 @@ function(sync) {
         tick('room-clock', 'room ', a.room, drift);
         tick('song-clock', 'song ', a.song, drift);
         pulse(now);
+        meter();
         requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
@@ -503,8 +522,6 @@ class SnapshotPoller:
         self._connection = None
         self._last = dict(BLANK_SNAPSHOT)
         self._answering = True
-        # Dash answers callbacks on threads and they share this poller, so two
-        # polls can be in flight at once. An HTTPConnection cannot carry both.
         self._lock = threading.Lock()
 
     @property
@@ -514,8 +531,6 @@ class SnapshotPoller:
     def snapshot(self) -> dict:
         with self._lock:
             try:
-                # Held locally: a failing poll clears the attribute, and reading
-                # it back mid-request is how this used to raise past the handler.
                 connection = self._connection
                 if connection is None:
                     connection = self._connection = http.client.HTTPConnection(
@@ -566,7 +581,11 @@ def build_app(snapshot_source) -> dash.Dash:
             'padding': '12px 20px 16px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
-        html.Div(id='metrics', style={
+        html.Div([
+            html.Div(id='metrics', style={'flex': '1'}),
+            html.Div('— fps', id='fps', style={'color': MUTED, 'marginLeft': '20px'}),
+        ], style={
+            'display': 'flex', 'alignItems': 'center',
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),

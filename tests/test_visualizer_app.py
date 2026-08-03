@@ -176,8 +176,6 @@ def test_a_beat_the_room_has_not_heard_yet_is_not_in_the_anchor():
 
 
 def test_the_anchor_carries_both_clocks_and_the_axis_they_are_read_against():
-    # 'now' is the axis base, so it is song time -- the room's position in the
-    # song -- while the two clocks keep their own bases.
     anchor = V._anchor(_snapshot(now=20.0, look_ahead_sec=14.0,
                                  sound_events=[{'t': 0.0, 'playing': True}]))
     assert (anchor['now'], anchor['song'], anchor['room']) == (6.0, 20.0, 6.0)
@@ -189,7 +187,6 @@ def test_the_anchor_leaves_the_clocks_blank_before_the_first_sound_start():
 
 
 def _two_songs(**overrides) -> dict:
-    """One stop and one restart: the room hears them at 74s and 94s."""
     return _snapshot(look_ahead_sec=14.0,
                      sound_events=[{'t': 0.0, 'playing': True},
                                    {'t': 60.0, 'playing': False},
@@ -252,7 +249,6 @@ def test_both_clocks_go_blank_between_songs():
 
 
 def test_the_old_song_survives_a_stop_the_room_has_not_reached():
-    # The detector saw silence at 60s; the room is at 70s and still in the song.
     fig = V._build_timeline(_snapshot(
         now=70.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
@@ -278,9 +274,6 @@ def test_the_previous_songs_beats_do_not_cross_the_reset():
 
 
 def test_a_beat_is_placed_in_the_song_the_room_heard_it_in_not_the_one_it_was_detected_in():
-    # Detected at 85s -- before the new song's zero at 94s -- but the room hears
-    # it at 99s, inside the new song.  Judged on its detection stamp it would
-    # vanish from the song it belongs to.
     fig = V._build_timeline(_two_songs(now=100.0,
                                        beats=[{'t': 85.0, 'bpm': 128.0}]))
     assert fig.data[0].x == (5.0,)
@@ -310,8 +303,6 @@ def test_the_anchor_holds_the_axis_still_between_songs():
 
 
 def test_the_browser_re_seats_a_backward_re_base_instead_of_extrapolating_it():
-    # The axis only ever moves backward at a song boundary, and the session
-    # clock never does -- so a backward step is a re-base, not elapsed time.
     assert 'sync.now < a.now' in V.ANIMATION_JS
     scroll = V.ANIMATION_JS[V.ANIMATION_JS.index('const scroll'):
                             V.ANIMATION_JS.index('const pulse')]
@@ -319,8 +310,6 @@ def test_the_browser_re_seats_a_backward_re_base_instead_of_extrapolating_it():
 
 
 def test_the_glow_re_arms_across_a_song_boundary():
-    # Song times repeat across a reset, so the last-pulsed stamp has to go with
-    # the song it belonged to or an early beat of the next one is swallowed.
     pulse = V.ANIMATION_JS[V.ANIMATION_JS.index('const pulse'):
                            V.ANIMATION_JS.index('const frame')]
     assert 'a.pulsed = null' in pulse
@@ -418,6 +407,20 @@ def test_only_the_lamps_the_intent_lights_are_pulse_targets():
         == len(V.SLOT_LABELS)
 
 
+def test_the_fps_readout_is_outside_every_callback_output():
+    layout = _app().layout.children
+    assert _find_by_id(layout, 'fps') is not None
+    assert _find_by_id(V._build_metrics(_snapshot()), 'fps') is None
+
+
+def test_the_fps_readout_is_driven_by_the_frame_loop_once_a_second():
+    js = V.ANIMATION_JS
+    meter = js[js.index('const meter'):js.index('const frame')]
+    assert "getElementById('fps')" in meter
+    assert 'span < 1000' in meter
+    assert 'meter();' in js[js.index('const frame'):]
+
+
 def test_the_clock_spans_are_addressable_by_the_browser():
     ids = {getattr(span, 'id', None) for span in V._build_metrics(_snapshot())}
     assert {'room-clock', 'song-clock'} <= ids
@@ -480,16 +483,50 @@ def test_the_snapshot_carries_the_delay_the_display_shifts_by():
     assert buffer.snapshot()['look_ahead_sec'] == pytest.approx(14.0)
 
 
+def _stopping(**overrides) -> dict:
+    return _snapshot(look_ahead_sec=14.0, is_playing=False,
+                     sound_events=[{'t': 0.0, 'playing': True},
+                                   {'t': 60.0, 'playing': False}],
+                     **overrides)
+
+
+def test_the_show_keeps_playing_until_the_room_hears_the_stop():
+    assert 'PLAYING' in _metric(V._build_metrics(_stopping(now=70.0)), '●')
+
+
+def test_the_show_pauses_the_moment_the_room_hears_the_stop():
+    assert 'PAUSED' in _metric(V._build_metrics(_stopping(now=74.0)), '◌')
+
+
+def test_the_reset_lands_one_look_ahead_after_the_stop_was_detected():
+    stop = 60.0
+    delay = 14.0
+    assert V._song_origin(_stopping(now=stop + delay - 0.01)) is not None
+    assert V._song_origin(_stopping(now=stop + delay)) is None
+
+
+def test_the_tempo_is_the_last_beat_the_room_heard():
+    items = V._build_metrics(_stopping(
+        now=70.0, bpm=0.0,
+        beats=[{'t': 50.0, 'bpm': 128.0}, {'t': 62.0, 'bpm': 174.0}]))
+    assert _metric(items, '128') == '128 BPM'
+
+
+def test_the_beat_count_is_what_the_room_has_heard():
+    items = V._build_metrics(_stopping(
+        now=70.0, beats_detected=900,
+        beats=[{'t': 50.0, 'bpm': 128.0}, {'t': 62.0, 'bpm': 128.0},
+               {'t': 64.0, 'bpm': 128.0}]))
+    assert _metric(items, '898') == '898 beats'
+
+
 def test_the_payload_window_stays_wider_than_the_span_it_has_to_fill():
-    # Two constants in two processes: widen the timeline past the snapshot's
-    # reach and the left of the window silently empties.
     from lib.engine.event_buffer import EventBuffer
 
     assert V.TIMELINE_WINDOW_SEC < EventBuffer.SNAPSHOT_WINDOW_SEC
 
 
 class _FakeConnection:
-    """Stands in for http.client.HTTPConnection, with a hook mid-request."""
 
     live = []
 
@@ -517,10 +554,6 @@ def _poller(monkeypatch):
 
 def test_a_poll_survives_a_sibling_dropping_the_connection_underneath_it(
         monkeypatch):
-    # Dash answers callbacks on threads, so two polls share one poller.  A poll
-    # that fails clears the connection; if the other reads the attribute again
-    # after its own request it finds None, and AttributeError is not in the
-    # caught set -- the callback 500s and every panel stops updating.
     poller = _poller(monkeypatch)
     poller.snapshot()
     poller._connection.interfere = lambda: setattr(poller, '_connection', None)

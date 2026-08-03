@@ -16,7 +16,6 @@ def test_timestamps_use_injected_clock():
 
 
 def _ui_session(minutes: float, look_ahead_sec: float = 14.0):
-    """The --ui session buffer: unbounded storage, one beat every half second."""
     clock = VirtualClock()
     buffer = EventBuffer(window_sec=float('inf'), clock=clock,
                          look_ahead_sec=look_ahead_sec)
@@ -50,8 +49,6 @@ def test_the_snapshot_stops_growing_once_the_window_is_full():
 
 
 def test_the_snapshot_reaches_back_far_enough_to_fill_the_display():
-    # Records are stamped when they are detected and drawn a look-ahead later,
-    # so the payload has to carry that much more history than the window shows.
     buffer, _ = _ui_session(minutes=10.0, look_ahead_sec=14.0)
     snapshot = buffer.snapshot()
     reach = snapshot['now'] - snapshot['beats'][0]['t']
@@ -59,8 +56,6 @@ def test_the_snapshot_reaches_back_far_enough_to_fill_the_display():
 
 
 def test_the_sound_events_are_never_windowed():
-    # One record per track boundary, not per second -- and the song the display
-    # counts from can have started an hour ago.
     buffer, clock = _ui_session(minutes=20.0)
     assert buffer.snapshot()['sound_events'][0]['t'] == 0.0
 
