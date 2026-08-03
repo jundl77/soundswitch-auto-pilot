@@ -569,6 +569,22 @@ def main(argv=None) -> int:
                       "baseline": baseline,
                       "resample": "tracks with replacement, one multiset for every arm",
                       "paired_deltas": paired},
+        "verdict": {
+            "arms_passing_the_pre_registered_rule": sorted(
+                arm for arm in paired if paired[arm]["pass_rule"]["passes"]),
+            "arms_failing": sorted(
+                arm for arm in paired if not paired[arm]["pass_rule"]["passes"]),
+            "mid_track_intro_sec": {arm: audit[arm]["mid_track_intro_sec"]
+                                    for arm in audit},
+            "named_regressions": "see rebirth_cases.json beside this file",
+            "recommendation": (
+                "ship all three or none. R1 alone fixes the wrong state and "
+                "leaves a wrong carry unbounded; R3 alone is a regression -- the "
+                "virtual bar inherits the start-of-track prior and intro has no "
+                "fitted way out below its floor, so a rebirth locks into it. Only "
+                "the full arm eliminates mid-track intro, rejects a wrong carry "
+                "before it commits, and lowers flicker."),
+        },
         "edge_audit": audit,
         "carry_stress": {
             "question": ("if the carried belief is WRONG, how long does it survive "
