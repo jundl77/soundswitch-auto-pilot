@@ -519,6 +519,8 @@ def test_the_gpu_thread_runs_under_real_time_pacing(nn_artifacts, anchor_mp3):
 
 
 def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
+    import asyncio
+
     from lib.clock import VirtualClock
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.event_buffer import EventBuffer
@@ -534,11 +536,68 @@ def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
     buffer.set_intent('drop', song_sec=1.0)
     report = tmp_path / 'session.json'
 
-    cli._run_pipeline({}, 1.0, buffer, DelayedCommandQueue(14.0, clock=clock),
-                      False, report_path=str(report))
+    asyncio.run(cli._run_pipeline(
+        {}, 1.0, buffer, DelayedCommandQueue(14.0, clock=clock), False,
+        report_path=str(report)))
 
     import json
     assert [b['intent'] for b in json.loads(report.read_text())['intents']] == ['drop']
+
+
+class _FakeUi:
+    def __init__(self):
+        self.waited = 0
+        self.stopped = 0
+
+    def wait(self):
+        self.waited += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
+def _viewer_session(monkeypatch, pipeline):
+    import asyncio
+
+    from lib import ui_bridge
+    from simulate import cli
+
+    ui = _FakeUi()
+    monkeypatch.setattr(ui_bridge, 'start', lambda buffer, port: ui)
+
+    async def session():
+        await cli._with_viewer(object(), 8050, pipeline)
+        return asyncio.get_running_loop()
+
+    return ui, session
+
+
+def test_the_ui_session_runs_the_pipeline_on_the_loop_it_was_called_from(
+        monkeypatch):
+    # The pipeline has the main thread now, so it must join the loop already
+    # running there rather than start one of its own.
+    import asyncio
+
+    ran = []
+
+    async def pipeline():
+        ran.append(asyncio.get_running_loop())
+
+    ui, session = _viewer_session(monkeypatch, pipeline)
+    assert ran == [asyncio.run(session())]
+    assert (ui.waited, ui.stopped) == (1, 1)
+
+
+def test_a_pipeline_that_raises_still_takes_the_viewer_down_with_it(monkeypatch):
+    import asyncio
+
+    async def pipeline():
+        raise RuntimeError('the audio device went away')
+
+    ui, session = _viewer_session(monkeypatch, pipeline)
+    with pytest.raises(RuntimeError):
+        asyncio.run(session())
+    assert (ui.waited, ui.stopped) == (0, 1)
 
 
 def test_a_ui_file_session_keeps_the_whole_track():
