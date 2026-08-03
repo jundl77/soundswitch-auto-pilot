@@ -141,11 +141,17 @@ def test_a_beat_the_room_has_not_heard_yet_is_not_plotted():
     assert fig.data[0].x == (17.0,)
 
 
-def test_the_sound_markers_move_onto_the_room_clock_with_the_beats():
+def test_the_song_zero_is_the_start_on_the_room_clock_not_the_detectors():
+    assert V._song_origin(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 1.0, 'playing': True}])) == pytest.approx(15.0)
+
+
+def test_the_start_marker_sits_on_the_zero_it_defines():
     fig = V._build_timeline(_snapshot(
         now=20.0, look_ahead_sec=14.0,
         sound_events=[{'t': 1.0, 'playing': True}]))
-    assert [a.x for a in fig.layout.annotations if 'START' in a.text] == [15.0]
+    assert [a.x for a in fig.layout.annotations if 'START' in a.text] == [0.0]
 
 
 def test_an_intent_block_is_already_room_fired_and_is_not_shifted_again():
@@ -169,15 +175,155 @@ def test_a_beat_the_room_has_not_heard_yet_is_not_in_the_anchor():
     assert anchor['beat'] == 17.0
 
 
-def test_the_anchor_carries_both_clocks_and_the_time_it_was_read():
+def test_the_anchor_carries_both_clocks_and_the_axis_they_are_read_against():
+    # 'now' is the axis base, so it is song time -- the room's position in the
+    # song -- while the two clocks keep their own bases.
     anchor = V._anchor(_snapshot(now=20.0, look_ahead_sec=14.0,
                                  sound_events=[{'t': 0.0, 'playing': True}]))
-    assert (anchor['now'], anchor['song'], anchor['room']) == (20.0, 20.0, 6.0)
+    assert (anchor['now'], anchor['song'], anchor['room']) == (6.0, 20.0, 6.0)
 
 
 def test_the_anchor_leaves_the_clocks_blank_before_the_first_sound_start():
     anchor = V._anchor(_snapshot(now=20.0, sound_events=[]))
     assert anchor['song'] is None and anchor['room'] is None
+
+
+def _two_songs(**overrides) -> dict:
+    """One stop and one restart: the room hears them at 74s and 94s."""
+    return _snapshot(look_ahead_sec=14.0,
+                     sound_events=[{'t': 0.0, 'playing': True},
+                                   {'t': 60.0, 'playing': False},
+                                   {'t': 80.0, 'playing': True}],
+                     **overrides)
+
+
+def _axis(fig) -> tuple:
+    return tuple(fig.layout.xaxis.range)
+
+
+_ZEROED_AXIS = (-V.TIMELINE_WINDOW_SEC,
+                V.TIMELINE_LEAD_SEC + V.TIMELINE_PAD_SEC)
+
+
+def test_a_run_that_never_claimed_a_boundary_plots_on_the_session_clock():
+    assert V._song_origin(_snapshot(now=20.0)) == 0.0
+
+
+def test_the_timeline_counts_from_the_instant_the_room_heard_the_song_start():
+    fig = V._build_timeline(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}],
+        beats=[{'t': 3.0, 'bpm': 128.0}]))
+    assert _axis(fig) == pytest.approx(
+        (6.0 - V.TIMELINE_WINDOW_SEC, 6.0 + V.TIMELINE_LEAD_SEC + V.TIMELINE_PAD_SEC))
+    assert fig.data[0].x == (3.0,)
+
+
+def test_the_axis_is_the_room_clock_so_the_two_can_never_disagree():
+    snap = _snapshot(now=20.0, look_ahead_sec=14.0,
+                     sound_events=[{'t': 0.0, 'playing': True}])
+    assert V._anchor(snap)['now'] == pytest.approx(V._song_and_room(snap)[1])
+
+
+def test_the_first_song_holds_the_axis_at_zero_until_the_room_reaches_it():
+    fig = V._build_timeline(_snapshot(
+        now=9.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}]))
+    assert _axis(fig) == pytest.approx(_ZEROED_AXIS)
+
+
+def test_the_room_hearing_the_stop_empties_the_timeline_and_zeroes_it():
+    fig = V._build_timeline(_snapshot(
+        now=80.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
+        beats=[{'t': 40.0, 'bpm': 128.0}],
+        intents=[{'t': 50.0, 'intent': 'drop'}]))
+    assert _axis(fig) == pytest.approx(_ZEROED_AXIS)
+    assert fig.data == ()
+    assert fig.layout.shapes == ()
+
+
+def test_both_clocks_go_blank_between_songs():
+    items = V._build_metrics(_snapshot(
+        now=80.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}]))
+    assert _metric(items, 'song') == 'song —'
+    assert _metric(items, 'room') == 'room —'
+
+
+def test_the_old_song_survives_a_stop_the_room_has_not_reached():
+    # The detector saw silence at 60s; the room is at 70s and still in the song.
+    fig = V._build_timeline(_snapshot(
+        now=70.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
+        beats=[{'t': 55.0, 'bpm': 128.0}]))
+    assert fig.data[0].x == (55.0,)
+
+
+def test_a_start_the_room_has_not_reached_does_not_end_the_gap():
+    snap = _two_songs(now=90.0)
+    assert V._song_and_room(snap) == (None, None)
+    assert _axis(V._build_timeline(snap)) == pytest.approx(_ZEROED_AXIS)
+
+
+def test_the_new_song_begins_the_moment_the_room_reaches_it():
+    assert V._song_and_room(_two_songs(now=94.0)) == (pytest.approx(14.0),
+                                                      pytest.approx(0.0))
+
+
+def test_the_previous_songs_beats_do_not_cross_the_reset():
+    fig = V._build_timeline(_two_songs(
+        now=100.0, beats=[{'t': 40.0, 'bpm': 128.0}, {'t': 85.0, 'bpm': 128.0}]))
+    assert fig.data[0].x == (5.0,)
+
+
+def test_a_beat_is_placed_in_the_song_the_room_heard_it_in_not_the_one_it_was_detected_in():
+    # Detected at 85s -- before the new song's zero at 94s -- but the room hears
+    # it at 99s, inside the new song.  Judged on its detection stamp it would
+    # vanish from the song it belongs to.
+    fig = V._build_timeline(_two_songs(now=100.0,
+                                       beats=[{'t': 85.0, 'bpm': 128.0}]))
+    assert fig.data[0].x == (5.0,)
+
+
+def test_the_previous_songs_intent_block_does_not_reach_back_past_zero():
+    fig = V._build_timeline(_two_songs(
+        now=100.0, intents=[{'t': 50.0, 'intent': 'drop', 'end': 70.0},
+                            {'t': 96.0, 'intent': 'peak'}]))
+    rects = [s for s in fig.layout.shapes if s.type == 'rect']
+    assert [r.x0 for r in rects] == [2.0]
+
+
+def test_the_anchor_publishes_the_axis_and_the_last_beat_in_song_time():
+    anchor = V._anchor(_snapshot(
+        now=20.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 0.0, 'playing': True}],
+        beats=[{'t': 3.0, 'bpm': 128.0}]))
+    assert (anchor['now'], anchor['beat']) == (pytest.approx(6.0),
+                                               pytest.approx(3.0))
+
+
+def test_the_anchor_holds_the_axis_still_between_songs():
+    anchor = V._anchor(_two_songs(now=90.0, beats=[{'t': 40.0, 'bpm': 128.0}]))
+    assert anchor['now'] == 0.0
+    assert anchor['beat'] is None
+
+
+def test_the_browser_re_seats_a_backward_re_base_instead_of_extrapolating_it():
+    # The axis only ever moves backward at a song boundary, and the session
+    # clock never does -- so a backward step is a re-base, not elapsed time.
+    assert 'sync.now < a.now' in V.ANIMATION_JS
+    scroll = V.ANIMATION_JS[V.ANIMATION_JS.index('const scroll'):
+                            V.ANIMATION_JS.index('const pulse')]
+    assert 'dx < 0' in scroll
+
+
+def test_the_glow_re_arms_across_a_song_boundary():
+    # Song times repeat across a reset, so the last-pulsed stamp has to go with
+    # the song it belonged to or an early beat of the next one is swallowed.
+    pulse = V.ANIMATION_JS[V.ANIMATION_JS.index('const pulse'):
+                           V.ANIMATION_JS.index('const frame')]
+    assert 'a.pulsed = null' in pulse
 
 
 class _FakePoller:

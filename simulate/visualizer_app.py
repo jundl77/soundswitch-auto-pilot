@@ -96,20 +96,48 @@ def _clock_text(seconds: float) -> str:
     return f'{minutes}min {secs}sec' if minutes else f'{secs}sec'
 
 
-def _song_and_room(snapshot: dict) -> tuple:
+def _song_origin(snapshot: dict) -> float | None:
+    """The timeline's zero: the instant the room heard the current song start.
+
+    None while the room is between songs.  The display describes what the room
+    hears, so a stop the detector saw a look-ahead ago has not happened yet, and
+    the start of the next song has not either.
+    """
+    heard = _room_events(snapshot.get('sound_events', []), snapshot)
+    if heard:
+        return heard[-1]['t'] if heard[-1]['playing'] else None
     starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
     if not starts:
+        return 0.0  # nothing ever claimed a boundary, so the session is the song
+    return starts[-1] + snapshot.get('look_ahead_sec', 0.0)
+
+
+def _display_now(snapshot: dict, origin: float | None) -> float:
+    """How far into the song the room is — the axis, the cursor and the window."""
+    if origin is None:
+        return 0.0
+    return max(0.0, snapshot.get('now', 0.0) - origin)
+
+
+def _song_and_room(snapshot: dict) -> tuple:
+    origin = _song_origin(snapshot)
+    if origin is None or not any(e['playing']
+                                 for e in snapshot.get('sound_events', [])):
         return None, None
-    song = max(0.0, snapshot.get('now', 0.0) - starts[-1])
-    return song, max(0.0, song - snapshot.get('look_ahead_sec', 0.0))
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    return (max(0.0, snapshot.get('now', 0.0) - origin + delay),
+            _display_now(snapshot, origin))
 
 
 def _anchor(snapshot: dict) -> dict:
-    beats = _room_events(snapshot.get('beats', []), snapshot)
+    origin = _song_origin(snapshot)
+    beats = [] if origin is None else [
+        b['t'] - origin for b in _room_events(snapshot.get('beats', []), snapshot)
+        if b['t'] - origin >= 0.0]
     song, room = _song_and_room(snapshot)
     return {
-        'now':  snapshot.get('now', 0.0),
-        'beat': beats[-1]['t'] if beats else None,
+        'now':  _display_now(snapshot, origin),
+        'beat': beats[-1] if beats else None,
         'song': song,
         'room': room,
         'span': TIMELINE_WINDOW_SEC,
@@ -119,15 +147,21 @@ def _anchor(snapshot: dict) -> dict:
 
 
 def _build_timeline(snapshot: dict) -> go.Figure:
-    now   = snapshot['now']
-    x0    = now - TIMELINE_WINDOW_SEC
-    x1    = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
+    origin = _song_origin(snapshot)
+    now    = _display_now(snapshot, origin)
+    x0     = now - TIMELINE_WINDOW_SEC
+    x1     = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
+    # The window opens a span before a song that may be seconds old, and nothing
+    # from the previous one may show up in that gap.
+    left   = max(x0, 0.0)
 
-    shapes, annotations = [], []
+    shapes, annotations, beat_x = [], [], []
 
-    for entry in snapshot.get('intents', []):
-        t_start = max(entry['t'], x0)
-        t_end   = min(entry.get('end', x1), x1)
+    for entry in snapshot.get('intents', []) if origin is not None else ():
+        start   = entry['t'] - origin
+        end     = entry['end'] - origin if 'end' in entry else x1
+        t_start = max(start, left)
+        t_end   = min(end, x1)
         if t_end <= t_start:
             continue
         cfg   = _intent_config(entry['intent'])
@@ -144,26 +178,30 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
 
-    for ev in _room_events(snapshot.get('sound_events', []), snapshot):
-        if ev['t'] < x0:
-            continue
-        is_start = ev['playing']
-        color    = '#3fb950' if is_start else '#f85149'
-        label    = '▶ START' if is_start else '■ STOP'
-        shapes.append(dict(
-            type='line', xref='x', yref='paper',
-            x0=ev['t'], x1=ev['t'], y0=0, y1=1,
-            line=dict(color=color, width=1.5, dash='dash'),
-        ))
-        annotations.append(dict(
-            x=ev['t'], y=0.04, xref='x', yref='paper',
-            text=label, showarrow=False,
-            font=dict(color=color, size=9, family='monospace'),
-            xanchor='left',
-        ))
+    if origin is not None:
+        for ev in _room_events(snapshot.get('sound_events', []), snapshot):
+            t = ev['t'] - origin
+            if t < left:
+                continue
+            is_start = ev['playing']
+            color    = '#3fb950' if is_start else '#f85149'
+            label    = '▶ START' if is_start else '■ STOP'
+            shapes.append(dict(
+                type='line', xref='x', yref='paper',
+                x0=t, x1=t, y0=0, y1=1,
+                line=dict(color=color, width=1.5, dash='dash'),
+            ))
+            annotations.append(dict(
+                x=t, y=0.04, xref='x', yref='paper',
+                text=label, showarrow=False,
+                font=dict(color=color, size=9, family='monospace'),
+                xanchor='left',
+            ))
 
-    beat_x = [b['t'] for b in _room_events(snapshot['beats'], snapshot)
-              if b['t'] >= x0]
+        beat_x = [b['t'] - origin
+                  for b in _room_events(snapshot.get('beats', []), snapshot)
+                  if b['t'] - origin >= left]
+
     beat_y = [0.25] * len(beat_x)
     beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
 
@@ -365,7 +403,10 @@ function(sync) {
     const a = ds.ss = ds.ss || {};
     if (!sync) return ds.no_update;
 
-    a.frozen = a.now === sync.now;
+    // Equal: the show's clock has stalled.  Backward: a song boundary re-based
+    // the axis, and the session clock never goes back.  Extrapolating from
+    // either invents time the room has not had.
+    a.frozen = a.now === sync.now || sync.now < a.now;
     Object.assign(a, sync);
     a.at = performance.now();
     if (a.running) return ds.no_update;
@@ -415,7 +456,9 @@ function(sync) {
     };
 
     const pulse = (now) => {
-        if (a.beat == null || a.beat === a.pulsed) return;
+        // Song times repeat across a reset, so the stamp goes with its song.
+        if (a.beat == null) { a.pulsed = null; return; }
+        if (a.beat === a.pulsed) return;
         a.pulsed = a.beat;
         document.querySelectorAll('.ss-lamp.ss-on').forEach((el) => {
             el.classList.remove('ss-pulse');
