@@ -222,6 +222,27 @@ produced, so that restart keeps the bar position it is holding and rebuilds only
 the grid, the pending cells and the committer; discarding a position that is
 still correct would trade it for a one-in-four guess.
 
+**A restart is a birth, and a birth is not the start of a track.** Whatever the
+flavour, the committer that came back used to take the corpus's start-of-track
+prior, so a decoder reborn 34 minutes into a set believed it was at bar zero of
+an imaginary track: it could commit `intro`, which no fitted transition can
+enter, and it owed a whole duration floor before it was allowed to leave. On one
+measured track a 5 s hole in the beat stream put the rig near dark for **53.4 s**
+over the back half of a breakdown the model was 0.978 sure of. A birth now
+carries the class the show was already in, places its mass on each class's
+*final* duration state -- a floor is charged for time the grid witnessed, never
+for time it was not alive for -- and is preceded by one virtual bar. The three
+are one change and ship together: the virtual bar is what gives the first real
+bar a transition, which is both how a boundary landing there can be acted on at
+all and how a carried belief can be **refused**. Without it a carry cannot be
+rejected on the bar it is born on, and forcing every val birth to carry every
+class in turn, carry-alone accepted 85 of 85 wrong beliefs against 37 of 85 with
+the virtual bar. Priced on val in `models/phase_b/decoder_rebirth/`; the runtime
+is held to that reference's own decisions by
+`tests/test_section_decoder_rebirth.py`. The third birth -- the committer
+restarted because the grid outran it -- is unreachable offline, so it is correct
+by construction rather than measured.
+
 **PEAK is an engine-level promotion, not a class.** "A drop that has lasted" is a
 run length, which no window of audio can express, so the engine promotes an
 already-committed DROP once the run reaches a fixed number of *bars* -- the same
