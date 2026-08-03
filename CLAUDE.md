@@ -80,12 +80,14 @@ The gitignored corpus does not follow `git worktree add`, so a linked worktree f
                                    DriftWatchdog (drift + stage health -> NONE | NN_SHED)
 ```
 
-Four threads under `run` and under `--ui`/realtime: the audio loop, the GPU
-stage, Dash, and `Os2lSender`. **The consumer is the audio loop**, deliberately:
-the delayed command queue, the MIDI client and the event buffer already live
-there, so no show state is shared across threads at all. The only objects two
-threads touch are the sample ring (one writer, one reader) and the hand-off
-queue under a lock held for microseconds. Fast simulation runs the same stages
+Three threads under `run` and under `--ui`/realtime: the audio loop, the GPU
+stage, and `Os2lSender`, plus the snapshot server's thread when a viewer is
+attached (the viewer itself is a separate *process*). **The consumer is the audio
+loop**, deliberately: the delayed command queue, the MIDI client and the event
+buffer already live there, so no show state is shared across threads at all. The
+only objects two threads touch are the sample ring (one writer, one reader), the
+hand-off queue under a lock held for microseconds, and the event buffer, which
+the snapshot server reads under the lock an in-process viewer used to take. Fast simulation runs the same stages
 inline on a virtual clock, and `build_section_chain` taking a watchdog *is* the
 switch between the two -- the stage reports health to one and reads its shed
 level off one, so handing one over is exactly the statement "run this off the
@@ -99,6 +101,7 @@ caller's thread".
 | `lib/main.py` | `SoundSwitchAutoPilot` â€” async event loop, per-buffer + 100 ms / 1 s / 10 s callbacks; owns `PLAYBACK_DELAY_SEC` |
 | `lib/clock.py` | `Clock` abstraction â€” `SystemClock` (prod default) vs `VirtualClock` (fast sim); every time-based component takes an injectable clock |
 | `lib/audio_config.py` | Canonical `SAMPLE_RATE` / `BUFFER_SIZE` â€” single source for live pipeline, simulation, and virtual-clock timing math |
+| `lib/ui_bridge.py` | The show's whole UI surface: the event buffer served as JSON on localhost, and the viewer process `--ui` starts beside it and kills on the way out |
 | `lib/section_chain.py` | Assembles the show's NN path out of the shipped artifacts, for both entry points, so sim=prod is one wiring rather than two; `artifacts_present` is how a caller asks whether this machine has the model |
 | `lib/analyser/madmom_rhythm.py` | `MadmomRhythm` -- madmom's online beat stack, adapted from the pipeline's buffer size to madmom's frame rate; the only place that framing mismatch exists |
 | `lib/analyser/mert_stream.py` | The live MERT feature stage: resample, 30 s ring buffer, one encoder pass per hop, label cells out. Every geometry number is read off the shipped artifact |
@@ -116,7 +119,7 @@ caller's thread".
 | `lib/clients/os2l_client.py` | zeroconf discovery of VirtualDJ; bidirectional OS2L JSON |
 | `lib/clients/pyaudio_client.py` | Mono 44.1 kHz audio input (and optional debug output passthrough) |
 | `lib/clients/overlay_client.py` | UDP binary DMX overlay (hardcoded IP â€” must match venue) |
-| `simulate/visualizer_app.py` | Dash real-time visualizer: timeline, intent-based stage simulation, metrics, and the decoder-state row; motion is the browser's job (see Visualizer smoothness) |
+| `simulate/visualizer_app.py` | The visualizer, in its own process: timeline, intent-based stage simulation, metrics, and the decoder-state row, rendered from snapshots polled off the show; motion is the browser's job (see Visualizer smoothness) |
 | `simulate/runner.py` | Simulation runner â€” stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing with a threaded GPU stage for the live UI |
 | `simulate/cell_cache.py` | The extractor's cells, cached beside the audio â€” what makes a warm `simulate file` pure CPU and byte-deterministic |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
@@ -339,8 +342,25 @@ When moving away from SoundSwitch to direct DMX:
 
 ## Visualizer smoothness
 
-The UI shares a process, and a GIL, with the pipeline. So the rule is that
-**smoothness is bought in the browser and never from the server**: the poll stays
+**The viewer is a separate process, and that is measured rather than tidy.** Dash
+used to serve out of the show's own process, so every callback rendered a figure
+while holding the GIL the audio loop needs -- and that loop is fed by an input
+that drops rather than queues, so what it loses is audio, not latency. One
+ordinary viewer, at the same poll rate either way, cost two paced full-track runs
+five and four shed transitions; with the render moved out, the same two runs cost
+none and one -- and none of the *drift* sheds the contention produced survived at
+all. So the show serves exactly one UI-ish thing -- `EventBuffer.snapshot()` as
+JSON, over a stdlib HTTP server on a thread, at the poll rate the callback used
+to run at -- and `--ui` spawns the Dash app as a child that polls it. `--ui-port`
+still means the Dash port and the snapshot port is derived from it, so nothing an
+owner types changed. Neither did any rendering: the render functions always took
+snapshot dicts, so only the data source swapped. Two things keep the split from
+eroding -- `lib/` may not import dash, flask or plotly, which the
+dependency-surface probe enforces, and the viewer is killed with `taskkill /T`
+because the venv launcher re-execs and the pid the show holds is a parent (#181).
+The report path never went near any of this: it is still written in the show.
+
+**Smoothness is bought in the browser and never from the server**: the poll stays
 at its tick and its single callback, because a faster poll once starved the
 plotly bundle behind Chrome's connection limit, and a 10 Hz viewer once cost the
 audio loop four sheds. The server publishes an anchor beside the panels; the
@@ -380,6 +400,15 @@ raster instead of the machine's compositor. And a run whose track has ended read
 frozen for an unrelated reason -- the server clock stops, so the loop correctly
 stops extrapolating. Both mistakes were made here before the numbers meant
 anything.
+
+**Occluded counts as hidden, and that is the trap on this machine.** Chrome's
+native occlusion check reports `visibilityState: hidden` for a window that is
+neither minimised nor backgrounded but merely covered -- which is every window in
+a session with no foreground desktop, so a viewer meant to be measured under load
+polled at 0.5 Hz instead of 4 Hz and reported a *softer* load than a real one.
+`--disable-features=CalculateNativeWinOcclusion` (with the backgrounding and
+timer-throttling flags) restores the real behaviour rather than faking it, and
+`document.visibilityState` is the thing to assert before believing any number.
 
 ---
 
@@ -448,8 +477,8 @@ uv run pytest                        # unit + integration (minutes, not seconds)
 - `-i / -o` â€” audio device indices from `list`; passing `-o` enables delayed audio monitoring on that device
 - `-d` â€” debug: adds a click on every detected BEAT to the monitored audio (implies monitoring on the default output if `-o` is not given). Beat-triggered by owner preference, and now the only trigger there is â€” the onset stream it used to be able to fire from no longer exists.
 - `--no-os2l` â€” disable VirtualDJ connection
-- `--ui` â€” launch Dash real-time visualizer at http://localhost:8050
-- `--ui-port N` â€” change visualizer port
+- `--ui` â€” launch the real-time visualizer, in its own process, at http://localhost:8050; it stops with the show
+- `--ui-port N` â€” change the visualizer's port (the show's snapshot endpoint follows it)
 - `--report FILE` â€” write JSON session report on exit
 
 ---
