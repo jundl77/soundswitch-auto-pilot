@@ -419,6 +419,40 @@ past now its screen position is a constant, so it is a plain positioned div
 outside the translated layer -- as a plotted shape it rode the transform and
 jittered against the very thing it measures.
 
+**The timeline shows a song, not a session, and the song is the room's.** Its
+zero is the instant the room *hears* a track start; the axis, its ticks and both
+clocks re-zero there and sit at an empty zero between songs. That follows from
+the convention the display already keeps -- every event is drawn at the moment
+the room experiences it -- so a boundary judged on detection stamps would cut the
+ribbon somewhere other than where the events on it were placed. Both sides of
+every such comparison are therefore on the room clock, which is the one way this
+can silently go wrong: a beat detected *before* a start reaches the room still
+belongs to the song that start opens, and a beat detected before a stop belongs
+to the song it interrupts. Nothing stored moves -- the re-basing is derived in
+the render path from the sound events the snapshot already carries, so the report
+and the digest are untouched. Two consequences in the browser layer: a backward
+step in the anchor is a re-base rather than elapsed time and must not be
+extrapolated from (the existing re-seat guard then absorbs it), and the
+last-pulsed beat stamp is cleared at a boundary because song times repeat.
+
+**The snapshot ships the window, never the session.** The `--ui` buffer stores
+without a window on purpose -- the report written at the end has to cover the
+whole track -- and the snapshot used to read that same unbounded store, so a poll
+cost the length of the set rather than the length of the view. It now carries
+only what the viewer can draw: the timeline's span plus the look-ahead, because a
+record is stamped when it is detected and drawn one look-ahead later. Storage is
+untouched. Sound events are exempt and stay whole: one record per track boundary
+rather than per second, and the song the display counts from can be an hour old.
+
+**Dash answers callbacks on threads, and the poller they share is one
+connection.** A failing poll clears it; a poll running beside it then re-read
+that attribute between its own request and its response, found nothing, and
+raised past a handler that only catches transport errors -- so the callback
+returned 500 and *every panel* stopped updating until the page was reloaded.
+Measured, not theorised: one live session froze for its remaining four minutes
+this way. Any shared client here needs a lock and needs its handle held locally
+across the round trip.
+
 Measuring this needs a **real visible browser window**. A hidden tab gets no
 `requestAnimationFrame` whatsoever, so every cadence reads as zero and every
 throttled tab looks like a passing result; a headless one measures software
