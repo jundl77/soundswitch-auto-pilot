@@ -72,6 +72,7 @@ class FakeDecoder:
         self.beats: list = []
         self.cells: list = []
         self.resets = 0
+        self.cold_starts: list = []
         self.recent_observations = deque(maxlen=4)
         self._script = list(script or [])
 
@@ -86,8 +87,9 @@ class FakeDecoder:
     def _next(self):
         return self._script.pop(0) if self._script else []
 
-    def reset(self):
+    def reset(self, *, cold_start=True):
         self.resets += 1
+        self.cold_starts.append(cold_start)
 
 
 def engine(*, decoder=None, chain=None, playback_delay_sec=14.0, clock=None,
@@ -239,6 +241,9 @@ async def test_a_gap_from_the_feature_stage_clears_the_decoder_before_it_is_fed(
     await light.on_audio(np.zeros(256, dtype=np.float32))
     assert decoder.resets == 1
     assert decoder.cells == [(0.9288, 0.3)]
+    assert decoder.cold_starts == [False], \
+        'the feature stage gapped, not the beat source: madmom kept running and ' \
+        'pays no warm-up, so the grid must not re-apply the first-beat anchor'
 
 
 async def test_a_missing_chain_is_the_degradation_state_rather_than_a_crash():

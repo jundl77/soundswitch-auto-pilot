@@ -81,13 +81,14 @@ class SectionDecoder:
             maxlen=self.params.lag_bars + 2)
         self.reset()
 
-    def reset(self) -> None:
+    def reset(self, *, cold_start: bool = True) -> None:
         self._decoder.reset()
         self._edges: deque = deque(maxlen=max(_EDGE_RETAIN_BARS,
                                               self.params.lag_bars + 4))
         self._edge_base: int = 0
         self._bar_offset: int = 0
-        self._bar_position: int = _FIRST_BEAT_BAR_POSITION
+        self._bar_position: int = (_FIRST_BEAT_BAR_POSITION if cold_start
+                                   else _RE_ANCHOR_BAR_POSITION)
         self._last_beat_sec: float | None = None
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf

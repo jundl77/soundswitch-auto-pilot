@@ -389,6 +389,16 @@ def test_reset_makes_the_decoder_indistinguishable_from_a_fresh_one():
            [tuple(d) for d in fresh.decisions]
 
 
+def test_a_warm_restart_does_not_re_apply_the_beat_sources_warm_up():
+    section = decoder(lag_bars=2)
+    for beat in beats(6, period=0.5):
+        section.push_beat(beat)
+    section.reset(cold_start=False)
+    for beat in beats(5, period=0.5, start=10.0):
+        section.push_beat(beat)
+    assert section.bar_edges == [pytest.approx(10.0), pytest.approx(12.0)]
+
+
 def test_chain_latency_is_the_features_plus_the_lag_the_bars_actually_took():
     section = decoder(lag_bars=2, feature_latency_sec=7.9938)
     assert section.bar_sec == pytest.approx(NOMINAL_BAR_SEC)
