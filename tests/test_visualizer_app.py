@@ -44,6 +44,15 @@ def _styles(node) -> list:
     return out if children is None else out + _styles(children)
 
 
+def _classes(node) -> list:
+    if isinstance(node, (list, tuple)):
+        return [name for item in node for name in _classes(item)]
+    name = getattr(node, 'className', None)
+    out = [] if name is None else [name]
+    children = getattr(node, 'children', None)
+    return out if children is None else out + _classes(children)
+
+
 def _colour_of(items, prefix: str) -> str:
     for span in items:
         text = ''.join(_texts(span))
@@ -60,12 +69,6 @@ def _metric(items, prefix: str) -> str:
             return text
     raise AssertionError(f'no metric strip item starts with {prefix!r}: '
                          f'{[".".join(_texts(i)) for i in items]}')
-
-
-def _glow_px(slots) -> int:
-    glow = next(style['boxShadow'] for style in _styles(slots)
-                if 'boxShadow' in style)
-    return int(glow.split()[2].removesuffix('px'))
 
 
 def test_beat_marker_size_ignores_the_deleted_strength_channel():
@@ -153,13 +156,172 @@ def test_an_intent_block_is_already_room_fired_and_is_not_shifted_again():
     assert (rect.x0, rect.x1) == (5.0, 10.0)
 
 
-def test_the_stage_pulses_on_the_beat_the_room_hears_not_the_one_detected():
-    beats = [{'t': 6.0, 'bpm': 128.0}]
-    on_the_room_clock = V._build_stage(
-        _snapshot(now=20.0, look_ahead_sec=14.0, beats=beats))
-    on_the_detector_clock = V._build_stage(
-        _snapshot(now=20.0, look_ahead_sec=0.0, beats=beats))
-    assert _glow_px(on_the_room_clock) > _glow_px(on_the_detector_clock)
+def test_the_anchor_puts_the_last_beat_on_the_room_clock():
+    anchor = V._anchor(_snapshot(now=20.0, look_ahead_sec=14.0,
+                                 beats=[{'t': 3.0, 'bpm': 128.0}]))
+    assert anchor['beat'] == 17.0
+
+
+def test_a_beat_the_room_has_not_heard_yet_is_not_in_the_anchor():
+    anchor = V._anchor(_snapshot(now=20.0, look_ahead_sec=14.0,
+                                 beats=[{'t': 3.0, 'bpm': 128.0},
+                                        {'t': 12.0, 'bpm': 128.0}]))
+    assert anchor['beat'] == 17.0
+
+
+def test_the_anchor_carries_both_clocks_and_the_time_it_was_read():
+    anchor = V._anchor(_snapshot(now=20.0, look_ahead_sec=14.0,
+                                 sound_events=[{'t': 0.0, 'playing': True}]))
+    assert (anchor['now'], anchor['song'], anchor['room']) == (20.0, 20.0, 6.0)
+
+
+def test_the_anchor_leaves_the_clocks_blank_before_the_first_sound_start():
+    anchor = V._anchor(_snapshot(now=20.0, sound_events=[]))
+    assert anchor['song'] is None and anchor['room'] is None
+
+
+class _FakePoller:
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+        self.reads = 0
+
+    def snapshot(self) -> dict:
+        self.reads += 1
+        return self._snapshot
+
+
+def _app(source=None):
+    from lib.clock import VirtualClock
+    from lib.engine.event_buffer import EventBuffer
+
+    if source is None:
+        source = EventBuffer(clock=VirtualClock())
+        source.start()
+    return V.build_app(source)
+
+
+_REFRESH = ('..timeline.figure...stage.children...decoder.children...'
+            'metrics.children...sync.data..')
+
+
+def test_the_app_reads_its_data_through_a_snapshot_call_and_nothing_else():
+    poller = _FakePoller(_snapshot(bpm=131.0, beats_detected=7))
+    app = _app(poller)
+
+    figure, stage, decoder, metrics, anchor = app.callback_map[
+        _REFRESH]['callback'].__wrapped__(1)
+
+    assert poller.reads == 1
+    assert '131 BPM' in ''.join(_texts(metrics))
+    assert '7 beats' in ''.join(_texts(metrics))
+    assert anchor['now'] == 10.0
+    assert figure is not None and stage and decoder
+
+
+def test_one_poll_feeds_every_panel_so_they_cannot_disagree():
+    poller = _FakePoller(_snapshot())
+    app = _app(poller)
+    app.callback_map[_REFRESH]['callback'].__wrapped__(1)
+    assert poller.reads == 1
+
+
+def test_the_layout_publishes_the_anchor_the_browser_interpolates():
+    ids = {getattr(child, 'id', None) for child in _app().layout.children}
+    assert {'sync', 'anim'} <= ids
+
+
+def test_the_animation_runs_in_the_browser_off_the_anchor():
+    app = _app()
+    assert 'anim.data' in app.callback_map
+    assert app.callback_map['anim.data']['inputs'][0]['id'] == 'sync'
+    assert V.ANIMATION_JS in ''.join(app._inline_scripts)
+
+
+def test_the_browser_drives_the_axis_the_clocks_and_the_glow():
+    for driven in ('xaxis.range', 'room-clock', 'song-clock', 'ss-pulse'):
+        assert driven in V.ANIMATION_JS, driven
+
+
+def test_the_scroll_translates_per_frame_and_re_seats_the_axis_rarely():
+    # Measured: relayout re-renders every beat marker, 3.2 of 4.7 ms per call.
+    # The per-frame path must be the compositor, not Plotly.
+    js = V.ANIMATION_JS
+    assert 'translate3d' in js
+    assert 'RESEAT_PX' in js
+    scroll = js[js.index('const scroll'):js.index('const pulse')]
+    assert scroll.index('translate3d') > scroll.index('RESEAT_PX')
+
+
+def test_the_stylesheet_animates_the_beat_glow_instead_of_the_server():
+    assert '@keyframes ss-pulse' in _app().index_string
+
+
+def test_the_lamps_hand_the_stylesheet_the_glow_it_animates():
+    lamp = next(style for style in _styles(V._build_stage(_snapshot()))
+                if '--ss-peak' in style)
+    assert lamp['--ss-decay'] == '0.12s'
+    assert lamp['--ss-lamp'] == V.INTENT_CONFIG['drop']['primary']
+    assert 'boxShadow' not in lamp
+
+
+def test_only_the_lamps_the_intent_lights_are_pulse_targets():
+    slots = V._build_stage(_snapshot(intent='atmospheric'))
+    lit = [name for name in _classes(slots) if 'ss-on' in name]
+    assert len(lit) == len(V.INTENT_CONFIG['atmospheric']['slots'])
+    assert len([name for name in _classes(slots) if 'ss-lamp' in name]) \
+        == len(V.SLOT_LABELS)
+
+
+def test_the_clock_spans_are_addressable_by_the_browser():
+    ids = {getattr(span, 'id', None) for span in V._build_metrics(_snapshot())}
+    assert {'room-clock', 'song-clock'} <= ids
+
+
+def _find_by_id(node, target):
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            found = _find_by_id(item, target)
+            if found is not None:
+                return found
+        return None
+    if getattr(node, 'id', None) == target:
+        return node
+    children = getattr(node, 'children', None)
+    return None if children is None else _find_by_id(children, target)
+
+
+def test_the_now_cursor_is_a_fixed_screen_position_not_a_plotted_shape():
+    # The window always ends a fixed lead past now, so the cursor's screen x is
+    # a constant -- a shape would ride the scrolling transform and jitter.
+    fig = V._build_timeline(_snapshot(now=10.0))
+    assert [s for s in fig.layout.shapes if s.xref == 'paper'] == []
+
+    cursor = _find_by_id(_app().layout.children, 'now-cursor')
+    assert cursor is not None
+    assert cursor.style['left'] == f'{V.NOW_CURSOR_X * 100:.4f}%'
+    assert cursor.style['position'] == 'absolute'
+
+
+def test_the_scrolled_layer_is_outside_the_graph_dash_rerenders():
+    scroll = _find_by_id(_app().layout.children, 'timeline-scroll')
+    assert scroll is not None
+    assert scroll.style.get('willChange') == 'transform'
+
+
+def test_the_second_grid_is_an_axis_setting_not_thirty_shapes():
+    fig = V._build_timeline(_snapshot(now=100.0))
+    assert [s for s in fig.layout.shapes if s.xref == 'x'] == []
+    assert fig.layout.xaxis.minor.dtick == 1.0
+
+
+def test_the_running_intent_block_reaches_the_edge_the_browser_scrolls_to():
+    # Out to the pad, not just the lead: the pad is the strip the transform
+    # translates in, so a block stopping at the lead would open a gap there.
+    fig = V._build_timeline(_snapshot(
+        now=20.0, intents=[{'t': 5.0, 'intent': 'drop'}]))
+    rect = next(s for s in fig.layout.shapes if s.type == 'rect')
+    assert rect.x1 == pytest.approx(
+        20.0 + V.TIMELINE_LEAD_SEC + V.TIMELINE_PAD_SEC)
 
 
 def test_the_snapshot_carries_the_delay_the_display_shifts_by():
@@ -357,6 +519,8 @@ def test_the_gpu_thread_runs_under_real_time_pacing(nn_artifacts, anchor_mp3):
 
 
 def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
+    import asyncio
+
     from lib.clock import VirtualClock
     from lib.engine.delayed_command_queue import DelayedCommandQueue
     from lib.engine.event_buffer import EventBuffer
@@ -372,11 +536,68 @@ def test_a_ui_session_leaves_the_report_it_committed(tmp_path, monkeypatch):
     buffer.set_intent('drop', song_sec=1.0)
     report = tmp_path / 'session.json'
 
-    cli._run_pipeline({}, 1.0, buffer, DelayedCommandQueue(14.0, clock=clock),
-                      False, report_path=str(report))
+    asyncio.run(cli._run_pipeline(
+        {}, 1.0, buffer, DelayedCommandQueue(14.0, clock=clock), False,
+        report_path=str(report)))
 
     import json
     assert [b['intent'] for b in json.loads(report.read_text())['intents']] == ['drop']
+
+
+class _FakeUi:
+    def __init__(self):
+        self.waited = 0
+        self.stopped = 0
+
+    def wait(self):
+        self.waited += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
+def _viewer_session(monkeypatch, pipeline):
+    import asyncio
+
+    from lib import ui_bridge
+    from simulate import cli
+
+    ui = _FakeUi()
+    monkeypatch.setattr(ui_bridge, 'start', lambda buffer, port: ui)
+
+    async def session():
+        await cli._with_viewer(object(), 8050, pipeline)
+        return asyncio.get_running_loop()
+
+    return ui, session
+
+
+def test_the_ui_session_runs_the_pipeline_on_the_loop_it_was_called_from(
+        monkeypatch):
+    # The pipeline has the main thread now, so it must join the loop already
+    # running there rather than start one of its own.
+    import asyncio
+
+    ran = []
+
+    async def pipeline():
+        ran.append(asyncio.get_running_loop())
+
+    ui, session = _viewer_session(monkeypatch, pipeline)
+    assert ran == [asyncio.run(session())]
+    assert (ui.waited, ui.stopped) == (1, 1)
+
+
+def test_a_pipeline_that_raises_still_takes_the_viewer_down_with_it(monkeypatch):
+    import asyncio
+
+    async def pipeline():
+        raise RuntimeError('the audio device went away')
+
+    ui, session = _viewer_session(monkeypatch, pipeline)
+    with pytest.raises(RuntimeError):
+        asyncio.run(session())
+    assert (ui.waited, ui.stopped) == (0, 1)
 
 
 def test_a_ui_file_session_keeps_the_whole_track():

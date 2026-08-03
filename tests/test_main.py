@@ -16,6 +16,7 @@ def _app(enable_ui: bool, event_buffer):
     app.disable_os2l = True
     app.enable_ui = enable_ui
     app._ui_port = 8050
+    app._ui = None
     app._enable_playback = False
     app.event_buffer = event_buffer
     app.audio_client = MagicMock()
@@ -44,16 +45,41 @@ def _run(app):
         asyncio.run(app.run())
 
 
-def test_report_without_ui_starts_no_dash_server(monkeypatch):
-    started = _threads_started(monkeypatch)
+def _bridge_started(monkeypatch) -> list:
+    from lib import ui_bridge
+
+    started = []
+    monkeypatch.setattr(ui_bridge, 'start',
+                        lambda buffer, port: started.append((buffer, port))
+                        or MagicMock())
+    return started
+
+
+def test_report_without_ui_starts_no_viewer(monkeypatch):
+    started = _bridge_started(monkeypatch)
     _run(_app(enable_ui=False, event_buffer=MagicMock()))
     assert started == []
 
 
-def test_ui_starts_the_dash_server(monkeypatch):
+def test_ui_hands_the_viewer_to_its_own_process(monkeypatch):
+    started = _bridge_started(monkeypatch)
+    app = _app(enable_ui=True, event_buffer=MagicMock())
+    _run(app)
+    assert started == [(app.event_buffer, 8050)]
+
+
+def test_the_viewer_is_stopped_when_the_show_stops(monkeypatch):
+    _bridge_started(monkeypatch)
+    app = _app(enable_ui=True, event_buffer=MagicMock())
+    _run(app)
+    app._ui.stop.assert_called_once()
+
+
+def test_no_dash_thread_shares_the_show_process(monkeypatch):
     started = _threads_started(monkeypatch)
+    _bridge_started(monkeypatch)
     _run(_app(enable_ui=True, event_buffer=MagicMock()))
-    assert [t['target'].__name__ for t in started] == ['run_app']
+    assert started == []
 
 
 def test_report_without_ui_still_starts_the_event_buffer(monkeypatch):

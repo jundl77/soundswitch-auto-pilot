@@ -1,29 +1,23 @@
-import asyncio
 import json
 import logging
 import os
 import sys
-import threading
 import time
 
 from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 
-def _run_pipeline(components, duration_sec: float, event_buffer, command_queue,
-                  pace_real_time: bool, report_path: str | None = None):
+async def _run_pipeline(components, duration_sec: float, event_buffer,
+                        command_queue, pace_real_time: bool,
+                        report_path: str | None = None):
     from simulate import runner
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(
-            runner.run_simulation(components, duration_sec,
-                                  pace_real_time=pace_real_time)
-        )
+        await runner.run_simulation(components, duration_sec,
+                                    pace_real_time=pace_real_time)
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
         if report_path:
             _write_report(event_buffer, command_queue, report_path)
-        loop.close()
 
 
 def _write_report(event_buffer, command_queue, report_path: str) -> dict:
@@ -52,7 +46,7 @@ async def run_file(args):
               '(audio cannot play at fast-simulation speed)')
         sys.exit(2)
     if args.ui:
-        _run_file_realtime_ui(args)
+        await _run_file_realtime_ui(args)
     else:
         await _run_file_fast(args)
 
@@ -86,7 +80,24 @@ def _session_buffer(look_ahead_sec: float, clock=None):
                        look_ahead_sec=look_ahead_sec)
 
 
-def _run_file_realtime_ui(args):
+async def _with_viewer(event_buffer, port, run):
+    from lib import ui_bridge
+
+    ui = ui_bridge.start(event_buffer, port)
+    try:
+        await run()
+        if ui is not None:
+            print('[simulate] the track is over — the viewer is still up on '
+                  f'http://localhost:{port}; Ctrl-C to close it')
+            ui.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if ui is not None:
+            ui.stop()
+
+
+async def _run_file_realtime_ui(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
 
@@ -103,14 +114,6 @@ def _run_file_realtime_ui(args):
 
     event_buffer.start()
 
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, duration_sec, event_buffer, command_queue, True,
-              args.report),
-        daemon=True,
-    )
-    thread.start()
-
     if args.play_audio:
         try:
             import sounddevice as sd
@@ -121,15 +124,16 @@ def _run_file_realtime_ui(args):
         except ImportError as e:
             print(f'[simulate] warning: {e} — audio playback skipped')
 
-    from simulate.visualizer_app import run_app
-    run_app(event_buffer, port=args.port)
+    await _with_viewer(event_buffer, args.port,
+                       lambda: _run_pipeline(components, duration_sec,
+                                             event_buffer, command_queue, True,
+                                             args.report))
 
 
-def run_realtime(args):
+async def run_realtime(args):
     from lib.engine.event_buffer import EventBuffer
     from lib.clients.pyaudio_client import PyAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
-    from simulate.visualizer_app import run_app
 
     audio_client = PyAudioClient(
         sample_rate=SAMPLE_RATE,
@@ -141,14 +145,9 @@ def run_realtime(args):
                                                  threaded=True)
     event_buffer.start()
 
-    thread = threading.Thread(
-        target=_run_pipeline,
-        args=(components, float('inf'), event_buffer, command_queue, False),
-        daemon=True,
-    )
-    thread.start()
-
-    run_app(event_buffer, port=args.port)
+    await _with_viewer(event_buffer, args.port,
+                       lambda: _run_pipeline(components, float('inf'),
+                                             event_buffer, command_queue, False))
 
 
 def add_simulate_subparser(subparsers):
@@ -181,4 +180,4 @@ async def simulate_cmd(args):
     if args.sim_mode == 'file':
         await run_file(args)
     elif args.sim_mode == 'realtime':
-        run_realtime(args)
+        await run_realtime(args)

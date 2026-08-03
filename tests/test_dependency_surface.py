@@ -10,6 +10,8 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 LIVE_PATH = REPO_ROOT / "lib"
 
 RETIRED = ("tensorflow", "tensorflow_hub", "aubio")
+# The viewer runs in its own process; a GIL shared with it costs the show sheds.
+VIEWER_ONLY = ("dash", "flask", "plotly")
 
 
 def _pyproject() -> dict:
@@ -79,15 +81,22 @@ _probe_result: list = []
 
 def _load_the_live_path():
     if not _probe_result:
+        watched = RETIRED + VIEWER_ONLY
         probe = (
             "import sys, importlib;"
             f"[importlib.import_module(name) for name in {_live_modules()!r}];"
-            f"print(','.join(sorted(m for m in {RETIRED!r} if m in sys.modules)))"
+            f"print(','.join(sorted(m for m in {watched!r} if m in sys.modules)))"
         )
         _probe_result.append(subprocess.run(
             [sys.executable, "-c", probe], cwd=REPO_ROOT,
             capture_output=True, text=True, timeout=600))
     return _probe_result[0]
+
+
+def _pulled_in() -> set:
+    result = _load_the_live_path()
+    assert result.returncode == 0, result.stderr[-2000:]
+    return set(filter(None, result.stdout.strip().split(",")))
 
 
 def test_every_module_on_the_live_path_still_imports():
@@ -96,9 +105,11 @@ def test_every_module_on_the_live_path_still_imports():
 
 
 def test_loading_the_whole_live_path_pulls_in_neither_tensorflow_nor_aubio():
-    result = _load_the_live_path()
-    assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip() == ""
+    assert _pulled_in() & set(RETIRED) == set()
+
+
+def test_the_show_process_never_imports_the_viewer():
+    assert _pulled_in() & set(VIEWER_ONLY) == set()
 
 
 def test_the_two_playback_delays_are_one_number():
