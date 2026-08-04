@@ -1,16 +1,22 @@
 import http.client
 import json
 import logging
+import os
+import signal
 import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from lib import ui_bridge
 from lib.clock import VirtualClock
+
 from lib.engine.event_buffer import EventBuffer
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -236,3 +242,93 @@ def test_stopping_the_show_takes_the_viewer_and_the_endpoint_with_it(
 
     assert bridge.viewer.poll() is not None
     assert not _bound(ui_bridge.snapshot_port(ui_port))
+
+
+_INTERRUPT_HARNESS = '''
+import ctypes, subprocess, sys, time
+sys.path.insert(0, {root!r})
+ctypes.windll.kernel32.SetConsoleCtrlHandler(None, 0)
+from lib.ui_bridge import UiBridge
+
+
+class _Server:
+    def stop(self):
+        print('SERVER STOPPED', flush=True)
+
+
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+bridge = UiBridge(_Server(), child, 8050)
+print('READY', child.pid, flush=True)
+try:
+    bridge.wait()
+except KeyboardInterrupt:
+    print('KBI', flush=True)
+finally:
+    bridge.stop()
+print('EXITED', flush=True)
+'''
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='CTRL_C_EVENT is a Windows console signal')
+def test_one_ctrl_c_tears_the_viewer_down_instead_of_waiting_on_it():
+    """Popen.wait() cannot return early on Windows, so the interrupt never lands."""
+    harness = _INTERRUPT_HARNESS.format(root=str(REPO_ROOT))
+    process = subprocess.Popen(
+        [sys.executable, '-c', harness],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    try:
+        line = process.stdout.readline()
+        assert line.startswith('READY'), line
+        child_pid = int(line.split()[1])
+
+        os.kill(process.pid, signal.CTRL_C_EVENT)
+        try:
+            out = process.communicate(timeout=20)[0]
+        except subprocess.TimeoutExpired:
+            raise AssertionError('one Ctrl-C did not end the run')
+
+        assert 'KBI' in out, out
+        assert 'SERVER STOPPED' in out, out
+        assert 'EXITED' in out, out
+        assert process.returncode == 0
+        assert not _alive(child_pid), 'the viewer was orphaned'
+    finally:
+        if process.poll() is None:
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True)
+            process.wait(timeout=10)
+
+
+def _alive(pid: int) -> bool:
+    found = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'],
+                           capture_output=True, text=True)
+    return str(pid) in found.stdout
+
+
+async def test_an_interrupted_run_still_writes_the_report_it_was_asked_for(tmp_path):
+    from lib.engine.delayed_command_queue import DelayedCommandQueue
+    from lib.engine.event_buffer import EventBuffer
+    from simulate import cli, runner
+
+    async def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    original, runner.run_simulation = runner.run_simulation, interrupted
+    try:
+        clock = VirtualClock()
+        buffer = EventBuffer(window_sec=float('inf'), clock=clock)
+        buffer.start()
+        buffer.set_intent('drop')
+        clock.advance(12.0)
+        report = tmp_path / 'report.json'
+
+        with pytest.raises(KeyboardInterrupt):
+            await cli._run_pipeline({}, 1.0, buffer, DelayedCommandQueue(14.0),
+                                    True, str(report))
+    finally:
+        runner.run_simulation = original
+
+    written = json.loads(report.read_text())
+    assert written['intents'][0]['intent'] == 'drop'
+    assert written['duration_sec'] == pytest.approx(12.0)
