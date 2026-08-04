@@ -119,6 +119,7 @@ def test_eval_set_head_matches_the_committed_baseline(nn_artifacts):
     exit_code = run_eval_set.main([
         "--only", ",".join(BENCH_TRACK_IDS),
         "--data-dir", str(DATA_DIR),
+        "--workers", "1",
         "--quiet",
     ])
     assert exit_code == 0, (
