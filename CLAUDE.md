@@ -241,13 +241,22 @@ the virtual bar. Priced on val in `models/phase_b/decoder_rebirth/`; the runtime
 is held to that reference's own decisions by
 `tests/test_section_decoder_rebirth.py`.
 
-**A cold start is a birth too, and that is the change with the widest reach.**
-The gate is named after re-anchors, but pre-aging and the virtual bar apply at
-the opening of *every* track, so the first run no longer owes its duration floor:
-a probe track's `intro` now ends after one bar where the floor is eight. Only 13
-of 215 val tracks re-anchor at all, yet every track's report moves, and that --
-not the gap repair -- is the dominant reason a benchmark re-cut touches all ten
-checksums. Read a moved checksum against that before assuming a gap was involved.
+**A cold start is a birth too, and its reach was over-estimated.** The gate is
+named after re-anchors, but pre-aging and the virtual bar apply at the opening of
+*every* track, so the first run no longer owes its duration floor: a probe
+track's `intro` now ends after one bar where the floor is eight. Only 13 of 215
+val tracks re-anchor at all, so this path looked like the one with the widest
+reach, and it was written down here as the dominant reason a benchmark re-cut
+would touch all ten checksums. **Measurement falsified that, twice** -- once on
+the branch and again on master after the merge, where all ten reports came back
+byte-identical and the baseline needed no re-cut at all. Owing no floor only
+changes a decision where a floor actually *binds*, and a virtual predecessor only
+changes one where a boundary sits on the grid's very first bar; the frozen ten
+are gapless and open on long, uncontested intros, so the path is live on them and
+inert. What generalises is not the ten tracks but the failure: a decoder change
+can be read statically for what it is *able* to reach and never for what it does,
+so read a moved -- or an unmoved -- checksum against a measurement rather than
+against this paragraph.
 
 **Two of the four births are unmeasured, and both are deliberate.** The third --
 the committer restarted because the grid outran it -- is unreachable offline (the
