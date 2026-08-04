@@ -18,6 +18,7 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+import select_eval_set  # noqa: E402
 from select_eval_set import (  # noqa: E402  (needs the path insert above)
     EVAL_SET_FILE,
     GAP_BUCKET_BPM,
@@ -27,6 +28,7 @@ from select_eval_set import (  # noqa: E402  (needs the path insert above)
     Candidate,
     artist_of,
     beat_grid_bpm,
+    build_candidates,
     equal_width_bins,
     family_of,
     gap_bucket,
@@ -35,9 +37,9 @@ from select_eval_set import (  # noqa: E402  (needs the path insert above)
     rationale_line,
     select,
     tiebreak,
-    v1_runs,
     verify_inputs,
 )
+from lib.label_space import SECTION_LABELS  # noqa: E402
 
 
 def candidate(track_id="0001.aaaaaaaaaaa", youtube="aaaaaaaaaaa", bpm=126.0,
@@ -61,24 +63,58 @@ def spread(count, bpms, **kwargs) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# v1_runs
+# structural facts: the raw vocabulary, no fold of the selector's own
 # --------------------------------------------------------------------------- #
 
 
-def test_v1_runs_merges_cooldown_into_an_adjacent_breakdown():
-    # canonical_runs keeps these apart (different labels); the v1 fold makes
-    # them the same class, so counting them as two runs would invent a boundary
-    # the evaluator can never observe.
-    sections = [(0.0, 10.0, "breakdown"), (10.0, 20.0, "cooldown"), (20.0, 30.0, "drop")]
-    assert v1_runs(sections) == [(0.0, 20.0, "breakdown"), (20.0, 30.0, "drop")]
+def test_the_selector_owns_no_fold_of_its_own_any_more():
+    """The second merge existed only to undo the retired v1 fold."""
+    for name in ("v1_runs", "V1_CLASSES", "V1_ORDER", "label_v1", "canonical_runs"):
+        assert not hasattr(select_eval_set, name), name
 
 
-def test_v1_runs_folds_altoutro_into_outro():
-    assert v1_runs([(0.0, 5.0, "outro"), (5.0, 9.0, "altoutro")]) == [(0.0, 9.0, "outro")]
+def corpus_with(tmp_path: Path, sections: list, track_id="0001.aaaaaaaaaaa",
+                bpm=120.0, duration=300.0):
+    beats = tmp_path / "annotations" / "beats"
+    beats.mkdir(parents=True, exist_ok=True)
+    step = 60.0 / bpm
+    lines = ["time"] + [f"{index * step:.6f}" for index in range(32)]
+    (beats / f"{track_id}.beat.csv").write_text("\n".join(lines) + "\n",
+                                                encoding="utf-8")
+    rows = [{"track_id": track_id, "youtube_id": track_id.split(".", 1)[1],
+             "decoded_duration_sec": str(duration)}]
+    tracks = [{"key": track_id, "title": "Someone - A Track", "genre": "Techno",
+               "sections": [{"start": start, "end": end, "name": name}
+                            for start, end, name in sections]}]
+    return build_candidates(tmp_path, rows, tracks)
 
 
-def test_v1_runs_drops_the_end_sentinel():
-    assert v1_runs([(0.0, 5.0, "drop"), (5.0, 9.0, "end")]) == [(0.0, 5.0, "drop")]
+def test_boundaries_are_counted_in_the_raw_vocabulary_without_folding(tmp_path):
+    """breakdown|cooldown was one v1 run; in the raw space it is two sections
+    and the boundary between them is one the evaluator can now see."""
+    picked = corpus_with(tmp_path, [(0.0, 10.0, "breakdown"),
+                                    (10.0, 20.0, "cooldown"),
+                                    (20.0, 30.0, "drop")])
+    assert [c.boundaries for c in picked] == [2]
+    assert picked[0].classes == frozenset({"breakdown", "cooldown", "drop"})
+
+
+def test_the_alt_classes_are_kept_apart_from_the_ones_they_used_to_fold_into(tmp_path):
+    picked = corpus_with(tmp_path, [(0.0, 5.0, "outro"), (5.0, 9.0, "altoutro")])
+    assert picked[0].classes == frozenset({"outro", "altoutro"})
+    assert picked[0].boundaries == 1
+
+
+def test_the_end_sentinel_is_still_dropped_rather_than_counted(tmp_path):
+    picked = corpus_with(tmp_path, [(0.0, 5.0, "drop"), (5.0, 9.0, "end")])
+    assert picked[0].classes == frozenset({"drop"})
+    assert picked[0].boundaries == 0
+
+
+def test_adjacent_sections_of_one_label_are_still_one_run(tmp_path):
+    picked = corpus_with(tmp_path, [(0.0, 5.0, "drop"), (5.0, 9.0, "drop"),
+                                    (9.0, 14.0, "outro")])
+    assert picked[0].boundaries == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -168,7 +204,7 @@ def test_is_eligible_rejects_a_structurally_thin_track():
     assert not is_eligible(candidate(boundaries=MIN_BOUNDARIES - 1))
 
 
-def test_is_eligible_does_not_require_all_five_classes():
+def test_is_eligible_does_not_require_full_class_coverage():
     # Criterion 1 is "where possible" -- a rank, not a gate, so a sparse tempo
     # band still contributes a track.
     assert is_eligible(candidate(classes=("intro", "drop", "outro")))
@@ -352,6 +388,21 @@ def test_the_committed_eval_set_is_a_well_formed_frozen_set():
     assert len(ids) == len(set(ids)) == 10
     assert sorted(document["rationale"]) == sorted(ids)
     assert [track["youtube_id"] for track in document["tracks"]] == ids
+
+
+def test_a_fresh_document_records_the_raw_vocabulary_it_was_selected_under(tmp_path):
+    from select_eval_set import Pick, build_document
+
+    (tmp_path / "annotations").mkdir()
+    (tmp_path / "clean_manifest.csv").write_text("x", encoding="utf-8")
+    (tmp_path / "annotations" / "segments.json").write_text("[]", encoding="utf-8")
+    picks = [Pick(candidate(classes=("intro", "cooldown", "drop")), "BPM band")]
+    document = build_document(picks, tmp_path, 1, 1, 1, seed=1)
+
+    assert document["selected_from"]["criteria"]["classes"] == list(SECTION_LABELS)
+    assert document["tracks"][0]["classes"] == ["intro", "drop", "cooldown"]
+    assert "v1_classes" not in document["tracks"][0]
+    assert "v1_boundaries" not in document["tracks"][0]
 
 
 def test_load_eval_set_rejects_a_document_that_is_not_an_eval_set(tmp_path):
