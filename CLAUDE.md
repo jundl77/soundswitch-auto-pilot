@@ -426,6 +426,21 @@ dependency-surface probe enforces, and the viewer is killed with `taskkill /T`
 because the venv launcher re-execs and the pid the show holds is a parent (#181).
 The report path never went near any of this: it is still written in the show.
 
+**One Ctrl-C has to end the session, and the obvious way to wait on a child
+guarantees it cannot.** `Popen.wait()` on Windows is `WaitForSingleObject` with
+an infinite timeout: it releases the GIL without joining CPython's SIGINT event,
+so it cannot return early. The interrupt is *delivered and then held* — measured,
+not inferred: killing the viewer by hand released the wait and the
+`KeyboardInterrupt` fired five seconds late, at the first bytecode afterwards,
+while the line straight after the wait never ran at all. That makes the deadlock
+exact, because the only thing that kills the viewer is the handler the interrupt
+has not reached yet. A second Ctrl-C cannot help; it re-sets a flag that is
+already set. So the session waits on the viewer by polling, which costs one
+wake-up every fifth of a second and makes the interrupt land in the same
+millisecond it is sent. The report is unaffected either way — it is written from
+a `finally` around the pipeline, so an interrupt mid-track still writes what the
+run had.
+
 **Smoothness is bought in the browser and never from the server**: the poll stays
 at its tick, because a faster poll once starved the plotly bundle behind Chrome's
 connection limit, and a 10 Hz viewer once cost the audio loop four sheds. The
