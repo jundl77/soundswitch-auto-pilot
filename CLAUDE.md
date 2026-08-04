@@ -222,6 +222,45 @@ produced, so that restart keeps the bar position it is holding and rebuilds only
 the grid, the pending cells and the committer; discarding a position that is
 still correct would trade it for a one-in-four guess.
 
+**A restart is a birth, and a birth is not the start of a track.** Whatever the
+flavour, the committer that came back used to take the corpus's start-of-track
+prior, so a decoder reborn 34 minutes into a set believed it was at bar zero of
+an imaginary track: it could commit `intro`, which no fitted transition can
+enter, and it owed a whole duration floor before it was allowed to leave. On one
+measured track a 5 s hole in the beat stream put the rig near dark for **53.4 s**
+over the back half of a breakdown the model was 0.978 sure of. A birth now
+carries the class the show was already in, places its mass on each class's
+*final* duration state -- a floor is charged for time the grid witnessed, never
+for time it was not alive for -- and is preceded by one virtual bar. The three
+are one change and ship together: the virtual bar is what gives the first real
+bar a transition, which is both how a boundary landing there can be acted on at
+all and how a carried belief can be **refused**. Without it a carry cannot be
+rejected on the bar it is born on, and forcing every val birth to carry every
+class in turn, carry-alone accepted 85 of 85 wrong beliefs against 37 of 85 with
+the virtual bar. Priced on val in `models/phase_b/decoder_rebirth/`; the runtime
+is held to that reference's own decisions by
+`tests/test_section_decoder_rebirth.py`.
+
+**A cold start is a birth too, and that is the change with the widest reach.**
+The gate is named after re-anchors, but pre-aging and the virtual bar apply at
+the opening of *every* track, so the first run no longer owes its duration floor:
+a probe track's `intro` now ends after one bar where the floor is eight. Only 13
+of 215 val tracks re-anchor at all, yet every track's report moves, and that --
+not the gap repair -- is the dominant reason a benchmark re-cut touches all ten
+checksums. Read a moved checksum against that before assuming a gap was involved.
+
+**Two of the four births are unmeasured, and both are deliberate.** The third --
+the committer restarted because the grid outran it -- is unreachable offline (the
+harness holds the whole grid), so it is correct by construction rather than
+measured. The fourth is a feature-stage gap: it carries for the same reason the
+other three do, and resetting a mid-track committer to the start-of-track prior
+is precisely the defect this package removes, so it was approved on the failure
+ranking rather than on a measurement. Both are pinned by unit tests and both are
+one line to withdraw. A class the fitted priors never start a track in cannot be
+carried into at all -- its whole initial row is `-inf`, and a birth into it would
+commit that class forever with nothing able to move it -- so a birth degrades to
+the cold spread and says so, rather than raising on the show's thread.
+
 **PEAK is an engine-level promotion, not a class.** "A drop that has lasted" is a
 run length, which no window of audio can express, so the engine promotes an
 already-committed DROP once the run reaches a fixed number of *bars* -- the same
@@ -910,6 +949,7 @@ session is therefore not a clean read of what the headless pipeline does.
 - **The eval-set baseline lags a deliberate pipeline change by one command.** Any change to `lib/` or `simulate/` that moves the reports fails `run_eval_set.py` until the baseline is re-cut. That is the gate working, not a flake — but it does mean a pipeline PR is two steps, and the second one must not be skipped. **The gate keys on report content, not on musical behaviour**: the madmom migration moved all ten checksums, and so did a later merge that changed no rhythm at all. Read the printed table before assuming a checksum move means the show moved — `beats` and `changes_intent` sitting still is the signal that it did not. The NN integration is the extreme case: the branch deliberately carried a strict-xfail on this gate through the whole demolition rather than re-cutting an intermediate state as the benchmark, and cut it exactly once at the settled tip.
 - **The CPU cost of the front-end, as measured today.** Paced at real time on one eval-set track: the audio loop is about 17 % of one core (mean 0.97 ms, p99 2.80 ms against the 5.805 ms buffer period), of which madmom is ~10 % and the engine's per-buffer audio push ~1.6 %; the GPU pass is ~157 ms mean / ~334 ms p99 against a 1 s hop, with the hand-off queue's p99 depth at zero. **These are anchored against the same day's madmom and cannot be diffed against the committed `realtime_measurement.json`** — madmom alone measures 2.5x apart between days on identical code, so subtracting the two files is meaningless. For history: the earlier aubio front-end cost ~1.4 % of a core end to end, and the madmom migration took that to ~25.7 % before the demolition gave ~11 % of it back by deleting the onset chain.
 - **Fast simulation now has a cold cost and a warm one.** A warm run replays the extractor and is about 2.2x faster than a cold one, and needs no GPU at all. A cold run needs a GPU and is what the first pass over any new audio pays. Regenerating the corpus report cache is a cold pass over every track — and the report schema change on this branch invalidates that cache by construction.
+- **A cold benchmark run must be serial on a single GPU, and `--workers` above 1 does not merely fail to help.** Each simulation worker holds ~3.3 GB of VRAM, so on an 8 GB card two workers plus the desktop already sit at 7.7 GB and the driver evicts continuously: a 30 s encoder pass that costs ~157 ms warm ran **over ten minutes without completing**, at four workers and again at two, while serial the frozen ten take 16 minutes at 4x realtime. The pathology is invisible from outside — the runner banks no per-track artifact and `pool.map` yields in order, so an empty stdout is what both a wedged run and a healthy one look like for the first several minutes. What separates them is `buffers_fed` in `simulate/runner.py`'s `run_simulation` frame, read out of the live process (`py-spy dump --locals`); times the buffer period it is seconds of audio consumed, and if it does not move in five minutes the run will not finish. A serial pass also leaves the cell sidecars behind, so the next run over the same audio is warm and needs no GPU at all.
 - **madmom is CC BY-NC-SA** (models). Fine for a personal project; it forecloses a
   commercial turn without a JKU licence. **MERT's own licence terms are the same
   class of question and are not analysed here** — check them before any
