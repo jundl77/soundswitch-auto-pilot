@@ -57,7 +57,7 @@ of zero rather than as "not known yet".
 **Reported BPM is octave-folded**, and the reason has changed. It was introduced
 because the retired tracker locked onto double tempo during warm-up, reliably
 enough to fire a false PEAK before the music started, and it was load-bearing for
-a tempo-gated DROP branch that no longer exists. It stays because a folded tempo
+a tempo-gated DROP branch that no longer exists. Neither does PEAK. It stays because a folded tempo
 is what the OS2L wire has always carried and the ambiguity it addresses is a
 property of tempo rather than of any one tracker.
 
