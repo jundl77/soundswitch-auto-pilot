@@ -94,7 +94,9 @@ def resolve_backend(device: str | None = None, fp16: bool = True) -> dict:
 
 def _check_class_space(priors) -> None:
     from lib.engine.effect_definitions import intent_for_class
+    from lib.label_space import check_class_space
 
+    check_class_space(priors.classes, "the decoder priors")
     for name in priors.classes:
         intent_for_class(name)
 

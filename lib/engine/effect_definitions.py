@@ -23,12 +23,22 @@ class LightIntent(Enum):
     PEAK        = 'peak'
 
 
+# PROVISIONAL for the four classes the vocabulary gained -- owner-pending.  The
+# real mapping is a product decision to be taken against measured per-class
+# energy and position profiles, not intuition, and this is the one dict that
+# changes when it is.  `cooldown` goes to BREAKDOWN because that is where
+# GROOVE's banks went under D7, so its documented semantic home still plays
+# GROOVE's lights.
 SECTION_CLASS_INTENTS: Dict[str, 'LightIntent'] = {
     'intro':     LightIntent.ATMOSPHERIC,
-    'outro':     LightIntent.ATMOSPHERIC,
+    'altintro':  LightIntent.ATMOSPHERIC,
     'buildup':   LightIntent.BUILDUP,
     'breakdown': LightIntent.BREAKDOWN,
+    'bridge':    LightIntent.BREAKDOWN,
     'drop':      LightIntent.DROP,
+    'cooldown':  LightIntent.BREAKDOWN,
+    'outro':     LightIntent.ATMOSPHERIC,
+    'altoutro':  LightIntent.ATMOSPHERIC,
 }
 
 
