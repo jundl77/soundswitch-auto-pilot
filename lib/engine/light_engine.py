@@ -126,8 +126,8 @@ class LightEngine(IMusicAnalyserHandler):
             self._show_sound_stop()
         if self.event_buffer:
             self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value,
+                                         song_sec=self.event_buffer.elapsed(),
                                          trigger=SILENCE_TRIGGER)
-        self._current_intent = LightIntent.ATMOSPHERIC
 
     def _show_sound_start(self) -> None:
         with self._deliberate_stall():

@@ -196,3 +196,61 @@ def test_every_intent_block_carries_a_trigger():
     buf.set_intent('atmospheric', trigger='silence')
     assert [block['trigger'] for block in buf.to_report()['intents']] == \
         ['classifier'] * 3 + ['silence']
+
+
+def test_a_trigger_flip_opens_a_new_block_even_when_the_intent_repeats():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('atmospheric')
+    clock.advance(5.0)
+    buf.set_intent('atmospheric', trigger='silence')
+    blocks = buf.to_report()['intents']
+    assert [(b['t'], b['trigger']) for b in blocks] == \
+        [(0.0, 'classifier'), (5.0, 'silence')]
+
+
+def test_a_classifier_commit_after_a_blackout_is_not_absorbed_into_it():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('atmospheric', trigger='silence')
+    clock.advance(5.0)
+    buf.set_intent('atmospheric', song_sec=3.0)
+    blocks = buf.to_report()['intents']
+    assert [b['trigger'] for b in blocks] == ['silence', 'classifier']
+    assert blocks[1]['song_t'] == 3.0
+
+
+def test_a_repeat_of_the_same_intent_and_trigger_is_still_one_block():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('GROOVE')
+    clock.advance(5.0)
+    buf.set_intent('GROOVE')
+    assert len(buf.to_report()['intents']) == 1
+
+
+def test_a_stop_banks_the_beats_that_never_reached_the_room():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    for step in (10.0, 40.0, 5.0):
+        clock.advance(step)
+        buf.add_beat(bpm=128.0, change=False)
+    clock.advance(5.0)
+    buf.set_playing(False)
+    assert buf.snapshot()['beats_cut'] == 2
+
+
+def test_the_banked_beats_survive_the_window_they_were_counted_in():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    clock.advance(50.0)
+    buf.add_beat(bpm=128.0, change=False)
+    clock.advance(10.0)
+    buf.set_playing(False)
+    clock.advance(300.0)
+    assert buf.snapshot()['beats_cut'] == 1

@@ -28,6 +28,8 @@ class EventBuffer:
         self._intents: list[dict] = []
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
+        self._current_trigger: str | None = None
+        self._beats_cut: int = 0
         self._sound_events: list[dict] = []
         self._decoder_state: dict = {}
 
@@ -72,14 +74,19 @@ class EventBuffer:
         with self._lock:
             self._is_playing = is_playing
             now = self._now()
+            if not is_playing:
+                self._beats_cut += sum(
+                    1 for beat in self._beats
+                    if beat['t'] + self._look_ahead_sec > now)
             self._sound_events.append({'t': now, 'playing': is_playing})
 
     def set_intent(self, intent: str, song_sec: float | None = None,
                    trigger: str = CLASSIFIER_TRIGGER) -> None:
         with self._lock:
-            if intent == self._current_intent:
+            if (intent, trigger) == (self._current_intent, self._current_trigger):
                 return
             self._current_intent = intent
+            self._current_trigger = trigger
             now = self._now()
             if self._intents and 'end' not in self._intents[-1]:
                 self._intents[-1]['end'] = now
@@ -143,6 +150,7 @@ class EventBuffer:
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
+                'beats_cut': self._beats_cut,
                 'intent': self._current_intent,
                 'sound_events': list(self._sound_events),
                 'timing_stats': timing_stats,

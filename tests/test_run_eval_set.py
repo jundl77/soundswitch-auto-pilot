@@ -687,3 +687,15 @@ def test_a_blackout_that_moved_into_labeled_time_fails_even_with_every_score_hel
 
     assert outcome.failed and outcome.regressions == []
     assert any("silence_interior" in line for line in outcome.fact_drift)
+
+
+def test_a_count_fact_missing_from_the_baseline_is_a_failure_not_a_skip():
+    stale = entry()
+    del stale["silence_interior"]
+    baseline = result_document({"a.1": stale})
+    current = result_document({"a.1": entry()})
+
+    outcome = compare(baseline, current)
+
+    assert outcome.failed
+    assert any("silence_interior" in line for line in outcome.fact_drift)

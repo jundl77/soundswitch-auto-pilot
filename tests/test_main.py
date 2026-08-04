@@ -172,3 +172,20 @@ def test_a_session_report_keeps_the_whole_session(monkeypatch):
 def test_the_live_view_keeps_its_rolling_window(monkeypatch):
     buffer = _built_buffer(monkeypatch, enable_ui=True, report_path=None)
     assert buffer._window_sec == 60.0
+
+
+def test_the_monitor_delay_is_rearmed_after_a_stop():
+    import time
+    from collections import deque
+    from lib.main import PLAYBACK_DELAY_SEC
+
+    app = _app(enable_ui=False, event_buffer=None)
+    app._audio_delay_buf = deque([b'a', b'b', b'c'])
+    app._playback_ready_at = time.monotonic() - 100.0
+    app._audio_playback_started = True
+
+    app._silence_monitor()
+
+    assert list(app._audio_delay_buf) == []
+    assert app._playback_ready_at >= time.monotonic() + PLAYBACK_DELAY_SEC - 1.0
+    assert app._audio_playback_started is False

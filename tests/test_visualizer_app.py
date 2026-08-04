@@ -520,11 +520,14 @@ def test_a_start_still_waits_for_the_room_although_a_stop_does_not():
 
 
 def test_the_beats_still_in_the_air_at_a_stop_are_never_heard():
-    silenced = _stopping(now=70.0, beats_detected=900,
+    silenced = _stopping(now=70.0, beats_detected=900, beats_cut=2,
                          beats=[{'t': 50.0, 'bpm': 128.0},
                                 {'t': 55.0, 'bpm': 128.0}])
     assert V._heard_beats(silenced) == []
     assert _metric(V._build_metrics(silenced), '898') == '898 beats'
+
+    aged_out = dict(silenced, now=110.0, beats=[])
+    assert _metric(V._build_metrics(aged_out), '898') == '898 beats'
 
 
 def test_the_tempo_is_the_last_beat_the_room_heard():

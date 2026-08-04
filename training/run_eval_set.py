@@ -388,11 +388,17 @@ def _regression(name: str, metric: str, before: float, after: float,
 
 
 def _fact_drift(name: str, before: dict, after: dict) -> list:
-    return [
-        f"{name}: {fact} {before[fact]} -> {after[fact]}"
-        for fact in COUNT_FACTS
-        if fact in before and fact in after and before[fact] != after[fact]
-    ]
+    if not any(fact in before or fact in after for fact in COUNT_FACTS):
+        return []
+    drift = []
+    for fact in COUNT_FACTS:
+        if fact not in before or fact not in after:
+            where = "the baseline" if fact not in before else "this run"
+            drift.append(f"{name}: {fact} is missing from {where} -- it is "
+                         f"NOT being compared")
+        elif before[fact] != after[fact]:
+            drift.append(f"{name}: {fact} {before[fact]} -> {after[fact]}")
+    return drift
 
 
 def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: float,

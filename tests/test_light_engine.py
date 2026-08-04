@@ -1095,3 +1095,13 @@ def test_the_quiet_floor_is_recorded_as_an_operator_action_not_a_classification(
     blocks = light.event_buffer.to_report()['intents']
     assert [(b['intent'], b['trigger']) for b in blocks] == \
         [('atmospheric', 'silence')]
+
+
+def test_the_quiet_floor_records_the_song_instant_it_happened_at():
+    light, _, clock, _ = engine(events=True)
+    light.event_buffer.start()
+    clock.advance(37.0)
+    light.on_sound_stop()
+    block = light.event_buffer.to_report()['intents'][-1]
+    assert block['trigger'] == 'silence'
+    assert block['song_t'] == pytest.approx(block['t'], abs=1e-6)

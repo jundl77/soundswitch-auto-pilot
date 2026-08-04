@@ -132,10 +132,19 @@ def _room_bpm(snapshot: dict) -> float:
     return heard[-1]['bpm'] if heard else snapshot.get('bpm', 0.0)
 
 
+def _beats_still_travelling(snapshot: dict) -> int:
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    now = snapshot.get('now', 0.0)
+    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    return sum(1 for beat in snapshot.get('beats', [])
+               if beat['t'] + delay > now
+               and not any(beat['t'] < stop <= beat['t'] + delay for stop in stops))
+
+
 def _room_beat_count(snapshot: dict) -> int:
-    beats = snapshot.get('beats', [])
-    unheard = len(beats) - len(_heard_beats(snapshot))
-    return max(0, snapshot.get('beats_detected', 0) - unheard)
+    return max(0, snapshot.get('beats_detected', 0)
+               - _beats_still_travelling(snapshot)
+               - snapshot.get('beats_cut', 0))
 
 
 def _display_now(snapshot: dict, origin: float | None) -> float:
