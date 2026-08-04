@@ -53,22 +53,29 @@ def _classes(node) -> list:
     return out if children is None else out + _classes(children)
 
 
-def _colour_of(items, prefix: str) -> str:
-    for span in items:
-        text = ''.join(_texts(span))
-        if text.startswith(prefix):
-            return span.style['color']
+def _spans(node) -> list:
+    if isinstance(node, (list, tuple)):
+        return [span for item in node for span in _spans(item)]
+    children = getattr(node, 'children', None)
+    if isinstance(children, (list, tuple)):
+        return _spans(children)
+    return [node]
+
+
+def _span_of(items, prefix: str):
+    for span in _spans(items):
+        if ''.join(_texts(span)).startswith(prefix):
+            return span
     raise AssertionError(f'no metric strip item starts with {prefix!r}: '
-                         f'{[".".join(_texts(i)) for i in items]}')
+                         f'{[".".join(_texts(i)) for i in _spans(items)]}')
+
+
+def _colour_of(items, prefix: str) -> str:
+    return _span_of(items, prefix).style['color']
 
 
 def _metric(items, prefix: str) -> str:
-    for span in items:
-        text = ''.join(_texts(span))
-        if text.startswith(prefix):
-            return text
-    raise AssertionError(f'no metric strip item starts with {prefix!r}: '
-                         f'{[".".join(_texts(i)) for i in items]}')
+    return ''.join(_texts(_span_of(items, prefix)))
 
 
 def test_beat_marker_size_ignores_the_deleted_strength_channel():
@@ -492,7 +499,8 @@ def test_the_fps_readout_is_driven_by_the_frame_loop_once_a_second():
 
 
 def test_the_clock_spans_are_addressable_by_the_browser():
-    ids = {getattr(span, 'id', None) for span in V._build_metrics(_snapshot())}
+    ids = {getattr(span, 'id', None)
+           for span in _spans(V._build_metrics(_snapshot()))}
     assert {'room-clock', 'song-clock'} <= ids
 
 
@@ -1095,3 +1103,59 @@ def test_a_run_that_settled_hours_ago_stops_shouting_about_it():
         shed={'level': 'NONE', 'fault': None, 'sheds': 9, 'sheds_per_min': 0}))
     assert _metric(items, 'sheds') == 'sheds 0/min  ·  9 this run'
     assert _colour_of(items, 'sheds') == V.MUTED
+
+
+def _degraded_strip() -> dict:
+    return _snapshot(
+        now=133.0, look_ahead_sec=14.0, bpm=140.0, intent='atmospheric',
+        sound_events=[{'t': 0.0, 'playing': True}],
+        shed={'level': 'NN_SHED', 'fault': None,
+              'sheds': 10, 'sheds_per_min': 4},
+        timing_stats=_timing_stats(beat=(14.01, 9.0), intent=(1.41, 1.0)))
+
+
+def test_the_strip_reads_as_grouped_rows_rather_than_one_line():
+    rows = [' '.join(_texts(row)) for row in V._build_metrics(_degraded_strip())]
+    transport, analysis, health, timing = rows
+
+    assert transport == '● PLAYING room 1min 59sec song 2min 13sec'
+    assert analysis == '140 BPM 0 beats intent: ATMOSPHERIC'
+    assert health == 'health: ◆ DEGRADED — holding intent sheds 4/min  ·  10 this run'
+    assert timing.startswith('cmd timing: on target')
+
+
+def test_every_row_is_a_line_of_its_own_that_wraps_on_its_own():
+    for row in V._build_metrics(_degraded_strip()):
+        assert row.style['display'] == 'flex'
+        assert row.style['flexWrap'] == 'wrap'
+        assert row.style['columnGap']
+
+
+def test_a_ticking_value_reserves_its_width_so_the_row_cannot_jitter():
+    rows = V._build_metrics(_degraded_strip())
+    assert all(row.style['fontVariantNumeric'] == 'tabular-nums' for row in rows)
+    for prefix in ('● PLAYING', 'room', 'song', '140 BPM', '0 beats',
+                   'beat 14.01s'):
+        assert _span_of(rows, prefix).style['minWidth'], prefix
+
+
+def test_the_health_verdict_is_the_prominent_reading():
+    health = _span_of(V._build_metrics(_degraded_strip()), 'health')
+    assert health.style['fontWeight'] == 'bold'
+    assert health.style['fontSize'] == V.HEALTH_FONT_SIZE
+    assert health.style['border'].endswith(V.WARN_COLOR)
+    assert (int(V.HEALTH_FONT_SIZE.rstrip('px'))
+            > int(V.TIMING_FONT_SIZE.rstrip('px')))
+
+
+def test_the_command_timing_block_is_secondary_and_one_span_per_stream():
+    timing = V._build_metrics(_degraded_strip())[-1]
+    assert timing.style['fontSize'] == V.TIMING_FONT_SIZE
+    assert timing.style['borderTop'].endswith(V.BORDER)
+    assert _texts(timing) == ['cmd timing: on target',
+                              'beat 14.01s ±9ms', 'intent 1.41s ±1ms']
+
+
+def test_a_run_with_no_delivered_command_still_lays_out_four_rows():
+    assert len(V._build_metrics(_snapshot())) == 4
+    assert _metric(V._build_metrics(_snapshot()), 'cmd timing') == 'cmd timing: —'
