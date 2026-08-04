@@ -15,6 +15,7 @@ _ENTER_SEC = 0.15
 _EXIT_SEC = 0.05
 
 _LOG_INTERVAL_SEC = 30.0
+SHED_RATE_WINDOW_SEC = 60.0
 
 
 class ShedLevel(IntEnum):
@@ -40,6 +41,8 @@ class DriftWatchdog:
         self._fault: str | None = None
         self.peak_drift_sec = 0.0
         self.total_drift_sec = 0.0
+        self.sheds = 0
+        self._shed_at: deque[float] = deque()
         self._first_wall: float | None = None
         self._calm_since: float | None = None
         self._said: dict = {}
@@ -65,6 +68,11 @@ class DriftWatchdog:
     @property
     def drift_sec(self) -> float:
         return self._drift_sec
+
+    @property
+    def sheds_per_min(self) -> int:
+        cutoff = self._clock.monotonic() - SHED_RATE_WINDOW_SEC
+        return sum(1 for at in list(self._shed_at) if at >= cutoff)
 
     def report_fault(self, kind: str) -> ShedLevel:
         if self._fault != kind:
@@ -131,6 +139,11 @@ class DriftWatchdog:
                        f'{target.name} ({reason})')
             self._level = target
             now = self._clock.monotonic()
+            if target is not ShedLevel.NONE:
+                self.sheds += 1
+                self._shed_at.append(now)
+                while self._shed_at[0] < now - SHED_RATE_WINDOW_SEC:
+                    self._shed_at.popleft()
             last = self._said.get(direction)
             if last is not None and now - last < _LOG_INTERVAL_SEC:
                 self._suppressed[direction] = self._suppressed.get(direction, 0) + 1
