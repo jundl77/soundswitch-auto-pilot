@@ -126,6 +126,7 @@ caller's thread".
 | `simulate/ui_wedge_rig.py` | The viewer under a slow callback, with no audio and no GPU: a seeded buffer, the real snapshot server and the real Dash app, with latency injected into every poll — `serve` reproduces the freeze in a browser, `profile` times the server callbacks without one |
 | `training/corpus_root.py` | Where the gitignored corpus is on this machine, stdlib-only â€” so a *show* can ask without importing the benchmark harness |
 | `training/inspect_report.py` | Report inspector â€” per-10s rms/beat/intent bins + intent timeline; the tool for checking a show against a track's structure |
+| `training/label_tool.py` | Hand-labelling: a standalone Dash app over one track's waveform and onset curve, writing owner-authored sections beside the audio in the raw Raveform vocabulary plus a boundary strength. Deliberately coupled to nothing in `lib/` or `simulate/` |
 | `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
 | `training/soak_nn.py` | The live soak: a player and a subject, real audio through real hardware for half an hour, sampled at 1 Hz |
 | `training/nn_determinism_proof.py` | Four runs per track in four interpreters â€” cold/cold, warm/warm, cold/warm â€” and the bytes compared |
