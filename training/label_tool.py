@@ -1,19 +1,26 @@
 """Hand-label a song's sections in the browser.
 
-Run `python training/label_tool.py <song.mp3> [--port 8070]` and open the printed
-URL. The track is decoded once with ffmpeg into a waveform envelope and a
+Launched by `auto_pilot label <song.mp3> [--port 8070] [-o DEVICE]`, which is the
+only entry point -- this module has no CLI of its own. `-o` takes an index from
+`auto_pilot list`, resolves it to a device name here, and asks the browser to
+route playback there on the first press of play; a chip says which device it
+actually landed on, with a picker beside it when the match or the permission
+fails. The track is decoded once with ffmpeg into a waveform envelope and a
 spectral-flux curve, so the beat starts a boundary should land on are visible
 rather than guessed; play the audio, click the timeline to seek, and press "mark
 boundary" to cut a section at the playhead, with the major/minor toggle saying
 how strong that transition is. Each section gets a row in the table with a label
 picker, a strength picker, +/- nudge buttons and a delete, and shows as a
-coloured span on the timeline. Save writes `<audio>.labels.csv` beside the file
--- one `start_seconds,label[,strength]` line per section, sorted, LF-terminated,
-the third column present only when some boundary is minor -- and relaunching on
-the same track loads it back, so editing an existing labelling is idempotent.
+coloured span on the timeline. Every one of those edits writes
+`<audio>.labels.csv` beside the file immediately and atomically -- one
+`start_seconds,label[,strength]` line per section, sorted, LF-terminated, the
+third column present only when some boundary is minor -- so the file is the
+state and the page is only a view of it; closing or reloading the tab costs
+nothing, and relaunching loads the file back.
 """
-import argparse
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import dash
@@ -120,10 +127,84 @@ def load_labels(audio_path: str) -> list:
 
 
 def save_labels(audio_path: str, sections: list) -> Path:
+    """Write the labelling, atomically -- the file is the state, the page is a view.
+
+    Every mutation calls this, so a killed process or a reloaded tab can only
+    ever lose the edit in flight, never the ones already made.
+    """
     path = labels_path(audio_path)
-    with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+    temp = path.with_name(path.name + '.tmp')
+    with open(temp, 'w', encoding='utf-8', newline='\n') as handle:
         handle.write(format_csv(sections))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
     return path
+
+
+def saved_status(path: Path, sections: list) -> str:
+    return (f'saved ✓ {time.strftime("%H:%M:%S")} · '
+            f'{len(sections)} sections → {path}')
+
+
+def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
+               new_label: str = None, new_strength: str = DEFAULT_STRENGTH,
+               row_labels: list = (), row_strengths: list = ()) -> tuple:
+    """Apply one UI event and write the result. `None` means "leave it alone"."""
+    if trigger == 'save':
+        return None, saved_status(save_labels(audio_path, sections), sections)
+    if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
+        return None, None
+    if trigger == 'mark':
+        updated = add_boundary(sections, cursor or 0.0,
+                               new_label or LABELS[0], new_strength)
+    elif isinstance(trigger, dict) and trigger['type'] == 'row-nudge':
+        updated = list(sections)
+        moved = updated.pop(trigger['index'])
+        updated = add_boundary(updated, moved['start'] + trigger['delta'],
+                               moved['label'], moved['strength'])
+    elif isinstance(trigger, dict) and trigger['type'] == 'row-del':
+        updated = [s for i, s in enumerate(sections) if i != trigger['index']]
+    elif isinstance(trigger, dict) and trigger['type'] in ('row-label',
+                                                           'row-strength'):
+        values = (row_labels if trigger['type'] == 'row-label' else row_strengths)
+        field = 'label' if trigger['type'] == 'row-label' else 'strength'
+        if trigger['index'] >= len(values):
+            return None, None
+        updated = list(sections)
+        updated[trigger['index']] = dict(updated[trigger['index']],
+                                         **{field: values[trigger['index']]})
+    else:
+        return None, None
+    updated = normalise(updated)
+    if updated == sections:
+        return None, None
+    return updated, saved_status(save_labels(audio_path, updated), updated)
+
+
+def output_device_name(index: int, py_audio=None) -> str:
+    """Resolve a pyaudio output index to its name, in `auto_pilot list`'s index space.
+
+    The browser cannot consume a pyaudio index, so the name is all that crosses
+    to the client -- it is the only identifier both APIs describe the device by.
+    """
+    owned = py_audio is None
+    if owned:
+        import pyaudio
+        py_audio = pyaudio.PyAudio()
+    try:
+        count = py_audio.get_device_count()
+        if not 0 <= index < count:
+            raise SystemExit(f'no audio device at index {index} (0..{count - 1}) '
+                             f'-- run `python auto_pilot list`')
+        info = py_audio.get_device_info_by_index(index)
+        if not info.get('maxOutputChannels'):
+            raise SystemExit(f'device {index} ({info["name"]}) has no output '
+                             f'channels -- run `python auto_pilot list`')
+        return str(info['name'])
+    finally:
+        if owned:
+            py_audio.terminate()
 
 
 def decode_mono(audio_path: str, rate: int = DECODE_RATE) -> np.ndarray:
@@ -277,6 +358,115 @@ def build_rows(sections: list) -> list:
                                     'fontFamily': 'monospace', 'fontSize': '13px'})]
 
 
+SINK_JS = """
+function (tick, wanted) {
+    const HIDDEN = {display: 'none'};
+    if (!wanted) { return ['', HIDDEN, [], HIDDEN]; }
+    const audio = document.getElementById('player');
+    if (!window.__sink) {
+        window.__sink = {status: 'press play to route to ' + wanted,
+                         ok: true, devices: [], bound: false};
+
+        // MME truncates a device name at 31 characters and Chrome prefixes the
+        // default with "Default - ", so the two APIs rarely spell it the same.
+        window.__sinkMatch = function (devices, target) {
+            const clean = s => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            const want = clean(target);
+            let best = null, bestScore = 0;
+            for (const device of devices) {
+                const have = clean(device.label);
+                if (!have) { continue; }
+                let score;
+                if (have === want) { score = 1000; }
+                else if (have.includes(want) || want.includes(have)) {
+                    score = 500 + Math.min(have.length, want.length);
+                } else {
+                    const tokens = new Set(want.split(' '));
+                    score = have.split(' ').filter(t => tokens.has(t)).length;
+                }
+                if (score > bestScore) { best = device; bestScore = score; }
+            }
+            return bestScore > 0 ? best : null;
+        };
+
+        window.__sinkOutputs = async function () {
+            let found = await navigator.mediaDevices.enumerateDevices();
+            if (!found.some(d => d.kind === 'audiooutput' && d.label)) {
+                // Labels are blank until the page holds a media permission.
+                await navigator.mediaDevices.getUserMedia({audio: true})
+                    .then(s => s.getTracks().forEach(t => t.stop()))
+                    .catch(() => {});
+                found = await navigator.mediaDevices.enumerateDevices();
+            }
+            return found.filter(d => d.kind === 'audiooutput')
+                        .map(d => ({deviceId: d.deviceId, label: d.label || d.deviceId}));
+        };
+
+        window.__sinkApply = async function (target) {
+            const sink = window.__sink;
+            if (!audio.setSinkId) {
+                sink.ok = false;
+                sink.status = 'this browser has no setSinkId';
+                return;
+            }
+            try {
+                sink.devices = await window.__sinkOutputs();
+                if (!sink.devices.some(d => d.label && d.label !== d.deviceId)) {
+                    sink.ok = false;
+                    sink.status = 'device names blocked - allow audio permission, or pick below';
+                    return;
+                }
+                const match = window.__sinkMatch(sink.devices, target);
+                if (!match) {
+                    sink.ok = false;
+                    sink.status = 'no device matches "' + target + '" - pick below';
+                    return;
+                }
+                await audio.setSinkId(match.deviceId);
+                sink.ok = true;
+                sink.status = match.label;
+            } catch (error) {
+                sink.ok = false;
+                sink.status = error.name + ' - pick below';
+            }
+        };
+    }
+    const sink = window.__sink;
+    if (audio && !sink.bound) {
+        sink.bound = true;
+        // setSinkId wants a user gesture, and pressing play is the one gesture
+        // this page is guaranteed to get.
+        audio.addEventListener('play', () => window.__sinkApply(wanted));
+    }
+    const chip = {display: 'inline-block', marginLeft: '16px', padding: '3px 10px',
+                  borderRadius: '6px', fontSize: '13px',
+                  border: '1px solid ' + (sink.ok ? '#1e2937' : '#f85149'),
+                  color: sink.ok ? '#6e7681' : '#f85149'};
+    const options = sink.devices.map(d => ({label: d.label, value: d.deviceId}));
+    return ['output: ' + sink.status, chip, options,
+            options.length ? {width: '320px', color: '#000000', marginLeft: '10px',
+                              display: 'inline-block', verticalAlign: 'middle'}
+                           : HIDDEN];
+}
+"""
+
+SINK_PICK_JS = """
+function (deviceId) {
+    const audio = document.getElementById('player');
+    if (deviceId && audio && audio.setSinkId) {
+        audio.setSinkId(deviceId).then(() => {
+            const picked = window.__sink.devices.find(d => d.deviceId === deviceId);
+            window.__sink.ok = true;
+            window.__sink.status = picked ? picked.label : deviceId;
+        }).catch(error => {
+            window.__sink.ok = false;
+            window.__sink.status = error.name;
+        });
+    }
+    return window.dash_clientside.no_update;
+}
+"""
+
 CURSOR_JS = """
 function (tick) {
     const audio = document.getElementById('player');
@@ -305,7 +495,8 @@ function (tick) {
 """
 
 
-def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
+def build_app(audio_path: str, track: Track, sections: list,
+              output_device: str = None) -> dash.Dash:
     name = Path(audio_path).name
     app = dash.Dash(__name__, title=f'label · {name}')
 
@@ -330,6 +521,8 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
                      style={'fontSize': '32px', 'color': '#ffffff'}),
             html.Div('0sec', id='cursor-clock',
                      style={'fontSize': '18px', 'color': MUTED, 'marginLeft': '16px'}),
+            html.Div(id='sink-chip'),
+            dcc.Dropdown(id='sink-pick', clearable=False, placeholder='output device'),
             html.Div([
                 dcc.Dropdown(id='new-label', options=LABELS, value=LABELS[0],
                              clearable=False,
@@ -345,7 +538,7 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
                                            'marginLeft': '8px'}),
                 html.Button('mark boundary at current time', id='mark',
                             style=dict(BUTTON_STYLE, marginLeft='10px')),
-                html.Button('save', id='save',
+                html.Button('save now', id='save',
                             style=dict(BUTTON_STYLE, marginLeft='10px',
                                        color='#3fb950')),
             ], style={'marginLeft': 'auto', 'display': 'flex',
@@ -359,6 +552,8 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
         html.Div(build_rows(sections), id='table', style={'padding': '0 20px 40px'}),
         dcc.Store(id='sections', data=sections),
         dcc.Store(id='cursor', data=0.0),
+        dcc.Store(id='sink-want', data=output_device),
+        dcc.Store(id='sink-echo'),
         dcc.Interval(id='tick', interval=TICK_MS),
     ], style={'background': DARK_BG, 'minHeight': '100vh',
               'fontFamily': 'monospace'})
@@ -369,6 +564,23 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
         Output('cursor-seconds', 'children'),
         Output('cursor-clock', 'children'),
         Input('tick', 'n_intervals'),
+    )
+
+    app.clientside_callback(
+        SINK_JS,
+        Output('sink-chip', 'children'),
+        Output('sink-chip', 'style'),
+        Output('sink-pick', 'options'),
+        Output('sink-pick', 'style'),
+        Input('tick', 'n_intervals'),
+        State('sink-want', 'data'),
+    )
+
+    app.clientside_callback(
+        SINK_PICK_JS,
+        Output('sink-echo', 'data'),
+        Input('sink-pick', 'value'),
+        prevent_initial_call=True,
     )
 
     @app.callback(
@@ -388,38 +600,11 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
     )
     def edit(mark_clicks, save_clicks, nudges, deletes, row_labels,
              row_strengths, sections, cursor, new_label, new_strength):
-        trigger = callback_context.triggered_id
-        if trigger == 'save':
-            path = save_labels(audio_path, sections)
-            return dash.no_update, f'saved {len(sections)} sections → {path}'
-        if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
-            return dash.no_update, dash.no_update
-        if trigger == 'mark':
-            updated = add_boundary(sections, cursor or 0.0, new_label,
-                                   new_strength)
-        elif isinstance(trigger, dict) and trigger['type'] == 'row-nudge':
-            updated = list(sections)
-            moved = updated.pop(trigger['index'])
-            updated = add_boundary(updated, moved['start'] + trigger['delta'],
-                                   moved['label'], moved['strength'])
-        elif isinstance(trigger, dict) and trigger['type'] == 'row-del':
-            updated = [s for i, s in enumerate(sections) if i != trigger['index']]
-        elif isinstance(trigger, dict) and trigger['type'] in ('row-label',
-                                                               'row-strength'):
-            values = (row_labels if trigger['type'] == 'row-label'
-                      else row_strengths)
-            field = 'label' if trigger['type'] == 'row-label' else 'strength'
-            if trigger['index'] >= len(values):
-                return dash.no_update, dash.no_update
-            updated = list(sections)
-            updated[trigger['index']] = dict(updated[trigger['index']],
-                                             **{field: values[trigger['index']]})
-        else:
-            return dash.no_update, dash.no_update
-        updated = normalise(updated)
-        if updated == sections:
-            return dash.no_update, dash.no_update
-        return updated, f'{len(updated)} sections · unsaved'
+        updated, status = apply_edit(
+            audio_path, callback_context.triggered_id, sections, cursor,
+            new_label, new_strength, row_labels, row_strengths)
+        return (dash.no_update if updated is None else updated,
+                dash.no_update if status is None else status)
 
     @app.callback(
         Output('table', 'children'),
@@ -433,27 +618,23 @@ def build_app(audio_path: str, track: Track, sections: list) -> dash.Dash:
     return app
 
 
-def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(
-        description='Hand-label a song into sections and write '
-                    '<audio>.labels.csv beside it.')
-    parser.add_argument('audio', help='path to the audio file')
-    parser.add_argument('--port', type=int, default=8070,
-                        help='Dash server port (default: %(default)s)')
-    args = parser.parse_args(argv)
-
-    audio_path = str(Path(args.audio).resolve())
+def launch(audio: str, port: int = 8070, output_device: int = None) -> None:
+    audio_path = str(Path(audio).resolve())
     if not Path(audio_path).exists():
         raise SystemExit(f'no such audio file: {audio_path}')
+
+    device = (None if output_device is None
+              else output_device_name(output_device))
+    if device is not None:
+        print(f'  output device {output_device}: {device}')
 
     print(f'  decoding {Path(audio_path).name} ...')
     track = Track(audio_path)
     sections = load_labels(audio_path)
     print(f'  {track.duration:.1f} s, {len(sections)} sections loaded from '
           f'{labels_path(audio_path)}')
-    print(f'\n  Labeler → http://localhost:{args.port}\n')
-    build_app(audio_path, track, sections).run(port=args.port, debug=False)
-
-
-if __name__ == '__main__':
-    main()
+    print(f'\n  Labeler → http://localhost:{port}\n')
+    # No reloader and no hot reload: a restart would drop the page mid-labelling,
+    # and there is nothing here worth watching a filesystem for.
+    build_app(audio_path, track, sections, device).run(
+        port=port, debug=False, use_reloader=False, dev_tools_hot_reload=False)

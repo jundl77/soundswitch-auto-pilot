@@ -1,6 +1,11 @@
 """Tests for the hand-labelling tool (training/label_tool.py)."""
+import json
+import subprocess
 import sys
+import types
 from pathlib import Path
+
+import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
@@ -12,10 +17,12 @@ from label_tool import (  # noqa: E402
     LABELS,
     STRENGTHS,
     add_boundary,
+    apply_edit,
     format_csv,
     labels_path,
     load_labels,
     normalise,
+    output_device_name,
     parse_csv,
     save_labels,
 )
@@ -68,6 +75,67 @@ def test_saved_file_round_trips_on_disk_with_lf_endings(tmp_path):
         assert path.read_bytes() == first
 
 
+def test_a_save_leaves_no_temp_file_behind(tmp_path):
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    save_labels(str(audio), SECTIONS)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        'song.mp3', 'song.mp3.labels.csv']
+
+
+def test_every_mutation_reaches_disk_before_the_next_one(tmp_path):
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    sections = load_labels(str(audio))
+    assert not labels_path(str(audio)).exists()
+
+    def step(trigger, **kwargs):
+        nonlocal sections
+        updated, status = apply_edit(str(audio), trigger, sections, **kwargs)
+        assert updated is not None and 'saved' in status
+        sections = updated
+        assert _load_in_a_new_process(audio) == sections
+
+    step('mark', cursor=31.25, new_label='buildup', new_strength='minor')
+    step('mark', cursor=48.0, new_label='drop')
+    step('mark', cursor=120.0, new_label='breakdown')
+    step({'type': 'row-nudge', 'index': 2, 'delta': -0.5})
+    step({'type': 'row-label', 'index': 1},
+         row_labels=['intro', 'cooldown', 'drop', 'breakdown'])
+    step({'type': 'row-strength', 'index': 3},
+         row_strengths=['major', 'major', 'major', 'minor'])
+    step({'type': 'row-del', 'index': 2})
+
+    assert [(s['start'], s['label'], s['strength']) for s in sections] == [
+        (0.0, 'intro', 'major'),
+        (31.25, 'cooldown', 'minor'),
+        (120.0, 'breakdown', 'minor'),
+    ]
+
+
+def test_a_no_op_edit_neither_rewrites_nor_reports(tmp_path):
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    sections = load_labels(str(audio))
+    apply_edit(str(audio), 'mark', sections, cursor=0.0, new_label='intro')
+    assert apply_edit(str(audio), 'mark', sections, cursor=0.0,
+                      new_label='intro') == (None, None)
+    assert apply_edit(str(audio), {'type': 'row-del', 'index': 9},
+                      sections) == (None, None)
+
+
+def _load_in_a_new_process(audio: Path) -> list:
+    source = (
+        'import json, sys; sys.path.insert(0, sys.argv[1]); '
+        'import label_tool; '
+        'print(json.dumps(label_tool.load_labels(sys.argv[2])))'
+    )
+    finished = subprocess.run(
+        [sys.executable, '-c', source, str(TRAINING_DIR), str(audio)],
+        capture_output=True, text=True, check=True)
+    return json.loads(finished.stdout)
+
+
 def test_load_seeds_an_opening_intro_when_no_file_exists(tmp_path):
     audio = tmp_path / 'song.mp3'
     audio.write_bytes(b'')
@@ -113,3 +181,83 @@ def test_adding_keeps_the_list_sorted():
     starts = [s['start'] for s in updated]
     assert starts == sorted(starts)
     assert 40.0 in starts
+
+
+async def test_auto_pilot_label_parses_and_dispatches(monkeypatch, tmp_path):
+    from lib.main import build_parser, label_cmd
+
+    song = tmp_path / 'song.mp3'
+    args = build_parser().parse_args(
+        ['label', str(song), '--port', '9001', '-o', '7'])
+    assert args.func is label_cmd
+    assert (args.audio, args.port, args.output_device) == (str(song), 9001, '7')
+
+    launched = {}
+    monkeypatch.setitem(sys.modules, 'label_tool', types.SimpleNamespace(
+        launch=lambda audio, port, output_device: launched.update(
+            audio=audio, port=port, output_device=output_device)))
+    await label_cmd(args)
+    assert launched == {'audio': str(song), 'port': 9001, 'output_device': 7}
+
+
+async def test_label_without_an_output_device_asks_for_the_system_default(
+        monkeypatch, tmp_path):
+    from lib.main import build_parser, label_cmd
+
+    args = build_parser().parse_args(['label', str(tmp_path / 'song.mp3')])
+    assert (args.port, args.output_device) == (8070, None)
+
+    launched = {}
+    monkeypatch.setitem(sys.modules, 'label_tool', types.SimpleNamespace(
+        launch=lambda audio, port, output_device: launched.update(
+            output_device=output_device)))
+    await label_cmd(args)
+    assert launched == {'output_device': None}
+
+
+class FakePyAudio:
+    def __init__(self, devices):
+        self.devices = devices
+        self.terminated = False
+
+    def get_device_count(self):
+        return len(self.devices)
+
+    def get_device_info_by_index(self, index):
+        return self.devices[index]
+
+    def terminate(self):
+        self.terminated = True
+
+
+def _fake():
+    return FakePyAudio([
+        {'name': 'Microphone (USB Audio)', 'maxInputChannels': 2,
+         'maxOutputChannels': 0},
+        {'name': 'Speakers (Realtek(R) Audio)', 'maxInputChannels': 0,
+         'maxOutputChannels': 2},
+        {'name': 'Headphones (WH-1000XM4 Stereo)', 'maxInputChannels': 0,
+         'maxOutputChannels': 2},
+    ])
+
+
+def test_an_output_index_resolves_to_the_name_the_browser_will_match_on():
+    assert output_device_name(2, _fake()) == 'Headphones (WH-1000XM4 Stereo)'
+
+
+def test_an_index_outside_the_device_list_names_the_range():
+    with pytest.raises(SystemExit, match=r'index 7 \(0\.\.2\)'):
+        output_device_name(7, _fake())
+    with pytest.raises(SystemExit):
+        output_device_name(-1, _fake())
+
+
+def test_an_input_only_device_is_refused_by_name():
+    with pytest.raises(SystemExit, match='Microphone'):
+        output_device_name(0, _fake())
+
+
+def test_an_injected_handle_is_left_open_for_its_owner():
+    audio = _fake()
+    output_device_name(1, audio)
+    assert not audio.terminated

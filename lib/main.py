@@ -233,6 +233,23 @@ async def list_cmd(args: argparse.Namespace):
     MidiClient(0).list_devices()
 
 
+async def label_cmd(args: argparse.Namespace):
+    # Imported here, and by path rather than as a package, for the same two
+    # reasons the corpus root is: training/ is not installed, and the labeller
+    # needs dash, which the show is not allowed to pull in.
+    import sys
+    from pathlib import Path
+
+    training = str(Path(__file__).resolve().parents[1] / 'training')
+    if training not in sys.path:
+        sys.path.insert(0, training)
+    import label_tool
+
+    label_tool.launch(args.audio, port=args.port,
+                      output_device=(None if args.output_device is None
+                                     else int(args.output_device)))
+
+
 def death_handler(signum, frame):
     if global_app is not None:
         logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
@@ -248,7 +265,7 @@ def run_sync():
     loop.run_until_complete(main())
 
 
-async def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(help='Functionality to start')
 
@@ -266,9 +283,19 @@ async def main():
     subparser.add_argument('--report', default=None, help='Write a JSON session report on exit (e.g. report.json); implies event tracking', required=False)
     subparser.set_defaults(func=run_cmd)
 
+    subparser = subparsers.add_parser('label', help='Hand-label a song into sections in the browser (requires dash extra)')
+    subparser.add_argument('audio', help='Path to the audio file to label')
+    subparser.add_argument('--port', type=int, default=8070, help='Labeler Dash server port (default: 8070)')
+    subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to play through, uses system-default by default', required=False, default=None)
+    subparser.set_defaults(func=label_cmd)
+
     from simulate.cli import add_simulate_subparser
     add_simulate_subparser(subparsers)
+    return parser
 
+
+async def main():
+    parser = build_parser()
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 

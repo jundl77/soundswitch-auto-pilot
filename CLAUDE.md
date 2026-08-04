@@ -126,7 +126,7 @@ caller's thread".
 | `simulate/ui_wedge_rig.py` | The viewer under a slow callback, with no audio and no GPU: a seeded buffer, the real snapshot server and the real Dash app, with latency injected into every poll — `serve` reproduces the freeze in a browser, `profile` times the server callbacks without one |
 | `training/corpus_root.py` | Where the gitignored corpus is on this machine, stdlib-only â€” so a *show* can ask without importing the benchmark harness |
 | `training/inspect_report.py` | Report inspector â€” per-10s rms/beat/intent bins + intent timeline; the tool for checking a show against a track's structure |
-| `training/label_tool.py` | Hand-labelling: a standalone Dash app over one track's waveform and onset curve, writing owner-authored sections beside the audio in the raw Raveform vocabulary plus a boundary strength. Deliberately coupled to nothing in `lib/` or `simulate/` |
+| `training/label_tool.py` | `auto_pilot label` â€” a Dash app over one track's waveform and onset curve, writing owner-authored sections beside the audio in the raw Raveform vocabulary plus a boundary strength. Every edit is written immediately, so the file is the state and the page is only a view of it. Reads nothing from `lib/` or `simulate/`; the CLI reaches *it* the way the show reaches `corpus_root`, which is what keeps dash off the show's import path |
 | `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
 | `training/soak_nn.py` | The live soak: a player and a subject, real audio through real hardware for half an hour, sampled at 1 Hz |
 | `training/nn_determinism_proof.py` | Four runs per track in four interpreters â€” cold/cold, warm/warm, cold/warm â€” and the bytes compared |
@@ -695,6 +695,10 @@ python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 python auto_pilot simulate file path/to/song.mp3          # fast headless: report + plumbing evaluation
 python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced, threaded GPU stage, live Dash timeline
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
+
+# Hand-label a song's sections (writes <audio>.labels.csv beside it, on every edit)
+python auto_pilot label path/to/song.mp3                   # browser labeller on :8070
+python auto_pilot label path/to/song.mp3 -o 7              # play through device 7 (from `list`)
 
 # Inspect a report: per-10s rms/beat bins, intent timeline, distribution
 python auto_pilot simulate file path/to/song.mp3 --report report.json
