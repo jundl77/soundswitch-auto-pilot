@@ -146,7 +146,7 @@ Four intents map to structural moments in an EDM track, and the mapping is
 | ATMOSPHERIC | Intro, outro, silence â€” quiet, or nothing playing | `intro`, `altintro`, `outro`, `altoutro` | BANK_2A/B/C |
 | BREAKDOWN | Melodic, stripped, emotional | `breakdown`, `bridge`, `cooldown` | BANK_2C/D/E + 2F/G/H |
 | BUILDUP | Rising tension pre-drop | `buildup` | BANK_1A/B/C |
-| DROP | Maximum impact â€” bass, kick, full arrangement | `drop` | BANK_1D/E + STROBE |
+| DROP | Maximum impact â€” bass, kick, full arrangement | `drop` | BANK_1D/E + 1F/G/H + STROBE |
 
 **The four classes the vocabulary gained carry a provisional, owner-pending
 mapping.** `altintro`, `bridge`, `cooldown` and `altoutro` were given the
@@ -162,13 +162,14 @@ into BREAKDOWN's and six banks stay in rotation behind the class the corpus
 actually labels. This was an audience-visible choice, not a mechanical
 consequence, and it was taken deliberately.
 
-**PEAK is gone, and its banks went with it** (#265) â€” the opposite call to the
-one above, so the asymmetry is deliberate rather than an oversight. What removing
-PEAK buys is that the intent layer becomes a pure mapped image of the class
-space, deriving no state of its own; what it costs is that `BANK_1F/G/H` are
-unreachable and a long drop now evolves only through effect refresh inside
-DROP's own banks, with no bank-family shift partway through. Re-homing those
-three into DROP is a one-line change if the room says the drop went flat.
+**PEAK is gone, and its banks are not** (#265, #268) â€” the same call as D7's,
+so the two are consistent rather than opposed. Removing PEAK buys an intent
+layer that is a pure mapped image of the class space, deriving no state of its
+own; folding `BANK_1F/G/H` into DROP's pool keeps what the promotion was
+actually *for*. A long drop used to change bank family at eight bars; it now
+rotates over a pool of five instead, so the variety survives the mechanism. The
+rig is unchanged: no bank of the two families the show draws from is dark, and
+a test says so.
 
 **ATMOSPHERIC is one intent for several classes** because an intent cannot know
 where in the arrangement it is: the same sound is `intro` at the start of a
@@ -782,6 +783,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 Decisions that belong here rather than in the code:
 
 - **One label vocabulary, and it is the published one.** The repo's only label space is the raw Raveform nine -- `intro`, `altintro`, `buildup`, `breakdown`, `bridge`, `drop`, `cooldown`, `outro`, `altoutro` -- with `end` dropped as a tail sentinel rather than treated as a musical section. It lives in `lib/label_space.py`, which also owns the class-space check every priors file, exported graph and decoder config is held to: vocabulary names, in vocabulary order, no duplicates. Order is checked because per-class floors and hazards are positional lists, so a space of merely the right *length* loads cleanly and decodes the wrong classes. Adjacent same-label sections are still merged after the drop, because that answers "how long is a musical section" and is a statement about section identity, not about vocabulary.
+- **The structural graph is stated over families, because that is the granularity it was measured at.** "Nothing enters intro, nothing leaves outro" was counted while the folds collapsed `altintro` into `intro` and `altoutro` into `outro`, so those counts never distinguished the members of a pair. Re-stating the rule per class would silently promote *unmeasured* to *impossible* and would forbid the `altintro` -> `intro` beat-in the vocabulary exists to express. So the intro family `{intro, altintro}` cannot be entered from outside and the outro family `{outro, altoutro}` cannot be left; moves *within* a family are legal, and everything else the strict fit still refuses loudly rather than smoothing over.
 - **Politeness over throughput.** Downloads are strictly sequential with a pause between videos -- pulling 1,423 tracks in parallel is indistinguishable from abuse. Bot checks are never worked around: no cookies, credentials or IP tricks. A refusal is recorded, reported, and left as an owner decision, and a run of consecutive refusals aborts rather than burning the manifest into failure records.
 - **Resumability is the contract.** The downloader is safe to kill at any point: finished tracks and failures are both persisted, an interrupted track is never recorded as failed, and a track counts as downloaded only when a non-empty mp3 is actually on disk. See the module docstring in `raveform_download.py`.
 - **The container header is not evidence.** An mp3 truncated on a frame boundary -- the normal shape of an interrupted download -- decodes with no error at all (the stream just ends) while its Xing header still advertises the original full length, because that header is written at encode time and never revised. Neither "ffmpeg exited clean" nor "the header duration matches" detects it, together or apart. So the gate measures how much audio the decoder actually emitted and judges on that: it must agree with the header (or the file is truncated) and with the annotation (or it is the wrong recording). The measurement is free -- it comes from ffmpeg's own progress output during the decode pass the gate already runs.

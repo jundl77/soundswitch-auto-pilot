@@ -34,6 +34,8 @@ from nn.priors import (  # noqa: E402
     fit_runs,
     label_runs,
     section_classes,
+    INTRO_FAMILY,
+    OUTRO_FAMILY,
     transition_allowed,
 )
 
@@ -104,6 +106,32 @@ def test_the_transition_rule_bars_intro_re_entry_outro_exit_and_self_loops():
     assert transition_allowed("buildup", "drop")
     assert transition_allowed("drop", "breakdown")
     assert transition_allowed("breakdown", "outro")
+
+
+def test_the_structural_rule_is_about_families_not_single_classes():
+    """The measured fact -- nothing re-enters the introduction, nothing follows
+    the outro -- was measured while the folds collapsed each pair into one
+    class, so it was only ever true at family granularity."""
+    for src in SECTION_LABELS:
+        if src not in INTRO_FAMILY:
+            assert not transition_allowed(src, "intro")
+            assert not transition_allowed(src, "altintro")
+        if src not in OUTRO_FAMILY:
+            assert not transition_allowed("outro", src)
+            assert not transition_allowed("altoutro", src)
+
+
+def test_a_within_family_move_is_legal_because_that_is_the_owners_beat_in():
+    assert transition_allowed("altintro", "intro")
+    assert transition_allowed("intro", "altintro")
+    assert transition_allowed("outro", "altoutro")
+    assert transition_allowed("altoutro", "outro")
+
+
+def test_a_family_is_still_sealed_against_everything_outside_it():
+    assert not transition_allowed("drop", "altintro")
+    assert not transition_allowed("altoutro", "drop")
+    assert not transition_allowed("altintro", "altintro")
 
 
 def test_fitted_transition_rows_are_stochastic_and_illegal_entries_are_zero():
@@ -228,15 +256,17 @@ def test_the_default_class_space_to_fit_in_is_the_whole_vocabulary():
     assert fit_runs(corpus_runs()).classes == SECTION_LABELS
 
 
-def test_the_structural_graph_still_calls_the_raw_intro_beat_in_impossible():
-    """``altintro`` -> ``intro`` was invisible while the folds collapsed the pair;
-    the raw vocabulary can express it and the graph says it cannot happen.  A
-    refit that meets one must fail loudly -- that is what ``strict`` is for --
-    rather than drop the evidence.  Which side is wrong is an owner decision.
-    """
-    assert not transition_allowed("altintro", "intro")
-    with pytest.raises(RuntimeError, match="altintro->intro"):
-        fit_runs([[("altintro", 8), ("intro", 8), ("drop", 8), ("outro", 8)]])
+def test_the_owners_beat_in_now_fits_instead_of_raising():
+    """``altintro`` -> ``intro`` was invisible while the folds collapsed the
+    pair.  Under family semantics it is an ordinary within-family move, so a
+    corpus carrying it fits rather than failing the strict gate."""
+    fitted = fit_runs([[("altintro", 8), ("intro", 8), ("drop", 8), ("outro", 8)]])
+    assert fitted.classes == SECTION_LABELS
+
+
+def test_a_cross_family_violation_still_fails_the_strict_gate_loudly():
+    with pytest.raises(RuntimeError, match="drop->intro"):
+        fit_runs([[("altintro", 8), ("drop", 8), ("intro", 8), ("outro", 8)]])
 
 
 def test_a_priors_file_naming_the_shipping_five_classes_still_loads(tmp_path):

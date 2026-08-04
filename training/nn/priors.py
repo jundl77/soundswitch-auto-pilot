@@ -101,20 +101,36 @@ def section_classes() -> tuple:
 # --------------------------------------------------------------------------- #
 
 
+INTRO_FAMILY = frozenset({"intro", "altintro"})
+OUTRO_FAMILY = frozenset({"outro", "altoutro"})
+
+
 def transition_allowed(src: str, dst: str) -> bool:
     """Can a decoded section of class ``src`` be followed by one of ``dst``?
 
     Three rules, each a measured fact about the corpus rather than taste:
 
-    * **nothing enters intro** -- intro is pure-initial (0 of 3,747 train
-      transitions land on it); a track does not go back to its introduction.
-    * **nothing leaves outro** -- outro is terminal (0 of 525 train outros have
-      a successor); once the decoder commits an outro the track is over.
+    * **nothing enters the intro family** -- intro is pure-initial (0 of 3,747
+      train transitions land on it); a track does not go back to its
+      introduction.
+    * **nothing leaves the outro family** -- outro is terminal (0 of 525 train
+      outros have a successor); once the decoder commits an outro the track is
+      over.
     * **nothing self-transitions** -- the states are *merged runs*, so a
       self-loop is not a section change at all.  Persistence within a run is the
       duration model's job; putting it in the matrix too would double-count it.
+
+    The first two are stated over *families* because that is the granularity
+    they were measured at: the fold collapsed each pair into one class, so the
+    counts never distinguished ``altintro`` from ``intro``.  A within-family
+    move is therefore unmeasured rather than absent, and it is exactly the
+    beat-in the owner asked the vocabulary to be able to express.
     """
-    if dst == "intro" or src == "outro":
+    if src in INTRO_FAMILY and dst in INTRO_FAMILY:
+        return src != dst
+    if src in OUTRO_FAMILY and dst in OUTRO_FAMILY:
+        return src != dst
+    if dst in INTRO_FAMILY or src in OUTRO_FAMILY:
         return False
     return src != dst
 

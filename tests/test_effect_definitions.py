@@ -11,6 +11,25 @@ def test_groove_is_gone_because_no_path_can_produce_it():
     assert 'groove' not in {intent.value for intent in LightIntent}
 
 
+def test_peaks_banks_move_into_drop_rather_than_going_dark():
+    channels = [effect.midi_channel.name
+                for effect in INTENT_EFFECTS[LightIntent.DROP]]
+    assert channels == ['AUTOLOOP_BANK_1D', 'AUTOLOOP_BANK_1E',
+                        'AUTOLOOP_BANK_1F', 'AUTOLOOP_BANK_1G',
+                        'AUTOLOOP_BANK_1H', 'SPECIAL_EFFECT_STROBE']
+
+
+def test_no_bank_of_the_two_families_the_show_draws_from_goes_dark():
+    # Bank families 3 and 4 have never been wired to an intent; 1 and 2 are the
+    # show's pools, and retiring an intent must re-home its banks rather than
+    # silently shrink the rig.
+    reachable = {effect.midi_channel.name
+                 for pool in INTENT_EFFECTS.values() for effect in pool}
+    banks = {channel.name for channel in MidiChannel
+             if channel.name.startswith(('AUTOLOOP_BANK_1', 'AUTOLOOP_BANK_2'))}
+    assert banks <= reachable
+
+
 def test_grooves_banks_move_into_breakdown_rather_than_going_dark():
     channels = [effect.midi_channel.name
                 for effect in INTENT_EFFECTS[LightIntent.BREAKDOWN]]
