@@ -231,7 +231,7 @@ def test_the_first_song_holds_the_axis_at_zero_until_the_room_reaches_it():
 
 def test_a_detected_stop_empties_the_timeline_and_zeroes_it():
     fig = V._build_timeline(_snapshot(
-        now=60.0, look_ahead_sec=14.0,
+        now=62.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}],
         beats=[{'t': 40.0, 'bpm': 128.0}],
         intents=[{'t': 50.0, 'intent': 'drop'}]))
@@ -242,7 +242,7 @@ def test_a_detected_stop_empties_the_timeline_and_zeroes_it():
 
 def test_both_clocks_go_blank_between_songs():
     items = V._build_metrics(_snapshot(
-        now=60.0, look_ahead_sec=14.0,
+        now=62.0, look_ahead_sec=14.0,
         sound_events=[{'t': 0.0, 'playing': True}, {'t': 60.0, 'playing': False}]))
     assert _metric(items, 'song') == 'song —'
     assert _metric(items, 'room') == 'room —'
@@ -565,18 +565,35 @@ def _mid_play(**overrides) -> dict:
                      sound_events=[{'t': 0.0, 'playing': True}], **overrides)
 
 
-def test_the_show_stops_the_instant_a_stop_is_detected():
-    assert 'PAUSED' in _metric(V._build_metrics(_stopping(now=60.0)), '◌')
+def test_the_show_stops_once_the_detected_silence_has_persisted():
+    assert 'PAUSED' in _metric(V._build_metrics(_stopping(now=62.0)), '◌')
 
 
-def test_the_show_is_still_playing_the_moment_before_that():
-    playing = dict(_stopping(now=59.99), is_playing=True)
-    assert 'PLAYING' in _metric(V._build_metrics(playing), '●')
+def test_the_room_keeps_playing_the_tail_while_the_bypass_is_still_pending():
+    assert 'PLAYING' in _metric(V._build_metrics(_stopping(now=61.99)), '●')
 
 
-def test_the_timeline_resets_the_instant_a_stop_is_detected():
-    assert V._song_origin(_stopping(now=59.99)) is not None
-    assert V._song_origin(_stopping(now=60.0)) is None
+def test_the_timeline_resets_when_the_silence_persists_not_when_it_starts():
+    assert V._song_origin(_stopping(now=61.99)) is not None
+    assert V._song_origin(_stopping(now=62.0)) is None
+
+
+def test_a_gap_shorter_than_the_persistence_never_reaches_the_room_at_all():
+    seamless = _snapshot(now=200.0, look_ahead_sec=14.0,
+                         sound_events=[{'t': 0.0, 'playing': True},
+                                       {'t': 100.0, 'playing': False},
+                                       {'t': 101.5, 'playing': True}])
+    assert [e['t'] for e in V._room_sound_events(seamless)] == [14.0]
+    assert V._song_origin(seamless) == pytest.approx(14.0)
+    assert 'PLAYING' in _metric(V._build_metrics(seamless), '●')
+
+
+def test_the_room_holds_its_tail_through_the_window_before_a_resume_lands():
+    mid_gap = _snapshot(now=100.5, look_ahead_sec=14.0, is_playing=False,
+                        sound_events=[{'t': 0.0, 'playing': True},
+                                      {'t': 100.0, 'playing': False}])
+    assert V._song_origin(mid_gap) == pytest.approx(14.0)
+    assert 'PLAYING' in _metric(V._build_metrics(mid_gap), '●')
 
 
 def _burst() -> dict:
@@ -588,17 +605,18 @@ def _burst() -> dict:
 
 
 def test_a_play_burst_shorter_than_the_look_ahead_never_reaches_the_room():
-    assert [e['t'] for e in V._room_sound_events(_burst())] == [14.0, 60.0, 105.0]
+    assert [e['t'] for e in V._room_sound_events(_burst())] == [14.0, 62.0, 107.0]
     assert V._song_origin(_burst()) is None
     assert 'PAUSED' in _metric(V._build_metrics(_burst()), '◌')
 
 
-def test_a_stop_landing_on_a_start_arrival_cuts_it_because_silence_is_immediate():
-    tie = _snapshot(now=30.0, look_ahead_sec=14.0,
-                    sound_events=[{'t': 1.0, 'playing': True},
-                                  {'t': 15.0, 'playing': False}])
-    assert [e['t'] for e in V._room_sound_events(tie)] == [15.0]
-    assert V._song_origin(tie) is None
+def test_a_start_that_lands_before_the_bypass_is_heard_and_then_cut():
+    brief = _snapshot(now=30.0, look_ahead_sec=14.0,
+                      sound_events=[{'t': 1.0, 'playing': True},
+                                    {'t': 15.0, 'playing': False}])
+    assert [e['t'] for e in V._room_sound_events(brief)] == [15.0, 17.0]
+    assert V._song_origin(dict(brief, now=16.0)) == pytest.approx(15.0)
+    assert V._song_origin(brief) is None
 
 
 def test_room_time_and_list_order_agree_once_one_rule_decides_both():
@@ -607,7 +625,7 @@ def test_room_time_and_list_order_agree_once_one_rule_decides_both():
                                        {'t': 60.0, 'playing': False},
                                        {'t': 80.0, 'playing': True}])
     for snapshot in (_burst(), resuming, _stopping(now=60.0),
-                     _mid_play(now=70.0)):
+                     _stopping(now=70.0), _mid_play(now=70.0)):
         heard = V._room_sound_events(snapshot)
         assert V._last_heard(snapshot) == heard[-1]
         assert heard == sorted(heard, key=lambda event: event['t'])

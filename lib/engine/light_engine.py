@@ -6,7 +6,7 @@ from lib.audio_config import SAMPLE_RATE
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_definitions import LightIntent, intent_for_class
-from lib.engine.event_buffer import SILENCE_TRIGGER
+from lib.engine.event_buffer import SILENCE_TRIGGER, STOP_PERSISTENCE_SEC
 from lib.clients.midi_client import SETTLE_SEC, MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
@@ -71,6 +71,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._latency_logged_at: float | None = None
         self._committing_late: bool = False
         self._floor_armed: bool = True
+        self._bypass_due_at: float | None = None
         self._last_refresh_sec: float = float('-inf')
         self._committed = None
         self._log_chain_latency()
@@ -97,6 +98,7 @@ class LightEngine(IMusicAnalyserHandler):
 
     def on_sound_start(self):
         logging.info('[engine] sound start')
+        self._bypass_due_at = None
         self.os2l_client.on_sound_start(0, 0, 20000, 120)
         if self.event_buffer:
             self.event_buffer.set_playing(True)
@@ -108,10 +110,20 @@ class LightEngine(IMusicAnalyserHandler):
         self.effect_controller.reset_state()
         if self.event_buffer:
             self.event_buffer.set_playing(False)
+        self._bypass_due_at = self._clock.monotonic() + STOP_PERSISTENCE_SEC
+        self._restart_for_the_next_song()
+
+    def _bypass_if_the_silence_held(self) -> None:
+        if self._bypass_due_at is None:
+            return
+        if self._clock.monotonic() < self._bypass_due_at:
+            return
+        self._bypass_due_at = None
+        logging.info(f'[engine] silence held {STOP_PERSISTENCE_SEC:.1f}s — '
+                     f'cutting the tail the room has not reached')
         if self._silence_monitor is not None:
             self._silence_monitor()
         self._quiet_the_room_now()
-        self._restart_for_the_next_song()
 
     def _quiet_the_room_now(self) -> None:
         if self.command_queue:
@@ -182,6 +194,7 @@ class LightEngine(IMusicAnalyserHandler):
         self.overlay_client.flush_messages()
 
     async def on_audio(self, audio_signal) -> None:
+        self._bypass_if_the_silence_held()
         self._audio_sec += len(audio_signal) / SAMPLE_RATE
         if self.section_chain is None or self.section_decoder is None:
             return

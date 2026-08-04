@@ -8,6 +8,7 @@ import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 
+from lib.engine.event_buffer import STOP_PERSISTENCE_SEC
 from lib.ui_bridge import SNAPSHOT_HOST, SNAPSHOT_PATH, snapshot_port
 from simulate.runner import TIMING_TOLERANCE_SEC
 
@@ -89,17 +90,40 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
+def _bridged(stop_t: float, start_t: float) -> bool:
+    return stop_t < start_t <= stop_t + STOP_PERSISTENCE_SEC
+
+
+def _elided(event: dict, snapshot: dict) -> bool:
+    others = snapshot.get('sound_events', [])
+    if event['playing']:
+        return any(_bridged(other['t'], event['t'])
+                   for other in others if not other['playing'])
+    return any(_bridged(event['t'], other['t'])
+               for other in others if other['playing'])
+
+
+def _room_stops(snapshot: dict) -> list:
+    return [event['t'] + STOP_PERSISTENCE_SEC
+            for event in snapshot.get('sound_events', [])
+            if not event['playing'] and not _elided(event, snapshot)]
+
+
 def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    events = snapshot.get('sound_events', [])
-    stops = [e['t'] for e in events if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
-    for event in events:
-        reaches_room_at = event['t'] + delay if event['playing'] else event['t']
-        cut = event['playing'] and any(event['t'] < stop <= reaches_room_at
-                                       for stop in stops)
-        if reaches_room_at <= now and not cut:
+    for event in snapshot.get('sound_events', []):
+        if _elided(event, snapshot):
+            continue
+        if event['playing']:
+            reaches_room_at = event['t'] + delay
+            if any(event['t'] < stop <= reaches_room_at for stop in stops):
+                continue
+        else:
+            reaches_room_at = event['t'] + STOP_PERSISTENCE_SEC
+        if reaches_room_at <= now:
             heard.append(dict(event, t=reaches_room_at))
     return heard
 
@@ -107,7 +131,7 @@ def _room_sound_events(snapshot: dict) -> list:
 def _heard_beats(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
     for beat in snapshot.get('beats', []):
         reaches_room_at = beat['t'] + delay
@@ -140,10 +164,13 @@ def _song_origin(snapshot: dict) -> float | None:
 
 
 def _room_is_playing(snapshot: dict) -> bool:
+    now = snapshot.get('now', 0.0)
+    live = (bool(snapshot.get('is_playing'))
+            or any(stop > now for stop in _room_stops(snapshot)))
     last = _last_heard(snapshot)
     if last is not None:
-        return last['playing'] and bool(snapshot.get('is_playing'))
-    return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
+        return last['playing'] and live
+    return not snapshot.get('sound_events') and live
 
 
 def _room_bpm(snapshot: dict) -> float:
@@ -154,7 +181,7 @@ def _room_bpm(snapshot: dict) -> float:
 def _beats_still_travelling(snapshot: dict) -> int:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     return sum(1 for beat in snapshot.get('beats', [])
                if beat['t'] + delay > now
                and not any(beat['t'] < stop <= beat['t'] + delay for stop in stops))

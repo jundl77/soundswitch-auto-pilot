@@ -537,17 +537,41 @@ every other one, and the figure re-uses the snapshot the anchor stream just read
 instead of polling again -- so a tick still costs exactly one poll and the panels
 still cannot disagree about which snapshot they are drawing.
 
-**Stops are immediate; starts wait for the room.** The asymmetry is the spec, not
-an oversight: music starting has to travel the playback delay before anyone hears
-it, so a start and everything after it stays room-aligned -- but silence needs no
-look-ahead, because there is nothing left to hear. A detected stop therefore ends
-the song on the display at once, cuts the monitored output's buffered tail
-instead of playing it out, and discards the beats still in flight, which were
-never going to reach the room. Everything mid-play keeps the room alignment.
+**Stops are immediate once the silence has persisted; starts wait for the room.**
+The asymmetry is the spec, not an oversight: music starting has to travel the
+playback delay before anyone hears it, so a start and everything after it stays
+room-aligned -- but silence needs no look-ahead, because there is nothing left to
+hear. A stop therefore ends the song on the display, cuts the monitored output's
+buffered tail instead of playing it out, and discards the beats still in flight,
+which were never going to reach the room. Everything mid-play keeps the room
+alignment.
+
+What the first version of that got wrong is that **detected silence is not the
+same as a stopped set**. The gap between two tracks is silence too, so every
+song change threw away a playback delay's worth of tail the room was still
+enjoying. The whole bypass package therefore waits for the silence to *persist*:
+the monitor cut, the flush of lighting the room has not seen, the quiet floor,
+and the display's own reading of the stop are one thing that fires together
+after the window, or does not fire at all. A resume inside the window cancels
+it entirely and the room hears the natural gap a look-ahead later -- which is
+exactly what it would have heard from a DJ mixing on the desk. Nothing else
+moves: the stop is still detected when it is detected, its sound event is still
+recorded there, and the song-boundary reset and rebirth machinery still run at
+once. Those were gap-correct before the bypass existed, and the gate is not
+theirs to wear.
+
+**The display derives the gate rather than being told about it.** A stop reaches
+the room one window after it was recorded, and a stop with a start inside that
+window never reached the room at all -- so that pair is dropped from the render
+entirely and the song keeps its origin straight through the gap. This is the
+same move the look-ahead shift already makes: nothing stored moves, the room's
+version is derived from the sound events the snapshot already carries. The
+report and the digest are untouched, and the window is written down in exactly
+one place for both sides to read.
 
 **That cut applies to the start record too, not only to the beats behind it.** A
-start whose audio is still travelling when a stop lands never reaches the room
-either, so it is not a record the display may count a song from. Leaving it in is
+start whose audio is still travelling when the bypass fires never reaches the
+room either, so it is not a record the display may count a song from. Leaving it in is
 what made the remapped list non-monotonic -- starts move by the delay and stops do
 not -- and the two obvious ways to ask which record is current then disagreed: the
 last by list position, and the last by room time. Position was accidentally right;
@@ -1000,6 +1024,7 @@ session is therefore not a clean read of what the headless pipeline does.
 - **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and the input side DROPS rather than queues, so falling behind costs audio, not latency. The ladder is now one rung with two inputs — drift (which the audio loop measures) and stage health (which only the stage can report, because a CUDA fault costs the loop's pacing nothing). Either input alone holds the door shut. If a log shows sustained shedding, the box is too slow or the GPU is unwell — that is the signal, not a nuisance warning.
 - **Watching the show costs the show.** `--ui` serves Dash from the same process as the pipeline, so a viewer's callbacks and the pipeline contend for one GIL. One ordinary viewer measurably increased sheds over a single track (1 -> 5 against a control run); two stale viewers degraded it enough to reset the decoder repeatedly, and that show never left one intent for the whole track. A `--ui` session is not a clean read of headless behaviour, and its checksums are not comparable with a fast-sim baseline either.
 - **A soak or live run through a virtual audio cable needs the rig checked first.** A run whose default render endpoint is the cable never sees silence, so the silence gate never trips and no song boundary fires — a "song boundaries exercised" result under that configuration is vacuous. Measured with the machine actually quiet, the cable's idle RMS sits an order of magnitude *below* the gate, so the blocker is configuration (a media player left running was the real cause) rather than routing. The cable is also **not transparent**: measured round trip is about −3.6 dB with a tilted magnitude response and r ≈ 0.94, so the live pipeline analyses audibly different audio from the simulation. Sim/live show agreement is agreement *despite* that channel.
+- **`beats_cut` still banks at detection, not at the gate.** `set_playing(False)` counts every beat still travelling as never-heard the instant silence is detected, and the persistence gate deliberately did not move it — the recorder is the one thing the gate is not allowed to touch. When a gap cancels the bypass those beats *do* reach the room, so the displayed beat count under-reports by up to a look-ahead's worth of beats for every song change. Display only: nothing in the report, the training table or the digest reads it. Fixing it means either passing the window into the recorder or deriving the count in the render path, and both are a change to the machinery a ruling froze.
 - **Beat dropout false ATMOSPHERIC**: a beat tracker can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained artifacts. It matters more than it used to, because the bar grid is counted off the same stream: a gap longer than the decoder's own threshold re-anchors the grid rather than closing one bar across it.
 - **Tempo octave choice now moves the bar grid, not just a threshold.** BPM is octave-folded before anyone sees it, which is what the OS2L wire has always carried. The DROP tempo gate that originally motivated the fold died with the rule classifier, but a *tracker* octave flip is now visible in the show: on a drum & bass track a live run emitted a 30-second passage on the half-time grid, which moved the committed DROP by nearly a full decoder bar relative to the simulation. Fast genres remain the exposed case.
 - **ATMOSPHERIC is reachable now, and the entry that said otherwise is retired.** It used to be the only intent driven by a beat-absence timer, so on mastered EDM — whose intros and outros have beats — the timer never tripped and `intro`/`outro` were unreachable no matter how thresholds moved. `intro` and `outro` are decoder classes now, so the intent is committed from evidence; the timer survives as a second producer and the cold-start floor is a third. A live soak spent several minutes of a 35-minute session in ATMOSPHERIC.
