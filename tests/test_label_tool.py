@@ -25,6 +25,7 @@ from label_tool import (  # noqa: E402
     _YOUTUBE_ID,
     add_boundary,
     apply_edit,
+    audio_digest,
     beat_grid,
     commit_labels,
     default_title,
@@ -35,8 +36,8 @@ from label_tool import (  # noqa: E402
     normalise,
     parse_csv,
     save_labels,
+    resolve_identity,
     to_annotation,
-    track_id,
 )
 
 SECTIONS = [
@@ -49,11 +50,14 @@ MIXED = [dict(entry, strength='minor' if entry['label'] == 'buildup' else 'major
          for entry in SECTIONS]
 
 
+_REAL_TMP_LABELS_DIR = label_tool.tmp_labels_dir
+
+
 @pytest.fixture(autouse=True)
 def scratch(tmp_path, monkeypatch):
-    """No test may write into the repo's own working-label workspace."""
-    workspace = tmp_path / 'tmp_labels'
-    monkeypatch.setattr(label_tool, 'TMP_LABELS_DIR', workspace)
+    """No test may write into the real corpus's working-label workspace."""
+    workspace = tmp_path / 'scratch_corpus' / label_tool.TMP_LABELS_DIR_NAME
+    monkeypatch.setattr(label_tool, 'tmp_labels_dir', lambda: workspace)
     return workspace
 
 
@@ -146,7 +150,8 @@ def test_a_no_op_edit_neither_rewrites_nor_reports(tmp_path):
 def _load_in_a_new_process(audio: Path, scratch: Path) -> list:
     source = (
         'import json, pathlib, sys; sys.path.insert(0, sys.argv[1]); '
-        'import label_tool; label_tool.TMP_LABELS_DIR = pathlib.Path(sys.argv[3]); '
+        'import label_tool; '
+        'label_tool.tmp_labels_dir = lambda: pathlib.Path(sys.argv[3]); '
         'print(json.dumps(label_tool.load_labels(sys.argv[2])))'
     )
     finished = subprocess.run(
@@ -247,23 +252,35 @@ def song(tmp_path):
 
 @pytest.fixture
 def song_id(song):
-    return track_id(str(song))
+    return resolve_identity(str(song))[0]
 
 
 TITLE = 'Ferry Corsten - Is It Beautiful'
 
 
-def test_the_working_file_lives_in_the_scratch_workspace_not_beside_the_audio(song):
+def test_the_working_file_lives_in_the_scratch_workspace_not_beside_the_audio(
+        song, scratch):
     path = labels_path(str(song))
-    assert path.parent == label_tool.TMP_LABELS_DIR
+    assert path.parent == scratch
     assert path.name == 'is_it_beautiful.kUP_iJuoq9g.mp3.labels.csv'
     save_labels(str(song), SECTIONS)
     assert path.exists()
     assert not song.with_name(song.name + '.labels.csv').exists()
 
 
-def test_the_track_id_is_content_addressed_and_never_looks_like_a_download(
-        tmp_path):
+def test_working_state_follows_the_corpus_rather_than_the_checkout(
+        tmp_path, monkeypatch):
+    elsewhere = tmp_path / 'main-checkout' / 'training' / 'data' / 'raveform'
+    monkeypatch.setattr(label_tool, 'corpus_dir', lambda: elsewhere)
+    monkeypatch.setattr(label_tool, 'tmp_labels_dir', _REAL_TMP_LABELS_DIR)
+    scratch = label_tool.tmp_labels_dir()
+    assert scratch == elsewhere / label_tool.TMP_LABELS_DIR_NAME
+    assert scratch.parent == label_tool.hand_label_path('x').parent.parent, (
+        'the scratch file and the committed label must resolve to one corpus')
+
+
+def test_new_audio_is_content_addressed_and_never_looks_like_a_download(
+        tmp_path, corpus):
     one = tmp_path / 'is_it_beautiful.kUP_iJuoq9g.mp3'
     one.write_bytes(b'the same bytes')
     renamed = tmp_path / 'totally different name.mp3'
@@ -271,12 +288,86 @@ def test_the_track_id_is_content_addressed_and_never_looks_like_a_download(
     other = tmp_path / 'other.mp3'
     other.write_bytes(b'different bytes')
 
-    assert track_id(str(one)) == track_id(str(renamed))
-    assert track_id(str(one)) != track_id(str(other))
-    assert track_id(str(one)).startswith('hand-')
-    assert not _YOUTUBE_ID.match(track_id(str(one))[len('hand-'):])
-    assert track_id(str(one)) == 'hand-' + hashlib.sha256(
+    identity = lambda path: resolve_identity(str(path))[0]
+    assert identity(one) == identity(renamed)
+    assert identity(one) != identity(other)
+    assert identity(one).startswith('hand-')
+    assert not _YOUTUBE_ID.match(identity(one)[len('hand-'):])
+    assert identity(one) == 'hand-' + hashlib.sha256(
         b'the same bytes').hexdigest()[:12]
+    assert resolve_identity(str(one))[1] is None
+
+
+def _publish(corpus, youtube_id, payload, record_checksum=True):
+    """A track the corpus already holds, exactly as the downloader left it."""
+    audio = corpus / 'audio' / f'{youtube_id}.mp3'
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(payload)
+    if record_checksum:
+        (corpus / label_tool.CHECKSUMS_FILE).write_text(
+            f'{hashlib.sha256(payload).hexdigest()}  audio/{youtube_id}.mp3\n',
+            encoding='utf-8')
+    return audio
+
+
+def test_audio_the_corpus_already_holds_keeps_its_native_id(song, corpus):
+    published = _publish(corpus, 'kUP_iJuoq9g', song.read_bytes())
+
+    identifier, native = resolve_identity(str(song))
+    assert identifier == 'kUP_iJuoq9g'
+    assert native == published
+
+    result = commit_labels(str(song), load_labels(str(song)), 214.842, TITLE)
+    assert result['copied'] is False
+    assert result['labels'] == corpus / 'annotations' / 'kUP_iJuoq9g.hand.json'
+    assert result['audio'] == published
+    assert sorted(p.name for p in (corpus / 'audio').iterdir()) == [
+        'kUP_iJuoq9g.mp3'], 'nothing was copied'
+    record = json.loads(result['labels'].read_text(encoding='utf-8'))
+    assert record['id'] == 'kUP_iJuoq9g'
+    assert record['audio'] == 'kUP_iJuoq9g.mp3'
+
+
+def test_a_renamed_copy_of_a_corpus_track_is_still_that_track(tmp_path, corpus):
+    payload = b'the exact bytes the downloader fetched'
+    _publish(corpus, 'hzIFjGcOKbg', payload)
+    renamed = tmp_path / 'some track I saved off a mix.mp3'
+    renamed.write_bytes(payload)
+
+    assert resolve_identity(str(renamed))[0] == 'hzIFjGcOKbg'
+
+
+def test_dedupe_falls_back_to_hashing_when_the_baseline_is_absent(song, corpus):
+    published = _publish(corpus, 'kUP_iJuoq9g', song.read_bytes(),
+                         record_checksum=False)
+    assert not (corpus / label_tool.CHECKSUMS_FILE).exists()
+
+    identifier, native = resolve_identity(str(song))
+    assert identifier == 'kUP_iJuoq9g'
+    assert native == published
+
+
+def test_a_stale_baseline_does_not_hide_a_track_it_never_recorded(song, corpus):
+    published = _publish(corpus, 'kUP_iJuoq9g', song.read_bytes(),
+                         record_checksum=False)
+    (corpus / label_tool.CHECKSUMS_FILE).write_text(
+        f'{"0" * 64}  audio/somethingelse.mp3\n', encoding='utf-8')
+
+    assert resolve_identity(str(song)) == ('kUP_iJuoq9g', published)
+
+
+def test_audio_of_the_same_size_but_different_bytes_is_not_the_same_track(
+        song, corpus):
+    same_size = bytes(len(song.read_bytes()))
+    _publish(corpus, 'kUP_iJuoq9g', same_size, record_checksum=False)
+
+    identifier, native = resolve_identity(str(song))
+    assert identifier.startswith('hand-')
+    assert native is None
+
+
+def test_the_digest_is_the_whole_file():
+    assert len(audio_digest(__file__)) == 64
 
 
 def test_the_title_prefill_drops_a_trailing_youtube_id():
@@ -303,7 +394,7 @@ def test_the_committed_shape_is_the_corpus_section_shape_and_round_trips():
     assert parse_sections(record)[1] == (31.25, 48.0, 'buildup')
 
 
-def test_commit_promotes_the_scratch_into_the_dataset(song, corpus, song_id):
+def test_commit_promotes_new_audio_into_the_dataset(song, corpus, song_id):
     sections = load_labels(str(song))
     sections = add_boundary(sections, 61.9, 'buildup', 'minor')
     save_labels(str(song), sections)
@@ -347,14 +438,14 @@ def test_committing_twice_overwrites_rather_than_accumulates(song, corpus):
     assert len(list((corpus / 'annotations').glob('*.hand.json'))) == 1
 
 
-def test_audio_already_in_the_corpus_is_left_alone(song, corpus, song_id):
-    existing = corpus / 'audio' / f'{song_id}.mp3'
-    existing.parent.mkdir(parents=True)
-    existing.write_bytes(b'the copy the downloader fetched')
+def test_a_second_commit_of_new_audio_copies_nothing_further(song, corpus):
+    first = commit_labels(str(song), load_labels(str(song)), 214.842, TITLE)
+    assert first['copied'] is True
 
-    result = commit_labels(str(song), load_labels(str(song)), 214.842, TITLE)
-    assert result['copied'] is False
-    assert existing.read_bytes() == b'the copy the downloader fetched'
+    again = commit_labels(str(song), load_labels(str(song)), 214.842, TITLE)
+    assert again['copied'] is False, 'the corpus now holds it'
+    assert again['audio'] == first['audio']
+    assert len(list((corpus / 'audio').iterdir())) == 1
 
 
 def test_commit_reports_both_paths_through_the_dispatcher(song, corpus, song_id):
@@ -379,11 +470,48 @@ def test_commit_is_refused_without_a_title_and_writes_nothing(song, corpus):
     assert not (corpus / 'audio').exists()
 
 
-def test_a_title_with_no_artist_dash_commits_but_says_so(song, corpus):
+def test_a_title_with_no_artist_dash_is_refused_and_writes_nothing(song, corpus):
+    """The prefill for the owner's first real file was exactly this shape."""
+    updated, status = apply_edit(str(song), 'commit', load_labels(str(song)),
+                                 duration=214.842, title='is it beautiful')
+    assert updated is None
+    assert status.startswith('commit refused')
+    assert 'no artist' in status and 'contamination' in status
+    assert list((corpus / 'annotations').glob('*.hand.json')) == []
+    assert not (corpus / 'audio').exists()
+
+
+def test_a_release_with_genuinely_no_artist_goes_through_the_override(
+        song, corpus, song_id):
     _, status = apply_edit(str(song), 'commit', load_labels(str(song)),
-                           duration=214.842, title='is it beautiful')
+                           duration=214.842, title='is it beautiful',
+                           no_artist=True)
     assert 'committed' in status
-    assert 'artist guard cannot read an artist' in status
+    assert 'NO artist' in status
+
+    record = json.loads(
+        (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert record['title'] == 'is it beautiful'
+    assert record['artist'] is None, 'absent honestly, not absent by omission'
+
+
+def test_a_dash_title_records_the_artist_the_guard_will_read(song, corpus,
+                                                             song_id):
+    apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
+               title='Ferry Corsten - Is It Beautiful')
+    record = json.loads(
+        (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert record['artist'] == 'Ferry Corsten'
+
+    sys.path.insert(0, str(TRAINING_DIR))
+    from select_eval_set import artist_of
+    assert artist_of(record['title']) == artist_of('Ferry Corsten - anything')
+
+
+def test_the_override_is_not_needed_when_a_dash_is_present(song, corpus):
+    _, status = apply_edit(str(song), 'commit', load_labels(str(song)),
+                           duration=214.842, title=TITLE, no_artist=False)
+    assert 'committed' in status
 
 
 def test_commit_still_places_the_files_when_no_admission_step_exists(song, corpus):

@@ -14,10 +14,12 @@ picker, a strength picker, +/- nudge buttons and a delete, and shows as a
 coloured span on the timeline.
 
 A labelling has two homes, and the split is the whole lifecycle. **Working
-state** is a scratch CSV under `training/data/tmp_labels/`, rewritten atomically
+state** is a scratch CSV under `<corpus>/tmp_labels/`, rewritten atomically
 on every single edit, so the file is the state and the page is only a view of
 it; closing or reloading the tab costs nothing, and relaunching loads it back.
-It is gitignored scratch and nothing downstream should read it.
+It is gitignored scratch and nothing downstream should read it, and it
+resolves through `corpus_root` exactly as a committed label does -- one
+resolution, so a relaunch from a different worktree finds the same work.
 
 **Commit** promotes that scratch into the dataset: it writes
 `<corpus>/annotations/<track_id>.hand.json` and, if the audio is not already in
@@ -35,18 +37,33 @@ inviolable; a hand label is always a new sibling file.
 The committed shape is the corpus's own section shape plus one key::
 
     {"schema": 1, "source": "hand_label", "id": "hand-<sha256(audio)[:12]>",
-     "title": "Artist - Track", "audio": "<file in the corpus audio dir>",
-     "duration": <seconds>,
+     "title": "Artist - Track", "artist": "Artist" | null,
+     "audio": "<file in the corpus audio dir>", "duration": <seconds>,
      "sections": [{"name": "<label>", "start": <s>, "end": <s>,
                    "strength": "major" | "minor"}, ...]}
 
-The `id` is content-addressed and prefixed, for two separate reasons: splits are
-assigned by hashing the id, so a rename must not move a track between train and
-val; and a hand track must never be mistakable for a downloaded corpus row. The
-`title` is required rather than optional because the benchmark's artist-exclusion
-guard reads it -- `select_eval_set.artist_of` takes everything before the dash --
-and a track with no title is invisible to that guard, which is a contamination
-hole rather than a cosmetic gap.
+**A track is identified by its bytes, not by its filename, and that decides the
+`id`.** Commit hashes the audio and looks it up in the corpus's own
+`checksums.sha256` (falling back to hashing only same-size files in `audio/`,
+since that record is written by a validation run and can lag the downloader). If
+the corpus already holds this recording, the label is filed under the **native**
+id and nothing is copied -- `<native>.hand.json` sits beside the published entry
+for that track and takes precedence over it. Only genuinely new audio gets a
+`hand-<sha256[:12]>` id and a copy into `audio/`. So the id says which case it
+is: a `hand-` prefix means new audio, anything else means an override.
+
+Being content-addressed also matters for the split assignment, which hashes the
+id: renaming a file must not move a track between train and val.
+
+The `title` is required, and **commit is blocked until it is in `Artist - Track`
+form**, because the benchmark's artist-exclusion guard reads it:
+`select_eval_set.artist_of` takes everything before the dash, so a track without
+one is never checked for contamination and nothing anywhere records that it was
+skipped. A release that genuinely has no artist credit is admitted by ticking
+"no artist", which stores `"artist": null` -- the difference between "there is
+none" and "nobody filled it in" is the whole reason the field is written down
+rather than re-derived. This started as a warning and was not enough: the first
+real hand label went in as `is it beautiful`.
 
 `name`/`start`/`end` are exactly what `parse_sections` in
 `raveform/raveform_fetch_annotations.py` reads, so a consumer can treat a hand
@@ -69,10 +86,10 @@ admission that raises is reported rather than swallowed, because the files are
 already placed and a half-admitted track must not look finished.
 
 A beat grid is drawn under the waveform when one exists, so a generated grid can
-be eyeballed against the audio at labelling time. Two spellings are read from
-`<corpus>/annotations/beats/`: the published `<key>.beat.csv`, and
-`<track_id>.hand.beat.csv` for a generated one. Columns are the published ones,
-`time` and `downbeat`.
+be eyeballed against the audio at labelling time. It is read from
+`<corpus>/annotations/beats/<track_id>.hand.beat.csv` -- the published grids are
+named by a corpus key this tool never sees, so a generated one is the only kind
+it can find. Columns are the published ones, `time` and `downbeat`.
 """
 import csv
 import hashlib
@@ -124,32 +141,97 @@ NUDGES = (-0.5, -0.1, 0.1, 0.5)
 TIME_DECIMALS = 3
 
 
-TMP_LABELS_DIR = Path(__file__).resolve().parent / 'data' / 'tmp_labels'
+TMP_LABELS_DIR_NAME = 'tmp_labels'
 HAND_LABEL_SUFFIX = '.hand.json'
 HAND_LABEL_SCHEMA = 1
 HAND_ID_PREFIX = 'hand-'
 HAND_ID_LENGTH = 12
+CHECKSUMS_FILE = 'checksums.sha256'
+ARTIST_SEPARATOR = ' - '
 _YOUTUBE_ID = re.compile(r'^[A-Za-z0-9_-]{11}$')
 
 
-def labels_path(audio_path: str) -> Path:
-    return TMP_LABELS_DIR / f'{Path(audio_path).name}.labels.csv'
+def tmp_labels_dir() -> Path:
+    """Working state lives with the corpus, for the reason the labels do.
 
-
-def track_id(audio_path: str) -> str:
-    """Content-addressed, and visibly not a YouTube id.
-
-    Splits hash the track id, so it has to be stable -- a rename must not move a
-    track between train and val. The audio's own digest is the only thing about
-    a hand-labelled file that cannot drift. The `hand-` prefix is the other half:
-    a hand track must never be mistakable for a downloaded corpus row, and that
-    is worth more as a property of the data than as a rule written down.
+    Anything resolved against this file's own directory is worktree-local, while
+    a committed label resolves through `corpus_root` to wherever the corpus
+    actually is. Those two answers differ in a linked worktree, and the failure
+    is silent: relaunching from a different checkout presents an empty labelling
+    while the real one sits in the other tree. One resolution, so there is one
+    place the work can be.
     """
+    return corpus_dir() / TMP_LABELS_DIR_NAME
+
+
+def labels_path(audio_path: str) -> Path:
+    return tmp_labels_dir() / f'{Path(audio_path).name}.labels.csv'
+
+
+def audio_digest(audio_path: str) -> str:
     digest = hashlib.sha256()
     with open(audio_path, 'rb') as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b''):
             digest.update(chunk)
-    return f'{HAND_ID_PREFIX}{digest.hexdigest()[:HAND_ID_LENGTH]}'
+    return digest.hexdigest()
+
+
+def read_checksums(path: Path) -> dict:
+    """The corpus's recorded content baseline, as {digest: name}."""
+    recorded = {}
+    with open(path, 'r', encoding='utf-8') as handle:
+        for line in handle:
+            digest, _, name = line.strip().partition(' ')
+            name = name.strip().lstrip('*')
+            if digest and name:
+                recorded[digest] = name
+    return recorded
+
+
+def locate_in_corpus(digest: str, size: int) -> Path:
+    """The corpus file holding exactly these bytes, or None.
+
+    Identity is content, never a filename: the same recording arrives here under
+    whatever the owner called it. `checksums.sha256` is the cheap path because it
+    is the corpus's own record of what it already has. It can be stale -- it is
+    written by a validation run, not by the downloader -- so a miss there still
+    falls through to the size scan, which only has to hash files that could
+    possibly match. A missed match would copy audio the corpus already holds and
+    would file the labels under a new id instead of overriding the published
+    track, which is the expensive mistake here; a redundant hash is not.
+    """
+    try:
+        audio = corpus_dir() / 'audio'
+        checksums = corpus_dir() / CHECKSUMS_FILE
+        if checksums.exists():
+            name = read_checksums(checksums).get(digest)
+            if name:
+                found = audio / Path(name).name
+                if found.exists():
+                    return found
+        for candidate in sorted(audio.glob('*')):
+            if (candidate.is_file() and candidate.stat().st_size == size
+                    and audio_digest(str(candidate)) == digest):
+                return candidate
+    except OSError:
+        return None
+    return None
+
+
+def resolve_identity(audio_path: str) -> tuple:
+    """The track id these bytes belong under, and their home if the corpus has one.
+
+    A track the corpus already holds keeps its native id, so the hand label lands
+    beside the published one as `<native>.hand.json` and takes precedence over
+    it. Only genuinely new audio gets a `hand-` id -- content-addressed because
+    splits hash the id and a rename must not move a track between train and val,
+    and prefixed because new audio must never be mistakable for a downloaded row.
+    """
+    digest = audio_digest(audio_path)
+    native = locate_in_corpus(digest, Path(audio_path).stat().st_size)
+    if native is not None:
+        return native.stem, native
+    return f'{HAND_ID_PREFIX}{digest[:HAND_ID_LENGTH]}', None
 
 
 def default_title(audio_path: str) -> str:
@@ -188,12 +270,12 @@ def beat_grid(audio_path: str) -> list:
     """Beat times and downbeat flags for this track, or [] if it has no grid.
 
     Only `<track_id>.hand.beat.csv` is read. The published grids are named by a
-    corpus key this tool never sees, and a hand id can never be one -- so a
-    generated grid is the only kind that can exist for a hand track.
+    corpus key this tool never sees, so a generated grid is the only kind it can
+    find -- for a native track as much as for a new one.
     """
     try:
         found = sorted((annotations_dir() / 'beats').glob(
-            f'{track_id(audio_path)}.hand.beat.csv'))
+            f'{resolve_identity(audio_path)[0]}.hand.beat.csv'))
     except OSError:
         return []
     if not found:
@@ -206,8 +288,18 @@ def beat_grid(audio_path: str) -> list:
         return []
 
 
+def title_artist(title: str, no_artist: bool = False) -> str:
+    """The artist the guard will read out of this title, or None if there is none.
+
+    `None` is a statement, not a gap: it means the owner said this release has no
+    artist credit, rather than that nobody filled the field in.
+    """
+    head, separator, _ = title.strip().partition(ARTIST_SEPARATOR)
+    return None if (no_artist or not separator) else head.strip()
+
+
 def to_annotation(sections: list, duration: float, identifier: str,
-                  audio_name: str, title: str) -> dict:
+                  audio_name: str, title: str, no_artist: bool = False) -> dict:
     ordered = normalise(sections)
     spans = []
     for index, entry in enumerate(ordered):
@@ -217,7 +309,8 @@ def to_annotation(sections: list, duration: float, identifier: str,
                       'end': round(end, TIME_DECIMALS),
                       'strength': entry['strength']})
     return {'schema': HAND_LABEL_SCHEMA, 'source': 'hand_label',
-            'id': identifier, 'title': title.strip(), 'audio': audio_name,
+            'id': identifier, 'title': title.strip(),
+            'artist': title_artist(title, no_artist), 'audio': audio_name,
             'duration': round(float(duration), TIME_DECIMALS),
             'sections': spans}
 
@@ -258,32 +351,34 @@ def admit_track(identifier: str, audio: Path, labels: Path) -> tuple:
 
 
 def commit_labels(audio_path: str, sections: list, duration: float,
-                  title: str) -> dict:
-    identifier = track_id(audio_path)
-    home = corpus_audio_path(identifier, audio_path)
-    copied = not home.exists()
-    if copied:
+                  title: str, no_artist: bool = False) -> dict:
+    identifier, native = resolve_identity(audio_path)
+    copied = native is None
+    if native is not None:
+        home = native
+    else:
+        home = corpus_audio_path(identifier, audio_path)
         home.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(audio_path, home)
     path = hand_label_path(identifier)
-    record = to_annotation(sections, duration, identifier, home.name, title)
+    record = to_annotation(sections, duration, identifier, home.name, title,
+                           no_artist)
     write_atomically(path, json.dumps(record, indent=2, ensure_ascii=False) + '\n')
     admitted, admission = admit_track(identifier, home, path)
     return {'labels': path, 'audio': home, 'copied': copied,
             'sections': len(record['sections']), 'title': record['title'],
+            'artist': record['artist'],
             'admitted': admitted, 'admission': admission}
 
 
 def commit_status(result: dict) -> str:
     audio = (f'audio copied → {result["audio"]}' if result['copied']
              else f'audio already at {result["audio"]}')
-    # artist_of() reads everything before the dash; with no dash there is no
-    # artist to exclude on, and the benchmark guard silently sees nothing.
-    warning = ('' if ' - ' in result['title'] else
-               ' · NOTE title has no "Artist - Track" dash, so the artist '
-               'guard cannot read an artist from it')
-    return (f'committed ✓ {result["sections"]} sections · {result["title"]!r} → '
-            f'{result["labels"]} · {audio} · {result["admission"]}{warning}')
+    artist = (f'artist {result["artist"]!r}' if result['artist']
+              else 'recorded as having NO artist, so no eval-set artist can be '
+                   'excluded on it')
+    return (f'committed ✓ {result["sections"]} sections · {result["title"]!r} · '
+            f'{artist} → {result["labels"]} · {audio} · {result["admission"]}')
 
 
 def clock_text(seconds: float) -> str:
@@ -374,17 +469,28 @@ def saved_status(path: Path, sections: list) -> str:
 def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                new_label: str = None, new_strength: str = DEFAULT_STRENGTH,
                row_labels: list = (), row_strengths: list = (),
-               duration: float = 0.0, title: str = '') -> tuple:
+               duration: float = 0.0, title: str = '',
+               no_artist: bool = False) -> tuple:
     """Apply one UI event and write the result. `None` means "leave it alone"."""
     if trigger == 'save':
         return None, saved_status(save_labels(audio_path, sections), sections)
     if trigger == 'commit':
-        if not (title or '').strip():
+        title = (title or '').strip()
+        if not title:
             return None, ('commit refused: a title is required — the dataset\'s '
                           'artist guard reads it, and a track without one is '
                           'invisible to the benchmark contamination check')
+        if ARTIST_SEPARATOR not in title and not no_artist:
+            # A warning was not enough: the first real hand label was committed
+            # as "is it beautiful", which the guard cannot read an artist from.
+            return None, (
+                f'commit refused: title needs "Artist{ARTIST_SEPARATOR}Track", '
+                f'or tick "no artist" if it genuinely has none. The benchmark '
+                f'keeps eval-set artists out of training by parsing the artist '
+                f'out of this title, so a track without one is never checked '
+                f'for contamination and nothing anywhere says so')
         return None, commit_status(
-            commit_labels(audio_path, sections, duration, title))
+            commit_labels(audio_path, sections, duration, title, no_artist))
     if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
         return None, None
     if trigger == 'mark':
@@ -753,6 +859,12 @@ def build_app(audio_path: str, track: Track, sections: list,
                                  'background': CARD_BG, 'color': TEXT,
                                  'border': f'1px solid {BORDER}',
                                  'fontFamily': 'monospace'}),
+                dcc.Checklist(id='no-artist', options=[{'label': 'no artist',
+                                                        'value': 'yes'}],
+                              value=[], inline=True,
+                              style={'marginLeft': '8px'},
+                              labelStyle={'color': TEXT, 'fontSize': '13px'},
+                              inputStyle={'marginRight': '4px'}),
                 html.Button('commit to dataset', id='commit',
                             style=dict(BUTTON_STYLE, marginLeft='10px',
                                        color='#58a6ff')),
@@ -812,15 +924,16 @@ def build_app(audio_path: str, track: Track, sections: list,
         State('new-label', 'value'),
         State('new-strength', 'value'),
         State('title', 'value'),
+        State('no-artist', 'value'),
         prevent_initial_call=True,
     )
     def edit(mark_clicks, save_clicks, commit_clicks, nudges, deletes,
              row_labels, row_strengths, sections, cursor, new_label,
-             new_strength, title):
+             new_strength, title, no_artist):
         updated, status = apply_edit(
             audio_path, callback_context.triggered_id, sections, cursor,
             new_label, new_strength, row_labels, row_strengths, track.duration,
-            title)
+            title, bool(no_artist))
         return (dash.no_update if updated is None else updated,
                 dash.no_update if status is None else status)
 
