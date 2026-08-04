@@ -15,7 +15,8 @@ FAST_SIM_RANDOM_SEED = 1337
 
 
 def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOCK,
-                     section: object | None = None, threaded: bool = False):
+                     section: object | None = None, threaded: bool = False,
+                     silence_monitor=None):
     from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
     from lib.analyser.drift_watchdog import DriftWatchdog
     from lib.engine.delayed_command_queue import DelayedCommandQueue
@@ -43,6 +44,7 @@ def build_simulation(audio_client, event_buffer=None, clock: Clock = SYSTEM_CLOC
         section_chain=None if section is None else section.stream,
         section_decoder=None if section is None else section.decoder,
         watchdog=watchdog,
+        silence_monitor=silence_monitor,
         clock=clock,
     )
 
@@ -150,7 +152,7 @@ async def run_fast_simulation(audio_client, duration_sec: float = float('inf'),
 
 async def run_simulation(components: dict, duration_sec: float,
                          clock: Clock = SYSTEM_CLOCK,
-                         pace_real_time: bool = False):
+                         pace_real_time: bool = False, monitor=None):
     audio_client = components['audio_client']
     music_analyser = components['music_analyser']
     command_queue = components['command_queue']
@@ -181,8 +183,10 @@ async def run_simulation(components: dict, duration_sec: float,
                 await asyncio.sleep(sleep_sec)
 
         await components['light_engine'].on_audio(audio_signal)
-        await music_analyser.analyse(audio_signal)
+        monitored = await music_analyser.analyse(audio_signal)
         await command_queue.drain()
+        if monitor is not None:
+            monitor.feed(monitored)
 
         now = clock.now()
         if now - last_100ms > datetime.timedelta(milliseconds=100):
