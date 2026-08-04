@@ -75,7 +75,8 @@ DEFAULT_SCORE_TOLERANCE = 0.02
 DEFAULT_FLICKER_TOLERANCE = 0.20
 
 COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec", "beats",
-               "changes_intent", "late")
+               "changes_intent", "late",
+               "silence_leading", "silence_interior", "silence_trailing")
 
 AUDIO_MISSING_HINT = (
     "eval-set audio missing -- expected the committed copy in "
@@ -299,6 +300,9 @@ def track_entry(report: dict, score, rows: int, youtube_id: str,
     if stats is not None:
         entry["late"] = int(stats.intent_blocks_late)
         entry["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
+        entry["silence_leading"] = int(stats.silence_blocks_leading)
+        entry["silence_interior"] = int(stats.silence_blocks_interior)
+        entry["silence_trailing"] = int(stats.silence_blocks_trailing)
     entry.update(track_metrics(score))
     return entry
 
@@ -384,11 +388,17 @@ def _regression(name: str, metric: str, before: float, after: float,
 
 
 def _fact_drift(name: str, before: dict, after: dict) -> list:
-    return [
-        f"{name}: {fact} {before[fact]} -> {after[fact]}"
-        for fact in COUNT_FACTS
-        if fact in before and fact in after and before[fact] != after[fact]
-    ]
+    if not any(fact in before or fact in after for fact in COUNT_FACTS):
+        return []
+    drift = []
+    for fact in COUNT_FACTS:
+        if fact not in before or fact not in after:
+            where = "the baseline" if fact not in before else "this run"
+            drift.append(f"{name}: {fact} is missing from {where} -- it is "
+                         f"NOT being compared")
+        elif before[fact] != after[fact]:
+            drift.append(f"{name}: {fact} {before[fact]} -> {after[fact]}")
+    return drift
 
 
 def _compare_metrics(name: str, before: dict, after: dict, score_tolerance: float,

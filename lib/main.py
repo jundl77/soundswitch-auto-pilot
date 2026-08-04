@@ -78,13 +78,24 @@ class SoundSwitchAutoPilot:
                                                      playback_delay_sec=PLAYBACK_DELAY_SEC,
                                                      section_chain=None if self.section is None else self.section.stream,
                                                      section_decoder=None if self.section is None else self.section.decoder,
-                                                     watchdog=self.drift_watchdog)
+                                                     watchdog=self.drift_watchdog,
+                                                     silence_monitor=self._silence_monitor)
 
         self.music_analyser: MusicAnalyser = MusicAnalyser(SAMPLE_RATE, BUFFER_SIZE, self.light_engine,
                                                            note_clicks=debug_mode,
                                                            watchdog=self.drift_watchdog)
         self.light_engine.set_analyser(self.music_analyser)
         self.os2l_client.set_analyser(self.music_analyser)
+
+    def _arm_playback_delay(self) -> None:
+        self._playback_ready_at = time.monotonic() + PLAYBACK_DELAY_SEC
+        self._audio_playback_started = False
+
+    def _silence_monitor(self) -> None:
+        buffered = getattr(self, '_audio_delay_buf', None)
+        if buffered is not None:
+            buffered.clear()
+        self._arm_playback_delay()
 
     def list_devices(self):
         self.audio_client.list_devices()
@@ -117,9 +128,9 @@ class SoundSwitchAutoPilot:
         last_100ms_callback_execution: datetime.datetime = datetime.datetime.now()
         last_1sec_callback_execution: datetime.datetime = datetime.datetime.now()
         last_10sec_callback_execution: datetime.datetime = datetime.datetime.now()
-        audio_delay_buf: deque = deque()
-        _audio_playback_started = False
-        _playback_ready_at: float = time.monotonic() + PLAYBACK_DELAY_SEC
+        self._audio_delay_buf = deque()
+        audio_delay_buf: deque = self._audio_delay_buf
+        self._arm_playback_delay()
 
         while self.is_running:
             now = datetime.datetime.now()
@@ -130,10 +141,10 @@ class SoundSwitchAutoPilot:
 
             if self.audio_client.support_output():
                 audio_delay_buf.append(new_audio_signal)
-                if time.monotonic() >= _playback_ready_at:
-                    if not _audio_playback_started:
+                if time.monotonic() >= self._playback_ready_at:
+                    if not self._audio_playback_started:
                         logging.info('[main] audio delay buffer ready, starting delayed playback')
-                        _audio_playback_started = True
+                        self._audio_playback_started = True
                     self.audio_client.play(audio_delay_buf.popleft())
 
             if now - last_100ms_callback_execution > datetime.timedelta(milliseconds=100):

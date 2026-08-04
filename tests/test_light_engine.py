@@ -427,21 +427,17 @@ async def test_the_stream_is_deduplicated_against_what_it_will_show():
     assert len(queued_intents(queue)) == 1
 
 
-async def test_the_stage_does_not_go_dark_while_the_room_is_still_hearing_music():
+async def test_the_stage_goes_dark_the_moment_silence_is_detected():
     light, queue, clock, midi = engine(decoder=FakeDecoder())
     blackout = []
     midi.on_sound_stop = lambda: blackout.append(clock.monotonic())
     await elapse(light, clock, 5.0)
+    at_stop = clock.monotonic()
     light.on_sound_stop()
 
-    await elapse(light, clock, 13.0)
     await queue.drain()
-    assert blackout == [], 'the stage went dark before the room heard the end'
-
-    await elapse(light, clock, 2.0)
-    await queue.drain()
-    assert blackout == [pytest.approx(20.0, abs=1.1)], \
-        'the blackout did not land a playback delay after the boundary'
+    assert blackout == [pytest.approx(at_stop, abs=1.1)], \
+        'the blackout waited for the room instead of cutting with the sound'
 
 
 async def test_the_engines_own_bookkeeping_at_a_boundary_is_not_delayed():
@@ -1047,3 +1043,65 @@ def test_the_grid_never_tears_itself_down_before_the_show_has_gone_quiet():
         'the bar grid re-anchors while the engine still believes a section is ' \
         'playing: the decisions either side of the gap would name bars on two ' \
         'different grids with nothing on screen saying the beat had stopped'
+
+
+def test_a_detected_stop_silences_the_monitor_without_waiting_for_the_room():
+    light, queue, _, _ = engine()
+    cut = []
+    light._silence_monitor = lambda: cut.append(queue.pending)
+    light.on_sound_stop()
+    assert cut == [0]
+
+
+def test_a_show_with_no_monitor_still_stops_cleanly():
+    light, _, _, _ = engine()
+    light.on_sound_stop()
+
+
+async def test_a_detected_stop_drops_the_lighting_the_room_has_not_seen():
+    light, queue, clock, _ = engine(events=True)
+    ran = []
+
+    async def stale():
+        ran.append('stale')
+
+    queue.schedule('intent', stale)
+    queue.schedule('overlay', stale)
+    light.on_sound_stop()
+    clock.advance(30.0)
+    await queue.drain()
+    assert ran == []
+
+
+async def test_a_detected_stop_darkens_the_room_on_the_next_drain():
+    light, queue, clock, midi = engine(events=True)
+    blackout = []
+    midi.on_sound_stop = lambda: blackout.append(clock.monotonic())
+    light.on_sound_stop()
+    assert blackout == []
+    await queue.drain()
+    assert blackout == [pytest.approx(clock.monotonic(), abs=0.01)]
+
+
+def test_a_detected_stop_records_the_quiet_floor():
+    light, _, _, _ = engine(events=True)
+    light.on_sound_stop()
+    assert light.event_buffer.snapshot()['intent'] == 'atmospheric'
+
+
+def test_the_quiet_floor_is_recorded_as_an_operator_action_not_a_classification():
+    light, _, _, _ = engine(events=True)
+    light.on_sound_stop()
+    blocks = light.event_buffer.to_report()['intents']
+    assert [(b['intent'], b['trigger']) for b in blocks] == \
+        [('atmospheric', 'silence')]
+
+
+def test_the_quiet_floor_records_the_song_instant_it_happened_at():
+    light, _, clock, _ = engine(events=True)
+    light.event_buffer.start()
+    clock.advance(37.0)
+    light.on_sound_stop()
+    block = light.event_buffer.to_report()['intents'][-1]
+    assert block['trigger'] == 'silence'
+    assert block['song_t'] == pytest.approx(block['t'], abs=1e-6)

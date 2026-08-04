@@ -15,6 +15,75 @@ def test_timestamps_use_injected_clock():
     assert snap['beats'][0]['t'] == 12.5
 
 
+def _ui_session(minutes: float, look_ahead_sec: float = 14.0):
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=float('inf'), clock=clock,
+                         look_ahead_sec=look_ahead_sec)
+    buffer.start()
+    buffer.set_playing(True)
+    for step in range(int(minutes * 120)):
+        clock.advance(0.5)
+        buffer.add_beat(bpm=128.0, change=False)
+        if step % 60 == 0:
+            buffer.set_intent(f'intent_{step}')
+    return buffer, clock
+
+
+def test_a_long_session_snapshots_a_window_but_reports_the_whole_track():
+    buffer, _ = _ui_session(minutes=20.0)
+    snapshot = buffer.snapshot()
+    report = buffer.to_report()
+
+    assert len(report['beats']) == 2400
+    assert snapshot['beats_detected'] == 2400
+    assert len(snapshot['beats']) < 150
+    assert len(snapshot['intents']) < 10
+    oldest = snapshot['beats'][0]['t']
+    assert snapshot['now'] - oldest <= EventBuffer.SNAPSHOT_WINDOW_SEC + 14.0
+
+
+def test_the_snapshot_stops_growing_once_the_window_is_full():
+    short, _ = _ui_session(minutes=5.0)
+    long, _ = _ui_session(minutes=20.0)
+    assert len(long.snapshot()['beats']) == len(short.snapshot()['beats'])
+
+
+def test_the_snapshot_reaches_back_far_enough_to_fill_the_display():
+    buffer, _ = _ui_session(minutes=10.0, look_ahead_sec=14.0)
+    snapshot = buffer.snapshot()
+    reach = snapshot['now'] - snapshot['beats'][0]['t']
+    assert reach >= EventBuffer.SNAPSHOT_WINDOW_SEC + 14.0 - 1.0
+
+
+def test_a_sound_event_outlives_the_storage_window_it_was_recorded_in():
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buffer.start()
+    buffer.set_playing(True)
+    clock.advance(900.0)
+    buffer.set_playing(False)
+    clock.advance(20.0)
+    buffer.set_playing(True)
+    assert [e['t'] for e in buffer.snapshot()['sound_events']] == [0.0, 900.0, 920.0]
+
+
+def test_a_song_outlasting_the_storage_window_still_knows_where_it_started():
+    from simulate import visualizer_app as V
+
+    clock = VirtualClock()
+    buffer = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buffer.start()
+    buffer.set_playing(True)
+    clock.advance(900.0)
+    buffer.add_beat(bpm=128.0, change=False)
+    assert V._song_origin(buffer.snapshot()) == pytest.approx(14.0)
+
+
+def test_the_sound_events_are_never_windowed():
+    buffer, clock = _ui_session(minutes=20.0)
+    assert buffer.snapshot()['sound_events'][0]['t'] == 0.0
+
+
 def test_infinite_window_keeps_old_events():
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
@@ -100,3 +169,88 @@ def test_report_look_ahead_defaults_to_zero():
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
     assert buf.to_report()['metrics']['look_ahead_sec'] == 0.0
+
+
+def test_an_intent_block_names_the_classifier_when_nothing_says_otherwise():
+    buf = EventBuffer(window_sec=float('inf'), clock=VirtualClock())
+    buf.start()
+    buf.set_intent('GROOVE')
+    assert buf.to_report()['intents'][0]['trigger'] == 'classifier'
+
+
+def test_an_intent_block_records_the_trigger_it_was_given():
+    buf = EventBuffer(window_sec=float('inf'), clock=VirtualClock())
+    buf.start()
+    buf.set_intent('atmospheric', trigger='silence')
+    assert buf.to_report()['intents'][0]['trigger'] == 'silence'
+
+
+def test_every_intent_block_carries_a_trigger():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    for step, intent in enumerate(('GROOVE', 'DROP', 'BREAKDOWN')):
+        clock.advance(1.0)
+        buf.set_intent(intent)
+    clock.advance(1.0)
+    buf.set_intent('atmospheric', trigger='silence')
+    assert [block['trigger'] for block in buf.to_report()['intents']] == \
+        ['classifier'] * 3 + ['silence']
+
+
+def test_a_trigger_flip_opens_a_new_block_even_when_the_intent_repeats():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('atmospheric')
+    clock.advance(5.0)
+    buf.set_intent('atmospheric', trigger='silence')
+    blocks = buf.to_report()['intents']
+    assert [(b['t'], b['trigger']) for b in blocks] == \
+        [(0.0, 'classifier'), (5.0, 'silence')]
+
+
+def test_a_classifier_commit_after_a_blackout_is_not_absorbed_into_it():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('atmospheric', trigger='silence')
+    clock.advance(5.0)
+    buf.set_intent('atmospheric', song_sec=3.0)
+    blocks = buf.to_report()['intents']
+    assert [b['trigger'] for b in blocks] == ['silence', 'classifier']
+    assert blocks[1]['song_t'] == 3.0
+
+
+def test_a_repeat_of_the_same_intent_and_trigger_is_still_one_block():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_intent('GROOVE')
+    clock.advance(5.0)
+    buf.set_intent('GROOVE')
+    assert len(buf.to_report()['intents']) == 1
+
+
+def test_a_stop_banks_the_beats_that_never_reached_the_room():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    for step in (10.0, 40.0, 5.0):
+        clock.advance(step)
+        buf.add_beat(bpm=128.0, change=False)
+    clock.advance(5.0)
+    buf.set_playing(False)
+    assert buf.snapshot()['beats_cut'] == 2
+
+
+def test_the_banked_beats_survive_the_window_they_were_counted_in():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    clock.advance(50.0)
+    buf.add_beat(bpm=128.0, change=False)
+    clock.advance(10.0)
+    buf.set_playing(False)
+    clock.advance(300.0)
+    assert buf.snapshot()['beats_cut'] == 1

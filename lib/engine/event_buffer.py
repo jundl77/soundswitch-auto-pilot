@@ -7,8 +7,13 @@ from lib.clock import Clock, SYSTEM_CLOCK
 
 _UNMEASURED_BEAT_STRENGTH = 0.0
 
+CLASSIFIER_TRIGGER = 'classifier'
+SILENCE_TRIGGER = 'silence'
+
 
 class EventBuffer:
+    SNAPSHOT_WINDOW_SEC = 35.0
+
     def __init__(self, window_sec: float = 60.0, clock: Clock = SYSTEM_CLOCK,
                  look_ahead_sec: float = 0.0):
         self._lock = threading.Lock()
@@ -23,6 +28,8 @@ class EventBuffer:
         self._intents: list[dict] = []
         self._timing_log: list[dict] = []
         self._current_intent: str | None = None
+        self._current_trigger: str | None = None
+        self._beats_cut: int = 0
         self._sound_events: list[dict] = []
         self._decoder_state: dict = {}
 
@@ -67,19 +74,23 @@ class EventBuffer:
         with self._lock:
             self._is_playing = is_playing
             now = self._now()
+            if not is_playing:
+                self._beats_cut += sum(
+                    1 for beat in self._beats
+                    if beat['t'] + self._look_ahead_sec > now)
             self._sound_events.append({'t': now, 'playing': is_playing})
-            cutoff = now - self._window_sec * 2
-            self._sound_events = [e for e in self._sound_events if e['t'] >= cutoff]
 
-    def set_intent(self, intent: str, song_sec: float | None = None) -> None:
+    def set_intent(self, intent: str, song_sec: float | None = None,
+                   trigger: str = CLASSIFIER_TRIGGER) -> None:
         with self._lock:
-            if intent == self._current_intent:
+            if (intent, trigger) == (self._current_intent, self._current_trigger):
                 return
             self._current_intent = intent
+            self._current_trigger = trigger
             now = self._now()
             if self._intents and 'end' not in self._intents[-1]:
                 self._intents[-1]['end'] = now
-            block = {'t': now, 'intent': intent}
+            block = {'t': now, 'intent': intent, 'trigger': trigger}
             if song_sec is not None:
                 block['song_t'] = round(float(song_sec), 6)
             self._intents.append(block)
@@ -114,23 +125,34 @@ class EventBuffer:
                     by_label={label: cls._delivery(entries)
                               for label, entries in sorted(labels.items())})
 
+    def _beats_since(self, cutoff: float) -> list:
+        recent = []
+        for beat in reversed(self._beats):
+            if beat['t'] < cutoff:
+                break
+            recent.append(beat)
+        recent.reverse()
+        return recent
+
     def snapshot(self) -> dict:
         with self._lock:
             now = self._now()
-            cutoff = now - self._window_sec
+            cutoff = now - min(self._window_sec,
+                               self.SNAPSHOT_WINDOW_SEC + self._look_ahead_sec)
             timing_stats = self._timing_stats(self._timing_log)
             return {
                 'now': now,
                 'look_ahead_sec': self._look_ahead_sec,
                 'is_playing': self._is_playing and self._end_time is None,
-                'beats': [b for b in self._beats if b['t'] >= cutoff],
+                'beats': self._beats_since(cutoff),
                 'effects': [e for e in self._effects if e.get('end', now) >= cutoff],
                 'intents': [e for e in self._intents if e.get('end', now) >= cutoff],
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
                 'beats_detected': len(self._beats),
+                'beats_cut': self._beats_cut,
                 'intent': self._current_intent,
-                'sound_events': [e for e in self._sound_events if e['t'] >= cutoff],
+                'sound_events': list(self._sound_events),
                 'timing_stats': timing_stats,
                 'decoder': dict(self._decoder_state),
             }

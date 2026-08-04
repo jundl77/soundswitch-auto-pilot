@@ -2,6 +2,7 @@ import argparse
 import http.client
 import json
 import logging
+import threading
 
 import dash
 from dash import dcc, html, Input, Output
@@ -83,12 +84,25 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
-def _room_events(events: list, snapshot: dict) -> list:
-    """Detection-stamped records moved onto the room clock; unheard ones dropped."""
+def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    return [dict(event, t=event['t'] + delay) for event in events
-            if event['t'] + delay <= now]
+    moved = [dict(event, t=event['t'] + delay if event['playing'] else event['t'])
+             for event in snapshot.get('sound_events', [])]
+    return [event for event in moved if event['t'] <= now]
+
+
+def _heard_beats(snapshot: dict) -> list:
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    now = snapshot.get('now', 0.0)
+    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    heard = []
+    for beat in snapshot.get('beats', []):
+        reaches_room_at = beat['t'] + delay
+        cut = any(beat['t'] < stop <= reaches_room_at for stop in stops)
+        if reaches_room_at <= now and not cut:
+            heard.append(dict(beat, t=reaches_room_at))
+    return heard
 
 
 def _clock_text(seconds: float) -> str:
@@ -96,20 +110,68 @@ def _clock_text(seconds: float) -> str:
     return f'{minutes}min {secs}sec' if minutes else f'{secs}sec'
 
 
-def _song_and_room(snapshot: dict) -> tuple:
+def _song_origin(snapshot: dict) -> float | None:
+    heard = _room_sound_events(snapshot)
+    if heard:
+        return heard[-1]['t'] if heard[-1]['playing'] else None
     starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
     if not starts:
+        return 0.0
+    return starts[-1] + snapshot.get('look_ahead_sec', 0.0)
+
+
+def _room_is_playing(snapshot: dict) -> bool:
+    heard = _room_sound_events(snapshot)
+    if heard:
+        return heard[-1]['playing'] and bool(snapshot.get('is_playing'))
+    return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
+
+
+def _room_bpm(snapshot: dict) -> float:
+    heard = _heard_beats(snapshot)
+    return heard[-1]['bpm'] if heard else snapshot.get('bpm', 0.0)
+
+
+def _beats_still_travelling(snapshot: dict) -> int:
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    now = snapshot.get('now', 0.0)
+    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    return sum(1 for beat in snapshot.get('beats', [])
+               if beat['t'] + delay > now
+               and not any(beat['t'] < stop <= beat['t'] + delay for stop in stops))
+
+
+def _room_beat_count(snapshot: dict) -> int:
+    return max(0, snapshot.get('beats_detected', 0)
+               - _beats_still_travelling(snapshot)
+               - snapshot.get('beats_cut', 0))
+
+
+def _display_now(snapshot: dict, origin: float | None) -> float:
+    if origin is None:
+        return 0.0
+    return max(0.0, snapshot.get('now', 0.0) - origin)
+
+
+def _song_and_room(snapshot: dict) -> tuple:
+    origin = _song_origin(snapshot)
+    if origin is None or not any(e['playing']
+                                 for e in snapshot.get('sound_events', [])):
         return None, None
-    song = max(0.0, snapshot.get('now', 0.0) - starts[-1])
-    return song, max(0.0, song - snapshot.get('look_ahead_sec', 0.0))
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    return (max(0.0, snapshot.get('now', 0.0) - origin + delay),
+            _display_now(snapshot, origin))
 
 
 def _anchor(snapshot: dict) -> dict:
-    beats = _room_events(snapshot.get('beats', []), snapshot)
+    origin = _song_origin(snapshot)
+    beats = [] if origin is None else [
+        b['t'] - origin for b in _heard_beats(snapshot)
+        if b['t'] - origin >= 0.0]
     song, room = _song_and_room(snapshot)
     return {
-        'now':  snapshot.get('now', 0.0),
-        'beat': beats[-1]['t'] if beats else None,
+        'now':  _display_now(snapshot, origin),
+        'beat': beats[-1] if beats else None,
         'song': song,
         'room': room,
         'span': TIMELINE_WINDOW_SEC,
@@ -119,15 +181,19 @@ def _anchor(snapshot: dict) -> dict:
 
 
 def _build_timeline(snapshot: dict) -> go.Figure:
-    now   = snapshot['now']
-    x0    = now - TIMELINE_WINDOW_SEC
-    x1    = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
+    origin = _song_origin(snapshot)
+    now    = _display_now(snapshot, origin)
+    x0     = now - TIMELINE_WINDOW_SEC
+    x1     = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
+    left   = max(x0, 0.0)
 
-    shapes, annotations = [], []
+    shapes, annotations, beat_x = [], [], []
 
-    for entry in snapshot.get('intents', []):
-        t_start = max(entry['t'], x0)
-        t_end   = min(entry.get('end', x1), x1)
+    for entry in snapshot.get('intents', []) if origin is not None else ():
+        start   = entry['t'] - origin
+        end     = entry['end'] - origin if 'end' in entry else x1
+        t_start = max(start, left)
+        t_end   = min(end, x1)
         if t_end <= t_start:
             continue
         cfg   = _intent_config(entry['intent'])
@@ -144,26 +210,29 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 font=dict(color='rgba(255,255,255,0.85)', size=10, family='monospace'),
             ))
 
-    for ev in _room_events(snapshot.get('sound_events', []), snapshot):
-        if ev['t'] < x0:
-            continue
-        is_start = ev['playing']
-        color    = '#3fb950' if is_start else '#f85149'
-        label    = '▶ START' if is_start else '■ STOP'
-        shapes.append(dict(
-            type='line', xref='x', yref='paper',
-            x0=ev['t'], x1=ev['t'], y0=0, y1=1,
-            line=dict(color=color, width=1.5, dash='dash'),
-        ))
-        annotations.append(dict(
-            x=ev['t'], y=0.04, xref='x', yref='paper',
-            text=label, showarrow=False,
-            font=dict(color=color, size=9, family='monospace'),
-            xanchor='left',
-        ))
+    if origin is not None:
+        for ev in _room_sound_events(snapshot):
+            t = ev['t'] - origin
+            if t < left:
+                continue
+            is_start = ev['playing']
+            color    = '#3fb950' if is_start else '#f85149'
+            label    = '▶ START' if is_start else '■ STOP'
+            shapes.append(dict(
+                type='line', xref='x', yref='paper',
+                x0=t, x1=t, y0=0, y1=1,
+                line=dict(color=color, width=1.5, dash='dash'),
+            ))
+            annotations.append(dict(
+                x=t, y=0.04, xref='x', yref='paper',
+                text=label, showarrow=False,
+                font=dict(color=color, size=9, family='monospace'),
+                xanchor='left',
+            ))
 
-    beat_x = [b['t'] for b in _room_events(snapshot['beats'], snapshot)
-              if b['t'] >= x0]
+        beat_x = [b['t'] - origin for b in _heard_beats(snapshot)
+                  if b['t'] - origin >= left]
+
     beat_y = [0.25] * len(beat_x)
     beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
 
@@ -288,8 +357,8 @@ def _build_legend() -> list:
 
 
 def _build_metrics(snapshot: dict) -> list:
-    bpm         = snapshot.get('bpm', 0.0)
-    beats       = snapshot.get('beats_detected', 0)
+    bpm         = _room_bpm(snapshot)
+    beats       = _room_beat_count(snapshot)
     song, room  = _song_and_room(snapshot)
     song_text   = '—' if song is None else _clock_text(song)
     room_text   = '—' if room is None else _clock_text(room)
@@ -297,7 +366,7 @@ def _build_metrics(snapshot: dict) -> list:
     cfg         = _intent_config(intent_key)
     intent_lbl  = cfg['label']
     intent_col  = cfg['primary']
-    is_playing  = snapshot.get('is_playing', False)
+    is_playing  = _room_is_playing(snapshot)
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
@@ -365,7 +434,7 @@ function(sync) {
     const a = ds.ss = ds.ss || {};
     if (!sync) return ds.no_update;
 
-    a.frozen = a.now === sync.now;
+    a.frozen = a.now === sync.now || sync.now < a.now;
     Object.assign(a, sync);
     a.at = performance.now();
     if (a.running) return ds.no_update;
@@ -415,7 +484,8 @@ function(sync) {
     };
 
     const pulse = (now) => {
-        if (a.beat == null || a.beat === a.pulsed) return;
+        if (a.beat == null) { a.pulsed = null; return; }
+        if (a.beat === a.pulsed) return;
         a.pulsed = a.beat;
         document.querySelectorAll('.ss-lamp.ss-on').forEach((el) => {
             el.classList.remove('ss-pulse');
@@ -425,6 +495,18 @@ function(sync) {
         });
     };
 
+    const meter = () => {
+        a.ticks = (a.ticks || 0) + 1;
+        const at = performance.now();
+        if (a.meteredAt == null) { a.meteredAt = at; return; }
+        const span = at - a.meteredAt;
+        if (span < 1000) return;
+        const el = document.getElementById('fps');
+        if (el) el.textContent = Math.round(a.ticks * 1000 / span) + ' fps';
+        a.ticks = 0;
+        a.meteredAt = at;
+    };
+
     const frame = () => {
         const drift = a.frozen ? 0 : Math.min(1.5, (performance.now() - a.at) / 1000);
         const now = a.now + drift;
@@ -432,6 +514,7 @@ function(sync) {
         tick('room-clock', 'room ', a.room, drift);
         tick('song-clock', 'song ', a.song, drift);
         pulse(now);
+        meter();
         requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
@@ -459,28 +542,35 @@ class SnapshotPoller:
         self._connection = None
         self._last = dict(BLANK_SNAPSHOT)
         self._answering = True
+        self._lock = threading.Lock()
 
     @property
     def url(self) -> str:
         return f'http://{self._host}:{self._port}{SNAPSHOT_PATH}'
 
     def snapshot(self) -> dict:
+        if not self._lock.acquire(blocking=False):
+            return self._last
         try:
-            if self._connection is None:
-                self._connection = http.client.HTTPConnection(
-                    self._host, self._port, timeout=self._timeout)
-            self._connection.request('GET', SNAPSHOT_PATH)
-            self._last = json.loads(self._connection.getresponse().read())
-            if not self._answering:
-                logging.info('[viewer] the show is answering again')
-                self._answering = True
-        except (OSError, http.client.HTTPException, ValueError) as error:
-            self._connection = None
-            if self._answering:
-                logging.warning(f'[viewer] the show stopped answering on '
-                                f'{self.url} ({error!r}) — holding the last frame')
-                self._answering = False
-        return self._last
+            try:
+                connection = self._connection
+                if connection is None:
+                    connection = self._connection = http.client.HTTPConnection(
+                        self._host, self._port, timeout=self._timeout)
+                connection.request('GET', SNAPSHOT_PATH)
+                self._last = json.loads(connection.getresponse().read())
+                if not self._answering:
+                    logging.info('[viewer] the show is answering again')
+                    self._answering = True
+            except (OSError, http.client.HTTPException, ValueError) as error:
+                self._connection = None
+                if self._answering:
+                    logging.warning(f'[viewer] the show stopped answering on '
+                                    f'{self.url} ({error!r}) — holding the last frame')
+                    self._answering = False
+            return self._last
+        finally:
+            self._lock.release()
 
 
 def build_app(snapshot_source) -> dash.Dash:
@@ -515,7 +605,11 @@ def build_app(snapshot_source) -> dash.Dash:
             'padding': '12px 20px 16px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
-        html.Div(id='metrics', style={
+        html.Div([
+            html.Div(id='metrics', style={'flex': '1'}),
+            html.Div('— fps', id='fps', style={'color': MUTED, 'marginLeft': '20px'}),
+        ], style={
+            'display': 'flex', 'alignItems': 'center',
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),

@@ -41,6 +41,7 @@ from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
 from raveform_manifest import CANONICAL_DROP, CANONICAL_MAP, canonical_runs  # noqa: E402
 
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
+from lib.engine.event_buffer import CLASSIFIER_TRIGGER, SILENCE_TRIGGER  # noqa: E402
 
 from corpus_root import default_data_dir  # noqa: E402,F401
 
@@ -228,6 +229,44 @@ def realign_intents(blocks: list, look_ahead_sec: float, beat_times: list,
                                   song_recorded, late)
 
 
+LEADING, INTERIOR, TRAILING = "leading", "interior", "trailing"
+
+
+class SilenceBlocks(NamedTuple):
+    leading: int
+    interior: int
+    trailing: int
+
+
+def silence_triggered(blocks: list) -> list:
+    return [str(block.get("trigger", CLASSIFIER_TRIGGER)) == SILENCE_TRIGGER
+            for block in blocks]
+
+
+def drop_silence_spans(spans: list, silence: list) -> list:
+    """An operator blackout is not a classification claim; the span it covers is
+    left as a hole so those beats read as uncommitted rather than as the intent
+    that preceded them."""
+    return [span for span, excluded in zip(spans, silence) if not excluded]
+
+
+def silence_position(span, first_start, last_end) -> str:
+    start, end, _intent = span
+    if last_end is None or start >= last_end:
+        return TRAILING
+    if first_start is not None and end <= first_start:
+        return LEADING
+    return INTERIOR
+
+
+def count_silence_positions(spans: list, silence: list,
+                            first_start, last_end) -> SilenceBlocks:
+    counts = collections.Counter(
+        silence_position(span, first_start, last_end)
+        for span, excluded in zip(spans, silence) if excluded)
+    return SilenceBlocks(counts[LEADING], counts[INTERIOR], counts[TRAILING])
+
+
 def zscores(values: list) -> list:
     """Population z-scores; all-zero for a feature that never moves."""
     if not values:
@@ -251,6 +290,9 @@ class JoinStats(NamedTuple):
     intent_blocks_song_recorded: int
     intent_blocks_late: int
     intent_reattributed: int
+    silence_blocks_leading: int
+    silence_blocks_interior: int
+    silence_blocks_trailing: int
 
 
 def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) -> tuple:
@@ -266,8 +308,11 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
     duration_sec = report.get("duration_sec")
     beat_times = [float(record["t"]) for record in beats]
     spans, alignment = realign_intents(blocks, look_ahead_sec, beat_times, duration_sec)
-    intents = Timeline(spans)
-    naive_intents = Timeline(song_time_intents(blocks, look_ahead_sec, duration_sec))
+    silence = silence_triggered(blocks)
+    silence_blocks = count_silence_positions(spans, silence, first_start, last_end)
+    intents = Timeline(drop_silence_spans(spans, silence))
+    naive_intents = Timeline(drop_silence_spans(
+        song_time_intents(blocks, look_ahead_sec, duration_sec), silence))
 
     rows: list = []
     leading = gap = trailing = in_dropped = without_intent = reattributed = 0
@@ -319,6 +364,9 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
         intent_blocks_song_recorded=alignment.song_recorded,
         intent_blocks_late=alignment.late,
         intent_reattributed=reattributed,
+        silence_blocks_leading=silence_blocks.leading,
+        silence_blocks_interior=silence_blocks.interior,
+        silence_blocks_trailing=silence_blocks.trailing,
     )
     return rows, stats
 
@@ -709,6 +757,9 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                     stats.intent_blocks_song_recorded
                 dropped["intent_blocks_late"] += stats.intent_blocks_late
                 dropped["intent_reattributed"] += stats.intent_reattributed
+                dropped["silence_blocks_leading"] += stats.silence_blocks_leading
+                dropped["silence_blocks_interior"] += stats.silence_blocks_interior
+                dropped["silence_blocks_trailing"] += stats.silence_blocks_trailing
                 for joined_row in joined:
                     canonical[joined_row["label_canonical"]] += 1
                     v1[joined_row["label_v1"]] += 1
