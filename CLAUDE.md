@@ -173,9 +173,10 @@ three into DROP is a one-line change if the room says the drop went flat.
 **ATMOSPHERIC is one intent for several classes** because an intent cannot know
 where in the arrangement it is: the same sound is `intro` at the start of a
 track and `outro` at the end. **Any class the model can decode must light something, and
-that is checked when the chain is built** -- a retrained model naming a sixth
-class stops construction rather than killing the show at the first bar of that
-class, an hour into a set.
+that is checked when the chain is built** -- a retrained model naming a class
+outside the vocabulary, or naming the right classes in the wrong order, stops
+construction rather than killing the show at the first bar of that class, an
+hour into a set.
 
 ### How the show is decided
 
