@@ -31,6 +31,11 @@ POSTERIOR_FILL = '#58a6ff'
 
 BEAT_MARKER_SIZE = 16
 
+REFRESH_MS = 250
+VIEW_EVERY_TICKS = 2
+STALL_RELEASE_MS = 4000
+STALE_REFRESHES = 12
+
 INTENT_CONFIG = {
     'atmospheric': {
         'primary':    '#1565c0',
@@ -87,9 +92,16 @@ def _intent_config(intent_key):
 def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    moved = [dict(event, t=event['t'] + delay if event['playing'] else event['t'])
-             for event in snapshot.get('sound_events', [])]
-    return [event for event in moved if event['t'] <= now]
+    events = snapshot.get('sound_events', [])
+    stops = [e['t'] for e in events if not e['playing']]
+    heard = []
+    for event in events:
+        reaches_room_at = event['t'] + delay if event['playing'] else event['t']
+        cut = event['playing'] and any(event['t'] < stop <= reaches_room_at
+                                       for stop in stops)
+        if reaches_room_at <= now and not cut:
+            heard.append(dict(event, t=reaches_room_at))
+    return heard
 
 
 def _heard_beats(snapshot: dict) -> list:
@@ -110,10 +122,17 @@ def _clock_text(seconds: float) -> str:
     return f'{minutes}min {secs}sec' if minutes else f'{secs}sec'
 
 
-def _song_origin(snapshot: dict) -> float | None:
+def _last_heard(snapshot: dict) -> dict | None:
     heard = _room_sound_events(snapshot)
-    if heard:
-        return heard[-1]['t'] if heard[-1]['playing'] else None
+    if not heard:
+        return None
+    return max(reversed(heard), key=lambda event: event['t'])
+
+
+def _song_origin(snapshot: dict) -> float | None:
+    last = _last_heard(snapshot)
+    if last is not None:
+        return last['t'] if last['playing'] else None
     starts = [e['t'] for e in snapshot.get('sound_events', []) if e['playing']]
     if not starts:
         return 0.0
@@ -121,9 +140,9 @@ def _song_origin(snapshot: dict) -> float | None:
 
 
 def _room_is_playing(snapshot: dict) -> bool:
-    heard = _room_sound_events(snapshot)
-    if heard:
-        return heard[-1]['playing'] and bool(snapshot.get('is_playing'))
+    last = _last_heard(snapshot)
+    if last is not None:
+        return last['playing'] and bool(snapshot.get('is_playing'))
     return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
 
 
@@ -432,6 +451,7 @@ ANIMATION_JS = '''
 function(sync) {
     const ds = window.dash_clientside;
     const a = ds.ss = ds.ss || {};
+    if (ds.ss_gate) delete ds.ss_gate.inflight['anchor'];
     if (!sync) return ds.no_update;
 
     a.frozen = a.now === sync.now || sync.now < a.now;
@@ -523,6 +543,76 @@ function(sync) {
 '''
 
 
+_GATE_STATE_JS = '''
+    const ds = window.dash_clientside = window.dash_clientside || {};
+    const gate = ds.ss_gate = ds.ss_gate ||
+        {inflight: {}, sent: null, behind: 0};
+    const streamOf = (outputs) => {
+        const list = Array.isArray(outputs) ? outputs : [outputs];
+        for (let i = 0; i < list.length; i++) {
+            if (!list[i]) continue;
+            if (list[i].id === 'sync') return 'anchor';
+            if (list[i].id === 'timeline') return 'view';
+        }
+        return null;
+    };
+'''
+
+REQUEST_PRE_JS = 'function(payload) {' + _GATE_STATE_JS + '''
+    const stream = streamOf(payload.outputs);
+    if (stream) gate.inflight[stream] = Date.now();
+}'''
+
+VIEW_LANDED_JS = 'function(drawn) {' + _GATE_STATE_JS + '''
+    delete gate.inflight['view'];
+    return drawn;
+}'''
+
+CALLBACK_RESOLVED_JS = 'function(callback, result) {' + _GATE_STATE_JS + '''
+    const stream = streamOf(callback.outputs);
+    if (!stream) return;
+    if (result.error) {
+        delete gate.inflight[stream];
+        gate.sent = null;
+        gate.behind = 0;
+        return;
+    }
+    if (stream !== 'anchor') return;
+    const fresh = result.data && result.data.sync && result.data.sync.data;
+    if (!fresh) return;
+    const landed = ds.ss || {};
+    if (gate.sent !== null && landed.now !== gate.sent) {
+        gate.behind += 1;
+        if (gate.behind >= ''' + str(STALE_REFRESHES) + ''') {
+            console.warn('[viewer] ' + gate.behind + ' refreshes answered with '
+                + 'fresh data the page never took (server said ' + gate.sent
+                + 's, page still on ' + landed.now + 's) — the anchor is not '
+                + 'reaching the layout');
+            gate.behind = 0;
+        }
+    } else {
+        gate.behind = 0;
+    }
+    gate.sent = fresh.now;
+}'''
+
+GATE_JS = 'function(n) {' + _GATE_STATE_JS + '''
+    const free = (stream) => {
+        const since = gate.inflight[stream];
+        if (since == null) return true;
+        const waited = Date.now() - since;
+        if (waited < ''' + str(STALL_RELEASE_MS) + ''') return false;
+        console.warn('[viewer] the ' + stream + ' refresh has not answered in '
+            + (waited / 1000).toFixed(1) + 's — re-arming it');
+        delete gate.inflight[stream];
+        return true;
+    };
+    return [free('anchor') ? n : ds.no_update,
+            (n % ''' + str(VIEW_EVERY_TICKS) + ''' === 0 && free('view'))
+                ? n : ds.no_update];
+}'''
+
+
 BLANK_SNAPSHOT = {
     'now': 0.0, 'look_ahead_sec': 0.0, 'is_playing': False,
     'beats': [], 'effects': [], 'intents': [], 'sound_events': [],
@@ -574,7 +664,9 @@ class SnapshotPoller:
 
 
 def build_app(snapshot_source) -> dash.Dash:
-    app = dash.Dash(__name__, title=TITLE, eager_loading=True)
+    app = dash.Dash(__name__, title=TITLE, eager_loading=True,
+                    hooks={'request_pre': REQUEST_PRE_JS,
+                           'callback_resolved': CALLBACK_RESOLVED_JS})
     app.index_string = INDEX_TEMPLATE
     app.layout = html.Div([
         html.Div(_build_legend(), style={
@@ -613,26 +705,51 @@ def build_app(snapshot_source) -> dash.Dash:
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
-        dcc.Interval(id='tick', interval=250),
+        dcc.Interval(id='tick', interval=REFRESH_MS),
+        dcc.Store(id='gate'),
+        dcc.Store(id='view-gate'),
         dcc.Store(id='sync'),
         dcc.Store(id='anim'),
+        dcc.Store(id='drawn'),
+        dcc.Store(id='taken'),
     ], style={'background': DARK_BG, 'minHeight': '100vh'})
 
+    app.clientside_callback(
+        GATE_JS,
+        [Output('gate', 'data'), Output('view-gate', 'data')],
+        Input('tick', 'n_intervals'))
+
+    latest: dict = {}
+
     @app.callback(
-        [Output('timeline', 'figure'),
-         Output('stage', 'children'),
-         Output('decoder', 'children'),
+        [Output('sync', 'data'),
          Output('metrics', 'children'),
-         Output('sync', 'data')],
-        Input('tick', 'n_intervals'),
+         Output('stage', 'children'),
+         Output('decoder', 'children')],
+        Input('gate', 'data'),
+        prevent_initial_call=True,
     )
     def refresh(_):
-        snap = snapshot_source.snapshot()
-        return (_build_timeline(snap), _build_stage(snap),
-                _build_decoder(snap), _build_metrics(snap), _anchor(snap))
+        snap = latest['snapshot'] = snapshot_source.snapshot()
+        return (_anchor(snap), _build_metrics(snap),
+                _build_stage(snap), _build_decoder(snap))
+
+    @app.callback(
+        [Output('timeline', 'figure'), Output('drawn', 'data')],
+        Input('view-gate', 'data'),
+        prevent_initial_call=True,
+    )
+    def refresh_view(tick):
+        snap = latest.get('snapshot') or snapshot_source.snapshot()
+        if snap is latest.get('drawn'):
+            return dash.no_update, tick
+        latest['drawn'] = snap
+        return _build_timeline(snap), tick
 
     app.clientside_callback(ANIMATION_JS, Output('anim', 'data'),
                             Input('sync', 'data'))
+    app.clientside_callback(VIEW_LANDED_JS, Output('taken', 'data'),
+                            Input('drawn', 'data'))
     return app
 
 

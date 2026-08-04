@@ -123,6 +123,7 @@ caller's thread".
 | `simulate/runner.py` | Simulation runner â€” stub clients, full pipeline; virtual-clock fast mode (default) or real-time pacing with a threaded GPU stage for the live UI |
 | `simulate/cell_cache.py` | The extractor's cells, cached beside the audio â€” what makes a warm `simulate file` pure CPU and byte-deterministic |
 | `simulate/cli.py` | `auto_pilot simulate file|realtime` subcommands |
+| `simulate/ui_wedge_rig.py` | The viewer under a slow callback, with no audio and no GPU: a seeded buffer, the real snapshot server and the real Dash app, with latency injected into every poll — `serve` reproduces the freeze in a browser, `profile` times the server callbacks without one |
 | `training/corpus_root.py` | Where the gitignored corpus is on this machine, stdlib-only â€” so a *show* can ask without importing the benchmark harness |
 | `training/inspect_report.py` | Report inspector â€” per-10s rms/beat/intent bins + intent timeline; the tool for checking a show against a track's structure |
 | `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
@@ -435,10 +436,13 @@ because the venv launcher re-execs and the pid the show holds is a parent (#181)
 The report path never went near any of this: it is still written in the show.
 
 **Smoothness is bought in the browser and never from the server**: the poll stays
-at its tick and its single callback, because a faster poll once starved the
-plotly bundle behind Chrome's connection limit, and a 10 Hz viewer once cost the
-audio loop four sheds. The server publishes an anchor beside the panels; the
-browser runs one `requestAnimationFrame` loop off it and interpolates.
+at its tick, because a faster poll once starved the plotly bundle behind Chrome's
+connection limit, and a 10 Hz viewer once cost the audio loop four sheds. The
+server publishes an anchor beside the panels; the browser runs one
+`requestAnimationFrame` loop off it and interpolates. The one callback behind
+that tick has since become two, but the rate did not move and neither did the
+number of polls per tick -- what was bought is that the anchor no longer waits
+on the figure.
 
 Two things about that loop are measured facts rather than preferences, and both
 are easy to undo by accident:
@@ -489,11 +493,58 @@ stamped when it is detected and drawn one look-ahead later. Storage keeps its ow
 window -- unbounded when a report is being written, since that has to cover the
 whole track -- and the snapshot no longer reads the whole of it, so a poll costs
 the length of the view rather than the length of the set. Sound events are exempt
-from *both* windows and stay whole: one record per track boundary rather than per
-second, and the song the display counts from can be an hour old. Pruning them
-from storage is the subtle version of the same bug -- a live run keeps a finite
-window, so the stop that ends a long song would evict the start it is measured
-from and the axis would jump rather than reset.
+from the *storage* window and stay whole: one record per track boundary rather
+than per second, and the song the display counts from can be an hour old. Pruning
+them from storage is the subtle version of the same bug -- a live run keeps a
+finite window, so the stop that ends a long song would evict the start it is
+measured from and the axis would jump rather than reset. The *payload* is not
+exempt, because it was the one list a four-hour set grew without bound and the
+render path scans it once per beat: it ships the events inside the view plus the
+single event before them, which is exactly the record the display needs and no
+more. One is enough because only the latest event before the view can still be
+in force, and it must be shipped whichever kind it is -- keeping only the start
+would read a room that stopped an hour ago as playing. The report and the digest
+read the storage directly and never the payload, so neither moved.
+
+**A tick that overlaps its own answer loses it, so the tick is gated.**
+dash-renderer evicts an in-flight callback from its `watched` list the moment an
+identically-wired one is requested, and the evicted response then fails a
+membership check and returns silently: no prop write, no downstream dispatch, no
+error, a clean 200 in the network log. So once a refresh takes longer than the
+interval, *every* answer is thrown away and the page freezes while the show and
+the snapshot endpoint stay perfectly healthy -- at the measured 330 ms against a
+250 ms tick that is the steady state, not a transient. The interval stays at 250
+ms, because the cliff is the overlap and not the rate: a clientside gate decides
+whether a tick is allowed to become a request, and a tick that finds one in
+flight is skipped rather than queued. The renderer's `request_pre` hook marks a
+stream busy as the request leaves; what frees it again is the answer **landing in
+the layout**, watched from the clientside callback the store already feeds.
+
+Freeing it on the *resolution* instead is the trap, and it was measured here
+rather than reasoned about: `callback_resolved` runs before the props are
+written, so a tick arriving in that window still evicts the answer the gate
+existed to protect. It looked correct and lost every second answer -- the browser
+showed the anchor resolving in pairs three seconds apart with only the later one
+reaching the page. Landing is the only seam strictly after the write. Two escapes
+keep that from stranding anything: an errored callback frees its stream at once
+because nothing will land, and a stall deadline frees it regardless and says so
+-- the worst case is the old behaviour, never a page that stops asking.
+
+**The same seam carries the watchdog, because this failure prints nothing.**
+`callback_resolved` sees the fresh answer whether or not the page takes it, so
+comparing successive answers would notice nothing; what it compares instead is
+the answer the server just gave against the value the page last accepted. Those
+agree on every healthy tick and on a genuinely paused show, and diverge only when
+answers are being dropped on the floor -- which is the one thing nothing else in
+the stack can see.
+
+**The anchor and the figure are two streams now.** They were one callback, so the
+clock waited on the timeline: the anchor the animation loop runs off costs under
+a millisecond to build and the figure costs an order of magnitude more, on a
+payload an hour into a set. Split, the anchor answers every tick and the figure
+every other one, and the figure re-uses the snapshot the anchor stream just read
+instead of polling again -- so a tick still costs exactly one poll and the panels
+still cannot disagree about which snapshot they are drawing.
 
 **Stops are immediate; starts wait for the room.** The asymmetry is the spec, not
 an oversight: music starting has to travel the playback delay before anyone hears
@@ -502,6 +553,18 @@ look-ahead, because there is nothing left to hear. A detected stop therefore end
 the song on the display at once, cuts the monitored output's buffered tail
 instead of playing it out, and discards the beats still in flight, which were
 never going to reach the room. Everything mid-play keeps the room alignment.
+
+**That cut applies to the start record too, not only to the beats behind it.** A
+start whose audio is still travelling when a stop lands never reaches the room
+either, so it is not a record the display may count a song from. Leaving it in is
+what made the remapped list non-monotonic -- starts move by the delay and stops do
+not -- and the two obvious ways to ask which record is current then disagreed: the
+last by list position, and the last by room time. Position was accidentally right;
+room time was confidently wrong, claiming PLAYING with a running clock over
+silence that carries no beats, because a play burst shorter than the look-ahead is
+audible to nobody. Cutting first makes the two provably the same answer, and that
+equivalence is the property worth pinning rather than either reading on its own:
+one rule decides, so neither can drift from the other.
 
 **The blackout that follows is recorded, and it says who asked for it.** A stop
 drops the lighting still queued and puts the rig on a quiet floor at once, and
