@@ -38,9 +38,10 @@ from build_clean_manifest import (  # noqa: E402
     is_settled,
 )
 from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
-from raveform_manifest import CANONICAL_DROP, CANONICAL_MAP, canonical_runs  # noqa: E402
+from raveform_manifest import section_runs  # noqa: E402
 
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
+from lib.label_space import DROPPED_LABELS, SECTION_LABELS  # noqa: E402
 from lib.engine.event_buffer import CLASSIFIER_TRIGGER, SILENCE_TRIGGER  # noqa: E402
 
 from corpus_root import default_data_dir  # noqa: E402,F401
@@ -66,19 +67,13 @@ TABLE_HEADER = (
     "bpm",
     "rms",
     "intent_at_beat",
-    "label_canonical",
-    "label_raw",
-    "label_v1",
+    "label",
     "bar_position_unknown",
 ) + tuple(f"{column}_z" for column in CONTINUOUS_COLUMNS)
 
 NO_INTENT = ""
 
 BAR_POSITION_UNKNOWN = 1
-
-V1_MAP = {"cooldown": "breakdown", "altoutro": "outro"}
-V1_ORDER = ("intro", "buildup", "breakdown", "drop", "outro")
-CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro", "altoutro")
 
 MEL_BANDS = 40
 POOL_BUFFERS = 8
@@ -113,34 +108,28 @@ def _clamped_spans(sections: list) -> list:
     ]
 
 
-def canonical_coverage(sections: list) -> list:
-    """Canonical-vocabulary spans, per published section -- never per merged run."""
+def label_coverage(sections: list) -> list:
+    """Labelled spans, per published section -- never per merged run.
+
+    A merged run's span can swallow a dropped sentinel sitting between two
+    members, and that time belongs to neither neighbour.
+    """
     return [
-        (start, end, CANONICAL_MAP.get(label, label))
-        for start, end, label in _clamped_spans(sections)
-        if label not in CANONICAL_DROP
+        span for span in _clamped_spans(sections) if span[2] not in DROPPED_LABELS
     ]
 
 
-def raw_coverage(sections: list) -> list:
-    return _clamped_spans(sections)
-
-
 def dropped_coverage(sections: list) -> list:
-    return [span for span in _clamped_spans(sections) if span[2] in CANONICAL_DROP]
+    return [span for span in _clamped_spans(sections) if span[2] in DROPPED_LABELS]
 
 
 def labeled_bounds(sections: list) -> tuple:
-    runs = canonical_runs(list(sections))
+    runs = section_runs(list(sections))
     if not runs:
         return None, None
     first_start = float(runs[0][0])
     last_end = max(max(float(start), float(end)) for start, end, _label, _dur in runs)
     return first_start, last_end
-
-
-def label_v1(label: str) -> str:
-    return V1_MAP.get(label, label)
 
 
 def song_time_intents(blocks: list, look_ahead_sec: float,
@@ -298,8 +287,7 @@ class JoinStats(NamedTuple):
 def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) -> tuple:
     """One track's report + annotation -> ``(rows, JoinStats)``; pure, no I/O."""
     beats = sorted(report.get("beats", []), key=lambda record: float(record["t"]))
-    coverage = Timeline(canonical_coverage(sections))
-    raw = Timeline(raw_coverage(sections))
+    coverage = Timeline(label_coverage(sections))
     sentinels = Timeline(dropped_coverage(sections))
     first_start, last_end = labeled_bounds(sections)
 
@@ -345,9 +333,7 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
             "bpm": float(record.get("bpm", 0.0)),
             "rms": float(record.get("rms", 0.0)),
             "intent_at_beat": intent,
-            "label_canonical": label,
-            "label_raw": raw.at(t) or "",
-            "label_v1": label_v1(label),
+            "label": label,
             "bar_position_unknown": BAR_POSITION_UNKNOWN,
         })
 
@@ -688,9 +674,7 @@ def _print_progress(done: int, total: int, started: float, every: int) -> None:
 class TableStats(NamedTuple):
     tracks: int
     rows: int
-    canonical: collections.Counter
-    v1: collections.Counter
-    raw: collections.Counter
+    labels: collections.Counter
     intents: collections.Counter
     dropped: collections.Counter
     look_ahead_sec: set
@@ -703,9 +687,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
     path = data_dir / TABLE_FILE
     tmp = path.with_suffix(path.suffix + ".part")
     tracks = row_count = 0
-    canonical = collections.Counter()
-    v1 = collections.Counter()
-    raw = collections.Counter()
+    labels = collections.Counter()
     intents = collections.Counter()
     dropped = collections.Counter()
     look_ahead = set()
@@ -761,9 +743,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 dropped["silence_blocks_interior"] += stats.silence_blocks_interior
                 dropped["silence_blocks_trailing"] += stats.silence_blocks_trailing
                 for joined_row in joined:
-                    canonical[joined_row["label_canonical"]] += 1
-                    v1[joined_row["label_v1"]] += 1
-                    raw[joined_row["label_raw"]] += 1
+                    labels[joined_row["label"]] += 1
                     intents[joined_row["intent_at_beat"] or "(none)"] += 1
                     writer.writerow(format_row(joined_row))
         tmp.replace(path)
@@ -771,7 +751,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
         tmp.unlink(missing_ok=True)
         raise
 
-    return TableStats(tracks, row_count, canonical, v1, raw, intents, dropped,
+    return TableStats(tracks, row_count, labels, intents, dropped,
                       look_ahead, skipped, missing_reports, missing_sidecars)
 
 
@@ -829,11 +809,7 @@ def write_meta(data_dir: Path, stats: TableStats, failures: list,
         "tracks": stats.tracks,
         "rows": stats.rows,
         "look_ahead_sec": sorted(stats.look_ahead_sec),
-        "class_histogram": {
-            "canonical": _ordered_counts(stats.canonical, CANONICAL_ORDER),
-            "v1": _ordered_counts(stats.v1, V1_ORDER),
-            "raw": _ordered_counts(stats.raw, ()),
-        },
+        "class_histogram": _ordered_counts(stats.labels, SECTION_LABELS),
         "intent_histogram": _ordered_counts(stats.intents, ()),
         "dropped_beats": dict(sorted(stats.dropped.items())),
         "features": {
@@ -918,11 +894,8 @@ def print_report(stats: TableStats, results: list, table_path: Path,
           + (f"  {stats.missing_sidecars[:10]}" if stats.missing_sidecars else ""))
 
     print()
-    print("class histogram (canonical)")
-    _print_histogram(stats.canonical, stats.rows)
-    print()
-    print("class histogram (v1)")
-    _print_histogram(stats.v1, stats.rows)
+    print("class histogram")
+    _print_histogram(stats.labels, stats.rows)
     print()
     print("committed intent at beat")
     _print_histogram(stats.intents, stats.rows)

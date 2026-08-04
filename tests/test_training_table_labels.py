@@ -13,6 +13,8 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+import build_training_table  # noqa: E402
+from lib.label_space import SECTION_LABELS  # noqa: E402
 from build_training_table import (  # noqa: E402
     ANALYSER_RESET_SEC,
     BAR_POSITION_UNKNOWN,
@@ -33,10 +35,9 @@ from build_training_table import (  # noqa: E402
     silence_triggered,
     build_table,
     cache_is_fresh,
-    canonical_coverage,
+    label_coverage,
     format_row,
     join_track,
-    label_v1,
     load_ok_rows,
     realign_intents,
     pipeline_sha,
@@ -79,7 +80,7 @@ def join(sections, beats, intents=None, **kwargs):
     return join_track("0001.abc", "abc", report(beats, intents, **kwargs), sections)
 
 
-def labels(rows: list, column: str = "label_canonical") -> list:
+def labels(rows: list, column: str = "label") -> list:
     return [row[column] for row in rows]
 
 
@@ -169,15 +170,7 @@ def test_boundary_is_half_open_so_a_beat_on_a_boundary_belongs_to_the_later_sect
     assert labels(rows) == ["drop"]
 
 
-def test_canonical_mapping_folds_altintro_and_bridge():
-    sections = [(0.0, 10.0, "altintro"), (10.0, 20.0, "bridge")]
-    rows, _stats = join(sections, [beat(5.0), beat(15.0)])
-
-    assert labels(rows) == ["intro", "breakdown"]
-    assert labels(rows, "label_raw") == ["altintro", "bridge"]
-
-
-def test_label_v1_merges_cooldown_into_breakdown_and_altoutro_into_outro():
+def test_the_join_carries_every_published_label_unfolded():
     sections = [
         (0.0, 10.0, "altintro"),
         (10.0, 20.0, "bridge"),
@@ -186,19 +179,32 @@ def test_label_v1_merges_cooldown_into_breakdown_and_altoutro_into_outro():
     ]
     rows, _stats = join(sections, [beat(t) for t in (5.0, 15.0, 25.0, 35.0)])
 
-    assert labels(rows, "label_canonical") == ["intro", "breakdown", "cooldown", "altoutro"]
-    assert labels(rows, "label_v1") == ["intro", "breakdown", "breakdown", "outro"]
+    assert labels(rows) == ["altintro", "bridge", "cooldown", "altoutro"]
 
 
-def test_label_v1_is_identity_on_the_five_class_space():
-    for label in ("intro", "buildup", "breakdown", "drop", "outro"):
-        assert label_v1(label) == label
+def test_every_vocabulary_label_survives_the_join():
+    sections = [(10.0 * i, 10.0 * (i + 1), label)
+                for i, label in enumerate(SECTION_LABELS)]
+    rows, _stats = join(sections, [beat(10.0 * i + 5.0)
+                                   for i in range(len(SECTION_LABELS))])
+
+    assert labels(rows) == list(SECTION_LABELS)
 
 
-def test_canonical_coverage_drops_sentinels_and_clamps():
-    spans = canonical_coverage([(0.0, 5.0, "altintro"), (5.0, 7.0, "end"), (7.0, 6.0, "drop")])
+def test_the_fold_machinery_is_gone_from_the_table_builder():
+    for retired in ("label_v1", "V1_MAP", "V1_ORDER", "CANONICAL_ORDER",
+                    "canonical_coverage", "raw_coverage"):
+        assert not hasattr(build_training_table, retired), retired
+    assert "label_canonical" not in TABLE_HEADER
+    assert "label_v1" not in TABLE_HEADER
+    assert "label_raw" not in TABLE_HEADER
+    assert "label" in TABLE_HEADER
 
-    assert spans == [(0.0, 5.0, "intro"), (7.0, 7.0, "drop")]
+
+def test_label_coverage_drops_sentinels_and_clamps():
+    spans = label_coverage([(0.0, 5.0, "altintro"), (5.0, 7.0, "end"), (7.0, 6.0, "drop")])
+
+    assert spans == [(0.0, 5.0, "altintro"), (7.0, 7.0, "drop")]
 
 
 def test_intent_blocks_are_shifted_back_by_the_look_ahead():
@@ -402,7 +408,7 @@ def test_every_feature_column_reads_a_key_the_report_still_carries():
     rows, _stats = join([(0.0, 30.0, "drop")], [live])
 
     derived = {"track_id", "youtube_id", "t_song", "intent_at_beat",
-               "label_canonical", "label_raw", "label_v1", "bar_position_unknown"}
+               "label", "bar_position_unknown"}
     derived |= {f"{column}_z" for column in CONTINUOUS_COLUMNS}
 
     assert set(rows[0]) - derived <= set(live)
@@ -481,7 +487,7 @@ def test_format_row_emits_the_header_order_as_strings():
     assert all(isinstance(field, str) for field in fields)
     assert fields[TABLE_HEADER.index("track_id")] == "0001.abc"
     assert fields[TABLE_HEADER.index("t_song")] == "1.500000"
-    assert fields[TABLE_HEADER.index("label_canonical")] == "drop"
+    assert fields[TABLE_HEADER.index("label")] == "drop"
 
 
 def write_corpus(tmp_path: Path, tracks: dict) -> tuple:
@@ -521,8 +527,7 @@ def test_table_writes_the_header_and_one_row_per_labeled_beat(tmp_path):
     assert len(table) == 3
     assert stats.tracks == 1
     assert stats.rows == 2
-    assert stats.canonical["drop"] == 2
-    assert stats.v1["drop"] == 2
+    assert stats.labels["drop"] == 2
 
 
 def test_table_is_byte_identical_when_rebuilt_from_the_same_reports(tmp_path):

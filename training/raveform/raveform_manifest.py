@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from lib.label_space import DROPPED_LABELS, SECTION_LABELS  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     annotations_dir,
     load_tracks,
@@ -22,19 +24,6 @@ from raveform_fetch_annotations import (  # noqa: E402
 MANIFEST_FILE = "manifest.csv"
 MANIFEST_HEADER = ("track_id", "youtube_id", "n_sections", "total_sec")
 
-CANONICAL_DROP = frozenset({"end"})
-CANONICAL_MAP = {"altintro": "intro", "bridge": "breakdown"}
-
-CANONICAL_ORDER = (
-    "intro",
-    "buildup",
-    "drop",
-    "breakdown",
-    "cooldown",
-    "outro",
-    "altoutro",
-)
-
 
 def section_length(start: float, end: float) -> float:
     # One published track has start > end by 0.6 ms; clamping keeps aggregates
@@ -42,14 +31,13 @@ def section_length(start: float, end: float) -> float:
     return max(0.0, end - start)
 
 
-def canonical_runs(sections: list) -> list:
+def section_runs(sections: list) -> list:
     # A merged run's duration sums its members' clamped lengths rather than
     # taking end - start, so time inside a dropped section is not re-attributed.
     runs: list = []
     for start, end, label in sections:
-        if label in CANONICAL_DROP:
+        if label in DROPPED_LABELS:
             continue
-        label = CANONICAL_MAP.get(label, label)
         duration = section_length(start, end)
         if runs and runs[-1][2] == label:
             runs[-1][1] = end
@@ -177,7 +165,7 @@ def write_manifest(data_dir: Path, rows: list) -> Path:
 
 def report(data_dir: Path, tracks: list) -> None:
     per_track_raw = []
-    per_track_canonical = []
+    per_track_merged = []
     lead_ins = []
     negatives = []
     short_sections = collections.Counter()
@@ -192,7 +180,7 @@ def report(data_dir: Path, tracks: list) -> None:
         if not sections:
             empty_tracks += 1
             per_track_raw.append([])
-            per_track_canonical.append([])
+            per_track_merged.append([])
             continue
 
         for index, (start, end, label) in enumerate(sections):
@@ -211,25 +199,25 @@ def report(data_dir: Path, tracks: list) -> None:
 
         lead_ins.append(sections[0][0])
         per_track_raw.append(raw_runs(sections))
-        per_track_canonical.append(canonical_runs(sections))
+        per_track_merged.append(section_runs(sections))
 
     raw_stats = label_stats(per_track_raw)
-    canonical_stats = label_stats(per_track_canonical)
+    merged_stats = label_stats(per_track_merged)
     raw_sections = sum(entry["count"] for entry in raw_stats.values())
-    canonical_sections = sum(entry["count"] for entry in canonical_stats.values())
+    merged_sections = sum(entry["count"] for entry in merged_stats.values())
     raw_seconds = sum(entry["total_sec"] for entry in raw_stats.values())
-    canonical_seconds = sum(entry["total_sec"] for entry in canonical_stats.values())
+    merged_seconds = sum(entry["total_sec"] for entry in merged_stats.values())
     track_seconds = sum(float(track["duration"]) for track in tracks)
     per_track_counts = sorted(len(runs) for runs in per_track_raw)
 
     raw_pairs = transition_counts(per_track_raw)
-    canonical_pairs = transition_counts(per_track_canonical)
+    merged_pairs = transition_counts(per_track_merged)
     raw_adjacent_same = sum(count for (a, b), count in raw_pairs.items() if a == b)
     dropped_sections = sum(
         1
         for runs in per_track_raw
         for _s, _e, label, _d in runs
-        if label in CANONICAL_DROP
+        if label in DROPPED_LABELS
     )
 
     print()
@@ -237,7 +225,7 @@ def report(data_dir: Path, tracks: list) -> None:
     print(f"  tracks                 : {len(tracks)}")
     print(f"  total track duration   : {track_seconds / 3600.0:.1f} h  (sum of the 'duration' field)")
     print(f"  annotated section time : {raw_seconds / 3600.0:.1f} h  (raw sections)")
-    print(f"  canonical section time : {canonical_seconds / 3600.0:.1f} h  ('end' sentinel removed)")
+    print(f"  merged section time    : {merged_seconds / 3600.0:.1f} h  ('end' sentinel removed)")
     print(
         f"  sections per track     : min {per_track_counts[0]}  "
         f"median {statistics.median(per_track_counts):.0f}  "
@@ -254,28 +242,27 @@ def report(data_dir: Path, tracks: list) -> None:
     raw_order = sorted(raw_stats, key=lambda label: -raw_stats[label]["count"])
     _print_label_table(raw_stats, raw_order)
 
-    fold = ", ".join(f"{src}->{dst}" for src, dst in sorted(CANONICAL_MAP.items()))
     print()
     print(
-        "CANONICAL label statistics -- "
-        f"{'/'.join(sorted(CANONICAL_DROP))} dropped; {fold}; "
+        "MERGED label statistics -- "
+        f"{'/'.join(sorted(DROPPED_LABELS))} dropped; "
         "adjacent same-label runs merged."
     )
     print(
         f"  merge effect: {raw_sections} raw sections"
-        f" -> {dropped_sections} dropped ('{'/'.join(sorted(CANONICAL_DROP))}')"
+        f" -> {dropped_sections} dropped ('{'/'.join(sorted(DROPPED_LABELS))}')"
         f" -> {raw_sections - dropped_sections} remaining"
-        f" -> {raw_sections - dropped_sections - canonical_sections} merged away"
-        f" -> {canonical_sections} canonical sections"
+        f" -> {raw_sections - dropped_sections - merged_sections} merged away"
+        f" -> {merged_sections} merged sections"
     )
-    canonical_order = [label for label in CANONICAL_ORDER if label in canonical_stats]
-    unmapped = sorted(set(canonical_stats) - set(CANONICAL_ORDER))
-    canonical_order += unmapped
-    _print_label_table(canonical_stats, canonical_order)
-    if unmapped:
+    merged_order = [label for label in SECTION_LABELS if label in merged_stats]
+    unknown = sorted(set(merged_stats) - set(SECTION_LABELS))
+    merged_order += unknown
+    _print_label_table(merged_stats, merged_order)
+    if unknown:
         print(
-            f"  WARNING: {len(unmapped)} label(s) outside the canonical vocabulary "
-            f"passed through unmapped: {', '.join(unmapped)}"
+            f"  WARNING: {len(unknown)} label(s) outside the vocabulary "
+            f"passed through: {', '.join(unknown)}"
         )
 
     print()
@@ -286,16 +273,16 @@ def report(data_dir: Path, tracks: list) -> None:
     )
     print()
     _print_transitions(
-        canonical_pairs,
-        canonical_order,
-        "CANONICAL transition counts (after drop + fold + merge; X->X is 0 by construction)",
+        merged_pairs,
+        merged_order,
+        "MERGED transition counts (after drop + fold + merge; X->X is 0 by construction)",
     )
 
-    first_labels = collections.Counter(runs[0][2] for runs in per_track_canonical if runs)
-    last_labels = collections.Counter(runs[-1][2] for runs in per_track_canonical if runs)
+    first_labels = collections.Counter(runs[0][2] for runs in per_track_merged if runs)
+    last_labels = collections.Counter(runs[-1][2] for runs in per_track_merged if runs)
     print()
-    print("  canonical first-section labels : " + _counter_line(first_labels))
-    print("  canonical last-section labels  : " + _counter_line(last_labels))
+    print("  first-section labels : " + _counter_line(first_labels))
+    print("  last-section labels  : " + _counter_line(last_labels))
 
     lead_sorted = sorted(lead_ins)
     print()

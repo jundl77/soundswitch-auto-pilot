@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 _BEAT_ABSENCE_SEC = 2.5
 
 # 32 beat-commits on the retired device, converted to bars at 4 beats each.
-PEAK_PROMOTION_BARS = 8
 
 _LATENCY_LOG_STEP_SEC = 0.25
 _BYPASSED_ON_STOP = ('sound', 'intent', 'refresh', 'overlay')
@@ -65,7 +64,6 @@ class LightEngine(IMusicAnalyserHandler):
         self._current_intent: LightIntent | None = None
         self._pending_intents: list = []
         self._published_bpm: dict = {}
-        self._bars_in_current_intent: int = 0
         self._intent_commits: int = 0
         self._audio_sec: float = 0.0
         self._latency_logged_at: float | None = None
@@ -163,7 +161,6 @@ class LightEngine(IMusicAnalyserHandler):
     def _restart_for_the_next_song(self) -> None:
         self._atmospheric_sent = False
         self._current_intent = None
-        self._bars_in_current_intent = 0
         self._floor_armed = True
         if self.command_queue:
             self.command_queue.drop_pending('intent', float('-inf'))
@@ -235,16 +232,6 @@ class LightEngine(IMusicAnalyserHandler):
         self._publish_decoder_state(decisions[-1] if decisions else None)
         for decision in decisions:
             intent = intent_for_class(decision.label)
-            self._bars_in_current_intent += 1
-            decided = self.decided_intent
-
-            if (decided is LightIntent.DROP and intent is LightIntent.DROP
-                    and self._bars_in_current_intent >= PEAK_PROMOTION_BARS):
-                logging.info(f'[engine] sustained DROP over '
-                             f'{self._bars_in_current_intent} bars — promoting to PEAK')
-                intent = LightIntent.PEAK
-            elif decided is LightIntent.PEAK and intent is LightIntent.DROP:
-                continue
 
             logging.info(
                 f'[engine] bar {decision.bar} @ {decision.start_sec:.2f}s  '
@@ -308,7 +295,6 @@ class LightEngine(IMusicAnalyserHandler):
         if intent is self.decided_intent:
             return
 
-        self._bars_in_current_intent = 0
         if self.command_queue:
             self.command_queue.drop_pending('refresh', fire_at, inclusive=True)
         song_sec = (None if self.event_buffer is None

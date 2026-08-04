@@ -69,14 +69,6 @@ INTENT_CONFIG = {
         'glow_mult':  3.0,
         'label':      'DROP',
     },
-    'peak': {
-        'primary':    '#c62828',
-        'accent':     '#ffffff',
-        'slots':      [0, 1, 2, 3, 4, 5, 6, 7],
-        'decay':      0.20,
-        'glow_mult':  2.8,
-        'label':      'PEAK',
-    },
 }
 
 _DEFAULT_CONFIG = {

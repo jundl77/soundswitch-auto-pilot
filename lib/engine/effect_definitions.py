@@ -20,7 +20,6 @@ class LightIntent(Enum):
     BREAKDOWN   = 'breakdown'
     BUILDUP     = 'buildup'
     DROP        = 'drop'
-    PEAK        = 'peak'
 
 
 # PROVISIONAL for the four classes the vocabulary gained -- owner-pending.  The
@@ -124,10 +123,5 @@ INTENT_EFFECTS: Dict[LightIntent, List[Effect]] = {
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1D),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1E),
         Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE),
-    ],
-    LightIntent.PEAK: [
-        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1F),
-        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1G),
-        Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1H),
     ],
 }

@@ -11,7 +11,7 @@ from simulate.visualizer_app import SnapshotPoller, build_app
 LOOK_AHEAD_SEC = 14.0
 BPM = 128.0
 BEAT_SEC = 60.0 / BPM
-INTENT_CYCLE = ('groove', 'buildup', 'drop', 'peak', 'breakdown')
+INTENT_CYCLE = ('atmospheric', 'buildup', 'drop', 'breakdown')
 INTENT_SEC = 40.0
 TRACK_SEC = 300.0
 GAP_SEC = 6.0

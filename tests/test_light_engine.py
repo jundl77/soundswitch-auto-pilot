@@ -9,7 +9,7 @@ from lib.audio_config import SAMPLE_RATE
 from lib.engine.effect_definitions import LightIntent
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_controller import EffectController
-from lib.engine.light_engine import PEAK_PROMOTION_BARS, LightEngine
+from lib.engine.light_engine import LightEngine
 from lib.engine.section_decoder import BarDecision, BarObservation
 from lib.clock import VirtualClock
 from simulate.stub_clients import StubMidiClient, StubOs2lClient, StubOverlayClient
@@ -174,44 +174,23 @@ async def test_the_same_class_twice_does_not_re_roll_the_effect():
     assert light.intent_commits == 1
 
 
-async def test_a_sustained_drop_is_promoted_to_peak_after_eight_decoder_bars():
-    """Eight bars is the retired 32 commit-beats at four beats per bar."""
-    assert PEAK_PROMOTION_BARS == 8
+async def test_a_sustained_drop_stays_drop_with_no_engine_derived_promotion():
+    """The intent layer is a pure mapped image of the class space -- a long drop
+    evolves through effect refresh inside DROP's banks, not a family change."""
     decoder = FakeDecoder()
     light, queue, clock, _ = engine(decoder=decoder)
     await elapse(light, clock, 20.0)
-    await bars(light, decoder, clock, *(['drop'] * (PEAK_PROMOTION_BARS + 1)))
-    await settle(light, clock, queue)
-    assert light.current_intent is LightIntent.PEAK
-
-
-async def test_a_short_drop_is_not_promoted():
-    decoder = FakeDecoder()
-    light, queue, clock, _ = engine(decoder=decoder)
-    await elapse(light, clock, 20.0)
-    await bars(light, decoder, clock, *(['drop'] * PEAK_PROMOTION_BARS))
+    await bars(light, decoder, clock, *(['drop'] * 12))
     await settle(light, clock, queue)
     assert light.current_intent is LightIntent.DROP
+    assert light.intent_commits == 1
 
 
-async def test_peak_absorbs_further_drop_bars_so_the_pair_cannot_oscillate():
-    decoder = FakeDecoder()
-    light, queue, clock, _ = engine(decoder=decoder)
-    await elapse(light, clock, 20.0)
-    await bars(light, decoder, clock, *(['drop'] * (PEAK_PROMOTION_BARS + 3)))
-    await settle(light, clock, queue)
-    assert light.current_intent is LightIntent.PEAK
-    assert light.intent_commits == 2
-
-
-async def test_any_other_class_leaves_peak_through_the_normal_path():
-    decoder = FakeDecoder()
-    light, queue, clock, _ = engine(decoder=decoder)
-    await elapse(light, clock, 20.0)
-    await bars(light, decoder, clock,
-               *(['drop'] * (PEAK_PROMOTION_BARS + 1) + ['breakdown']))
-    await settle(light, clock, queue)
-    assert light.current_intent is LightIntent.BREAKDOWN
+async def test_the_peak_promotion_is_gone_not_merely_unreachable():
+    import lib.engine.light_engine as light_engine
+    assert not hasattr(light_engine, 'PEAK_PROMOTION_BARS')
+    assert not hasattr(LightIntent, 'PEAK')
+    assert 'peak' not in {intent.value for intent in LightIntent}
 
 
 async def test_on_beat_feeds_the_bar_grid_in_the_audio_time_base():

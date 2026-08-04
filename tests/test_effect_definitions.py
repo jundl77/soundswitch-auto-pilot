@@ -62,8 +62,9 @@ def test_a_class_the_map_does_not_know_is_refused_rather_than_defaulted():
         intent_for_class('chorus')
 
 
-def test_peak_is_reachable_only_by_promotion():
-    assert LightIntent.PEAK not in SECTION_CLASS_INTENTS.values()
+def test_the_intent_alphabet_is_exactly_the_image_of_the_class_map():
+    assert set(LightIntent) == set(SECTION_CLASS_INTENTS.values())
+    assert not hasattr(LightIntent, 'PEAK')
 
 
 def test_effect_equal_same_values():
