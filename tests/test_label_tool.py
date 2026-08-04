@@ -10,6 +10,7 @@ import time
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -208,6 +209,164 @@ def test_adding_keeps_the_list_sorted():
     assert 40.0 in starts
 
 
+@pytest.fixture
+def song_file(tmp_path):
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    return audio
+
+
+def test_a_nudge_onto_another_boundary_is_refused_rather_than_deleting_it(
+        song_file):
+    """The clamp at zero is how this is reached without aiming for it.
+
+    Nudging a boundary at 0.3 s back by 0.5 s lands on 0.0, where the opening
+    section already is -- and adding at an existing start replaces it.
+    """
+    sections = normalise([{'start': 0.0, 'label': 'intro'},
+                          {'start': 0.3, 'label': 'buildup'}])
+    save_labels(str(song_file), sections)
+
+    updated, status = apply_edit(
+        str(song_file), {'type': 'row-nudge', 'index': 1, 'delta': -0.5},
+        sections)
+
+    assert updated is None
+    assert 'refused' in status and 'intro' in status
+    assert load_labels(str(song_file)) == sections
+
+
+def test_a_nudge_onto_a_boundary_away_from_zero_is_refused_the_same_way(
+        song_file):
+    sections = normalise([{'start': 0.0, 'label': 'intro'},
+                          {'start': 30.0, 'label': 'buildup'},
+                          {'start': 30.5, 'label': 'drop'}])
+    save_labels(str(song_file), sections)
+
+    updated, status = apply_edit(
+        str(song_file), {'type': 'row-nudge', 'index': 1, 'delta': 0.5},
+        sections)
+
+    assert updated is None
+    assert 'refused' in status and 'drop' in status
+    assert load_labels(str(song_file)) == sections
+
+
+def test_a_nudge_past_the_end_of_the_track_stops_at_the_end(song_file):
+    """A boundary past the duration is in the file and on screen nowhere."""
+    sections = normalise([{'start': 0.0, 'label': 'intro'},
+                          {'start': 100.0, 'label': 'drop'}])
+    save_labels(str(song_file), sections)
+
+    updated, _ = apply_edit(
+        str(song_file), {'type': 'row-nudge', 'index': 1, 'delta': 0.5},
+        sections, duration=100.2)
+
+    assert [s['start'] for s in updated] == [0.0, 100.2]
+
+
+def test_a_mark_past_the_end_of_the_track_stops_at_the_end(song_file):
+    sections = load_labels(str(song_file))
+    updated, _ = apply_edit(str(song_file), 'mark', sections, cursor=999.0,
+                            new_label='outro', duration=100.2)
+    assert [s['start'] for s in updated] == [0.0, 100.2]
+
+
+def test_an_edit_from_a_stale_page_is_refused_rather_than_overwriting_the_file(
+        song_file):
+    """The file is the state, so a page disagreeing with it has lost the race.
+
+    Two tabs, or one that reloaded before the fix below, hold sections from
+    before the edits that followed. Routing one more edit through that list
+    rewrites the file as launch-time state plus that edit.
+    """
+    stale = load_labels(str(song_file))
+    sections = stale
+    for cursor, label in ((31.25, 'buildup'), (48.0, 'drop')):
+        sections, _ = apply_edit(str(song_file), 'mark', sections,
+                                 cursor=cursor, new_label=label)
+    assert len(load_labels(str(song_file))) == 3
+
+    updated, status = apply_edit(str(song_file), 'mark', stale, cursor=90.0,
+                                 new_label='outro')
+
+    assert updated is None
+    assert 'reload' in status
+    assert len(load_labels(str(song_file))) == 3
+
+
+def test_a_stale_page_may_not_commit_or_save_either(song_file, corpus):
+    stale = load_labels(str(song_file))
+    sections, _ = apply_edit(str(song_file), 'mark', stale, cursor=31.25,
+                             new_label='buildup')
+
+    for trigger in ('save', 'commit'):
+        updated, status = apply_edit(str(song_file), trigger, stale,
+                                     duration=214.842, title=TITLE)
+        assert updated is None
+        assert 'reload' in status
+    assert load_labels(str(song_file)) == sections
+    assert list((corpus / 'annotations').glob('*.hand.json')) == []
+
+
+def test_a_labels_file_that_cannot_be_parsed_refuses_every_edit(song_file):
+    save_labels(str(song_file), SECTIONS)
+    labels_path(str(song_file)).write_text('start,label\n', encoding='utf-8')
+
+    updated, status = apply_edit(str(song_file), 'mark', SECTIONS, cursor=9.0,
+                                 new_label='drop')
+
+    assert updated is None
+    assert 'unreadable' in status
+    assert labels_path(str(song_file)).read_text(
+        encoding='utf-8') == 'start,label\n'
+
+
+def test_a_pasted_header_line_names_itself_instead_of_raising_a_value_error(
+        song_file):
+    save_labels(str(song_file), SECTIONS)
+    path = labels_path(str(song_file))
+    path.write_text('start,label\n' + path.read_text(encoding='utf-8'),
+                    encoding='utf-8')
+
+    with pytest.raises(label_tool.LabelFileError) as raised:
+        load_labels(str(song_file))
+    assert 'line 1' in str(raised.value) and 'start' in str(raised.value)
+
+
+def test_a_label_outside_the_vocabulary_is_refused_rather_than_loading_blank(
+        song_file):
+    """A strength has a defined fallback; a label has none.
+
+    An unknown strength renders as `major` and round-trips. An unknown label
+    renders as an empty dropdown, and the next edit through that row writes the
+    blank back, so the file has to be refused instead.
+    """
+    labels_path(str(song_file)).parent.mkdir(parents=True, exist_ok=True)
+    labels_path(str(song_file)).write_text('0.000,intro\n48.000,chorus\n',
+                                           encoding='utf-8')
+
+    with pytest.raises(label_tool.LabelFileError) as raised:
+        load_labels(str(song_file))
+    assert 'line 2' in str(raised.value) and 'chorus' in str(raised.value)
+
+
+def test_launch_names_the_broken_line_before_it_decodes_anything(
+        song_file, monkeypatch):
+    """A file the tool refuses to read is a file only this tool can repair."""
+    labels_path(str(song_file)).parent.mkdir(parents=True, exist_ok=True)
+    labels_path(str(song_file)).write_text('start,label\n', encoding='utf-8')
+    monkeypatch.setattr(label_tool, 'Track', lambda *_, **__: pytest.fail(
+        'decoded a whole track before reading the labels'))
+
+    with pytest.raises(SystemExit) as raised:
+        label_tool.launch(str(song_file))
+
+    message = str(raised.value)
+    assert str(labels_path(str(song_file))) in message
+    assert 'line 1' in message and 'start' in message
+
+
 async def test_auto_pilot_label_parses_and_dispatches(monkeypatch, tmp_path):
     from lib.main import build_parser, label_cmd
 
@@ -376,6 +535,7 @@ def test_the_title_prefill_drops_a_trailing_youtube_id():
 
 
 def test_the_committed_shape_is_the_corpus_section_shape_and_round_trips():
+    """The published reader is the contract, so it has to accept a hand label."""
     record = to_annotation(MIXED, 214.842, 'hand-abc123', 'hand-abc123.mp3',
                            TITLE)
     assert record['sections'] == [
@@ -388,7 +548,6 @@ def test_the_committed_shape_is_the_corpus_section_shape_and_round_trips():
     assert record['title'] == TITLE
     assert from_annotation(record) == normalise(MIXED)
 
-    # The published reader is the contract, so it has to accept a hand label.
     sys.path.insert(0, str(TRAINING_DIR / 'raveform'))
     from raveform_fetch_annotations import parse_sections
     assert parse_sections(record)[1] == (31.25, 48.0, 'buildup')
@@ -567,10 +726,88 @@ def test_a_generated_beat_grid_is_read_when_present(song, corpus, song_id):
     assert beat_grid(str(song)) == [], 'an unreadable grid is absent, not fatal'
 
 
+def _track(duration: float = 214.842):
+    return types.SimpleNamespace(
+        duration=duration, times=np.linspace(0.0, duration, 32),
+        envelope=np.zeros(32), flux=np.zeros(32))
+
+
+def _find(component, target: str):
+    stack = [component]
+    while stack:
+        node = stack.pop()
+        if getattr(node, 'id', None) == target:
+            return node
+        children = getattr(node, 'children', None)
+        if isinstance(children, (list, tuple)):
+            stack.extend(children)
+        elif children is not None:
+            stack.append(children)
+    raise AssertionError(f'no component with id {target!r} in the layout')
+
+
+def test_a_page_reload_serves_the_labels_on_disk_not_the_ones_from_launch(
+        song_file):
+    """A static layout is a launch-time snapshot that never expires.
+
+    Dash serves `app.layout` on every page load, so a single component instance
+    hands each reload the sections the process started with. That stale list is
+    the State every edit is applied to, so one edit after a reload rewrites the
+    file as launch-time state plus that edit.
+    """
+    track = _track()
+    app = label_tool.build_app(str(song_file), track)
+
+    sections = load_labels(str(song_file))
+    for cursor, label in ((31.25, 'buildup'), (48.0, 'drop'),
+                          (120.0, 'breakdown')):
+        sections, _ = apply_edit(str(song_file), 'mark', sections,
+                                 cursor=cursor, new_label=label,
+                                 duration=track.duration)
+    assert len(sections) == 4
+
+    assert callable(app.layout), 'a layout built once cannot see a later edit'
+    served = app.layout()
+    assert _find(served, 'sections').data == sections
+    assert len(_find(served, 'table').children[0].children) == len(sections) + 1
+
+    apply_edit(str(song_file), 'mark', _find(served, 'sections').data,
+               cursor=200.0, new_label='outro', duration=track.duration)
+    assert len(load_labels(str(song_file))) == 5
+
+
+def test_the_audio_route_names_the_type_the_file_actually_is(tmp_path):
+    """Any input ffmpeg can decode is accepted, so the type is not a constant."""
+    def served(name: str) -> str:
+        audio = tmp_path / name
+        audio.write_bytes(b'\0' * 64)
+        app = label_tool.build_app(str(audio), _track())
+        return app.server.test_client().get('/audio').mimetype
+
+    assert served('song.mp3') == 'audio/mpeg'
+    assert served('song.flac').startswith('audio/')
+    assert served('song.flac') != 'audio/mpeg'
+    assert served('song.notatype') == 'application/octet-stream'
+
+
+def test_an_edit_reships_the_spans_and_never_the_full_track_traces():
+    """The traces are the whole decode; the spans are what an edit changes."""
+    track = _track()
+    figure = label_tool.build_figure(track, SECTIONS)
+    assert len(figure.data) == 3
+
+    operations = label_tool.render_patch(track, SECTIONS).to_plotly_json()[
+        'operations']
+
+    assert [op['location'] for op in operations] == [['layout', 'shapes'],
+                                                     ['layout', 'annotations']]
+    assert len(operations[0]['params']['value']) == len(figure.layout.shapes)
+    assert len(operations[1]['params']['value']) == len(
+        figure.layout.annotations)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Re-including hand labels punches a hole through the rule that keeps ~13 GiB of
-# corpus out of git. These are the paths that must never come through it.
 MUST_STAY_IGNORED = (
     'training/data/raveform/annotations/segments.json',
     'training/data/raveform/audio/kUP_iJuoq9g.mp3',
@@ -582,13 +819,15 @@ MUST_STAY_IGNORED = (
 
 
 def _is_ignored(path: str) -> bool:
-    # Without -v: a path matching a NEGATED pattern is not reported, which is the
-    # only reading of check-ignore that answers "is this ignored" for both.
+    """Without -v: a path matching a NEGATED pattern is not reported, which is
+    the only reading of check-ignore that answers "is this ignored" for both."""
     return subprocess.run(['git', 'check-ignore', '-q', path],
                           cwd=REPO_ROOT).returncode == 0
 
 
 def test_the_corpus_stays_out_of_git_apart_from_hand_labels():
+    """Re-including hand labels punches a hole through the rule that keeps
+    ~13 GiB of corpus out of git; these must never come through it."""
     escaped = [path for path in MUST_STAY_IGNORED if not _is_ignored(path)]
     assert not escaped, f'these would be committed: {escaped}'
 

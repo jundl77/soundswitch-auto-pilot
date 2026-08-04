@@ -234,9 +234,9 @@ async def list_cmd(args: argparse.Namespace):
 
 
 async def label_cmd(args: argparse.Namespace):
-    # Imported here, and by path rather than as a package, for the same two
-    # reasons the corpus root is: training/ is not installed, and the labeller
-    # needs dash, which the show is not allowed to pull in.
+    """Imported here, and by path rather than as a package, for the same two
+    reasons the corpus root is: training/ is not installed, and the labeller
+    needs dash, which the show is not allowed to pull in."""
     import sys
     from pathlib import Path
 
@@ -249,12 +249,12 @@ async def label_cmd(args: argparse.Namespace):
 
 
 def death_handler(signum, frame):
+    """These handlers are installed at import, so every subcommand gets them --
+    including the ones that never build a show. Returning without a show would
+    be the end of it: the interrupt is delivered, consumed, and never becomes a
+    KeyboardInterrupt, so anything blocked in a serve loop keeps serving and
+    Ctrl-C looks broken. Raise what the default handler would have."""
     if global_app is None:
-        # These handlers are installed at import, so every subcommand gets them
-        # -- including the ones that never build a show. Returning here would be
-        # the end of it: the interrupt is delivered, consumed, and never becomes
-        # a KeyboardInterrupt, so anything blocked in a serve loop keeps serving
-        # and Ctrl-C looks broken. Raise what the default handler would have.
         raise KeyboardInterrupt
     logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
     global_app.stop()

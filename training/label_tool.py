@@ -13,6 +13,17 @@ how strong that transition is. Each section gets a row in the table with a label
 picker, a strength picker, +/- nudge buttons and a delete, and shows as a
 coloured span on the timeline.
 
+The vocabulary is the raw Raveform one minus `end`, which is a tail sentinel
+rather than a phase; folding is a downstream decision and a labelling that has
+already folded cannot be unfolded again. **A working file this tool cannot read
+is refused by name rather than opened**: a time that is not a number, or a label
+outside the vocabulary, names its own line and stops the launch before anything
+is decoded. Both are reachable by hand-editing the CSV -- a pasted header line
+is the whole of the first -- and both used to be silent, the one a `ValueError`
+traceback out of the pre-app path and the other an empty picker whose next edit
+wrote the blank back. An unknown *strength* is different and still falls back:
+it has a defined default that renders and round-trips, which a label has not.
+
 A labelling has two homes, and the split is the whole lifecycle. **Working
 state** is a scratch CSV under `<corpus>/tmp_labels/`, rewritten atomically
 on every single edit, so the file is the state and the page is only a view of
@@ -94,6 +105,7 @@ it can find. Columns are the published ones, `time` and `downbeat`.
 import csv
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -105,11 +117,8 @@ import dash
 import flask
 import numpy as np
 import plotly.graph_objects as go
-from dash import ALL, Input, Output, State, callback_context, dcc, html
+from dash import ALL, Input, Output, Patch, State, callback_context, dcc, html
 
-# The raw Raveform vocabulary, unfolded, minus `end` -- that one is a tail
-# sentinel rather than a phase. Folding is a downstream decision; a labelling
-# that has already folded cannot be unfolded again.
 LABELS = ['intro', 'altintro', 'buildup', 'breakdown', 'bridge', 'drop',
           'cooldown', 'outro', 'altoutro']
 STRENGTHS = ['major', 'minor']
@@ -409,10 +418,32 @@ def add_boundary(sections: list, start: float, label: str,
                               'strength': strength}])
 
 
+def clamp_time(seconds: float, duration: float = 0.0) -> float:
+    """Onto the track, at both ends -- a section past the end renders nowhere.
+
+    A duration of zero means the caller does not know one, which is the offline
+    case rather than a track of no length.
+    """
+    seconds = max(0.0, round(float(seconds), TIME_DECIMALS))
+    if duration > 0:
+        return min(seconds, round(float(duration), TIME_DECIMALS))
+    return seconds
+
+
+def boundary_at(sections: list, start: float) -> dict:
+    for entry in sections:
+        if round(float(entry['start']), TIME_DECIMALS) == start:
+            return entry
+    return None
+
+
 def format_csv(sections: list) -> str:
+    """The third column is written all-or-nothing.
+
+    A labelling with no minor boundary stays the two-column file it was, and
+    either shape round-trips.
+    """
     rows = normalise(sections)
-    # The third column is written all-or-nothing: a labelling with no minor
-    # boundary stays the two-column file it was, and either shape round-trips.
     if all(s['strength'] == DEFAULT_STRENGTH for s in rows):
         return ''.join(f'{s["start"]:.{TIME_DECIMALS}f},{s["label"]}\n'
                        for s in rows)
@@ -420,15 +451,28 @@ def format_csv(sections: list) -> str:
                    for s in rows)
 
 
+class LabelFileError(ValueError):
+    """A working file that cannot be read, named rather than raised blind."""
+
+
 def parse_csv(text: str) -> list:
     sections = []
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), start=1):
         fields = [field.strip() for field in line.split(',')]
         if len(fields) < 2 or not fields[0] or not fields[1]:
             continue
+        try:
+            start = float(fields[0])
+        except ValueError:
+            raise LabelFileError(
+                f'line {number}: {fields[0]!r} is not a time in seconds') from None
+        if fields[1] not in LABELS:
+            raise LabelFileError(
+                f'line {number}: {fields[1]!r} is not one of '
+                f'{", ".join(LABELS)}')
         strength = fields[2] if len(fields) > 2 else ''
         sections.append({
-            'start': float(fields[0]), 'label': fields[1],
+            'start': start, 'label': fields[1],
             'strength': strength if strength in STRENGTHS else DEFAULT_STRENGTH})
     return normalise(sections)
 
@@ -438,6 +482,11 @@ def load_labels(audio_path: str) -> list:
     if not path.exists():
         return normalise([{'start': 0.0, 'label': LABELS[0]}])
     return parse_csv(path.read_text(encoding='utf-8'))
+
+
+def disk_labels(audio_path: str) -> list:
+    """What the file says right now, or None if there is no file yet."""
+    return load_labels(audio_path) if labels_path(audio_path).exists() else None
 
 
 def write_atomically(path: Path, text: str) -> None:
@@ -471,7 +520,24 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                row_labels: list = (), row_strengths: list = (),
                duration: float = 0.0, title: str = '',
                no_artist: bool = False) -> tuple:
-    """Apply one UI event and write the result. `None` means "leave it alone"."""
+    """Apply one UI event and write the result. `None` means "leave it alone".
+
+    The file is the state, so a page whose sections disagree with it has lost
+    the race -- a second tab, or one that has been open across another tab's
+    edits. Applying its event would rewrite the file as that page's stale list
+    plus this one edit, silently dropping every boundary made in between, so a
+    disagreement is refused with a message instead. A file that cannot be parsed
+    at all is refused the same way, because overwriting it would destroy the
+    only copy of whatever the owner was trying to repair.
+    """
+    try:
+        on_disk = disk_labels(audio_path)
+    except LabelFileError as error:
+        return None, (f'edit refused: {labels_path(audio_path)} is unreadable '
+                      f'-- {error}')
+    if on_disk is not None and on_disk != normalise(sections):
+        return None, ('edit refused: this page is older than the labels on '
+                      'disk -- reload it to catch up, nothing was changed')
     if trigger == 'save':
         return None, saved_status(save_labels(audio_path, sections), sections)
     if trigger == 'commit':
@@ -481,8 +547,6 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                           'artist guard reads it, and a track without one is '
                           'invisible to the benchmark contamination check')
         if ARTIST_SEPARATOR not in title and not no_artist:
-            # A warning was not enough: the first real hand label was committed
-            # as "is it beautiful", which the guard cannot read an artist from.
             return None, (
                 f'commit refused: title needs "Artist{ARTIST_SEPARATOR}Track", '
                 f'or tick "no artist" if it genuinely has none. The benchmark '
@@ -494,13 +558,19 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
     if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
         return None, None
     if trigger == 'mark':
-        updated = add_boundary(sections, cursor or 0.0,
+        updated = add_boundary(sections, clamp_time(cursor or 0.0, duration),
                                new_label or LABELS[0], new_strength)
     elif isinstance(trigger, dict) and trigger['type'] == 'row-nudge':
         updated = list(sections)
         moved = updated.pop(trigger['index'])
-        updated = add_boundary(updated, moved['start'] + trigger['delta'],
-                               moved['label'], moved['strength'])
+        target = clamp_time(moved['start'] + trigger['delta'], duration)
+        blocking = boundary_at(updated, target)
+        if blocking is not None:
+            return None, (f'nudge refused: {blocking["label"]} already starts '
+                          f'at {target:.{TIME_DECIMALS}f} s -- moving onto a '
+                          f'boundary would delete it')
+        updated = add_boundary(updated, target, moved['label'],
+                               moved['strength'])
     elif isinstance(trigger, dict) and trigger['type'] == 'row-del':
         updated = [s for i, s in enumerate(sections) if i != trigger['index']]
     elif isinstance(trigger, dict) and trigger['type'] in ('row-label',
@@ -573,7 +643,12 @@ FLUX_BASE, FLUX_SPAN = 0.46, 0.38
 RIBBON_LOW, RIBBON_HIGH = 0.88, 1.0
 
 
-def build_figure(track: Track, sections: list, beats: list = ()) -> go.Figure:
+def section_shapes(track: Track, sections: list) -> tuple:
+    """Everything an edit can move: the playhead, the spans and their labels.
+
+    Split out from the figure because it is the only part that changes. The
+    traces behind it are the whole decode and are the same on every edit.
+    """
     shapes = [dict(type='line', xref='x', yref='paper', layer='above',
                    x0=0.0, x1=0.0, y0=0.0, y1=1.0,
                    line=dict(color='#ffffff', width=1.5))]
@@ -601,10 +676,32 @@ def build_figure(track: Track, sections: list, beats: list = ()) -> go.Figure:
             text=f'{entry["label"]} ·minor' if minor else entry['label'],
             showarrow=False,
             font=dict(color='rgba(255,255,255,0.92)', size=10, family='monospace')))
+    return shapes, annotations
 
+
+def render_patch(track: Track, sections: list) -> Patch:
+    """An edit ships the spans, never the traces.
+
+    The three full-track traces are the expensive half of the figure and no edit
+    can touch them, so a partial update leaves them where they are -- and leaves
+    the browser's webgl contexts and pan position alone with them.
+    """
+    shapes, annotations = section_shapes(track, sections)
+    patched = Patch()
+    patched['layout']['shapes'] = shapes
+    patched['layout']['annotations'] = annotations
+    return patched
+
+
+def build_figure(track: Track, sections: list, beats: list = ()) -> go.Figure:
+    """The whole figure, which is built on a page load and never on an edit.
+
+    The waveform is two mirrored outlines rather than a filled band because
+    scattergl draws no fill, and svg traces at this point count are too slow
+    to pan.
+    """
+    shapes, annotations = section_shapes(track, sections)
     figure = go.Figure()
-    # Two mirrored outlines rather than a filled band: scattergl draws no fill,
-    # and svg traces at this point count are too slow to pan.
     for sign in (1.0, -1.0):
         figure.add_trace(go.Scattergl(
             x=track.times, y=WAVE_MID + sign * WAVE_HALF * track.envelope,
@@ -713,6 +810,9 @@ function (tick, chosen) {
         };
 
         window.__sinkApply = async function (deviceId) {
+            // Re-queried rather than closed over: this function outlives the
+            // callback that made it, and #player is a node dash may replace.
+            const audio = document.getElementById('player');
             if (!deviceId || !audio) { return; }
             if (!audio.setSinkId) {
                 sink.ok = false;
@@ -774,6 +874,8 @@ function (deviceId) {
 }
 """
 
+SEEK_SLOP_PX = 4
+
 CURSOR_JS = """
 function (tick) {
     const audio = document.getElementById('player');
@@ -786,7 +888,17 @@ function (tick) {
             plot._seekBound = true;
             // Plotly only emits plotly_click for clicks that land on a point, so
             // click-anywhere-to-seek has to convert the pixel itself.
+            plot.addEventListener('mousedown', function (event) {
+                plot._seekFrom = [event.clientX, event.clientY];
+            });
             plot.addEventListener('click', function (event) {
+                // The plot pans on drag, and releasing a pan fires click too --
+                // so a seek is a click that did not travel.
+                const from = plot._seekFrom;
+                if (!from || Math.hypot(event.clientX - from[0],
+                                        event.clientY - from[1]) > SEEK_SLOP) {
+                    return;
+                }
                 const axis = plot._fullLayout && plot._fullLayout.xaxis;
                 if (!axis) { return; }
                 const box = plot.getBoundingClientRect();
@@ -799,90 +911,108 @@ function (tick) {
     return [t, t.toFixed(2) + ' s',
             minutes ? minutes + 'min ' + seconds + 'sec' : seconds + 'sec'];
 }
-"""
+""".replace('SEEK_SLOP', str(SEEK_SLOP_PX))
 
 
-def build_app(audio_path: str, track: Track, sections: list,
-              beats: list = ()) -> dash.Dash:
+def audio_mimetype(audio_path: str) -> str:
+    """Whatever the file is -- anything ffmpeg can decode is accepted here."""
+    return mimetypes.guess_type(audio_path)[0] or 'application/octet-stream'
+
+
+def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
+    """The page, served from the file rather than from a launch-time snapshot.
+
+    `app.layout` is a function because Dash serves it on every page load: as a
+    single component instance it hands each reload the sections the process
+    started with, and that stale list is the State every edit is applied to. One
+    edit after a reload then rewrote the file as launch-time state plus that
+    edit, destroying every boundary made in between. The layout reads the file,
+    so a reload is a re-read and the page is only ever a view of it.
+    """
     name = Path(audio_path).name
     app = dash.Dash(__name__, title=f'label · {name}')
 
     @app.server.route('/audio')
     def serve_audio():
-        # conditional=True answers Range requests, which is the whole of what
-        # makes seeking inside an <audio> element work.
-        return flask.send_file(audio_path, mimetype='audio/mpeg', conditional=True)
+        """conditional=True answers Range requests, which is the whole of what
+        makes seeking inside an <audio> element work."""
+        return flask.send_file(audio_path, mimetype=audio_mimetype(audio_path),
+                               conditional=True)
 
-    app.layout = html.Div([
-        html.Div([
-            html.Span(name, style={'color': TEXT}),
-            html.Span(f'  ·  {clock_text(track.duration)}  ·  {labels_path(audio_path)}',
-                      style={'color': MUTED}),
-        ], style={'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
-                  'fontSize': '13px'}),
-        html.Div(html.Audio(id='player', src='/audio', controls=True,
-                            style={'width': '100%'}),
-                 style={'padding': '12px 20px 4px'}),
-        html.Div([
-            html.Div('0.00 s', id='cursor-seconds',
-                     style={'fontSize': '32px', 'color': '#ffffff'}),
-            html.Div('0sec', id='cursor-clock',
-                     style={'fontSize': '18px', 'color': MUTED, 'marginLeft': '16px'}),
-            html.Div(id='sink-chip'),
-            dcc.Dropdown(id='sink-pick', clearable=False,
-                         placeholder='audio output',
-                         style={'width': '300px', 'color': '#000000',
-                                'marginLeft': '10px', 'display': 'inline-block',
-                                'verticalAlign': 'middle'}),
+    def serve_layout():
+        sections = load_labels(audio_path)
+        return html.Div([
             html.Div([
-                dcc.Dropdown(id='new-label', options=LABELS, value=LABELS[0],
-                             clearable=False,
-                             style={'width': '150px', 'color': '#000000',
-                                    'display': 'inline-block',
+                html.Span(name, style={'color': TEXT}),
+                html.Span(f'  ·  {clock_text(track.duration)}  ·  {labels_path(audio_path)}',
+                          style={'color': MUTED}),
+            ], style={'padding': '12px 20px', 'borderBottom': f'1px solid {BORDER}',
+                      'fontSize': '13px'}),
+            html.Div(html.Audio(id='player', src='/audio', controls=True,
+                                style={'width': '100%'}),
+                     style={'padding': '12px 20px 4px'}),
+            html.Div([
+                html.Div('0.00 s', id='cursor-seconds',
+                         style={'fontSize': '32px', 'color': '#ffffff'}),
+                html.Div('0sec', id='cursor-clock',
+                         style={'fontSize': '18px', 'color': MUTED, 'marginLeft': '16px'}),
+                html.Div(id='sink-chip'),
+                dcc.Dropdown(id='sink-pick', clearable=False,
+                             placeholder='audio output',
+                             style={'width': '300px', 'color': '#000000',
+                                    'marginLeft': '10px', 'display': 'inline-block',
                                     'verticalAlign': 'middle'}),
-                dcc.RadioItems(id='new-strength', options=STRENGTHS,
-                               value=DEFAULT_STRENGTH, inline=True,
-                               style={'marginLeft': '10px'},
-                               labelStyle={'color': TEXT, 'fontSize': '13px',
-                                           'marginRight': '6px'},
-                               inputStyle={'marginRight': '4px',
-                                           'marginLeft': '8px'}),
-                html.Button('mark boundary at current time', id='mark',
-                            style=dict(BUTTON_STYLE, marginLeft='10px')),
-                html.Button('save now', id='save',
-                            style=dict(BUTTON_STYLE, marginLeft='10px',
-                                       color='#3fb950')),
-                dcc.Input(id='title', value=default_title(audio_path),
-                          placeholder='Artist - Track', debounce=False,
-                          style={'marginLeft': '10px', 'width': '260px',
-                                 'padding': '6px 10px', 'borderRadius': '6px',
-                                 'background': CARD_BG, 'color': TEXT,
-                                 'border': f'1px solid {BORDER}',
-                                 'fontFamily': 'monospace'}),
-                dcc.Checklist(id='no-artist', options=[{'label': 'no artist',
-                                                        'value': 'yes'}],
-                              value=[], inline=True,
-                              style={'marginLeft': '8px'},
-                              labelStyle={'color': TEXT, 'fontSize': '13px'},
-                              inputStyle={'marginRight': '4px'}),
-                html.Button('commit to dataset', id='commit',
-                            style=dict(BUTTON_STYLE, marginLeft='10px',
-                                       color='#58a6ff')),
-            ], style={'marginLeft': 'auto', 'display': 'flex',
-                      'alignItems': 'center'}),
-        ], style={'display': 'flex', 'alignItems': 'center',
-                  'padding': '4px 20px 12px'}),
-        dcc.Graph(id='timeline', figure=build_figure(track, sections, beats),
-                  config={'displayModeBar': False, 'scrollZoom': True}),
-        html.Div(id='status', style={'padding': '10px 20px', 'color': MUTED,
-                                     'fontSize': '13px'}),
-        html.Div(build_rows(sections), id='table', style={'padding': '0 20px 40px'}),
-        dcc.Store(id='sections', data=sections),
-        dcc.Store(id='cursor', data=0.0),
-        dcc.Store(id='sink-echo'),
-        dcc.Interval(id='tick', interval=TICK_MS),
-    ], style={'background': DARK_BG, 'minHeight': '100vh',
-              'fontFamily': 'monospace'})
+                html.Div([
+                    dcc.Dropdown(id='new-label', options=LABELS, value=LABELS[0],
+                                 clearable=False,
+                                 style={'width': '150px', 'color': '#000000',
+                                        'display': 'inline-block',
+                                        'verticalAlign': 'middle'}),
+                    dcc.RadioItems(id='new-strength', options=STRENGTHS,
+                                   value=DEFAULT_STRENGTH, inline=True,
+                                   style={'marginLeft': '10px'},
+                                   labelStyle={'color': TEXT, 'fontSize': '13px',
+                                               'marginRight': '6px'},
+                                   inputStyle={'marginRight': '4px',
+                                               'marginLeft': '8px'}),
+                    html.Button('mark boundary at current time', id='mark',
+                                style=dict(BUTTON_STYLE, marginLeft='10px')),
+                    html.Button('save now', id='save',
+                                style=dict(BUTTON_STYLE, marginLeft='10px',
+                                           color='#3fb950')),
+                    dcc.Input(id='title', value=default_title(audio_path),
+                              placeholder='Artist - Track', debounce=False,
+                              style={'marginLeft': '10px', 'width': '260px',
+                                     'padding': '6px 10px', 'borderRadius': '6px',
+                                     'background': CARD_BG, 'color': TEXT,
+                                     'border': f'1px solid {BORDER}',
+                                     'fontFamily': 'monospace'}),
+                    dcc.Checklist(id='no-artist', options=[{'label': 'no artist',
+                                                            'value': 'yes'}],
+                                  value=[], inline=True,
+                                  style={'marginLeft': '8px'},
+                                  labelStyle={'color': TEXT, 'fontSize': '13px'},
+                                  inputStyle={'marginRight': '4px'}),
+                    html.Button('commit to dataset', id='commit',
+                                style=dict(BUTTON_STYLE, marginLeft='10px',
+                                           color='#58a6ff')),
+                ], style={'marginLeft': 'auto', 'display': 'flex',
+                          'alignItems': 'center'}),
+            ], style={'display': 'flex', 'alignItems': 'center',
+                      'padding': '4px 20px 12px'}),
+            dcc.Graph(id='timeline', figure=build_figure(track, sections, beats),
+                      config={'displayModeBar': False, 'scrollZoom': True}),
+            html.Div(id='status', style={'padding': '10px 20px', 'color': MUTED,
+                                         'fontSize': '13px'}),
+            html.Div(build_rows(sections), id='table', style={'padding': '0 20px 40px'}),
+            dcc.Store(id='sections', data=sections),
+            dcc.Store(id='cursor', data=0.0),
+            dcc.Store(id='sink-echo'),
+            dcc.Interval(id='tick', interval=TICK_MS),
+        ], style={'background': DARK_BG, 'minHeight': '100vh',
+                  'fontFamily': 'monospace'})
+
+    app.layout = serve_layout
 
     app.clientside_callback(
         CURSOR_JS,
@@ -944,26 +1074,37 @@ def build_app(audio_path: str, track: Track, sections: list,
         prevent_initial_call=True,
     )
     def render(sections):
-        return build_rows(sections), build_figure(track, sections, beats)
+        return build_rows(sections), render_patch(track, sections)
 
     return app
 
 
 def launch(audio: str, port: int = 8070) -> None:
+    """Read the labels first: a file this refuses is one only this can repair.
+
+    Decoding a whole track before finding out costs the owner a minute for a
+    message that was available immediately. The server runs with no reloader and
+    no hot reload -- a restart would drop the page mid-labelling, and there is
+    nothing here worth watching a filesystem for.
+    """
     audio_path = str(Path(audio).resolve())
     if not Path(audio_path).exists():
         raise SystemExit(f'no such audio file: {audio_path}')
 
+    try:
+        sections = load_labels(audio_path)
+    except LabelFileError as error:
+        raise SystemExit(
+            f'{labels_path(audio_path)} cannot be read: {error}\n'
+            f'  fix or delete that line and relaunch — nothing was changed')
+
     print(f'  decoding {Path(audio_path).name} ...')
     track = Track(audio_path)
-    sections = load_labels(audio_path)
     print(f'  {track.duration:.1f} s, {len(sections)} sections loaded from '
           f'{labels_path(audio_path)}')
     beats = beat_grid(audio_path)
     print(f'  beat grid: {len(beats)} beats' if beats
           else '  beat grid: none for this track')
     print(f'\n  Labeler → http://localhost:{port}\n')
-    # No reloader and no hot reload: a restart would drop the page mid-labelling,
-    # and there is nothing here worth watching a filesystem for.
-    build_app(audio_path, track, sections, beats).run(
+    build_app(audio_path, track, beats).run(
         port=port, debug=False, use_reloader=False, dev_tools_hot_reload=False)
