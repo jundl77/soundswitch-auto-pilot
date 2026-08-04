@@ -545,6 +545,18 @@ the song on the display at once, cuts the monitored output's buffered tail
 instead of playing it out, and discards the beats still in flight, which were
 never going to reach the room. Everything mid-play keeps the room alignment.
 
+**That cut applies to the start record too, not only to the beats behind it.** A
+start whose audio is still travelling when a stop lands never reaches the room
+either, so it is not a record the display may count a song from. Leaving it in is
+what made the remapped list non-monotonic -- starts move by the delay and stops do
+not -- and the two obvious ways to ask which record is current then disagreed: the
+last by list position, and the last by room time. Position was accidentally right;
+room time was confidently wrong, claiming PLAYING with a running clock over
+silence that carries no beats, because a play burst shorter than the look-ahead is
+audible to nobody. Cutting first makes the two provably the same answer, and that
+equivalence is the property worth pinning rather than either reading on its own:
+one rule decides, so neither can drift from the other.
+
 **The blackout that follows is recorded, and it says who asked for it.** A stop
 drops the lighting still queued and puts the rig on a quiet floor at once, and
 that floor is a real thing the room saw, so the report states it rather than

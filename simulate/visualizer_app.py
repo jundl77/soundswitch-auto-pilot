@@ -92,9 +92,16 @@ def _intent_config(intent_key):
 def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    moved = [dict(event, t=event['t'] + delay if event['playing'] else event['t'])
-             for event in snapshot.get('sound_events', [])]
-    return [event for event in moved if event['t'] <= now]
+    events = snapshot.get('sound_events', [])
+    stops = [e['t'] for e in events if not e['playing']]
+    heard = []
+    for event in events:
+        reaches_room_at = event['t'] + delay if event['playing'] else event['t']
+        cut = event['playing'] and any(event['t'] < stop <= reaches_room_at
+                                       for stop in stops)
+        if reaches_room_at <= now and not cut:
+            heard.append(dict(event, t=reaches_room_at))
+    return heard
 
 
 def _heard_beats(snapshot: dict) -> list:
@@ -119,7 +126,7 @@ def _last_heard(snapshot: dict) -> dict | None:
     heard = _room_sound_events(snapshot)
     if not heard:
         return None
-    return max(heard, key=lambda event: (event['t'], not event['playing']))
+    return max(reversed(heard), key=lambda event: event['t'])
 
 
 def _song_origin(snapshot: dict) -> float | None:
