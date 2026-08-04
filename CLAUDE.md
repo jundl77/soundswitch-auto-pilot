@@ -595,6 +595,26 @@ recorded there, and the song-boundary reset and rebirth machinery still run at
 once. Those were gap-correct before the bypass existed, and the gate is not
 theirs to wear.
 
+**The bar grid on the timeline is the decoder's, and it is an instrument rather
+than decoration.** Every decision the decoder makes is expressed in bars, so a
+grid that disagreed with the music was previously findable only by attaching a
+profiler to a running show — which is how a half-tempo lock on a cold entry was
+eventually caught, with `bar_sec` inflated 2x. Drawn, that failure is the first
+thing anyone notices: the bars are visibly twice as wide as the music. So the
+snapshot carries the decoder's own edge list, the bar index that names the first
+of them, and the bar length it is currently working with, and the render draws
+downbeats emphasised, intra-bar beats as light ticks, and every fourth bar
+numbered with the decoder's *own* index rather than a screen position. A client
+that re-derived a grid from the beat stream would agree with the decoder exactly
+when it did not matter and disagree silently when it did.
+
+The intra-bar ticks subdivide each *measured* bar rather than a nominal one, so a
+grid that is wobbling shows it. And the edges are converted to the buffer's clock
+by the publisher, which is the only place that holds both: the decoder counts in
+audio seconds that reset at a song boundary, the buffer stamps in session
+seconds that do not, and joining those two anywhere else is how a grid ends up
+drawn a track-length away from the beats it belongs to.
+
 **A shed chain and a model opinion look identical on screen, so the screen says
 which it is.** The show holds its current intent when the section stage sheds,
 and held ATMOSPHERIC through a shed is pixel-for-pixel what a confident

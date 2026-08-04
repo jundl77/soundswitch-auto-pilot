@@ -66,6 +66,14 @@ class FakeDecoder:
     bar_sec = 1.8898
     classes = ('intro', 'buildup', 'breakdown', 'drop', 'outro')
 
+    @property
+    def bar_edges(self):
+        return list(self._edges)
+
+    @property
+    def first_bar(self):
+        return self._first_bar
+
     class params:
         lag_bars = 2
 
@@ -75,6 +83,8 @@ class FakeDecoder:
         self.resets = 0
         self.cold_starts: list = []
         self.recent_observations = deque(maxlen=4)
+        self._edges: list = []
+        self._first_bar = 0
         self._script = list(script or [])
 
     def push_beat(self, at_sec):
@@ -1231,3 +1241,31 @@ async def test_a_show_with_no_watchdog_publishes_nothing_rather_than_zeroes():
     light, _, clock, _ = engine(events=True)
     await elapse(light, clock, 1.0)
     assert light.event_buffer.snapshot()['shed'] == {}
+
+
+async def test_the_grid_is_published_on_the_clock_the_beats_are_stamped_on():
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 20.0)
+    await light.on_beat(1, 128.0, False)
+
+    beat_at = light.event_buffer.snapshot()['beats'][-1]['t']
+    decoder._edges = [light.audio_sec - 4.0, light.audio_sec - 2.0]
+    light._publish_decoder_state(None)
+
+    published = light.event_buffer.snapshot()['decoder']['bar_edges']
+    assert published == [pytest.approx(beat_at - 4.0, abs=0.05),
+                         pytest.approx(beat_at - 2.0, abs=0.05)]
+
+
+async def test_the_grid_travels_with_the_bar_numbers_that_name_it():
+    decoder = FakeDecoder()
+    light, _, clock, _ = engine(decoder=decoder, events=True)
+    await elapse(light, clock, 20.0)
+    decoder._edges = [light.audio_sec - 2.0, light.audio_sec]
+    decoder._first_bar = 41
+    light._publish_decoder_state(None)
+
+    state = light.event_buffer.snapshot()['decoder']
+    assert state['first_bar'] == 41
+    assert state['bar_sec'] == pytest.approx(FakeDecoder.bar_sec)

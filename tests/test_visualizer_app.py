@@ -1095,3 +1095,81 @@ def test_a_run_that_settled_hours_ago_stops_shouting_about_it():
         shed={'level': 'NONE', 'fault': None, 'sheds': 9, 'sheds_per_min': 0}))
     assert _metric(items, 'sheds') == 'sheds 0/min  ·  9 this run'
     assert _colour_of(items, 'sheds') == V.MUTED
+
+
+def _gridded(bar_sec=2.0, bars=6, first_bar=0, **overrides):
+    edges = [10.0 + index * bar_sec for index in range(bars)]
+    snap = _snapshot(now=40.0, look_ahead_sec=14.0,
+                     sound_events=[{'t': 0.0, 'playing': True}],
+                     decoder={'bar_edges': edges, 'first_bar': first_bar,
+                              'bar_sec': bar_sec, 'classes': []})
+    snap.update(overrides)
+    return snap
+
+
+def _lines(fig, colour):
+    return [s for s in fig.layout.shapes
+            if s.type == 'line' and s.line.color == colour]
+
+
+def test_the_timeline_draws_the_decoders_own_downbeats():
+    fig = V._build_timeline(_gridded(bar_sec=2.0, bars=6))
+    downbeats = _lines(fig, V.DOWNBEAT_COLOR)
+    assert [round(s.x0, 3) for s in downbeats] == [10.0, 12.0, 14.0, 16.0, 18.0]
+
+
+def test_a_bar_line_is_shifted_into_room_time_like_everything_else():
+    fig = V._build_timeline(_gridded(bar_sec=2.0, bars=3))
+    # start@0 reaches the room at 14, so song zero is 14 and an edge at 10
+    # detected-seconds is heard at 24, which is 10 on the room axis.
+    assert round(_lines(fig, V.DOWNBEAT_COLOR)[0].x0, 3) == 10.0
+
+
+def test_each_bar_carries_its_intra_bar_beats():
+    fig = V._build_timeline(_gridded(bar_sec=2.0, bars=3))
+    ticks = _lines(fig, V.BEAT_TICK_COLOR)
+    assert len(ticks) == 2 * (V.BEATS_PER_BAR - 1)
+    assert [round(t.x0, 3) for t in ticks[:3]] == [10.5, 11.0, 11.5]
+
+
+def test_the_ticks_follow_a_wobbly_grid_instead_of_a_nominal_bar():
+    snap = _gridded()
+    snap['decoder']['bar_edges'] = [10.0, 12.0, 20.0]
+    ticks = _lines(V._build_timeline(snap), V.BEAT_TICK_COLOR)
+    assert [round(t.x0, 3) for t in ticks[3:6]] == [14.0, 16.0, 18.0]
+
+
+def test_the_phrasing_is_scannable_because_bars_are_numbered():
+    fig = V._build_timeline(_gridded(bar_sec=2.0, bars=10, first_bar=0))
+    numbered = [a for a in fig.layout.annotations if a.text.isdigit()]
+    assert [a.text for a in numbered] == ['0', '4', '8']
+
+
+def test_the_numbers_are_the_decoders_bar_indices_not_screen_positions():
+    fig = V._build_timeline(_gridded(bar_sec=2.0, bars=10, first_bar=102))
+    numbered = [a for a in fig.layout.annotations if a.text.isdigit()]
+    assert [a.text for a in numbered] == ['104', '108']
+
+
+def test_a_half_tempo_lock_reads_as_bars_twice_as_wide():
+    honest = _lines(V._build_timeline(_gridded(bar_sec=1.9)), V.DOWNBEAT_COLOR)
+    locked = _lines(V._build_timeline(_gridded(bar_sec=3.8)), V.DOWNBEAT_COLOR)
+    honest_span = honest[1].x0 - honest[0].x0
+    locked_span = locked[1].x0 - locked[0].x0
+    assert round(locked_span / honest_span, 3) == 2.0
+
+
+def test_a_run_with_no_decoder_draws_no_grid():
+    fig = V._build_timeline(_snapshot(now=40.0, decoder={}))
+    assert _lines(fig, V.DOWNBEAT_COLOR) == []
+
+
+def test_a_grid_of_one_edge_cannot_size_a_bar_so_it_draws_none():
+    snap = _gridded()
+    snap['decoder']['bar_edges'] = [10.0]
+    assert _lines(V._build_timeline(snap), V.DOWNBEAT_COLOR) == []
+
+
+def test_the_grid_scrolls_with_the_transform_rather_than_a_per_frame_relayout():
+    assert 'shapes' not in V.ANIMATION_JS
+    assert 'translate3d' in V.ANIMATION_JS
