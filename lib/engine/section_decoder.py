@@ -112,6 +112,10 @@ class SectionDecoder:
     def bar_edges(self) -> list:
         return list(self._edges)
 
+    @property
+    def first_bar(self) -> int:
+        return self._edge_base
+
     def _edge(self, bar: int) -> float:
         if not self._have_edge(bar):
             raise KeyError(f"bar {bar}'s line is no longer held; the grid keeps "

@@ -426,6 +426,26 @@ dependency-surface probe enforces, and the viewer is killed with `taskkill /T`
 because the venv launcher re-execs and the pid the show holds is a parent (#181).
 The report path never went near any of this: it is still written in the show.
 
+**The simulation can be monitored on headphones, and it is the same monitor the
+live show uses.** `simulate file -o IDX` plays the decoded track out one playback
+delay behind the analysis, so the owner hears *room* time and what he hears lines
+up with the room-aligned UI beside it rather than running fourteen seconds ahead
+of it. The delay machinery is extracted rather than copied — one `DelayedMonitor`
+holds the buffer, the arm, and the drop-the-tail-on-silence rule, and both the
+live path and the simulation drive it. Copying it is how the two would drift, and
+the one bug this code has already had (a monitor delay that collapsed after the
+first stop) is exactly the kind that would then need finding twice. The stop gate
+applies unchanged: a gap shorter than the persistence window plays through, a
+real stop drops the queued tail and re-arms.
+
+`-o` implies real-time pacing, because a monitor is meaningless at fast-sim
+speed; passing it without `--ui` paces the run with no viewer. Fast headless is
+untouched and stays the default — the monitor is a pure side effect that the
+report path never sees, which the digest is the check on. One caveat worth
+knowing: the queue drains one buffer per fed buffer, so the true lag is the delay
+minus one buffer period. That is the live path's behaviour too, preserved rather
+than introduced.
+
 **One Ctrl-C has to end the session, and the obvious way to wait on a child
 guarantees it cannot.** `Popen.wait()` on Windows is `WaitForSingleObject` with
 an infinite timeout: it releases the GIL without joining CPython's SIGINT event,
@@ -575,6 +595,26 @@ recorded there, and the song-boundary reset and rebirth machinery still run at
 once. Those were gap-correct before the bypass existed, and the gate is not
 theirs to wear.
 
+**The bar grid on the timeline is the decoder's, and it is an instrument rather
+than decoration.** Every decision the decoder makes is expressed in bars, so a
+grid that disagreed with the music was previously findable only by attaching a
+profiler to a running show — which is how a half-tempo lock on a cold entry was
+eventually caught, with `bar_sec` inflated 2x. Drawn, that failure is the first
+thing anyone notices: the bars are visibly twice as wide as the music. So the
+snapshot carries the decoder's own edge list, the bar index that names the first
+of them, and the bar length it is currently working with, and the render draws
+downbeats emphasised, intra-bar beats as light ticks, and every fourth bar
+numbered with the decoder's *own* index rather than a screen position. A client
+that re-derived a grid from the beat stream would agree with the decoder exactly
+when it did not matter and disagree silently when it did.
+
+The intra-bar ticks subdivide each *measured* bar rather than a nominal one, so a
+grid that is wobbling shows it. And the edges are converted to the buffer's clock
+by the publisher, which is the only place that holds both: the decoder counts in
+audio seconds that reset at a song boundary, the buffer stamps in session
+seconds that do not, and joining those two anywhere else is how a grid ends up
+drawn a track-length away from the beats it belongs to.
+
 **A shed chain and a model opinion look identical on screen, so the screen says
 which it is.** The show holds its current intent when the section stage sheds,
 and held ATMOSPHERIC through a shed is pixel-for-pixel what a confident
@@ -684,6 +724,8 @@ python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 # a cold run -- a warm cell cache replays the extractor on CPU)
 python auto_pilot simulate file path/to/song.mp3          # fast headless: report + plumbing evaluation
 python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced, threaded GPU stage, live Dash timeline
+python auto_pilot simulate file path/to/song.mp3 --ui -o 17  # ...and monitor it on device 17, one delay behind (room time)
+python auto_pilot simulate file path/to/song.mp3 -o 17     # monitor with no viewer; -o alone still paces in real time
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
 # Inspect a report: per-10s rms/beat bins, intent timeline, distribution

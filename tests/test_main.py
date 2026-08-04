@@ -12,7 +12,11 @@ class _StopRun(Exception):
 
 
 def _app(enable_ui: bool, event_buffer):
+    from lib.delayed_monitor import DelayedMonitor
+    from lib.main import PLAYBACK_DELAY_SEC
+
     app = object.__new__(SoundSwitchAutoPilot)
+    app._monitor = DelayedMonitor(PLAYBACK_DELAY_SEC, lambda audio: None)
     app.disable_os2l = True
     app.enable_ui = enable_ui
     app._ui_port = 8050
@@ -175,17 +179,26 @@ def test_the_live_view_keeps_its_rolling_window(monkeypatch):
 
 
 def test_the_monitor_delay_is_rearmed_after_a_stop():
-    import time
-    from collections import deque
+    from lib.clock import VirtualClock
+    from lib.delayed_monitor import DelayedMonitor
     from lib.main import PLAYBACK_DELAY_SEC
 
+    clock = VirtualClock()
+    played = []
     app = _app(enable_ui=False, event_buffer=None)
-    app._audio_delay_buf = deque([b'a', b'b', b'c'])
-    app._playback_ready_at = time.monotonic() - 100.0
-    app._audio_playback_started = True
+    app._monitor = DelayedMonitor(PLAYBACK_DELAY_SEC, played.append, clock=clock)
+    for _ in range(20):
+        clock.advance(1.0)
+        app._monitor.feed(b'old song')
+    assert app._monitor.started and played
 
     app._silence_monitor()
 
-    assert list(app._audio_delay_buf) == []
-    assert app._playback_ready_at >= time.monotonic() + PLAYBACK_DELAY_SEC - 1.0
-    assert app._audio_playback_started is False
+    assert app._monitor.buffered == 0, 'the tail was left to play out'
+    assert not app._monitor.started
+
+    heard = len(played)
+    for _ in range(int(PLAYBACK_DELAY_SEC) - 1):
+        clock.advance(1.0)
+        app._monitor.feed(b'next song')
+    assert len(played) == heard, 'the delay collapsed after the stop'

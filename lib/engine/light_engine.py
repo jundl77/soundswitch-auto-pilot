@@ -302,7 +302,15 @@ class LightEngine(IMusicAnalyserHandler):
             lag_bars=(None if observed is None or committed is None
                       else observed.bar - committed.bar),
             chain_latency_sec=decoder.chain_latency_sec,
+            bar_sec=round(decoder.bar_sec, 4),
+            first_bar=decoder.first_bar,
+            bar_edges=self._edges_on_the_buffers_clock(decoder.bar_edges),
         )
+
+    def _edges_on_the_buffers_clock(self, edges: list) -> list:
+        detected_now = self.event_buffer.elapsed()
+        return [round(detected_now - (self._audio_sec - edge), 4)
+                for edge in edges]
 
     def _log_chain_latency(self) -> None:
         decoder = self.section_decoder
