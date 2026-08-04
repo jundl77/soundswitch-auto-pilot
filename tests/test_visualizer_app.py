@@ -336,29 +336,98 @@ def _app(source=None):
     return V.build_app(source)
 
 
-_REFRESH = ('..timeline.figure...stage.children...decoder.children...'
-            'metrics.children...sync.data..')
+_ANCHOR = ('..sync.data...metrics.children...stage.children...'
+           'decoder.children..')
+_VIEW = '..timeline.figure...drawn.data..'
+_GATE = '..gate.data...view-gate.data..'
 
 
 def test_the_app_reads_its_data_through_a_snapshot_call_and_nothing_else():
     poller = _FakePoller(_snapshot(bpm=131.0, beats_detected=7))
     app = _app(poller)
 
-    figure, stage, decoder, metrics, anchor = app.callback_map[
-        _REFRESH]['callback'].__wrapped__(1)
+    anchor, metrics, stage, decoder = app.callback_map[
+        _ANCHOR]['callback'].__wrapped__(1)
 
     assert poller.reads == 1
     assert '131 BPM' in ''.join(_texts(metrics))
     assert '7 beats' in ''.join(_texts(metrics))
     assert anchor['now'] == 10.0
-    assert figure is not None and stage and decoder
+    assert stage and decoder
 
 
 def test_one_poll_feeds_every_panel_so_they_cannot_disagree():
     poller = _FakePoller(_snapshot())
     app = _app(poller)
-    app.callback_map[_REFRESH]['callback'].__wrapped__(1)
+    app.callback_map[_ANCHOR]['callback'].__wrapped__(1)
+    figure, _ = app.callback_map[_VIEW]['callback'].__wrapped__(1)
+    assert figure is not None
     assert poller.reads == 1
+
+
+def test_the_figure_is_not_rebuilt_from_a_snapshot_it_already_drew():
+    import dash
+
+    poller = _FakePoller(_snapshot())
+    app = _app(poller)
+    app.callback_map[_ANCHOR]['callback'].__wrapped__(1)
+    first, first_ack = app.callback_map[_VIEW]['callback'].__wrapped__(1)
+    again, again_ack = app.callback_map[_VIEW]['callback'].__wrapped__(2)
+    assert first is not None and again is dash.no_update
+    assert (first_ack, again_ack) == (1, 2)
+
+
+def test_no_tick_can_start_a_refresh_while_one_is_still_in_flight():
+    app = _app()
+    assert app.callback_map[_GATE]['inputs'][0]['id'] == 'tick'
+    assert app.callback_map[_ANCHOR]['inputs'][0]['id'] == 'gate'
+    assert app.callback_map[_VIEW]['inputs'][0]['id'] == 'view-gate'
+    assert 'gate.inflight[stream] = Date.now()' in V.REQUEST_PRE_JS
+    assert "free('anchor')" in V.GATE_JS and "free('view')" in V.GATE_JS
+
+
+def test_a_stream_is_freed_by_its_answer_landing_and_never_by_it_resolving():
+    app = _app()
+    assert "delete ds.ss_gate.inflight['anchor']" in V.ANIMATION_JS
+    assert app.callback_map['anim.data']['inputs'][0]['id'] == 'sync'
+    assert "delete gate.inflight['view']" in V.VIEW_LANDED_JS
+    assert app.callback_map['taken.data']['inputs'][0]['id'] == 'drawn'
+
+    before, after = V.CALLBACK_RESOLVED_JS.split('if (result.error)')
+    assert 'delete gate.inflight[stream]' not in before
+    assert 'delete gate.inflight[stream]' in after
+
+
+def test_the_interval_no_longer_reaches_a_server_callback_directly():
+    app = _app()
+    for key, entry in app.callback_map.items():
+        if getattr(entry.get('callback'), '__wrapped__', None) is None:
+            continue
+        assert 'tick' not in [i['id'] for i in entry['inputs']], key
+
+
+def test_the_figure_is_asked_for_on_a_slower_cadence_than_the_anchor():
+    assert V.VIEW_EVERY_TICKS >= 2
+    assert f'n % {V.VIEW_EVERY_TICKS}' in V.GATE_JS
+    assert V.REFRESH_MS == 250
+
+
+def test_the_renderer_reports_the_answers_dash_itself_would_discard():
+    app = _app()
+    assert 'new DashRenderer(' in app.renderer
+    assert V.REQUEST_PRE_JS in app.renderer
+    assert V.CALLBACK_RESOLVED_JS in app.renderer
+
+
+def test_the_watchdog_warns_when_the_page_stops_taking_what_the_server_sent():
+    assert 'landed.now !== gate.sent' in V.CALLBACK_RESOLVED_JS
+    assert 'console.warn' in V.CALLBACK_RESOLVED_JS
+    assert str(V.STALE_REFRESHES) in V.CALLBACK_RESOLVED_JS
+
+
+def test_a_refresh_that_never_answers_re_arms_instead_of_wedging_the_gate():
+    assert f'waited < {V.STALL_RELEASE_MS}' in V.GATE_JS
+    assert 'delete gate.inflight[stream]' in V.GATE_JS
 
 
 def test_the_layout_publishes_the_anchor_the_browser_interpolates():
@@ -508,6 +577,23 @@ def test_the_show_is_still_playing_the_moment_before_that():
 def test_the_timeline_resets_the_instant_a_stop_is_detected():
     assert V._song_origin(_stopping(now=59.99)) is not None
     assert V._song_origin(_stopping(now=60.0)) is None
+
+
+def test_a_play_burst_shorter_than_the_look_ahead_is_read_off_the_room_clock():
+    burst = _snapshot(now=130.0, look_ahead_sec=14.0,
+                      sound_events=[{'t': 0.0, 'playing': True},
+                                    {'t': 60.0, 'playing': False},
+                                    {'t': 100.0, 'playing': True},
+                                    {'t': 105.0, 'playing': False}])
+    assert V._song_origin(burst) == pytest.approx(114.0)
+    assert 'PLAYING' in _metric(V._build_metrics(burst), '●')
+
+
+def test_a_stop_landing_on_a_start_arrival_wins_because_silence_is_immediate():
+    assert V._song_origin(_snapshot(
+        now=30.0, look_ahead_sec=14.0,
+        sound_events=[{'t': 1.0, 'playing': True},
+                      {'t': 15.0, 'playing': False}])) is None
 
 
 def test_a_start_still_waits_for_the_room_although_a_stop_does_not():

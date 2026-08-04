@@ -236,7 +236,7 @@ def check_digest(name: str, digest: dict, fixture: dict) -> list:
 
 def capture_streams(components: dict) -> dict:
     return {
-        'sound': components['event_buffer'].snapshot()['sound_events'],
+        'sound': components['event_buffer'].sound_events(),
         'os2l': components['os2l_client'].events,
         'midi': components['midi_client'].events,
         'overlay': components['overlay_client'].events,

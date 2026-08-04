@@ -84,6 +84,73 @@ def test_the_sound_events_are_never_windowed():
     assert buffer.snapshot()['sound_events'][0]['t'] == 0.0
 
 
+def test_the_beat_count_outlives_the_deque_it_used_to_be_read_from():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    for _ in range(3005):
+        clock.advance(0.5)
+        buf.add_beat(bpm=128.0, change=False)
+    snapshot = buf.snapshot()
+    assert len(snapshot['beats']) < 3005
+    assert snapshot['beats_detected'] == 3005
+
+
+def _stop_start_hour():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    buf.set_playing(True)
+    for _ in range(60):
+        clock.advance(30.0)
+        buf.set_playing(False)
+        clock.advance(30.0)
+        buf.set_playing(True)
+    clock.advance(10.0)
+    return buf
+
+
+def test_the_payload_stops_at_the_window_and_the_start_the_origin_hangs_on():
+    buf = _stop_start_hour()
+    assert buf.snapshot()['sound_events'] == [{'t': 3540.0, 'playing': True},
+                                              {'t': 3570.0, 'playing': False},
+                                              {'t': 3600.0, 'playing': True}]
+
+
+def test_the_storage_keeps_every_sound_event_the_payload_leaves_behind():
+    buf = _stop_start_hour()
+    events = buf.sound_events()
+    assert len(events) == 121
+    assert events[0] == {'t': 0.0, 'playing': True}
+
+
+def test_an_hour_old_start_still_ships_because_the_origin_hangs_on_it():
+    from simulate import visualizer_app as V
+
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    buf.set_playing(True)
+    clock.advance(3600.0)
+    assert buf.snapshot()['sound_events'] == [{'t': 0.0, 'playing': True}]
+    assert V._song_origin(buf.snapshot()) == pytest.approx(14.0)
+
+
+def test_a_stop_older_than_the_payload_window_still_reads_as_stopped():
+    from simulate import visualizer_app as V
+
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=60.0, clock=clock, look_ahead_sec=14.0)
+    buf.start()
+    buf.set_playing(True)
+    clock.advance(100.0)
+    buf.set_playing(False)
+    clock.advance(3600.0)
+    snapshot = buf.snapshot()
+    assert snapshot['sound_events'] == [{'t': 100.0, 'playing': False}]
+    assert V._song_origin(snapshot) is None
+
+
 def test_infinite_window_keeps_old_events():
     clock = VirtualClock()
     buf = EventBuffer(window_sec=float('inf'), clock=clock)

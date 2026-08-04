@@ -24,6 +24,7 @@ class EventBuffer:
         self._end_time: float | None = None
         self._is_playing: bool = False
         self._beats: deque[dict] = deque(maxlen=None if window_sec == float('inf') else 3000)
+        self._beats_detected: int = 0
         self._effects: list[dict] = []
         self._intents: list[dict] = []
         self._timing_log: list[dict] = []
@@ -54,6 +55,7 @@ class EventBuffer:
 
     def add_beat(self, bpm: float, change: bool, rms: float = 0.0) -> None:
         with self._lock:
+            self._beats_detected += 1
             self._beats.append({
                 't': self._now(), 'bpm': bpm,
                 'strength': _UNMEASURED_BEAT_STRENGTH,
@@ -125,6 +127,14 @@ class EventBuffer:
                     by_label={label: cls._delivery(entries)
                               for label, entries in sorted(labels.items())})
 
+    def sound_events(self) -> list:
+        with self._lock:
+            return list(self._sound_events)
+
+    def _sound_events_since(self, cutoff: float) -> list:
+        before = [e for e in self._sound_events if e['t'] < cutoff]
+        return before[-1:] + [e for e in self._sound_events if e['t'] >= cutoff]
+
     def _beats_since(self, cutoff: float) -> list:
         recent = []
         for beat in reversed(self._beats):
@@ -149,10 +159,10 @@ class EventBuffer:
                 'intents': [e for e in self._intents if e.get('end', now) >= cutoff],
                 'current_effect': self._effects[-1] if self._effects else None,
                 'bpm': self._beats[-1]['bpm'] if self._beats else 0.0,
-                'beats_detected': len(self._beats),
+                'beats_detected': self._beats_detected,
                 'beats_cut': self._beats_cut,
                 'intent': self._current_intent,
-                'sound_events': list(self._sound_events),
+                'sound_events': self._sound_events_since(cutoff),
                 'timing_stats': timing_stats,
                 'decoder': dict(self._decoder_state),
             }
