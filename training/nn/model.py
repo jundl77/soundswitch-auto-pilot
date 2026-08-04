@@ -39,6 +39,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+# Straight from the vocabulary, not via ``dataset``: that module pulls the whole
+# eval pipeline in, and the exporter and the trainer both import this one.
+from lib.label_space import NUM_SECTION_CLASSES
+
 # The plan's ceiling.  Printed on every run and asserted in the tests: an
 # architecture edit that quietly triples the parameter count is a different
 # experiment, not a tweak.
@@ -89,7 +93,7 @@ class SectionCRNN(nn.Module):
     [batch, time])``.
     """
 
-    def __init__(self, n_mels: int = 40, n_classes: int = 5,
+    def __init__(self, n_mels: int = 40, n_classes: int = NUM_SECTION_CLASSES,
                  conv_channels: tuple = (32, 64, 64), conv1d_channels: int = 128,
                  rnn_hidden: int = 128, label_pool: int = 2,
                  dropout: float = 0.0) -> None:

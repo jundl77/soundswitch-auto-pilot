@@ -70,7 +70,6 @@ from .dataset import (
     FEATURES_DIR,
     FRAME_SEC,
     LABEL_POOL,
-    NUM_CLASSES,
     WINDOW_FRAMES,
     candidate_tracks,
     load_sidecar,
@@ -78,6 +77,7 @@ from .dataset import (
 from .export_onnx import MODEL_FILE, model_dir, run_window, session, sha256_file
 
 from build_training_table import default_data_dir  # noqa: E402
+from lib.label_space import NUM_SECTION_CLASSES  # noqa: E402
 
 POSTERIORS_DIR = "posteriors"
 MANIFEST_FILE = "manifest.json"
@@ -196,7 +196,7 @@ class TrackPosteriors(NamedTuple):
     would read a 200 ms hop as a 93 ms one with nothing to notice.
     """
 
-    label_post: np.ndarray      # [n // LABEL_POOL, NUM_CLASSES] float32
+    label_post: np.ndarray      # [n // LABEL_POOL, NUM_SECTION_CLASSES] float32
     boundary: np.ndarray        # [n] float32, mean of the per-window sigmoids
     coverage: np.ndarray        # [n] uint16, windows that voted on each frame
     n_frames: int
@@ -242,7 +242,7 @@ def infer_track(sess, mel: np.ndarray, *, window_frames: int = WINDOW_FRAMES,
         padded[:n_frames] = mel
 
     pooled_frames = n_frames // LABEL_POOL
-    label_sum = np.zeros((pooled_frames, NUM_CLASSES), dtype=np.float64)
+    label_sum = np.zeros((pooled_frames, NUM_SECTION_CLASSES), dtype=np.float64)
     boundary_sum = np.zeros(n_frames, dtype=np.float64)
     coverage = np.zeros(n_frames, dtype=np.int32)
 

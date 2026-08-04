@@ -14,15 +14,16 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+from lib.label_space import NUM_SECTION_CLASSES  # noqa: E402
 from nn.dataset import (  # noqa: E402
     IGNORE_INDEX,
     LABEL_FRAMES,
     LABEL_POOL,
-    NUM_CLASSES,
     WINDOW_FRAMES,
     TrackTargets,
     WindowDataset,
 )
+from nn import train as nn_train  # noqa: E402
 from nn.model import PARAM_BUDGET, SectionCRNN, count_parameters  # noqa: E402
 from nn.train import (  # noqa: E402
     accumulate_target_stats,
@@ -58,7 +59,7 @@ def test_forward_returns_the_dataset_target_shapes():
 
     labels, boundary = model(mel)
 
-    assert labels.shape == (3, LABEL_FRAMES, NUM_CLASSES)
+    assert labels.shape == (3, LABEL_FRAMES, NUM_SECTION_CLASSES)
     assert boundary.shape == (3, WINDOW_FRAMES)
     assert LABEL_FRAMES == WINDOW_FRAMES // LABEL_POOL
 
@@ -67,7 +68,7 @@ def test_forward_returns_the_dataset_target_shapes():
 def test_time_axis_is_not_baked_in(frames):
     labels, boundary = _model()(torch.zeros(1, frames, MEL_BANDS))
 
-    assert labels.shape == (1, frames // LABEL_POOL, NUM_CLASSES)
+    assert labels.shape == (1, frames // LABEL_POOL, NUM_SECTION_CLASSES)
     assert boundary.shape == (1, frames)
 
 
@@ -87,9 +88,29 @@ def test_frequency_is_pooled_away_and_time_is_preserved():
 def test_arch_names_every_shape_deciding_argument():
     arch = _model().arch()
 
-    assert arch == {"n_mels": 40, "n_classes": 5, "label_pool": 2, "rnn_hidden": 128,
-                    "conv_channels": [32, 64, 64], "conv1d_channels": 128}
+    assert arch == {"n_mels": 40, "n_classes": NUM_SECTION_CLASSES, "label_pool": 2,
+                    "rnn_hidden": 128, "conv_channels": [32, 64, 64],
+                    "conv1d_channels": 128}
     assert json.loads(json.dumps(arch)) == arch
+
+
+def test_the_default_class_count_is_the_published_vocabulary():
+    """The one hardcoded class count in the package; it now reads the vocabulary."""
+    assert SectionCRNN().n_classes == NUM_SECTION_CLASSES == 9
+
+
+def test_a_five_class_checkpoint_still_builds_and_records_its_own_width():
+    """The shipping chain is a 5-class model and must outlive the default moving."""
+    shipping = SectionCRNN(n_classes=5)
+    assert shipping.arch()["n_classes"] == 5
+    labels, _boundary = shipping(torch.zeros(1, LABEL_POOL * 4, MEL_BANDS))
+    assert labels.shape[-1] == 5
+
+
+@pytest.mark.parametrize("name", ["V1_ORDER", "NUM_CLASSES"])
+def test_the_folded_label_space_is_gone_from_the_trainer(name):
+    """Retired, not merely unused: a surviving alias is a second vocabulary."""
+    assert not hasattr(nn_train, name)
 
 
 @pytest.mark.parametrize("changed", [
@@ -144,17 +165,17 @@ def test_both_heads_reach_every_parameter():
 
 
 def _weights(scale=1.0) -> torch.Tensor:
-    return torch.full((NUM_CLASSES,), float(scale))
+    return torch.full((NUM_SECTION_CLASSES,), float(scale))
 
 
 def test_focal_loss_at_gamma_zero_is_cross_entropy():
     torch.manual_seed(3)
-    logits = torch.randn(4, 6, NUM_CLASSES)
-    targets = torch.randint(0, NUM_CLASSES, (4, 6))
+    logits = torch.randn(4, 6, NUM_SECTION_CLASSES)
+    targets = torch.randint(0, NUM_SECTION_CLASSES, (4, 6))
     targets[0, :3] = IGNORE_INDEX
 
     got = focal_loss(logits, targets, weight=_weights(), gamma=0.0)
-    want = F.cross_entropy(logits.reshape(-1, NUM_CLASSES), targets.reshape(-1),
+    want = F.cross_entropy(logits.reshape(-1, NUM_SECTION_CLASSES), targets.reshape(-1),
                            ignore_index=IGNORE_INDEX)
 
     assert torch.allclose(got, want, atol=1e-6)
@@ -162,8 +183,8 @@ def test_focal_loss_at_gamma_zero_is_cross_entropy():
 
 def test_focal_loss_ignores_masked_positions_entirely():
     torch.manual_seed(4)
-    logits = torch.randn(2, 5, NUM_CLASSES)
-    targets = torch.randint(0, NUM_CLASSES, (2, 5))
+    logits = torch.randn(2, 5, NUM_SECTION_CLASSES)
+    targets = torch.randint(0, NUM_SECTION_CLASSES, (2, 5))
     targets[:, :2] = IGNORE_INDEX
 
     baseline = focal_loss(logits, targets, weight=_weights(), gamma=2.0)
@@ -174,7 +195,7 @@ def test_focal_loss_ignores_masked_positions_entirely():
 
 
 def test_focal_loss_of_a_fully_masked_batch_is_zero_and_differentiable():
-    logits = torch.randn(2, 5, NUM_CLASSES, requires_grad=True)
+    logits = torch.randn(2, 5, NUM_SECTION_CLASSES, requires_grad=True)
     targets = torch.full((2, 5), IGNORE_INDEX)
 
     loss = focal_loss(logits, targets, weight=_weights(), gamma=2.0)
@@ -185,8 +206,9 @@ def test_focal_loss_of_a_fully_masked_batch_is_zero_and_differentiable():
 
 
 def test_focal_loss_discounts_easy_examples():
-    easy = torch.tensor([[[8.0, 0.0, 0.0, 0.0, 0.0]]])
-    hard = torch.tensor([[[0.2, 0.0, 0.0, 0.0, 0.0]]])
+    easy = torch.zeros(1, 1, NUM_SECTION_CLASSES)
+    hard = torch.zeros(1, 1, NUM_SECTION_CLASSES)
+    easy[0, 0, 0], hard[0, 0, 0] = 8.0, 0.2
     target = torch.zeros(1, 1, dtype=torch.long)
 
     easy_ratio = (focal_loss(easy, target, weight=_weights(), gamma=2.0)
@@ -199,7 +221,7 @@ def test_focal_loss_discounts_easy_examples():
 
 
 def test_focal_loss_scales_with_the_class_weight():
-    logits = torch.zeros(1, 1, NUM_CLASSES)
+    logits = torch.zeros(1, 1, NUM_SECTION_CLASSES)
     target = torch.zeros(1, 1, dtype=torch.long)
     weight = _weights()
     weight[0] = 3.0
@@ -279,14 +301,14 @@ def _tv_inputs(logits, *, boundary_value=0.0):
 
 
 def test_tv_penalty_is_zero_for_a_constant_posterior():
-    logits = torch.zeros(1, 6, NUM_CLASSES)
+    logits = torch.zeros(1, 6, NUM_SECTION_CLASSES)
     logits[:, :, 2] = 4.0
 
     assert float(tv_penalty(logits, *_tv_inputs(logits), pool=LABEL_POOL)) == pytest.approx(0.0)
 
 
 def test_tv_penalty_punishes_a_flickering_posterior():
-    logits = torch.zeros(1, 6, NUM_CLASSES)
+    logits = torch.zeros(1, 6, NUM_SECTION_CLASSES)
     logits[:, ::2, 0] = 8.0
     logits[:, 1::2, 1] = 8.0
 
@@ -294,7 +316,7 @@ def test_tv_penalty_punishes_a_flickering_posterior():
 
 
 def test_tv_penalty_stands_down_at_a_boundary():
-    logits = torch.zeros(1, 6, NUM_CLASSES)
+    logits = torch.zeros(1, 6, NUM_SECTION_CLASSES)
     logits[:, ::2, 0] = 8.0
     logits[:, 1::2, 1] = 8.0
 
@@ -304,7 +326,7 @@ def test_tv_penalty_stands_down_at_a_boundary():
 
 
 def test_tv_penalty_skips_unsupervised_frames():
-    logits = torch.zeros(1, 6, NUM_CLASSES)
+    logits = torch.zeros(1, 6, NUM_SECTION_CLASSES)
     logits[:, ::2, 0] = 8.0
     logits[:, 1::2, 1] = 8.0
     label_mask, boundary, boundary_mask = _tv_inputs(logits)
@@ -315,7 +337,7 @@ def test_tv_penalty_skips_unsupervised_frames():
 
 
 def test_tv_penalty_skips_frames_whose_boundary_target_was_deleted():
-    logits = torch.zeros(1, 6, NUM_CLASSES)
+    logits = torch.zeros(1, 6, NUM_SECTION_CLASSES)
     logits[:, ::2, 0] = 8.0
     logits[:, 1::2, 1] = 8.0
     label_mask, boundary, boundary_mask = _tv_inputs(logits)
@@ -329,7 +351,7 @@ def test_confusion_matrix_is_true_by_predicted():
     true = np.array([0, 0, 1, 2])
     pred = np.array([0, 1, 1, 1])
 
-    matrix = confusion_matrix(true, pred, NUM_CLASSES)
+    matrix = confusion_matrix(true, pred, NUM_SECTION_CLASSES)
 
     assert matrix[0, 0] == 1 and matrix[0, 1] == 1
     assert matrix[1, 1] == 1 and matrix[2, 1] == 1
@@ -338,7 +360,7 @@ def test_confusion_matrix_is_true_by_predicted():
 
 def test_per_class_f1_matches_the_hand_computed_value():
     # class 0 tp/fp/fn = 1/0/1 -> F1 2/3; class 1 = 1/2/0 -> F1 0.5
-    matrix = confusion_matrix(np.array([0, 0, 1, 2]), np.array([0, 1, 1, 1]), NUM_CLASSES)
+    matrix = confusion_matrix(np.array([0, 0, 1, 2]), np.array([0, 1, 1, 1]), NUM_SECTION_CLASSES)
 
     scores = per_class_f1(matrix)
 
@@ -348,13 +370,13 @@ def test_per_class_f1_matches_the_hand_computed_value():
 
 
 def test_macro_f1_averages_only_over_classes_that_occur():
-    matrix = confusion_matrix(np.array([0, 0, 1, 1]), np.array([0, 0, 1, 1]), NUM_CLASSES)
+    matrix = confusion_matrix(np.array([0, 0, 1, 1]), np.array([0, 0, 1, 1]), NUM_SECTION_CLASSES)
 
     assert macro_f1(matrix) == pytest.approx(1.0)
 
 
 def test_macro_f1_counts_a_class_the_model_hallucinates():
-    matrix = confusion_matrix(np.array([0, 0, 0, 0]), np.array([0, 0, 0, 3]), NUM_CLASSES)
+    matrix = confusion_matrix(np.array([0, 0, 0, 0]), np.array([0, 0, 0, 3]), NUM_SECTION_CLASSES)
 
     # class 0: P=1, R=0.75 -> F1=6/7; class 3: never true, once predicted -> 0.
     assert macro_f1(matrix) == pytest.approx((6 / 7) / 2)
@@ -376,14 +398,15 @@ def test_pr_auc_without_a_positive_is_not_a_number():
 
 
 def test_ece_is_zero_when_confidence_matches_accuracy():
-    probs = np.full((100, NUM_CLASSES), 0.2)
-    labels = np.arange(100) % NUM_CLASSES
+    rows = 10 * NUM_SECTION_CLASSES          # each class occurs exactly 1/C of the time
+    probs = np.full((rows, NUM_SECTION_CLASSES), 1.0 / NUM_SECTION_CLASSES)
+    labels = np.arange(rows) % NUM_SECTION_CLASSES
 
     assert per_class_ece(probs, labels)[0] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_ece_is_one_for_a_confidently_wrong_class():
-    probs = np.zeros((50, NUM_CLASSES))
+    probs = np.zeros((50, NUM_SECTION_CLASSES))
     probs[:, 0] = 1.0
     labels = np.ones(50, dtype=np.int64)
 
@@ -391,7 +414,7 @@ def test_ece_is_one_for_a_confidently_wrong_class():
 
 
 def test_ece_is_zero_for_a_confidently_right_class():
-    probs = np.zeros((50, NUM_CLASSES))
+    probs = np.zeros((50, NUM_SECTION_CLASSES))
     probs[:, 0] = 1.0
     labels = np.zeros(50, dtype=np.int64)
 
@@ -467,7 +490,7 @@ def test_target_stats_counts_only_supervised_positions():
 
     stats = accumulate_target_stats([targets, targets])
 
-    assert stats.class_counts.tolist() == [2, 4, 0, 0, 0]
+    assert stats.class_counts.tolist() == [2, 4] + [0] * (NUM_SECTION_CLASSES - 2)
     assert stats.boundary_positive == pytest.approx(3.0)
     assert stats.boundary_valid == 6
 

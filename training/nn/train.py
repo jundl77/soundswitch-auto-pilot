@@ -71,8 +71,6 @@ from .dataset import (
     FRAME_SEC,
     IGNORE_INDEX,
     LABEL_POOL,
-    NUM_CLASSES,
-    V1_ORDER,
     WindowDataset,
     candidate_tracks,
     make_splits,
@@ -82,6 +80,7 @@ from .dataset import (
 from .model import PARAM_BUDGET, SectionCRNN, count_parameters
 
 from build_training_table import default_data_dir  # noqa: E402
+from lib.label_space import NUM_SECTION_CLASSES, SECTION_LABELS  # noqa: E402
 from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
 
 MODELS_DIR = "models"
@@ -231,12 +230,12 @@ class TargetStats(NamedTuple):
 
 def accumulate_target_stats(targets_iterable) -> TargetStats:
     """Fold whole-track ``TrackTargets`` into the two loss-weight statistics."""
-    counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    counts = np.zeros(NUM_SECTION_CLASSES, dtype=np.int64)
     positive = 0.0
     valid = 0
     for targets in targets_iterable:
         supervised = targets.label_pooled[targets.label_pooled_mask]
-        counts += np.bincount(supervised, minlength=NUM_CLASSES).astype(np.int64)
+        counts += np.bincount(supervised, minlength=NUM_SECTION_CLASSES).astype(np.int64)
         positive += float(targets.boundary[targets.boundary_mask].sum())
         valid += int(targets.boundary_mask.sum())
     return TargetStats(counts, positive, valid)
@@ -512,7 +511,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *,
              tv_lambda: float) -> dict:
     """One pass over the val split -> the metric block logged each epoch."""
     model.eval()
-    matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
+    matrix = np.zeros((NUM_SECTION_CLASSES, NUM_SECTION_CLASSES), dtype=np.int64)
     probs_chunks: list = []
     label_chunks: list = []
     boundary_scores: list = []
@@ -540,10 +539,10 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *,
             batches += 1
 
             valid = label_mask.reshape(-1).cpu().numpy()
-            probabilities = label_logits.softmax(dim=-1).reshape(-1, NUM_CLASSES)
+            probabilities = label_logits.softmax(dim=-1).reshape(-1, NUM_SECTION_CLASSES)
             probabilities = probabilities.float().cpu().numpy()[valid]
             truth = labels.reshape(-1).cpu().numpy()[valid]
-            matrix += confusion_matrix(truth, probabilities.argmax(axis=1), NUM_CLASSES)
+            matrix += confusion_matrix(truth, probabilities.argmax(axis=1), NUM_SECTION_CLASSES)
             probs_chunks.append(probabilities)
             label_chunks.append(truth)
 
@@ -553,19 +552,19 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *,
             boundary_labels.append(
                 (boundary.reshape(-1).cpu().numpy()[live] >= BOUNDARY_POSITIVE_THRESHOLD))
 
-    probs = np.concatenate(probs_chunks) if probs_chunks else np.zeros((0, NUM_CLASSES))
+    probs = np.concatenate(probs_chunks) if probs_chunks else np.zeros((0, NUM_SECTION_CLASSES))
     truth = np.concatenate(label_chunks) if label_chunks else np.zeros(0, dtype=np.int64)
     ece = per_class_ece(probs, truth)
     divisor = max(batches, 1)
     return {
         "macro_f1": macro_f1(matrix),
         "per_class_f1": {name: float(value) for name, value
-                         in zip(V1_ORDER, per_class_f1(matrix))},
+                         in zip(SECTION_LABELS, per_class_f1(matrix))},
         "boundary_pr_auc": pr_auc(np.concatenate(boundary_scores) if boundary_scores
                                   else np.zeros(0),
                                   np.concatenate(boundary_labels) if boundary_labels
                                   else np.zeros(0, dtype=bool)),
-        "ece": {name: float(value) for name, value in zip(V1_ORDER, ece)},
+        "ece": {name: float(value) for name, value in zip(SECTION_LABELS, ece)},
         "ece_mean": float(ece.mean()),
         "loss": {key: value / divisor for key, value in losses.items()},
         "confusion": matrix.tolist(),
@@ -604,7 +603,7 @@ def train(config: dict) -> dict:
     pos_weight = boundary_pos_weight(stats.boundary_positive, stats.boundary_valid)
     weight_tensor = torch.as_tensor(weights, dtype=torch.float32, device=device)
 
-    model = SectionCRNN(n_classes=NUM_CLASSES, label_pool=LABEL_POOL,
+    model = SectionCRNN(n_classes=NUM_SECTION_CLASSES, label_pool=LABEL_POOL,
                         dropout=config["dropout"]).to(device)
     params = count_parameters(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"],

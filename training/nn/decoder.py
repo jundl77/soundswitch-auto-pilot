@@ -14,6 +14,8 @@ import numpy as np
 
 from .priors import Priors
 
+from lib.label_space import check_class_space  # noqa: E402
+
 # ~5.6 s at the corpus median bar of 1.875 s, inside the 8 s look-ahead budget.
 DEFAULT_LAG_BARS = 3
 
@@ -95,6 +97,9 @@ class FixedLagViterbi:
 
         self.priors = priors
         self.classes = tuple(priors.classes)
+        # The trellis is built positionally off this list; a space the vocabulary
+        # does not recognise would decode shifted rather than fail.
+        check_class_space(self.classes, "the priors handed to FixedLagViterbi")
         self.lag_bars = int(lag_bars)
         self.class_prior_division = bool(class_prior_division)
         self.prior_strength = float(prior_strength)

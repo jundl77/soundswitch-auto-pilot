@@ -30,9 +30,10 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from build_training_table import (  # noqa: E402  (needs the path insert above)
-    V1_ORDER,
     write_feature_sidecar,
 )
+from lib.label_space import LABEL_INDEX, NUM_SECTION_CLASSES, SECTION_LABELS  # noqa: E402
+from nn import dataset as nn_dataset  # noqa: E402
 from nn.dataset import (  # noqa: E402
     BOUNDARY_MASK_RADIUS_SEC,
     BOUNDARY_SIGMA_SEC,
@@ -49,12 +50,11 @@ from nn.dataset import (  # noqa: E402
     artist_participants,
     assign_split,
     excluded_artist_names,
+    label_spans,
     make_splits,
     partition,
     track_targets,
 )
-
-CLASS_INDEX = {label: index for index, label in enumerate(V1_ORDER)}
 
 
 # --------------------------------------------------------------------------- #
@@ -378,16 +378,32 @@ def test_trailing_audio_past_the_last_section_is_masked():
     assert targets.label_mask[frame_of(80.0)]
 
 
-def test_labels_are_folded_into_the_v1_space():
+def test_every_published_label_keeps_its_own_name():
+    """The four labels the retired folds used to absorb are now classes of their own."""
     targets = targets_for([
         (0.0, 30.0, "altintro"), (30.0, 60.0, "bridge"),
         (60.0, 90.0, "cooldown"), (90.0, 120.0, "altoutro"),
     ])
     at = lambda t: targets.label_frame[frame_of(t)]
-    assert at(15.0) == CLASS_INDEX["intro"]
-    assert at(45.0) == CLASS_INDEX["breakdown"]      # bridge -> breakdown
-    assert at(75.0) == CLASS_INDEX["breakdown"]      # cooldown -> breakdown
-    assert at(105.0) == CLASS_INDEX["outro"]         # altoutro -> outro
+    assert at(15.0) == LABEL_INDEX["altintro"]
+    assert at(45.0) == LABEL_INDEX["bridge"]
+    assert at(75.0) == LABEL_INDEX["cooldown"]
+    assert at(105.0) == LABEL_INDEX["altoutro"]
+
+
+def test_label_spans_carry_the_published_label_verbatim():
+    assert label_spans([(0.0, 10.0, "altintro"), (10.0, 20.0, "end"),
+                        (20.0, 30.0, "cooldown")]) == [
+        (0.0, 10.0, "altintro"), (20.0, 30.0, "cooldown")]
+
+
+def test_the_dataset_targets_span_the_whole_published_vocabulary():
+    """Every class the annotator can write is a class the label head can emit."""
+    spans = [(30.0 * index, 30.0 * (index + 1), label)
+             for index, label in enumerate(SECTION_LABELS)]
+    targets = targets_for(spans, duration=30.0 * len(SECTION_LABELS) + 30.0)
+    supervised = targets.label_frame[targets.label_mask]
+    assert set(supervised.tolist()) == set(range(NUM_SECTION_CLASSES))
 
 
 def test_boundary_target_peaks_at_the_boundary_frame():
@@ -412,34 +428,51 @@ def test_boundary_targets_sit_at_every_label_change():
         assert targets.boundary[frame_of(boundary)] == pytest.approx(1.0, abs=0.01)
 
 
-def test_merged_run_joins_are_deleted_not_taught_as_negatives():
-    """breakdown|cooldown folds to one v1 run -- the join is unknowable, so it is masked."""
+def test_a_former_fold_join_is_taught_as_a_boundary():
+    """The signal the folds destroyed.  ``breakdown|cooldown`` used to collapse to
+    one run, so its join was deleted from the boundary mask as unknowable; the
+    same goes for the ``altintro`` -> ``intro`` beat-in.  With no folds both are
+    published section changes like any other."""
     targets = targets_for([
-        (0.0, 30.0, "intro"), (30.0, 60.0, "breakdown"),
-        (60.0, 90.0, "cooldown"), (90.0, 150.0, "drop"),
+        (0.0, 30.0, "altintro"), (30.0, 60.0, "intro"),
+        (60.0, 90.0, "breakdown"), (90.0, 150.0, "cooldown"),
     ])
-    join = frame_of(60.0)
+    for join in (30.0, 60.0, 90.0):
+        assert targets.boundary_mask[frame_of(join)]
+        assert targets.boundary[frame_of(join)] == pytest.approx(1.0, abs=0.01)
 
-    assert not targets.boundary_mask[join]
+
+def test_two_adjacent_sections_of_the_same_label_still_carry_a_boundary():
+    """Nothing merges them here, and a published boundary stands on its own --
+    so the boundary head is taught it even though the label head sees no change."""
+    targets = targets_for([
+        (0.0, 30.0, "intro"), (30.0, 60.0, "drop"), (60.0, 90.0, "drop"),
+    ])
+    repeat = frame_of(60.0)
+    assert targets.boundary_mask[repeat]
+    assert targets.boundary[repeat] == pytest.approx(1.0, abs=0.01)
+    assert targets.label_frame[repeat] == targets.label_frame[repeat - 1]
+
+
+def test_a_gap_in_the_annotation_is_deleted_from_the_boundary_mask():
+    """A hole carries no boundary truth: neither of its edges is a known event."""
+    targets = targets_for([
+        (0.0, 30.0, "intro"), (30.0, 40.0, "end"), (40.0, 90.0, "drop"),
+    ])
     radius = int(BOUNDARY_MASK_RADIUS_SEC / FRAME_SEC)
-    assert not targets.boundary_mask[join - radius + 1:join + radius - 1].any()
-    # The real boundaries either side keep their supervision.
-    assert targets.boundary_mask[frame_of(30.0)]
-    assert targets.boundary[frame_of(30.0)] == pytest.approx(1.0, abs=0.01)
-    assert targets.boundary_mask[frame_of(90.0)]
-    assert targets.boundary[frame_of(90.0)] == pytest.approx(1.0, abs=0.01)
-    # The label head is unaffected: the whole merged run is one class.
-    assert targets.label_frame[frame_of(45.0)] == CLASS_INDEX["breakdown"]
-    assert targets.label_frame[frame_of(75.0)] == CLASS_INDEX["breakdown"]
+    for edge in (frame_of(30.0), frame_of(40.0)):
+        assert not targets.boundary_mask[edge - radius + 1:edge + radius - 1].any()
 
 
-def test_a_real_boundary_beside_a_merged_join_keeps_its_target():
-    """Deletion must not swallow a genuine transition that happens to sit close."""
+def test_a_real_boundary_beside_a_deleted_gap_keeps_its_target():
+    """Deletion is for ambiguity; it must not swallow a genuine transition."""
     targets = targets_for([
-        (0.0, 30.0, "breakdown"), (30.0, 30.5, "cooldown"), (30.5, 90.0, "drop"),
+        (0.0, 30.0, "intro"), (30.0, 30.2, "end"),
+        (30.2, 31.0, "breakdown"), (31.0, 90.0, "drop"),
     ])
-    assert targets.boundary_mask[frame_of(30.5)]
-    assert targets.boundary[frame_of(30.5)] == pytest.approx(1.0, abs=0.01)
+    assert targets.boundary_mask[frame_of(31.0)]
+    assert targets.boundary[frame_of(31.0)] == pytest.approx(1.0, abs=0.01)
+    assert not targets.boundary_mask[frame_of(29.5)]
 
 
 def test_dropped_end_sentinel_leaves_an_unlabeled_gap():
@@ -449,22 +482,22 @@ def test_dropped_end_sentinel_leaves_an_unlabeled_gap():
     ])
     assert not targets.label_mask[frame_of(35.0)]
     assert not targets.boundary_mask[frame_of(35.0)]
-    assert targets.label_frame[frame_of(20.0)] == CLASS_INDEX["intro"]
-    assert targets.label_frame[frame_of(60.0)] == CLASS_INDEX["drop"]
+    assert targets.label_frame[frame_of(20.0)] == LABEL_INDEX["intro"]
+    assert targets.label_frame[frame_of(60.0)] == LABEL_INDEX["drop"]
 
 
 def test_negative_length_sections_are_clamped_not_crashed():
     targets = targets_for([(0.0, 30.0, "intro"), (60.0, 45.0, "buildup"),
                            (60.0, 120.0, "drop")])
-    assert targets.label_frame[frame_of(90.0)] == CLASS_INDEX["drop"]
+    assert targets.label_frame[frame_of(90.0)] == LABEL_INDEX["drop"]
 
 
 def test_label_pooling_takes_the_majority_of_each_group():
     targets = targets_for([(0.0, 60.0, "intro"), (60.0, 120.0, "drop")])
     pooled_at = lambda t: targets.label_pooled[frame_of(t) // LABEL_POOL]
 
-    assert pooled_at(30.0) == CLASS_INDEX["intro"]
-    assert pooled_at(90.0) == CLASS_INDEX["drop"]
+    assert pooled_at(30.0) == LABEL_INDEX["intro"]
+    assert pooled_at(90.0) == LABEL_INDEX["drop"]
     assert len(targets.label_pooled) == len(targets.label_frame) // LABEL_POOL
 
 
@@ -487,13 +520,13 @@ def test_boundary_targets_and_label_transitions_agree():
     """
     targets = targets_for([
         (0.0, 30.0, "intro"), (30.0, 60.0, "buildup"), (60.0, 120.0, "drop"),
-        (120.0, 150.0, "breakdown"), (150.0, 180.0, "cooldown"),   # merged join
+        (120.0, 150.0, "breakdown"), (150.0, 180.0, "cooldown"),
         (180.0, 210.0, "outro"),
     ], duration=240.0)
 
     labeled = targets.label_mask[:-1] & targets.label_mask[1:]
     changes = np.flatnonzero(labeled & (targets.label_frame[:-1] != targets.label_frame[1:]))
-    assert len(changes) == 4                       # 30, 60, 120, 180 -- not 150
+    assert len(changes) == 5                       # 30, 60, 120, 150, 180
 
     # Every label change carries a boundary peak within a frame of it.
     for change in changes:
@@ -503,11 +536,13 @@ def test_boundary_targets_and_label_transitions_agree():
     for peak in np.flatnonzero(targets.boundary > 0.9):
         assert float(np.abs(changes - peak).min()) * FRAME_SEC <= 0.35
 
-    # The merged join is the control: no label change AND no boundary target.
-    join = frame_of(150.0)
-    assert targets.label_frame[join] == targets.label_frame[join - 1]
-    assert targets.boundary[join] == 0.0
-    assert not targets.boundary_mask[join]
+
+@pytest.mark.parametrize("name", [
+    "V1_ORDER", "NUM_CLASSES", "CLASS_INDEX", "v1_spans", "_boundaries_and_joins",
+])
+def test_the_folded_label_space_is_gone_from_the_module(name):
+    """Retired, not merely unused: a surviving alias is a second vocabulary."""
+    assert not hasattr(nn_dataset, name)
 
 
 def test_a_track_with_no_labeled_sections_is_entirely_masked():
@@ -631,7 +666,7 @@ def test_dataset_refuses_a_track_with_nothing_to_supervise(tmp_path):
     """A fully masked track is hours of zero gradient that looks like it works."""
     tracks = corpus_tracks(1)
     data_dir, _eval_set = fake_corpus(tmp_path, tracks, frames=1000)
-    with pytest.raises(RuntimeError, match="label_v1"):
+    with pytest.raises(RuntimeError, match="labelled sections"):
         WindowDataset(data_dir, [tracks[0][1]],
                       sections_by_youtube_id={tracks[0][1]: [(0.0, 30.0, "end")]})
 
