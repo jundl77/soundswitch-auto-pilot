@@ -30,6 +30,9 @@ WARN_COLOR = '#f0883e'
 MUTED      = '#6e7681'
 POSTERIOR_FILL = '#58a6ff'
 
+HEALTH_FONT_SIZE = '14px'
+TIMING_FONT_SIZE = '12px'
+
 BEAT_MARKER_SIZE = 16
 
 REFRESH_MS = 250
@@ -416,23 +419,57 @@ def _build_metrics(snapshot: dict) -> list:
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
-    timing_str, timing_col = _timing_health(snapshot.get('timing_stats', {}))
+    verdict_str, stream_strs, timing_col = _timing_health(
+        snapshot.get('timing_stats', {}))
     shed = snapshot.get('shed') or {}
     pill_str, pill_col = _shed_pill(shed)
     rate_str, rate_col = _shed_rate(shed)
 
-    items = [
-        html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'room {room_text}', id='room-clock', style={'color': '#e6edf3', 'fontWeight': 'bold', 'marginRight': '10px'}),
-        html.Span(f'song {song_text}', id='song-clock', style={'color': MUTED, 'marginRight': '20px'}),
-        html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
-        html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
-        html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
-        html.Span(pill_str, style={'color': pill_col, 'fontWeight': 'bold', 'marginRight': '10px'}),
-        html.Span(rate_str, style={'color': rate_col, 'marginRight': '20px'}),
-        html.Span(timing_str, style={'color': timing_col}),
+    return [
+        _metric_row([
+            html.Span(status_lbl, style={'color': status_col,
+                                         'fontWeight': 'bold',
+                                         'minWidth': '11ch'}),
+            html.Span(f'room {room_text}', id='room-clock',
+                      style={'color': '#e6edf3', 'fontWeight': 'bold',
+                             'minWidth': '17ch'}),
+            html.Span(f'song {song_text}', id='song-clock',
+                      style={'color': MUTED, 'minWidth': '17ch'}),
+        ]),
+        _metric_row([
+            html.Span(f'{bpm:.0f} BPM', style={'color': '#58a6ff',
+                                               'minWidth': '9ch'}),
+            html.Span(f'{beats} beats', style={'color': OK_COLOR,
+                                               'minWidth': '12ch'}),
+            html.Span(f'intent: {intent_lbl}', style={'color': intent_col,
+                                                      'fontWeight': 'bold'}),
+        ]),
+        _metric_row([
+            html.Span(pill_str, style={'color': pill_col,
+                                       'fontWeight': 'bold',
+                                       'fontSize': HEALTH_FONT_SIZE,
+                                       'border': f'1px solid {pill_col}',
+                                       'borderRadius': '4px',
+                                       'padding': '2px 10px'}),
+            html.Span(rate_str, style={'color': rate_col}),
+        ], alignItems='center'),
+        _metric_row(
+            [html.Span(verdict_str, style={'color': timing_col,
+                                           'fontWeight': 'bold'})]
+            + [html.Span(text, style={'color': MUTED, 'minWidth': '21ch'})
+               for text in stream_strs],
+            fontSize=TIMING_FONT_SIZE, columnGap='16px', marginBottom='0',
+            marginTop='2px', paddingTop='7px',
+            borderTop=f'1px solid {BORDER}'),
     ]
-    return items
+
+
+def _metric_row(items: list, **overrides) -> html.Div:
+    style = {'display': 'flex', 'alignItems': 'baseline', 'flexWrap': 'wrap',
+             'columnGap': '22px', 'rowGap': '4px', 'marginBottom': '7px',
+             'fontVariantNumeric': 'tabular-nums'}
+    style.update(overrides)
+    return html.Div(items, style=style)
 
 
 def _shed_pill(shed: dict) -> tuple:
@@ -459,16 +496,16 @@ def _shed_rate(shed: dict) -> tuple:
 def _timing_health(stats: dict) -> tuple:
     by_label = stats.get('by_label') or {}
     if not by_label:
-        return 'cmd timing: —', MUTED
+        return 'cmd timing: —', [], MUTED
     tolerance_ms = TIMING_TOLERANCE_SEC * 1000
     worst = max(by_label, key=lambda label: by_label[label]['mean_error_ms'])
     late = by_label[worst]['mean_error_ms'] > tolerance_ms
-    streams = ' '.join(f'{label} {s["mean_delta_sec"]:.2f}s±{s["mean_error_ms"]:.0f}ms'
-                       for label, s in by_label.items())
+    streams = [f'{label} {s["mean_delta_sec"]:.2f}s ±{s["mean_error_ms"]:.0f}ms'
+               for label, s in by_label.items()]
     if late:
         return (f'cmd timing: {worst} misses its target by '
-                f'{by_label[worst]["mean_error_ms"]:.0f}ms  │  {streams}'), WARN_COLOR
-    return f'cmd timing: on target  │  {streams}', OK_COLOR
+                f'{by_label[worst]["mean_error_ms"]:.0f}ms'), streams, WARN_COLOR
+    return 'cmd timing: on target', streams, OK_COLOR
 
 
 STYLESHEET = '''
@@ -754,7 +791,7 @@ def build_app(snapshot_source) -> dash.Dash:
             html.Div(id='metrics', style={'flex': '1'}),
             html.Div('— fps', id='fps', style={'color': MUTED, 'marginLeft': '20px'}),
         ], style={
-            'display': 'flex', 'alignItems': 'center',
+            'display': 'flex', 'alignItems': 'flex-start',
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),
