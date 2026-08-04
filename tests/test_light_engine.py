@@ -1193,3 +1193,41 @@ async def test_the_quiet_floor_records_the_song_instant_it_happened_at():
     assert block['trigger'] == 'silence'
     assert block['song_t'] == pytest.approx(block['t'], abs=1e-6)
     assert block['t'] == pytest.approx(37.0 + STOP_PERSISTENCE_SEC, abs=0.2)
+
+
+async def test_the_engine_publishes_what_the_watchdog_knows_about_shedding():
+    from lib.analyser.drift_watchdog import DriftWatchdog
+
+    light, _, clock, _ = engine(events=True)
+    light._watchdog = DriftWatchdog(256 / SAMPLE_RATE, clock=clock)
+
+    await elapse(light, clock, 1.0)
+    assert light.event_buffer.snapshot()['shed']['level'] == 'NONE'
+
+    light._watchdog.report_fault('hung_pass')
+    await elapse(light, clock, 1.0)
+    shed = light.event_buffer.snapshot()['shed']
+    assert (shed['level'], shed['fault']) == ('NN_SHED', 'hung_pass')
+    assert (shed['sheds'], shed['sheds_per_min']) == (1, 1)
+
+
+async def test_a_shed_shorter_than_the_publish_step_is_still_counted():
+    from lib.analyser.drift_watchdog import DriftWatchdog
+
+    light, _, clock, _ = engine(events=True)
+    light._watchdog = DriftWatchdog(256 / SAMPLE_RATE, clock=clock)
+    await elapse(light, clock, 1.0)
+
+    light._watchdog.report_fault('hung_pass')
+    light._watchdog.report_healthy()
+    await elapse(light, clock, 1.0)
+
+    shed = light.event_buffer.snapshot()['shed']
+    assert shed['level'] == 'NONE', 'the level poll should have missed it'
+    assert shed['sheds'] == 1, 'and the counter should not have'
+
+
+async def test_a_show_with_no_watchdog_publishes_nothing_rather_than_zeroes():
+    light, _, clock, _ = engine(events=True)
+    await elapse(light, clock, 1.0)
+    assert light.event_buffer.snapshot()['shed'] == {}

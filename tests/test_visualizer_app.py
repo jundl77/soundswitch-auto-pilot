@@ -1049,3 +1049,49 @@ def test_the_pill_leaves_playing_when_the_audio_runs_out():
     pill = ''.join(_texts(V._build_metrics(buffer.snapshot())[0]))
     assert 'PLAYING' not in pill, pill
     assert 'PAUSED' in pill, pill
+
+
+def test_a_run_with_no_watchdog_says_so_rather_than_claiming_health():
+    items = V._build_metrics(_snapshot(shed={}))
+    assert _metric(items, 'health') == 'health: —'
+    assert _colour_of(items, 'health') == V.MUTED
+    assert _metric(items, 'sheds') == 'sheds: —'
+
+
+def test_a_healthy_chain_reads_live():
+    items = V._build_metrics(_snapshot(
+        shed={'level': 'NONE', 'fault': None, 'sheds': 0, 'sheds_per_min': 0}))
+    assert _metric(items, 'health') == 'health: ● LIVE'
+    assert _colour_of(items, 'health') == V.OK_COLOR
+    assert _metric(items, 'sheds') == 'sheds 0/min'
+
+
+def test_a_shed_chain_names_the_held_intent_and_the_fault_that_holds_it():
+    items = V._build_metrics(_snapshot(
+        shed={'level': 'NN_SHED', 'fault': 'hung_pass',
+              'sheds': 3, 'sheds_per_min': 2}))
+    pill = _metric(items, 'health')
+    assert 'DEGRADED' in pill and 'holding intent' in pill
+    assert 'hung_pass' in pill
+    assert _colour_of(items, 'health') == V.WARN_COLOR
+
+
+def test_a_shed_with_no_named_fault_still_reads_degraded():
+    items = V._build_metrics(_snapshot(
+        shed={'level': 'NN_SHED', 'fault': None,
+              'sheds': 1, 'sheds_per_min': 1}))
+    assert _metric(items, 'health') == 'health: ◆ DEGRADED — holding intent'
+
+
+def test_the_rate_and_the_run_total_are_both_readable():
+    items = V._build_metrics(_snapshot(
+        shed={'level': 'NONE', 'fault': None, 'sheds': 9, 'sheds_per_min': 2}))
+    assert _metric(items, 'sheds') == 'sheds 2/min  ·  9 this run'
+    assert _colour_of(items, 'sheds') == V.WARN_COLOR
+
+
+def test_a_run_that_settled_hours_ago_stops_shouting_about_it():
+    items = V._build_metrics(_snapshot(
+        shed={'level': 'NONE', 'fault': None, 'sheds': 9, 'sheds_per_min': 0}))
+    assert _metric(items, 'sheds') == 'sheds 0/min  ·  9 this run'
+    assert _colour_of(items, 'sheds') == V.MUTED

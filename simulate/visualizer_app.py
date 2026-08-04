@@ -417,6 +417,9 @@ def _build_metrics(snapshot: dict) -> list:
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
     timing_str, timing_col = _timing_health(snapshot.get('timing_stats', {}))
+    shed = snapshot.get('shed') or {}
+    pill_str, pill_col = _shed_pill(shed)
+    rate_str, rate_col = _shed_rate(shed)
 
     items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
@@ -425,9 +428,32 @@ def _build_metrics(snapshot: dict) -> list:
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
         html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
+        html.Span(pill_str, style={'color': pill_col, 'fontWeight': 'bold', 'marginRight': '10px'}),
+        html.Span(rate_str, style={'color': rate_col, 'marginRight': '20px'}),
         html.Span(timing_str, style={'color': timing_col}),
     ]
     return items
+
+
+def _shed_pill(shed: dict) -> tuple:
+    if not shed:
+        return 'health: —', MUTED
+    if shed.get('level', 'NONE') != 'NONE':
+        fault = shed.get('fault')
+        return (f'health: ◆ DEGRADED — holding intent'
+                f'{f" ({fault})" if fault else ""}'), WARN_COLOR
+    return 'health: ● LIVE', OK_COLOR
+
+
+def _shed_rate(shed: dict) -> tuple:
+    if not shed:
+        return 'sheds: —', MUTED
+    rate = shed.get('sheds_per_min', 0)
+    total = shed.get('sheds', 0)
+    text = f'sheds {rate}/min'
+    if total:
+        text += f'  ·  {total} this run'
+    return text, (WARN_COLOR if rate else MUTED)
 
 
 def _timing_health(stats: dict) -> tuple:
@@ -644,7 +670,7 @@ BLANK_SNAPSHOT = {
     'now': 0.0, 'look_ahead_sec': 0.0, 'is_playing': False,
     'beats': [], 'effects': [], 'intents': [], 'sound_events': [],
     'current_effect': None, 'bpm': 0.0, 'beats_detected': 0, 'intent': None,
-    'timing_stats': {}, 'decoder': {},
+    'timing_stats': {}, 'decoder': {}, 'shed': {},
 }
 
 POLL_TIMEOUT_SEC = 1.0

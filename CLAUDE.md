@@ -426,6 +426,21 @@ dependency-surface probe enforces, and the viewer is killed with `taskkill /T`
 because the venv launcher re-execs and the pid the show holds is a parent (#181).
 The report path never went near any of this: it is still written in the show.
 
+**One Ctrl-C has to end the session, and the obvious way to wait on a child
+guarantees it cannot.** `Popen.wait()` on Windows is `WaitForSingleObject` with
+an infinite timeout: it releases the GIL without joining CPython's SIGINT event,
+so it cannot return early. The interrupt is *delivered and then held* — measured,
+not inferred: killing the viewer by hand released the wait and the
+`KeyboardInterrupt` fired five seconds late, at the first bytecode afterwards,
+while the line straight after the wait never ran at all. That makes the deadlock
+exact, because the only thing that kills the viewer is the handler the interrupt
+has not reached yet. A second Ctrl-C cannot help; it re-sets a flag that is
+already set. So the session waits on the viewer by polling, which costs one
+wake-up every fifth of a second and makes the interrupt land in the same
+millisecond it is sent. The report is unaffected either way — it is written from
+a `finally` around the pipeline, so an interrupt mid-track still writes what the
+run had.
+
 **Smoothness is bought in the browser and never from the server**: the poll stays
 at its tick, because a faster poll once starved the plotly bundle behind Chrome's
 connection limit, and a 10 Hz viewer once cost the audio loop four sheds. The
@@ -559,6 +574,24 @@ moves: the stop is still detected when it is detected, its sound event is still
 recorded there, and the song-boundary reset and rebirth machinery still run at
 once. Those were gap-correct before the bypass existed, and the gate is not
 theirs to wear.
+
+**A shed chain and a model opinion look identical on screen, so the screen says
+which it is.** The show holds its current intent when the section stage sheds,
+and held ATMOSPHERIC through a shed is pixel-for-pixel what a confident
+ATMOSPHERIC decode looks like — which cost a day of debugging a model that was
+never asked. The snapshot therefore carries the watchdog's own reading: the
+level, the fault holding it, a **monotonic** shed count and a sheds-per-minute
+rate over the trailing minute. The counter is the load-bearing one: state is
+polled at a fixed step and a shed shorter than that step is invisible to a level
+poll but is exactly the flapping worth seeing, so the count is incremented at the
+watchdog's single transition point rather than sampled. The rate is what
+distinguishes a box that stumbled once from one that is failing continuously; the
+total is what says a quiet-looking run had a bad five minutes an hour ago.
+
+This is payload only. It is deliberately **not** in the report: the report is
+what the room saw, and a shed is a fact about this machine on this night, so
+putting it there would make two runs of the same audio on two machines produce
+different bytes. The digest is the check that this stayed true.
 
 **The display derives the gate rather than being told about it.** A stop reaches
 the room one window after it was recorded, and a stop with a start inside that
@@ -1021,7 +1054,7 @@ session is therefore not a clean read of what the headless pipeline does.
 - **The GPU stage degrades by holding, and there is no second classifier.** `NN_SHED` means: stop consuming posteriors, hold the current intent, keep beats and the silence timer, log loudly on a rate limit, attempt reinit on a backoff that tops out at one attempt per half minute, resume on success. Three of the four named GPU failure modes (a raised CUDA fault, an out-of-memory, a dead context) are the same mechanism reached by different exceptions and are deliberately not told apart — a policy that branched on the message text would be a policy about strings. The fourth, a hung pass, raises nothing at all and is caught by a timeout from the audio thread.
 - **A shed keeps feeding the ring**, which looks like waste and is the opposite: the extractor's sample index *is* song time and is what every cell is stamped from, so a stage that stopped taking audio would come back with a clock that disagrees with the beat grid, silently, for the rest of the song. What a shed stops is the encoder pass, not the microseconds of resampling. Both edges of a gap clear state — entering drops the hand-off queue and resets the decoder, leaving resyncs past the gap and starts the student cold — because everything they hold describes audio from before it.
 - **VRAM pressure fails silently on Windows.** The WDDM driver spills to host memory under pressure and raises no OOM at all, so a run that has started crawling reads as a healthy one. The gate is therefore the *plateau* in reserved bytes, not the absence of an error: measured on this box it climbs while the 30 s ring fills and then sits flat.
-- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and the input side DROPS rather than queues, so falling behind costs audio, not latency. The ladder is now one rung with two inputs — drift (which the audio loop measures) and stage health (which only the stage can report, because a CUDA fault costs the loop's pacing nothing). Either input alone holds the door shut. If a log shows sustained shedding, the box is too slow or the GPU is unwell — that is the signal, not a nuisance warning.
+- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and the input side DROPS rather than queues, so falling behind costs audio, not latency. The ladder is now one rung with two inputs — drift (which the audio loop measures) and stage health (which only the stage can report, because a CUDA fault costs the loop's pacing nothing). Either input alone holds the door shut. If a log shows sustained shedding, the box is too slow or the GPU is unwell — that is the signal, not a nuisance warning. **It is now also on screen**, because a log nobody is reading is not a signal (see Visualizer smoothness).
 - **Watching the show costs the show.** `--ui` serves Dash from the same process as the pipeline, so a viewer's callbacks and the pipeline contend for one GIL. One ordinary viewer measurably increased sheds over a single track (1 -> 5 against a control run); two stale viewers degraded it enough to reset the decoder repeatedly, and that show never left one intent for the whole track. A `--ui` session is not a clean read of headless behaviour, and its checksums are not comparable with a fast-sim baseline either.
 - **A soak or live run through a virtual audio cable needs the rig checked first.** A run whose default render endpoint is the cable never sees silence, so the silence gate never trips and no song boundary fires — a "song boundaries exercised" result under that configuration is vacuous. Measured with the machine actually quiet, the cable's idle RMS sits an order of magnitude *below* the gate, so the blocker is configuration (a media player left running was the real cause) rather than routing. The cable is also **not transparent**: measured round trip is about −3.6 dB with a tilted magnitude response and r ≈ 0.94, so the live pipeline analyses audibly different audio from the simulation. Sim/live show agreement is agreement *despite* that channel.
 - **`beats_cut` still banks at detection, not at the gate.** `set_playing(False)` counts every beat still travelling as never-heard the instant silence is detected, and the persistence gate deliberately did not move it — the recorder is the one thing the gate is not allowed to touch. When a gap cancels the bypass those beats *do* reach the room, so the displayed beat count under-reports by up to a look-ahead's worth of beats for every song change. Display only: nothing in the report, the training table or the digest reads it. Fixing it means either passing the window into the recorder or deriving the count in the render path, and both are a change to the machinery a ruling froze.

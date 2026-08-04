@@ -23,6 +23,7 @@ _BEAT_ABSENCE_SEC = 2.5
 PEAK_PROMOTION_BARS = 8
 
 _LATENCY_LOG_STEP_SEC = 0.25
+_SHED_PUBLISH_SEC = 1.0
 _BYPASSED_ON_STOP = ('sound', 'intent', 'refresh', 'overlay')
 COLD_START_FLOOR_MARGIN_SEC = 4.0
 
@@ -72,6 +73,7 @@ class LightEngine(IMusicAnalyserHandler):
         self._committing_late: bool = False
         self._floor_armed: bool = True
         self._bypass_due_at: float | None = None
+        self._shed_published_at: float = float('-inf')
         self._last_refresh_sec: float = float('-inf')
         self._committed = None
         self._log_chain_latency()
@@ -193,8 +195,23 @@ class LightEngine(IMusicAnalyserHandler):
         await self.effect_controller.process_effects()
         self.overlay_client.flush_messages()
 
+    def _publish_shed_state(self) -> None:
+        if self.event_buffer is None or self._watchdog is None:
+            return
+        now = self._clock.monotonic()
+        if now - self._shed_published_at < _SHED_PUBLISH_SEC:
+            return
+        self._shed_published_at = now
+        self.event_buffer.set_shed_state(
+            level=self._watchdog.level.name,
+            fault=self._watchdog.fault,
+            sheds=self._watchdog.sheds,
+            sheds_per_min=self._watchdog.sheds_per_min,
+            drift_sec=round(self._watchdog.drift_sec, 4))
+
     async def on_audio(self, audio_signal) -> None:
         self._bypass_if_the_silence_held()
+        self._publish_shed_state()
         self._audio_sec += len(audio_signal) / SAMPLE_RATE
         if self.section_chain is None or self.section_decoder is None:
             return

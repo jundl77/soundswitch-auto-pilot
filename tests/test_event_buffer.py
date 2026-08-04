@@ -321,3 +321,22 @@ def test_the_banked_beats_survive_the_window_they_were_counted_in():
     buf.set_playing(False)
     clock.advance(300.0)
     assert buf.snapshot()['beats_cut'] == 1
+
+
+def test_the_shed_state_reaches_the_payload_and_stays_out_of_the_report():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    buf.set_shed_state(level='NN_SHED', fault='hung_pass',
+                       sheds=2, sheds_per_min=1, drift_sec=0.31)
+    assert buf.snapshot()['shed'] == {'level': 'NN_SHED', 'fault': 'hung_pass',
+                                      'sheds': 2, 'sheds_per_min': 1,
+                                      'drift_sec': 0.31}
+    assert 'shed' not in buf.to_report()
+    assert 'shed' not in buf.to_report()['metrics']
+
+
+def test_a_run_with_nothing_sheddable_ships_an_empty_shed_block():
+    buf = EventBuffer(window_sec=float('inf'), clock=VirtualClock())
+    buf.start()
+    assert buf.snapshot()['shed'] == {}

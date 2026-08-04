@@ -35,6 +35,7 @@ class EventBuffer:
         self._beats_cut: int = 0
         self._sound_events: list[dict] = []
         self._decoder_state: dict = {}
+        self._shed_state: dict = {}
 
     def start(self) -> None:
         with self._lock:
@@ -109,6 +110,10 @@ class EventBuffer:
         with self._lock:
             self._decoder_state = dict(state)
 
+    def set_shed_state(self, **state) -> None:
+        with self._lock:
+            self._shed_state = dict(state)
+
     @staticmethod
     def _delivery(log: list[dict]) -> dict:
         errors_ms = [abs(e['actual_delta_sec'] - e['target_delta_sec']) * 1000 for e in log]
@@ -167,6 +172,7 @@ class EventBuffer:
                 'sound_events': self._sound_events_since(cutoff),
                 'timing_stats': timing_stats,
                 'decoder': dict(self._decoder_state),
+                'shed': dict(self._shed_state),
             }
 
     def to_report(self, timing_log: list[dict] | None = None) -> dict:

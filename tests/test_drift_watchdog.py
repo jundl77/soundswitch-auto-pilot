@@ -2,7 +2,8 @@ import logging
 
 import pytest
 
-from lib.analyser.drift_watchdog import DriftWatchdog, ShedLevel
+from lib.analyser.drift_watchdog import (SHED_RATE_WINDOW_SEC, DriftWatchdog,
+                                        ShedLevel)
 
 
 class FakeClock:
@@ -255,3 +256,73 @@ def test_reset_clears_a_latched_fault():
     dog.reset()
     assert dog.level is ShedLevel.NONE
     assert dog.fault is None
+
+
+def test_a_shed_is_counted_once_however_long_it_lasts():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    assert dog.sheds == 0
+
+    dog.report_fault('hung_pass')
+    assert dog.sheds == 1
+    dog.report_fault('stage_error')
+    clock.advance(30.0)
+    assert dog.sheds == 1, 'a fault changing kind restarted the count'
+
+
+def test_every_return_to_shed_is_a_new_shed():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    for _ in range(3):
+        dog.report_fault('hung_pass')
+        clock.advance(1.0)
+        dog.report_healthy()
+        clock.advance(1.0)
+    assert dog.sheds == 3
+    assert dog.level is ShedLevel.NONE
+
+
+def test_the_rate_counts_the_last_minute_and_the_total_never_forgets():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    for _ in range(4):
+        dog.report_fault('hung_pass')
+        clock.advance(1.0)
+        dog.report_healthy()
+        clock.advance(1.0)
+    assert (dog.sheds, dog.sheds_per_min) == (4, 4)
+
+    clock.advance(SHED_RATE_WINDOW_SEC + 1.0)
+    assert dog.sheds_per_min == 0, 'the rate window never expired'
+    assert dog.sheds == 4, 'the monotonic count forgot a shed'
+
+
+def test_the_rate_window_slides_rather_than_resetting():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('hung_pass')
+    dog.report_healthy()
+    clock.advance(SHED_RATE_WINDOW_SEC - 1.0)
+    dog.report_fault('hung_pass')
+    dog.report_healthy()
+    assert dog.sheds_per_min == 2
+
+    clock.advance(2.0)
+    assert dog.sheds_per_min == 1, 'the older shed did not age out on its own'
+
+
+def test_a_recovery_is_not_a_shed():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('hung_pass')
+    dog.report_healthy()
+    assert (dog.sheds, dog.level) == (1, ShedLevel.NONE)
+
+
+def test_reset_returns_the_shed_count_to_the_constructed_state():
+    clock = FakeClock()
+    dog = DriftWatchdog(BUF, clock=clock)
+    dog.report_fault('hung_pass')
+    assert dog.sheds == 1
+    dog.reset()
+    assert (dog.sheds, dog.sheds_per_min) == (0, 0)
