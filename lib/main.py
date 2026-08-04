@@ -245,15 +245,19 @@ async def label_cmd(args: argparse.Namespace):
         sys.path.insert(0, training)
     import label_tool
 
-    label_tool.launch(args.audio, port=args.port,
-                      output_device=(None if args.output_device is None
-                                     else int(args.output_device)))
+    label_tool.launch(args.audio, port=args.port)
 
 
 def death_handler(signum, frame):
-    if global_app is not None:
-        logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
-        global_app.stop()
+    if global_app is None:
+        # These handlers are installed at import, so every subcommand gets them
+        # -- including the ones that never build a show. Returning here would be
+        # the end of it: the interrupt is delivered, consumed, and never becomes
+        # a KeyboardInterrupt, so anything blocked in a serve loop keeps serving
+        # and Ctrl-C looks broken. Raise what the default handler would have.
+        raise KeyboardInterrupt
+    logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
+    global_app.stop()
 
 
 signal.signal(signal.SIGINT, death_handler)
@@ -286,7 +290,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparser = subparsers.add_parser('label', help='Hand-label a song into sections in the browser (requires dash extra)')
     subparser.add_argument('audio', help='Path to the audio file to label')
     subparser.add_argument('--port', type=int, default=8070, help='Labeler Dash server port (default: 8070)')
-    subparser.add_argument('-o', '--output_device', help='Specify the index of the sound OUTPUT device to play through, uses system-default by default', required=False, default=None)
     subparser.set_defaults(func=label_cmd)
 
     from simulate.cli import add_simulate_subparser
