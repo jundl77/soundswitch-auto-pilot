@@ -23,6 +23,7 @@ from run_eval_set import (  # noqa: E402
     audio_path,
     build_document,
     build_jobs,
+    build_parser,
     compare,
     corpus_audio_path,
     corpus_dir,
@@ -699,3 +700,11 @@ def test_a_count_fact_missing_from_the_baseline_is_a_failure_not_a_skip():
 
     assert outcome.failed
     assert any("silence_interior" in line for line in outcome.fact_drift)
+
+
+def test_the_benchmark_runs_serial_unless_a_human_asks_otherwise():
+    assert build_parser().parse_args([]).workers == 1
+
+
+def test_parallelism_is_still_reachable_for_a_machine_that_can_afford_it():
+    assert build_parser().parse_args(["--workers", "4"]).workers == 4

@@ -24,7 +24,6 @@ for _path in (
 
 from build_training_table import (  # noqa: E402  (needs the path inserts above)
     _git,
-    default_workers,
     join_track,
     load_sections_by_track,
     pipeline_sha,
@@ -621,7 +620,7 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
     return document, runs, total_song, total_wall
 
 
-def main(argv: list | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=Path, default=corpus_dir(),
                         help=f"corpus root holding audio/ and annotations/; "
@@ -644,12 +643,18 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--flicker-tolerance", type=float,
                         default=DEFAULT_FLICKER_TOLERANCE,
                         help="how far flicker/min may rise (default: %(default)s)")
-    parser.add_argument("--workers", type=int, default=default_workers(),
-                        help="parallel simulations; results are identical either "
-                             "way (default: %(default)s)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="parallel simulations; the bytes are identical "
+                             "either way, but a cold run holds several GB of "
+                             "VRAM per worker and oversubscribing one card "
+                             "wedges rather than slows (default: %(default)s)")
     parser.add_argument("--quiet", action="store_true",
                         help="only the table and the verdict")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     try:
         document = load_eval_set(Path(args.eval_set))
