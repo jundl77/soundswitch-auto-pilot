@@ -126,6 +126,7 @@ caller's thread".
 | `simulate/ui_wedge_rig.py` | The viewer under a slow callback, with no audio and no GPU: a seeded buffer, the real snapshot server and the real Dash app, with latency injected into every poll — `serve` reproduces the freeze in a browser, `profile` times the server callbacks without one |
 | `training/corpus_root.py` | Where the gitignored corpus is on this machine, stdlib-only â€” so a *show* can ask without importing the benchmark harness |
 | `training/inspect_report.py` | Report inspector â€” per-10s rms/beat/intent bins + intent timeline; the tool for checking a show against a track's structure |
+| `training/label_tool.py` | `auto_pilot label` â€” a Dash app over one track's waveform, onset curve and beat grid, where the owner cuts a track into sections in the raw Raveform vocabulary plus a per-boundary strength. A labelling has two homes and the split *is* the lifecycle: working state is scratch CSV under `<corpus>/tmp_labels/` -- resolved through `corpus_root` exactly as a committed label is, because two resolutions meant a relaunch from another worktree silently showed an empty labelling while the work sat elsewhere -- rewritten on every edit so the file is the state and the page only a view of it; **Commit** promotes it into the dataset as `annotations/<track_id>.hand.json`, copying the audio into the corpus if it is not already there, and hands off to the corpus admission step if this branch has one. `segments.json` is never written to -- the benchmark hashes it. Places files only; git is the owner's action. Reads nothing from `lib/` or `simulate/`; the CLI reaches *it* the way the show reaches `corpus_root`, which is what keeps dash off the show's import path |
 | `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
 | `training/soak_nn.py` | The live soak: a player and a subject, real audio through real hardware for half an hour, sampled at 1 Hz |
 | `training/nn_determinism_proof.py` | Four runs per track in four interpreters â€” cold/cold, warm/warm, cold/warm â€” and the bytes compared |
@@ -695,6 +696,11 @@ python auto_pilot simulate file path/to/song.mp3          # fast headless: repor
 python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced, threaded GPU stage, live Dash timeline
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
 
+# Hand-label a song's sections. Edits autosave to <corpus>/tmp_labels/;
+# "commit to dataset" promotes them into the corpus annotations as *.hand.json.
+# Which speakers it plays through is picked in the page, not on the command line
+python auto_pilot label path/to/song.mp3                   # browser labeller on :8070
+
 # Inspect a report: per-10s rms/beat bins, intent timeline, distribution
 python auto_pilot simulate file path/to/song.mp3 --report report.json
 python training/inspect_report.py report.json
@@ -1045,6 +1051,8 @@ session is therefore not a clean read of what the headless pipeline does.
    still describes the rule engine.
 
 **Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, the download state files, and the build outputs (`reports/`, `features/`, `training_table.csv.gz`, `splits.json`, `models/` and `posteriors/`) -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`.
+
+**With exactly one exception, and it is the owner's rule rather than a technicality: labels are committed, songs are not.** Hand-authored annotations (`annotations/*.hand.json`, see the labelling tool) are the only thing under `training/data/` that git tracks. They are not derived from anything -- nobody can regenerate a human's judgement -- so losing them to a `.gitignore` written for a 90 GB corpus would be losing the one artifact in there that is genuinely irreplaceable. Re-including a path that deep needs a rung per directory level, because a directory excluded with a trailing slash is pruned before git looks inside it; the first rung re-admits `training/data/` itself, since at least one machine also excludes it from `.git/info/exclude`, which `.gitignore` can override but only if it names the same directory. The published `segments.json` is deliberately *not* re-admitted -- widening the exception to it is a one-line change and an owner decision.
 
 **This directory is now a production dependency, not just a research one.** The shipped encoder, the student's graph and the priors live under `models/`, and the show reads them at startup. `training/corpus_root.py` is the single stdlib-only answer to "where is it" -- `$RAVEFORM_DATA_DIR`, else the repo's copy, else the main worktree's -- and `lib/section_chain.py` asks it rather than reaching through the benchmark harness. That indirection is not cosmetic: resolving the path through `run_eval_set` pulled the table builder, the label evaluator, the acquisition scripts and a git subprocess into production startup, and any failure anywhere in that chain read as "this machine has no model", so the show quietly ran the degradation state on a box that had one.
 

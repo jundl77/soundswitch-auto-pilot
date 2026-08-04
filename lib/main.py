@@ -233,10 +233,31 @@ async def list_cmd(args: argparse.Namespace):
     MidiClient(0).list_devices()
 
 
+async def label_cmd(args: argparse.Namespace):
+    # Imported here, and by path rather than as a package, for the same two
+    # reasons the corpus root is: training/ is not installed, and the labeller
+    # needs dash, which the show is not allowed to pull in.
+    import sys
+    from pathlib import Path
+
+    training = str(Path(__file__).resolve().parents[1] / 'training')
+    if training not in sys.path:
+        sys.path.insert(0, training)
+    import label_tool
+
+    label_tool.launch(args.audio, port=args.port)
+
+
 def death_handler(signum, frame):
-    if global_app is not None:
-        logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
-        global_app.stop()
+    if global_app is None:
+        # These handlers are installed at import, so every subcommand gets them
+        # -- including the ones that never build a show. Returning here would be
+        # the end of it: the interrupt is delivered, consumed, and never becomes
+        # a KeyboardInterrupt, so anything blocked in a serve loop keeps serving
+        # and Ctrl-C looks broken. Raise what the default handler would have.
+        raise KeyboardInterrupt
+    logging.info('[DEATH] caught signal "SIGINT/SIGTERM", stopping')
+    global_app.stop()
 
 
 signal.signal(signal.SIGINT, death_handler)
@@ -248,7 +269,7 @@ def run_sync():
     loop.run_until_complete(main())
 
 
-async def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(help='Functionality to start')
 
@@ -266,9 +287,18 @@ async def main():
     subparser.add_argument('--report', default=None, help='Write a JSON session report on exit (e.g. report.json); implies event tracking', required=False)
     subparser.set_defaults(func=run_cmd)
 
+    subparser = subparsers.add_parser('label', help='Hand-label a song into sections in the browser (requires dash extra)')
+    subparser.add_argument('audio', help='Path to the audio file to label')
+    subparser.add_argument('--port', type=int, default=8070, help='Labeler Dash server port (default: 8070)')
+    subparser.set_defaults(func=label_cmd)
+
     from simulate.cli import add_simulate_subparser
     add_simulate_subparser(subparsers)
+    return parser
 
+
+async def main():
+    parser = build_parser()
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
