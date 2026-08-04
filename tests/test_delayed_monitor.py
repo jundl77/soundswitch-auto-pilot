@@ -1,7 +1,11 @@
+import asyncio
+
 import pytest
 
+from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE
 from lib.clock import VirtualClock
 from lib.delayed_monitor import DelayedMonitor
+from simulate.runner import run_simulation
 
 
 def _monitor(delay_sec=14.0):
@@ -92,6 +96,114 @@ def test_arming_twice_does_not_shorten_the_wait():
     assert played == ['early']
 
 
+class _FiniteAudio:
+    def __init__(self, buffers: int):
+        self._left = buffers
+        self._served = 0
+
+    def start_streams(self):
+        pass
+
+    @property
+    def exhausted(self) -> bool:
+        return self._left <= 0
+
+    def read(self):
+        self._left -= 1
+        self._served += 1
+        return self._served - 1
+
+    def close(self):
+        pass
+
+
+class _Idle:
+    async def analyse(self, signal):
+        return signal
+
+    async def on_audio(self, signal):
+        pass
+
+    async def on_100ms_callback(self):
+        pass
+
+    async def on_1sec_callback(self):
+        pass
+
+    async def on_10sec_callback(self):
+        pass
+
+
+class _NoCommands:
+    delay_sec = 0.0
+    pending = False
+
+    async def drain(self):
+        pass
+
+
+def _components(buffers: int) -> dict:
+    idle = _Idle()
+    return {'audio_client': _FiniteAudio(buffers), 'music_analyser': idle,
+            'light_engine': idle, 'midi_client': idle,
+            'command_queue': _NoCommands()}
+
+
+def _buffers_for(seconds: float) -> int:
+    return int(seconds * SAMPLE_RATE / BUFFER_SIZE)
+
+
+def test_setup_latency_is_not_deducted_from_the_monitors_delay():
+    monitor, clock, played = _monitor()
+    clock.advance(30.0)
+    asyncio.run(run_simulation(_components(_buffers_for(13.0)), float('inf'),
+                               clock=clock, monitor=monitor))
+    assert played == []
+
+
+def test_the_headphones_join_one_full_delay_after_the_first_buffer():
+    clock = VirtualClock()
+    heard = []
+    monitor = DelayedMonitor(
+        14.0, lambda buf: heard.append((clock.monotonic(), buf)), clock=clock)
+    clock.advance(30.0)
+    start = clock.monotonic()
+
+    asyncio.run(run_simulation(_components(_buffers_for(16.0)), float('inf'),
+                               clock=clock, monitor=monitor))
+
+    assert heard, 'the monitor never joined the room'
+    at, first = heard[0]
+    assert first == 0
+    assert 14.0 <= at - start < 14.0 + 2 * BUFFER_SIZE / SAMPLE_RATE
+
+
+def test_the_tail_the_room_has_not_heard_plays_out_when_the_file_ends():
+    monitor, clock, played = _monitor()
+    for index in range(20):
+        clock.advance(0.5)
+        monitor.feed(index)
+    assert played == [], 'the fixture should still be inside the delay'
+
+    asyncio.run(run_simulation(_components(0), 60.0, pace_real_time=True,
+                               monitor=monitor))
+
+    assert played == list(range(20))
+
+
+def test_a_persistent_stop_cuts_the_tail_rather_than_playing_it_out_at_the_end():
+    monitor, clock, played = _monitor()
+    for index in range(20):
+        clock.advance(0.5)
+        monitor.feed(index)
+    monitor.silence()
+
+    asyncio.run(run_simulation(_components(0), 60.0, pace_real_time=True,
+                               monitor=monitor))
+
+    assert played == []
+
+
 def _file_args(**overrides):
     import argparse
 
@@ -122,6 +234,15 @@ def test_the_viewer_paces_the_run_as_it_always_did():
     from simulate.cli import paced
 
     assert paced(_file_args(**{'--ui': True}))
+
+
+def test_the_retired_play_audio_flag_is_gone_from_the_parser():
+    with pytest.raises(SystemExit):
+        _file_args(**{'--play-audio': True})
+
+
+def test_the_retired_play_audio_flag_leaves_no_plumbing_behind():
+    assert not hasattr(_file_args(), 'play_audio')
 
 
 def test_the_monitor_delay_is_the_one_the_lights_are_aligned_to():

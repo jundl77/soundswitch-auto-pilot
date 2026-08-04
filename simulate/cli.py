@@ -42,10 +42,6 @@ async def run_file(args):
     if not os.path.isfile(args.audio):
         print(f'[simulate] error: audio file not found: {args.audio}')
         sys.exit(2)
-    if args.play_audio and not args.ui:
-        print('[simulate] error: --play-audio requires --ui '
-              '(audio cannot play at fast-simulation speed)')
-        sys.exit(2)
     if paced(args):
         await _run_file_paced(args)
     else:
@@ -136,16 +132,6 @@ async def _run_file_paced(args):
 
     event_buffer.start()
 
-    if args.play_audio:
-        try:
-            import sounddevice as sd
-            import librosa as lr
-            audio_data, sr = lr.load(args.audio, sr=SAMPLE_RATE, mono=True)
-            sd.play(audio_data, samplerate=sr)
-            print('[simulate] audio playback started')
-        except ImportError as e:
-            print(f'[simulate] warning: {e} — audio playback skipped')
-
     try:
         await _with_viewer(event_buffer, args.port,
                            lambda: _run_pipeline(components, duration_sec,
@@ -189,8 +175,6 @@ def add_simulate_subparser(subparsers):
     fp.add_argument('audio', help='Path to audio file (MP3 / WAV / FLAC)')
     fp.add_argument('--ui', action='store_true',
                     help='Real-time paced run with live Dash timeline (instead of fast headless)')
-    fp.add_argument('--play-audio', action='store_true',
-                    help='Play audio from speakers (requires --ui and sounddevice)')
     fp.add_argument('--report', default='report.json',
                     help='Report output path (default: report.json); under --ui '
                          'it is written when the track ends')

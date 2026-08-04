@@ -3,6 +3,7 @@ import http.client
 import json
 import logging
 import threading
+from statistics import median
 
 import dash
 from dash import dcc, html, Input, Output
@@ -36,6 +37,7 @@ TIMING_FONT_SIZE = '12px'
 BEAT_MARKER_SIZE = 16
 BEATS_PER_BAR = 4
 BAR_LABEL_EVERY = 4
+BAR_SPAN_TOLERANCE = 1.5
 DOWNBEAT_COLOR = 'rgba(88,166,255,0.55)'
 BEAT_TICK_COLOR = 'rgba(88,166,255,0.22)'
 
@@ -240,23 +242,26 @@ def _bar_grid(snapshot: dict, origin: float) -> tuple:
         return [], []
     delay = snapshot.get('look_ahead_sec', 0.0)
     first_bar = state.get('first_bar') or 0
+    spans = [b - a for a, b in zip(edges, edges[1:])]
+    bar_sec = state.get('bar_sec') or median(spans)
 
     shapes, annotations = [], []
     for index, start in enumerate(edges[:-1]):
         at = start + delay - origin
-        span = edges[index + 1] - start
+        span = spans[index]
         shapes.append(dict(
             type='line', xref='x', yref='paper',
             x0=at, x1=at, y0=0.0, y1=0.5,
             line=dict(color=DOWNBEAT_COLOR, width=1.4),
         ))
-        for beat in range(1, BEATS_PER_BAR):
-            tick = at + span * beat / BEATS_PER_BAR
-            shapes.append(dict(
-                type='line', xref='x', yref='paper',
-                x0=tick, x1=tick, y0=0.06, y1=0.20,
-                line=dict(color=BEAT_TICK_COLOR, width=0.8),
-            ))
+        if span <= bar_sec * BAR_SPAN_TOLERANCE:
+            for beat in range(1, BEATS_PER_BAR):
+                tick = at + span * beat / BEATS_PER_BAR
+                shapes.append(dict(
+                    type='line', xref='x', yref='paper',
+                    x0=tick, x1=tick, y0=0.06, y1=0.20,
+                    line=dict(color=BEAT_TICK_COLOR, width=0.8),
+                ))
         bar = first_bar + index
         if bar % BAR_LABEL_EVERY == 0:
             annotations.append(dict(

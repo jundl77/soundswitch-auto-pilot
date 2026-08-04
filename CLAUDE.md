@@ -448,6 +448,14 @@ first stop) is exactly the kind that would then need finding twice. The stop gat
 applies unchanged: a gap shorter than the persistence window plays through, a
 real stop drops the queued tail and re-arms.
 
+**`--play-audio` is retired, and `-o` is what replaced it** (#267). It pushed the
+file at the speakers on its own, undelayed and outside the pipeline, which was
+defensible only while nothing else could make a sound. Beside `-o` it was worse
+than redundant: the two start together and play the same track fourteen seconds
+apart, so the flag's only remaining effect was to make the monitor it sits next
+to unusable. Retiring it is an owner ruling rather than a cleanup — one output
+path is the point.
+
 `-o` implies real-time pacing, because a monitor is meaningless at fast-sim
 speed; passing it without `--ui` paces the run with no viewer. Fast headless is
 untouched and stays the default — the monitor is a pure side effect that the
@@ -455,6 +463,26 @@ report path never sees, which the digest is the check on. One caveat worth
 knowing: the queue drains one buffer per fed buffer, so the true lag is the delay
 minus one buffer period. That is the live path's behaviour too, preserved rather
 than introduced.
+
+**The delay is armed when the track starts, not when the rig was built.** A
+monitor that arms in its own constructor silently donates its whole delay to
+whatever happens next, and in the simulation what happens next is the model load
+and the decode — which on a cold run take longer than the delay itself, leaving
+the headphones playing level with the analysis and the room alignment `-o` exists
+for quietly gone. The live path never had this because it re-arms at the top of
+its loop; the sim now arms at the same place, so setup latency of any size is
+charged to nobody. This is the general shape of the bug: a delay measured from
+construction is a delay measured from an instant nothing else in the show shares.
+
+**The tail plays out at the end of a file, and the stop gate still decides
+whether it should.** The paced flush used to drain the command queue and then
+close the speaker, so the last playback delay's worth of monitored audio — the
+part the room had not reached yet — was never heard. It is drained now, one
+buffer per buffer period, exactly as the live path would have played it. That
+does not override the persistence gate: a stop that has already fired has cleared
+the buffer, so there is nothing to drain and the cut stands. Tail-plays-out and
+stop-cuts-the-tail are therefore one rule read at two different times, not two
+competing ones.
 
 **One Ctrl-C has to end the session, and the obvious way to wait on a child
 guarantees it cannot.** `Popen.wait()` on Windows is `WaitForSingleObject` with
@@ -619,7 +647,17 @@ that re-derived a grid from the beat stream would agree with the decoder exactly
 when it did not matter and disagree silently when it did.
 
 The intra-bar ticks subdivide each *measured* bar rather than a nominal one, so a
-grid that is wobbling shows it. And the edges are converted to the buffer's clock
+grid that is wobbling shows it. **They stop at the edge of a re-anchor gap, and
+that exception is what keeps the grid an instrument.** Two consecutive edges are
+not always one bar: when the beat stream drops out the decoder re-anchors, and
+the span it leaves behind is a hole the grid never counted through. Subdividing
+it in fours drew four evenly-spaced beats across a ten-second dropout — the most
+confident-looking part of the picture would have been the part with no evidence
+under it at all, which is precisely the failure the grid was drawn to expose. A
+span wider than the bar period by more than a fixed tolerance is therefore left
+tick-less; its two downbeats are real decoder edges and stay drawn, so the gap
+reads as a gap rather than vanishing. The period is the decoder's published one
+when it has one and the median span otherwise. And the edges are converted to the buffer's clock
 by the publisher, which is the only place that holds both: the decoder counts in
 audio seconds that reset at a song boundary, the buffer stamps in session
 seconds that do not, and joining those two anywhere else is how a grid ends up

@@ -171,6 +171,8 @@ async def run_simulation(components: dict, duration_sec: float,
 
     logging.info(f'[sim] starting simulation loop for {duration_sec:.1f}s '
                  f'({"virtual" if is_virtual else "wall"} time)')
+    if monitor is not None:
+        monitor.arm()
     while clock.monotonic() - start_mono < duration_sec and not audio_client.exhausted:
         audio_signal = audio_client.read()
         buffers_fed += 1
@@ -212,9 +214,11 @@ async def run_simulation(components: dict, duration_sec: float,
             clock.advance(buffer_sec)
             await command_queue.drain()
     elif pace_real_time:
-        while command_queue.pending:
+        while command_queue.pending or (monitor is not None and monitor.buffered):
             await asyncio.sleep(buffer_sec)
             await command_queue.drain()
+            if monitor is not None:
+                monitor.drain()
 
     audio_client.close()
     section = components.get('section')

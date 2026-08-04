@@ -1198,9 +1198,31 @@ def test_each_bar_carries_its_intra_bar_beats():
 
 def test_the_ticks_follow_a_wobbly_grid_instead_of_a_nominal_bar():
     snap = _gridded()
-    snap['decoder']['bar_edges'] = [10.0, 12.0, 20.0]
+    snap['decoder']['bar_edges'] = [10.0, 12.0, 14.4]
     ticks = _lines(V._build_timeline(snap), V.BEAT_TICK_COLOR)
-    assert [round(t.x0, 3) for t in ticks[3:6]] == [14.0, 16.0, 18.0]
+    assert [round(t.x0, 3) for t in ticks[3:6]] == [12.6, 13.2, 13.8]
+
+
+def test_a_re_anchor_gap_is_not_padded_with_beats_nobody_played():
+    snap = _gridded()
+    snap['decoder']['bar_edges'] = [10.0, 12.0, 22.0]
+    ticks = _lines(V._build_timeline(snap), V.BEAT_TICK_COLOR)
+    assert [round(t.x0, 3) for t in ticks] == [10.5, 11.0, 11.5]
+
+
+def test_the_downbeats_either_side_of_a_gap_are_real_and_stay_drawn():
+    snap = _gridded()
+    snap['decoder']['bar_edges'] = [10.0, 12.0, 22.0]
+    downbeats = _lines(V._build_timeline(snap), V.DOWNBEAT_COLOR)
+    assert [round(s.x0, 3) for s in downbeats] == [10.0, 12.0]
+
+
+def test_a_grid_with_no_published_bar_period_still_reads_its_own_spacing():
+    snap = _gridded()
+    snap['decoder']['bar_edges'] = [10.0, 12.0, 14.0, 16.0, 26.0]
+    snap['decoder'].pop('bar_sec')
+    ticks = _lines(V._build_timeline(snap), V.BEAT_TICK_COLOR)
+    assert [round(t.x0, 3) for t in ticks[-3:]] == [14.5, 15.0, 15.5]
 
 
 def test_the_phrasing_is_scannable_because_bars_are_numbered():

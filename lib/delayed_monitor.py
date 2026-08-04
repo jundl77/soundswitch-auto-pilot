@@ -32,6 +32,10 @@ class DelayedMonitor:
         self._buffered.clear()
         self.arm()
 
+    def drain(self) -> None:
+        if self._buffered:
+            self._play(self._buffered.popleft())
+
     def feed(self, audio) -> None:
         self._buffered.append(audio)
         if self._clock.monotonic() < self._ready_at:
