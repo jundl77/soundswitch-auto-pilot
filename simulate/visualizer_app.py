@@ -8,6 +8,7 @@ import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 
+from lib.engine.event_buffer import STOP_PERSISTENCE_SEC
 from lib.ui_bridge import SNAPSHOT_HOST, SNAPSHOT_PATH, snapshot_port
 from simulate.runner import TIMING_TOLERANCE_SEC
 
@@ -89,17 +90,40 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
+def _bridged(stop_t: float, start_t: float) -> bool:
+    return stop_t < start_t <= stop_t + STOP_PERSISTENCE_SEC
+
+
+def _elided(event: dict, snapshot: dict) -> bool:
+    others = snapshot.get('sound_events', [])
+    if event['playing']:
+        return any(_bridged(other['t'], event['t'])
+                   for other in others if not other['playing'])
+    return any(_bridged(event['t'], other['t'])
+               for other in others if other['playing'])
+
+
+def _room_stops(snapshot: dict) -> list:
+    return [event['t'] + STOP_PERSISTENCE_SEC
+            for event in snapshot.get('sound_events', [])
+            if not event['playing'] and not _elided(event, snapshot)]
+
+
 def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    events = snapshot.get('sound_events', [])
-    stops = [e['t'] for e in events if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
-    for event in events:
-        reaches_room_at = event['t'] + delay if event['playing'] else event['t']
-        cut = event['playing'] and any(event['t'] < stop <= reaches_room_at
-                                       for stop in stops)
-        if reaches_room_at <= now and not cut:
+    for event in snapshot.get('sound_events', []):
+        if _elided(event, snapshot):
+            continue
+        if event['playing']:
+            reaches_room_at = event['t'] + delay
+            if any(event['t'] < stop <= reaches_room_at for stop in stops):
+                continue
+        else:
+            reaches_room_at = event['t'] + STOP_PERSISTENCE_SEC
+        if reaches_room_at <= now:
             heard.append(dict(event, t=reaches_room_at))
     return heard
 
@@ -107,7 +131,7 @@ def _room_sound_events(snapshot: dict) -> list:
 def _heard_beats(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
     for beat in snapshot.get('beats', []):
         reaches_room_at = beat['t'] + delay
@@ -140,10 +164,13 @@ def _song_origin(snapshot: dict) -> float | None:
 
 
 def _room_is_playing(snapshot: dict) -> bool:
+    now = snapshot.get('now', 0.0)
+    live = (bool(snapshot.get('is_playing'))
+            or any(stop > now for stop in _room_stops(snapshot)))
     last = _last_heard(snapshot)
     if last is not None:
-        return last['playing'] and bool(snapshot.get('is_playing'))
-    return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
+        return last['playing'] and live
+    return not snapshot.get('sound_events') and live
 
 
 def _room_bpm(snapshot: dict) -> float:
@@ -154,7 +181,7 @@ def _room_bpm(snapshot: dict) -> float:
 def _beats_still_travelling(snapshot: dict) -> int:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     return sum(1 for beat in snapshot.get('beats', [])
                if beat['t'] + delay > now
                and not any(beat['t'] < stop <= beat['t'] + delay for stop in stops))
@@ -390,6 +417,9 @@ def _build_metrics(snapshot: dict) -> list:
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
     timing_str, timing_col = _timing_health(snapshot.get('timing_stats', {}))
+    shed = snapshot.get('shed') or {}
+    pill_str, pill_col = _shed_pill(shed)
+    rate_str, rate_col = _shed_rate(shed)
 
     items = [
         html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
@@ -398,9 +428,32 @@ def _build_metrics(snapshot: dict) -> list:
         html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
         html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
         html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
+        html.Span(pill_str, style={'color': pill_col, 'fontWeight': 'bold', 'marginRight': '10px'}),
+        html.Span(rate_str, style={'color': rate_col, 'marginRight': '20px'}),
         html.Span(timing_str, style={'color': timing_col}),
     ]
     return items
+
+
+def _shed_pill(shed: dict) -> tuple:
+    if not shed:
+        return 'health: —', MUTED
+    if shed.get('level', 'NONE') != 'NONE':
+        fault = shed.get('fault')
+        return (f'health: ◆ DEGRADED — holding intent'
+                f'{f" ({fault})" if fault else ""}'), WARN_COLOR
+    return 'health: ● LIVE', OK_COLOR
+
+
+def _shed_rate(shed: dict) -> tuple:
+    if not shed:
+        return 'sheds: —', MUTED
+    rate = shed.get('sheds_per_min', 0)
+    total = shed.get('sheds', 0)
+    text = f'sheds {rate}/min'
+    if total:
+        text += f'  ·  {total} this run'
+    return text, (WARN_COLOR if rate else MUTED)
 
 
 def _timing_health(stats: dict) -> tuple:
@@ -617,7 +670,7 @@ BLANK_SNAPSHOT = {
     'now': 0.0, 'look_ahead_sec': 0.0, 'is_playing': False,
     'beats': [], 'effects': [], 'intents': [], 'sound_events': [],
     'current_effect': None, 'bpm': 0.0, 'beats_detected': 0, 'intent': None,
-    'timing_stats': {}, 'decoder': {},
+    'timing_stats': {}, 'decoder': {}, 'shed': {},
 }
 
 POLL_TIMEOUT_SEC = 1.0
