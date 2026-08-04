@@ -24,9 +24,13 @@ from build_training_table import (  # noqa: E402
     MEL_EXPORTER_VERSION,
     NO_INTENT,
     REPORTS_DIR,
+    SilenceBlocks,
     TABLE_FILE,
     TABLE_HEADER,
     Timeline,
+    count_silence_positions,
+    drop_silence_spans,
+    silence_triggered,
     build_table,
     cache_is_fresh,
     canonical_coverage,
@@ -1034,3 +1038,70 @@ def _job_with(**over):
                   pipeline_sha="sha", mp3_size=1, mp3_mtime=1.0)
     fields.update(over)
     return SimJob(**fields)
+
+
+def silence_block(beat_t: float, end: float, look_ahead=LOOK_AHEAD) -> dict:
+    return {"t": beat_t + look_ahead, "intent": "atmospheric", "end": end,
+            "trigger": "silence"}
+
+
+def test_a_report_written_before_the_trigger_field_reads_as_the_classifier():
+    assert silence_triggered([{"t": 1.0, "intent": "DROP"}]) == [False]
+
+
+def test_the_trigger_field_separates_the_operator_action_from_the_classifier():
+    blocks = [{"t": 1.0, "intent": "DROP", "trigger": "classifier"},
+              {"t": 2.0, "intent": "atmospheric", "trigger": "silence"}]
+
+    assert silence_triggered(blocks) == [False, True]
+
+
+def test_a_silence_triggered_block_is_kept_out_of_the_scored_stream():
+    sections = [(0.0, 40.0, "drop")]
+    beats = [beat(t) for t in (10.0, 15.0, 20.0, 25.0)]
+    intents = [queue_block(10.0, "GROOVE", 20.0), silence_block(20.0, 40.0)]
+    rows, stats = join(sections, beats, intents, duration_sec=40.0)
+
+    assert labels(rows, "intent_at_beat") == ["GROOVE", "GROOVE",
+                                              NO_INTENT, NO_INTENT]
+    assert stats.beats_without_intent == 2
+
+
+def test_the_excluded_span_is_left_as_a_hole_rather_than_given_to_its_neighbour():
+    spans = [(10.0, 20.0, "GROOVE"), (20.0, 40.0, "atmospheric")]
+
+    assert drop_silence_spans(spans, [False, True]) == [(10.0, 20.0, "GROOVE")]
+
+
+def test_a_silence_block_past_the_last_label_is_counted_trailing():
+    assert count_silence_positions([(100.0, 120.0, "atmospheric")], [True],
+                                   10.0, 90.0) == SilenceBlocks(0, 0, 1)
+
+
+def test_a_silence_block_before_the_first_label_is_counted_leading():
+    assert count_silence_positions([(0.0, 5.0, "atmospheric")], [True],
+                                   10.0, 90.0) == SilenceBlocks(1, 0, 0)
+
+
+def test_a_silence_block_reaching_into_labeled_time_is_counted_interior():
+    assert count_silence_positions([(80.0, 120.0, "atmospheric")], [True],
+                                   10.0, 90.0) == SilenceBlocks(0, 1, 0)
+
+
+def test_a_track_with_no_labeled_region_has_no_interior_to_leak_into():
+    assert count_silence_positions([(0.0, 5.0, "atmospheric")], [True],
+                                   None, None) == SilenceBlocks(0, 0, 1)
+
+
+def test_classifier_blocks_are_never_counted_as_silence():
+    assert count_silence_positions([(80.0, 120.0, "DROP")], [False],
+                                   10.0, 90.0) == SilenceBlocks(0, 0, 0)
+
+
+def test_the_join_reports_where_the_blackout_fell():
+    sections = [(0.0, 40.0, "drop")]
+    intents = [queue_block(10.0, "GROOVE", 20.0), silence_block(20.0, 60.0)]
+    _rows, stats = join(sections, [beat(10.0)], intents, duration_sec=60.0)
+
+    assert (stats.silence_blocks_leading, stats.silence_blocks_interior,
+            stats.silence_blocks_trailing) == (0, 1, 0)

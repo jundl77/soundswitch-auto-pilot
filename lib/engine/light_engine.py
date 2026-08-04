@@ -6,6 +6,7 @@ from lib.audio_config import SAMPLE_RATE
 from lib.engine.effect_controller import EffectController
 from lib.engine.delayed_command_queue import DelayedCommandQueue
 from lib.engine.effect_definitions import LightIntent, intent_for_class
+from lib.engine.event_buffer import SILENCE_TRIGGER
 from lib.clients.midi_client import SETTLE_SEC, MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
@@ -22,6 +23,7 @@ _BEAT_ABSENCE_SEC = 2.5
 PEAK_PROMOTION_BARS = 8
 
 _LATENCY_LOG_STEP_SEC = 0.25
+_BYPASSED_ON_STOP = ('sound', 'intent', 'refresh', 'overlay')
 COLD_START_FLOOR_MARGIN_SEC = 4.0
 
 REFRESH_COOLDOWN_SEC = 10.0
@@ -108,7 +110,24 @@ class LightEngine(IMusicAnalyserHandler):
             self.event_buffer.set_playing(False)
         if self._silence_monitor is not None:
             self._silence_monitor()
-        self._at_the_room('sound', self._show_sound_stop)
+        self._quiet_the_room_now()
+        self._restart_for_the_next_song()
+
+    def _quiet_the_room_now(self) -> None:
+        if self.command_queue:
+            for label in _BYPASSED_ON_STOP:
+                self.command_queue.drop_pending(label, float('-inf'), inclusive=True)
+
+            async def command():
+                self._show_sound_stop()
+
+            self.command_queue.schedule('sound', command, delay_sec=0.0)
+        else:
+            self._show_sound_stop()
+        if self.event_buffer:
+            self.event_buffer.set_intent(LightIntent.ATMOSPHERIC.value,
+                                         trigger=SILENCE_TRIGGER)
+        self._current_intent = LightIntent.ATMOSPHERIC
 
     def _show_sound_start(self) -> None:
         with self._deliberate_stall():

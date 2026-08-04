@@ -75,7 +75,8 @@ DEFAULT_SCORE_TOLERANCE = 0.02
 DEFAULT_FLICKER_TOLERANCE = 0.20
 
 COUNT_FACTS = ("rows", "label_boundaries", "exposure_sec", "beats",
-               "changes_intent", "late")
+               "changes_intent", "late",
+               "silence_leading", "silence_interior", "silence_trailing")
 
 AUDIO_MISSING_HINT = (
     "eval-set audio missing -- expected the committed copy in "
@@ -299,6 +300,9 @@ def track_entry(report: dict, score, rows: int, youtube_id: str,
     if stats is not None:
         entry["late"] = int(stats.intent_blocks_late)
         entry["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
+        entry["silence_leading"] = int(stats.silence_blocks_leading)
+        entry["silence_interior"] = int(stats.silence_blocks_interior)
+        entry["silence_trailing"] = int(stats.silence_blocks_trailing)
     entry.update(track_metrics(score))
     return entry
 

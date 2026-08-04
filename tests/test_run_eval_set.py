@@ -82,7 +82,8 @@ def entry(checksum="cafe", **overrides) -> dict:
     record = {"youtube_id": "yt", "checksum": checksum, "beats": 100, "rows": 90,
               "song_sec": 300.0, "exposure_sec": 280.0,
               "changes_intent": 20, "changes_class": 15, "label_boundaries": 12,
-              "late": 1, "blocks_measurable": 14}
+              "late": 1, "blocks_measurable": 14,
+              "silence_leading": 0, "silence_interior": 0, "silence_trailing": 1}
     record.update(metrics())
     record.update(overrides)
     return record
@@ -364,6 +365,9 @@ def test_the_aggregate_row_is_gated_too():
     ("late", 2),
     ("beats", 101),
     ("changes_intent", 21),
+    ("silence_interior", 1),
+    ("silence_trailing", 2),
+    ("silence_leading", 1),
 ])
 def test_a_moved_count_fact_fails_even_when_every_score_holds(fact, moved):
     baseline = result_document({"a.1": entry()})
@@ -666,3 +670,20 @@ def test_the_refusal_happens_before_anything_is_simulated(tmp_path, monkeypatch,
     code = run_eval_set.main(['--data-dir', str(tmp_path), '--quiet'])
     assert code == 2
     assert 'shipped model is not on this machine' in capsys.readouterr().err
+
+
+def test_a_blackout_is_counted_exactly_rather_than_scored_with_a_tolerance():
+    from run_eval_set import COUNT_FACTS, GUARDED_METRICS
+
+    for fact in ("silence_leading", "silence_interior", "silence_trailing"):
+        assert fact in COUNT_FACTS and fact not in GUARDED_METRICS
+
+
+def test_a_blackout_that_moved_into_labeled_time_fails_even_with_every_score_held():
+    baseline = result_document({"a.1": entry(silence_interior=0)})
+    current = result_document({"a.1": entry(silence_interior=1)})
+
+    outcome = compare(baseline, current)
+
+    assert outcome.failed and outcome.regressions == []
+    assert any("silence_interior" in line for line in outcome.fact_drift)

@@ -7,6 +7,9 @@ from lib.clock import Clock, SYSTEM_CLOCK
 
 _UNMEASURED_BEAT_STRENGTH = 0.0
 
+CLASSIFIER_TRIGGER = 'classifier'
+SILENCE_TRIGGER = 'silence'
+
 
 class EventBuffer:
     SNAPSHOT_WINDOW_SEC = 35.0
@@ -71,7 +74,8 @@ class EventBuffer:
             now = self._now()
             self._sound_events.append({'t': now, 'playing': is_playing})
 
-    def set_intent(self, intent: str, song_sec: float | None = None) -> None:
+    def set_intent(self, intent: str, song_sec: float | None = None,
+                   trigger: str = CLASSIFIER_TRIGGER) -> None:
         with self._lock:
             if intent == self._current_intent:
                 return
@@ -79,7 +83,7 @@ class EventBuffer:
             now = self._now()
             if self._intents and 'end' not in self._intents[-1]:
                 self._intents[-1]['end'] = now
-            block = {'t': now, 'intent': intent}
+            block = {'t': now, 'intent': intent, 'trigger': trigger}
             if song_sec is not None:
                 block['song_t'] = round(float(song_sec), 6)
             self._intents.append(block)

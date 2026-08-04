@@ -169,3 +169,30 @@ def test_report_look_ahead_defaults_to_zero():
     buf = EventBuffer(window_sec=float('inf'), clock=clock)
     buf.start()
     assert buf.to_report()['metrics']['look_ahead_sec'] == 0.0
+
+
+def test_an_intent_block_names_the_classifier_when_nothing_says_otherwise():
+    buf = EventBuffer(window_sec=float('inf'), clock=VirtualClock())
+    buf.start()
+    buf.set_intent('GROOVE')
+    assert buf.to_report()['intents'][0]['trigger'] == 'classifier'
+
+
+def test_an_intent_block_records_the_trigger_it_was_given():
+    buf = EventBuffer(window_sec=float('inf'), clock=VirtualClock())
+    buf.start()
+    buf.set_intent('atmospheric', trigger='silence')
+    assert buf.to_report()['intents'][0]['trigger'] == 'silence'
+
+
+def test_every_intent_block_carries_a_trigger():
+    clock = VirtualClock()
+    buf = EventBuffer(window_sec=float('inf'), clock=clock)
+    buf.start()
+    for step, intent in enumerate(('GROOVE', 'DROP', 'BREAKDOWN')):
+        clock.advance(1.0)
+        buf.set_intent(intent)
+    clock.advance(1.0)
+    buf.set_intent('atmospheric', trigger='silence')
+    assert [block['trigger'] for block in buf.to_report()['intents']] == \
+        ['classifier'] * 3 + ['silence']
