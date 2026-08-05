@@ -3,6 +3,7 @@ import http.client
 import json
 import logging
 import threading
+from statistics import median
 
 import dash
 from dash import dcc, html, Input, Output
@@ -34,6 +35,11 @@ HEALTH_FONT_SIZE = '14px'
 TIMING_FONT_SIZE = '12px'
 
 BEAT_MARKER_SIZE = 16
+BEATS_PER_BAR = 4
+BAR_LABEL_EVERY = 4
+BAR_SPAN_TOLERANCE = 1.5
+DOWNBEAT_COLOR = 'rgba(88,166,255,0.55)'
+BEAT_TICK_COLOR = 'rgba(88,166,255,0.22)'
 
 REFRESH_MS = 250
 VIEW_EVERY_TICKS = 2
@@ -229,6 +235,43 @@ def _anchor(snapshot: dict) -> dict:
     }
 
 
+def _bar_grid(snapshot: dict, origin: float) -> tuple:
+    state = snapshot.get('decoder') or {}
+    edges = state.get('bar_edges') or []
+    if len(edges) < 2:
+        return [], []
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    first_bar = state.get('first_bar') or 0
+    spans = [b - a for a, b in zip(edges, edges[1:])]
+    bar_sec = state.get('bar_sec') or median(spans)
+
+    shapes, annotations = [], []
+    for index, start in enumerate(edges[:-1]):
+        at = start + delay - origin
+        span = spans[index]
+        shapes.append(dict(
+            type='line', xref='x', yref='paper',
+            x0=at, x1=at, y0=0.0, y1=0.5,
+            line=dict(color=DOWNBEAT_COLOR, width=1.4),
+        ))
+        if span <= bar_sec * BAR_SPAN_TOLERANCE:
+            for beat in range(1, BEATS_PER_BAR):
+                tick = at + span * beat / BEATS_PER_BAR
+                shapes.append(dict(
+                    type='line', xref='x', yref='paper',
+                    x0=tick, x1=tick, y0=0.06, y1=0.20,
+                    line=dict(color=BEAT_TICK_COLOR, width=0.8),
+                ))
+        bar = first_bar + index
+        if bar % BAR_LABEL_EVERY == 0:
+            annotations.append(dict(
+                x=at, y=0.50, xref='x', yref='paper',
+                text=str(bar), showarrow=False, xanchor='left', yanchor='bottom',
+                font=dict(color=DOWNBEAT_COLOR, size=9, family='monospace'),
+            ))
+    return shapes, annotations
+
+
 def _build_timeline(snapshot: dict) -> go.Figure:
     origin = _song_origin(snapshot)
     now    = _display_now(snapshot, origin)
@@ -237,6 +280,11 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     left   = max(x0, 0.0)
 
     shapes, annotations, beat_x = [], [], []
+
+    if origin is not None:
+        grid_shapes, grid_labels = _bar_grid(snapshot, origin)
+        shapes.extend(grid_shapes)
+        annotations.extend(grid_labels)
 
     for entry in snapshot.get('intents', []) if origin is not None else ():
         start   = entry['t'] - origin
