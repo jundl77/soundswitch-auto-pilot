@@ -24,7 +24,7 @@ from build_training_table import (  # noqa: E402
 )
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
 from lib.label_space import LABEL_INDEX, NUM_SECTION_CLASSES  # noqa: E402
-from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
+from raveform_fetch_annotations import load_all_tracks, parse_sections  # noqa: E402
 from select_eval_set import EVAL_SET_FILE, artist_of, load_eval_set  # noqa: E402
 
 try:
@@ -132,7 +132,7 @@ def _clean_manifest_rows(data_dir: Path) -> list:
 def candidate_tracks(data_dir: Path) -> tuple:
     data_dir = Path(data_dir)
     features = data_dir / FEATURES_DIR
-    by_track_id = {str(track.get("key")): track for track in load_tracks(data_dir)}
+    by_track_id = {str(track.get("key")): track for track in load_all_tracks(data_dir)}
 
     candidates: list = []
     no_sidecar: list = []
@@ -167,7 +167,7 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
     eval_ids = frozenset(str(i) for i in document["youtube_ids"])
 
     titles = {str(track.get("id")): str(track.get("title", ""))
-              for track in load_tracks(data_dir)}
+              for track in load_all_tracks(data_dir)}
     recorded = {str(track.get("youtube_id")): str(track.get("title", ""))
                 for track in document.get("tracks") or []}
     eval_titles = {}
@@ -409,7 +409,7 @@ class WindowDataset(_TorchDataset):
         if sections_by_youtube_id is None:
             sections_by_youtube_id = {
                 str(track.get("id")): parse_sections(track)
-                for track in load_tracks(self.data_dir)
+                for track in load_all_tracks(self.data_dir)
             }
 
         features = self.data_dir / FEATURES_DIR

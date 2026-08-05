@@ -121,7 +121,7 @@ def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
     path, committed = labels_source(data_dir, labels)
     if committed:
         return sections_from_slice(load_labels(path))
-    return load_sections_by_track(Path(data_dir))
+    return load_sections_by_track(Path(data_dir), include_hand=False)
 
 
 def select_tracks(document: dict, only: list | None = None) -> list:

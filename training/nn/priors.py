@@ -306,10 +306,10 @@ def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
     everywhere.
     """
     from raveform_fetch_annotations import (
-        beat_csv_path, load_tracks, parse_beat_csv, parse_sections)
+        beat_csv_path, load_all_tracks, parse_beat_csv, parse_sections)
     data_dir = Path(data_dir)
     wanted = set(str(i) for i in youtube_ids)
-    by_id = {str(track.get("id")): track for track in load_tracks(data_dir)}
+    by_id = {str(track.get("id")): track for track in load_all_tracks(data_dir)}
 
     sequences: list = []
     skipped: list = []

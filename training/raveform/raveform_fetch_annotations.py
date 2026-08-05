@@ -251,6 +251,59 @@ def parse_beat_csv(path: Path) -> list:
         ]
 
 
+HAND_LABEL_SUFFIX = ".hand.json"
+HAND_LABEL_SOURCE = "hand_label"
+_HAND_LABEL_FIELDS = ("id", "title", "duration", "sections")
+
+
+def load_hand_tracks(data_dir: Path) -> list:
+    records = []
+    for path in sorted(annotations_dir(data_dir).glob(f"*{HAND_LABEL_SUFFIX}")):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                record = json.load(handle)
+        except ValueError as exc:
+            raise RuntimeError(f"{path.name}: hand label does not parse ({exc})") from None
+        if not isinstance(record, dict):
+            raise RuntimeError(
+                f"{path.name}: expected a JSON object, got {type(record).__name__}"
+            )
+        missing = [field for field in _HAND_LABEL_FIELDS if field not in record]
+        if missing:
+            raise RuntimeError(f"{path.name}: hand label lacks {', '.join(missing)}")
+        key = path.name[: -len(HAND_LABEL_SUFFIX)]
+        if str(record["id"]) != key:
+            raise RuntimeError(
+                f"{path.name}: the file is named {key!r} but the record says id "
+                f"{record['id']!r} -- a renamed hand label would label the wrong track"
+            )
+        record = dict(record)
+        record["key"] = key
+        record.setdefault("source", HAND_LABEL_SOURCE)
+        records.append(record)
+    return records
+
+
+def merge_hand_tracks(published: list, hand: list) -> list:
+    by_id = {youtube_id(track): index for index, track in enumerate(published)}
+    merged = list(published)
+    for record in hand:
+        index = by_id.get(youtube_id(record))
+        if index is None:
+            merged.append(record)
+        else:
+            override = dict(merged[index])
+            override["sections"] = record["sections"]
+            override["duration"] = record["duration"]
+            override["source"] = str(record.get("source", HAND_LABEL_SOURCE))
+            merged[index] = override
+    return merged
+
+
+def load_all_tracks(data_dir: Path) -> list:
+    return merge_hand_tracks(load_tracks(data_dir), load_hand_tracks(data_dir))
+
+
 def beat_csv_path(data_dir: Path, track: dict) -> Path:
     return annotations_dir(data_dir) / BEATS_DIR / f"{track['key']}.beat.csv"
 

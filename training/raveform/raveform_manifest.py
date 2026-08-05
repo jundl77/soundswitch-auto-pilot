@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from lib.label_space import DROPPED_LABELS, SECTION_LABELS  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     annotations_dir,
-    load_tracks,
+    load_all_tracks,
     parse_sections,
     youtube_id,
 )
@@ -359,7 +359,7 @@ def main(argv: list | None = None) -> int:
     print(f"data dir: {data_dir}")
     print(f"annotations: {annotations_dir(data_dir)}")
 
-    tracks = load_tracks(data_dir)
+    tracks = load_all_tracks(data_dir)
     if not tracks:
         raise RuntimeError(f"no track records in {annotations_dir(data_dir)} -- run the fetch first")
 

@@ -37,7 +37,11 @@ from build_clean_manifest import (  # noqa: E402
     STATUS_OK,
     is_settled,
 )
-from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
+from raveform_fetch_annotations import (  # noqa: E402
+    load_all_tracks,
+    load_tracks,
+    parse_sections,
+)
 from raveform_manifest import section_runs  # noqa: E402
 
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
@@ -554,8 +558,9 @@ def _reject_past_the_analyser_reset(rows: list) -> tuple:
     return kept, rejected
 
 
-def load_sections_by_track(data_dir: Path) -> dict:
-    return {str(track["key"]): parse_sections(track) for track in load_tracks(data_dir)}
+def load_sections_by_track(data_dir: Path, include_hand: bool = True) -> dict:
+    tracks = load_all_tracks(data_dir) if include_hand else load_tracks(data_dir)
+    return {str(track["key"]): parse_sections(track) for track in tracks}
 
 
 def select_jobs(rows: list, data_dir: Path, force: bool = False,

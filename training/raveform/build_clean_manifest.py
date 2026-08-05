@@ -21,7 +21,7 @@ from raveform_manifest import (  # noqa: E402
     MANIFEST_FILE,
     build_manifest_rows,
 )
-from raveform_fetch_annotations import load_tracks  # noqa: E402
+from raveform_fetch_annotations import load_all_tracks  # noqa: E402
 
 AUDIO_DIR = "audio"
 CLEAN_MANIFEST_FILE = "clean_manifest.csv"
@@ -228,7 +228,7 @@ def load_manifest_rows(data_dir: Path) -> list:
         rows = [
             ManifestRow(track_id, youtube_id, float(total_sec))
             for track_id, youtube_id, _n_sections, total_sec in build_manifest_rows(
-                load_tracks(data_dir)
+                load_all_tracks(data_dir)
             )
         ]
     if not rows:
