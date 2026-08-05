@@ -17,7 +17,7 @@
       "DnhxAxnCbrY"
     ]
   },
-  "pipeline_sha": "11d26330657ec0080c658650c33db42f5e42b583+dirty.ebf8fc2ac994",
+  "pipeline_sha": "8b0ba45745937cc833fb7314a5b79e79b810875c",
   "space": "v1",
   "stream": "intent",
   "boundary_tolerance_sec": 2.0,
@@ -34,8 +34,8 @@
     }
   },
   "aggregate": {
-    "macro_f1": 0.718491,
-    "accuracy": 0.764827,
+    "macro_f1": 0.712603,
+    "accuracy": 0.763559,
     "boundary_f1": 0.635071,
     "crispness": 0.445498,
     "flicker_per_min": 0.703456
@@ -127,7 +127,7 @@
     },
     "0485.MRRgXXq-0rc": {
       "youtube_id": "MRRgXXq-0rc",
-      "checksum": "389934860da999138f2a7bff352254f635489936252843881fae438bd6e162bb",
+      "checksum": "73495463f4ca5181ef092d5326e4b49f884b14ec150ac115362c09321ba51f94",
       "beats": 866,
       "rows": 862,
       "song_sec": 412.665,
@@ -148,7 +148,7 @@
     },
     "0501.hwdjIgtMFq8": {
       "youtube_id": "hwdjIgtMFq8",
-      "checksum": "311bf572e86e539744c5e9bdf0455280e1f50af5f64a92e3fd62cf629c006f53",
+      "checksum": "d4c3c1393007c8d073f6be0754b82a6bfe79040355e1856d00dcac0f3d1d14fd",
       "beats": 931,
       "rows": 919,
       "song_sec": 420.003,
@@ -169,7 +169,7 @@
     },
     "0640.4o4joooH5tg": {
       "youtube_id": "4o4joooH5tg",
-      "checksum": "46e2947d7ed9a5d15bed816edb888e8d6c0d29ea49d574bdc967e5eb15c7d4ad",
+      "checksum": "afc812e33189b1fe03a47cf0a43843fc1b2e71333b2ec4d0090c40d0de24890f",
       "beats": 959,
       "rows": 955,
       "song_sec": 434.085,
@@ -178,19 +178,19 @@
       "changes_class": 10,
       "label_boundaries": 9,
       "late": 1,
-      "blocks_measurable": 15,
+      "blocks_measurable": 14,
       "silence_leading": 0,
       "silence_interior": 0,
-      "silence_trailing": 1,
+      "silence_trailing": 0,
       "macro_f1": 0.732362,
-      "accuracy": 0.849655,
+      "accuracy": 0.84606,
       "boundary_f1": 0.636364,
       "crispness": 0.636364,
       "flicker_per_min": 0.854598
     },
     "0834.NyEKXA7_6z0": {
       "youtube_id": "NyEKXA7_6z0",
-      "checksum": "89214c56c8308f9c05defa4729ed86564669f1b2379dc8812cb59d99d5aa7bd2",
+      "checksum": "32c101598fba135bdce370a237c5b4dee001f58b3d84f10acb62a62ea481e271",
       "beats": 701,
       "rows": 699,
       "song_sec": 365.087,
@@ -211,7 +211,7 @@
     },
     "0911.hSCcLy_OBLM": {
       "youtube_id": "hSCcLy_OBLM",
-      "checksum": "21ef8c095ae2ec126e38f322a0ef5d17c4dbbfac1723489d810620f2fd2672ed",
+      "checksum": "715b2ccb929a02f688bd0f9d3fb375afd3ee864228629c2dfb33f599c9f118f9",
       "beats": 833,
       "rows": 828,
       "song_sec": 411.797,
@@ -220,12 +220,12 @@
       "changes_class": 11,
       "label_boundaries": 11,
       "late": 1,
-      "blocks_measurable": 16,
+      "blocks_measurable": 15,
       "silence_leading": 0,
       "silence_interior": 0,
-      "silence_trailing": 1,
-      "macro_f1": 0.821484,
-      "accuracy": 0.832537,
+      "silence_trailing": 0,
+      "macro_f1": 0.8076,
+      "accuracy": 0.827752,
       "boundary_f1": 0.64,
       "crispness": 0.56,
       "flicker_per_min": 0.880591
