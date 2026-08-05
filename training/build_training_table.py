@@ -421,6 +421,7 @@ class SimJob(NamedTuple):
     pipeline_sha: str
     mp3_size: int
     mp3_mtime: float
+    keep_cells: bool = False
 
 
 class SimResult(NamedTuple):
@@ -443,6 +444,14 @@ def derived_cache_paths(mp3_path: str) -> tuple:
 
     return (decode_cache_path(mp3_path),
             str(sidecar_path(mp3_path, FileAudioClient.decode_path)))
+
+
+def paths_to_delete(job: SimJob) -> tuple:
+    return tuple(
+        path for path in derived_cache_paths(job.mp3_path)
+        if path not in job.preexisting
+        and not (job.keep_cells and path.endswith(".mertcells.npz"))
+    )
 
 
 def _write_json_gz(path: Path, payload: dict) -> None:
@@ -516,9 +525,7 @@ def simulate_track(job: SimJob) -> SimResult:
         return SimResult(job.track_id, False, f"{type(exc).__name__}: {exc}"[:300],
                          0, 0, 0, time.monotonic() - started)
     finally:
-        for path in derived_cache_paths(job.mp3_path):
-            if path in job.preexisting:
-                continue
+        for path in paths_to_delete(job):
             try:
                 os.unlink(path)
             except OSError:
@@ -566,7 +573,7 @@ def load_sections_by_track(data_dir: Path, include_hand: bool = True) -> dict:
 def select_jobs(rows: list, data_dir: Path, force: bool = False,
                 min_age_sec: float = MIN_AGE_SEC,
                 preexisting_caches: set | None = None,
-                sha: str | None = None) -> tuple:
+                sha: str | None = None, keep_cells: bool = False) -> tuple:
     """``(jobs, counts)`` -- which tracks still need simulating, and why."""
     now = time.time()
     preexisting_caches = preexisting_caches or set()
@@ -603,6 +610,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
             preexisting=tuple(path for path in derived_cache_paths(str(mp3))
                               if path in preexisting_caches),
             pipeline_sha=sha, mp3_size=stat.st_size, mp3_mtime=stat.st_mtime,
+            keep_cells=keep_cells,
         ))
     jobs.sort(key=lambda job: job.track_id)
     return jobs, counts
@@ -968,7 +976,18 @@ def main(argv: list | None = None) -> int:
         "--table-only", action="store_true",
         help="skip the simulations and re-join the cached reports on disk",
     )
+    parser.add_argument(
+        "--simulate-only", action="store_true",
+        help="run the simulations and stop before the table join",
+    )
+    parser.add_argument(
+        "--keep-cell-sidecars", action="store_true",
+        help="keep each track's extractor cell sidecar beside the audio; "
+             "the decode cache is still deleted per track",
+    )
     args = parser.parse_args(argv)
+    if args.table_only and args.simulate_only:
+        parser.error("--table-only and --simulate-only are mutually exclusive")
 
     data_dir = args.data_dir.resolve()
     started = time.time()
@@ -996,6 +1015,7 @@ def main(argv: list | None = None) -> int:
         jobs, cache_counts = select_jobs(
             rows, data_dir, force=args.force, min_age_sec=args.min_age_sec,
             preexisting_caches=preexisting_caches, sha=sha,
+            keep_cells=args.keep_cell_sidecars,
         )
         if args.limit:
             jobs = jobs[: args.limit]
@@ -1005,6 +1025,17 @@ def main(argv: list | None = None) -> int:
         if jobs:
             print(f"  {args.workers} worker(s)", flush=True)
             results = run_simulations(jobs, workers=args.workers)
+
+    if args.simulate_only:
+        failures = [(result.track_id, result.detail)
+                    for result in results if not result.ok]
+        for track_id, detail in failures:
+            print(f"  FAIL {track_id}: {detail}", flush=True)
+        print(f"simulate-only: {sum(1 for result in results if result.ok)}"
+              f"/{len(results)} simulated, {len(failures)} failed, "
+              f"{(time.time() - started) / 60:.1f} min -- table join skipped",
+              flush=True)
+        return 1 if failures else 0
 
     print("stage B: joining beats to labels ...", flush=True)
     stats = build_table(data_dir, rows, sections_by_track)

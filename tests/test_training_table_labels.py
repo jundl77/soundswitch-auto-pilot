@@ -1035,6 +1035,44 @@ def test_the_batch_deletes_the_cell_sidecar_it_wrote_even_beside_an_old_decode_c
     assert decode not in job.preexisting
 
 
+def test_by_default_both_derived_files_are_deleted(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+
+    assert paths_to_delete(_job_with(mp3_path=mp3)) == derived_cache_paths(mp3)
+
+
+def test_keeping_cells_still_deletes_the_decode_cache(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+    decode, cells = derived_cache_paths(mp3)
+
+    doomed = paths_to_delete(_job_with(mp3_path=mp3, keep_cells=True))
+
+    assert decode in doomed
+    assert cells not in doomed
+
+
+def test_keeping_cells_leaves_preexisting_files_alone(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+    decode, cells = derived_cache_paths(mp3)
+    job = _job_with(mp3_path=mp3, preexisting=(decode, cells), keep_cells=True)
+
+    assert paths_to_delete(job) == ()
+
+
+def test_the_retention_flag_reaches_every_job(tmp_path):
+    rows = stage_track(tmp_path, cached=False, sidecar=False)
+
+    jobs, _counts = select(tmp_path, rows, keep_cells=True)
+
+    assert all(job.keep_cells for job in jobs)
+
+
 def _job_with(**over):
     from build_training_table import SimJob
 
