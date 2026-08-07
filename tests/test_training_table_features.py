@@ -15,7 +15,6 @@ from build_training_table import (  # noqa: E402  (needs the path insert above)
     MEL_EXPORTER_KEY,
     MEL_EXPORTER_VERSION,
     POOL_BUFFERS,
-    sidecar_generation,
     write_feature_sidecar,
 )
 
@@ -43,4 +42,3 @@ def test_a_new_sidecar_records_which_exporter_wrote_it(tmp_path):
 
     with np.load(path) as loaded:
         assert int(loaded[MEL_EXPORTER_KEY]) == MEL_EXPORTER_VERSION
-    assert sidecar_generation(path) == MEL_EXPORTER_VERSION

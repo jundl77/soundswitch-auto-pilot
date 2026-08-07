@@ -84,7 +84,6 @@ POOL_BUFFERS = 8
 
 MEL_EXPORTER_VERSION = 1
 MEL_EXPORTER_KEY = "exporter_version"
-_UNSTAMPED_SIDECAR_GENERATION = 1
 
 ANALYSER_RESET_SEC = 900.0
 
@@ -401,22 +400,11 @@ def write_feature_sidecar(path, mel: np.ndarray, frame_sec: float, t0: float) ->
         raise
 
 
-def sidecar_generation(path: Path) -> int:
-    try:
-        with np.load(path) as archive:
-            if MEL_EXPORTER_KEY in archive.files:
-                return int(archive[MEL_EXPORTER_KEY])
-    except (OSError, ValueError, EOFError, KeyError):
-        pass
-    return _UNSTAMPED_SIDECAR_GENERATION
-
-
 class SimJob(NamedTuple):
     track_id: str
     youtube_id: str
     mp3_path: str
     report_path: str
-    sidecar_path: str
     preexisting: tuple
     pipeline_sha: str
     mp3_size: int
@@ -544,7 +532,7 @@ def load_ok_rows(data_dir: Path) -> list:
     for track_id, seconds in rejected:
         print(f"  SKIP {track_id}: {seconds / 60.0:.1f} min reaches MusicAnalyser's "
               f"{ANALYSER_RESET_SEC / 60.0:.0f}-minute self-reset -- its beats and "
-              f"its mel sidecar would no longer describe the same audio", flush=True)
+              f"its features would no longer describe the same audio", flush=True)
     if not rows:
         raise RuntimeError(f"no ok rows in {path} -- nothing to build from")
     rows.sort(key=lambda row: row["track_id"])
@@ -584,7 +572,6 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
     for row in rows:
         mp3 = Path(row["mp3_path"])
         cached = report_path(data_dir, row["youtube_id"])
-        sidecar = data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz"
         try:
             stat = mp3.stat()
         except OSError:
@@ -594,7 +581,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
         if force:
             reason = "miss_forced"
         else:
-            reason = _cache_miss_reason(cached, sidecar, sha, stat.st_size, stat.st_mtime)
+            reason = _cache_miss_reason(cached, sha, stat.st_size, stat.st_mtime)
             if reason is None:
                 counts["hit"] += 1
                 continue
@@ -605,8 +592,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
 
         counts[reason] += 1
         jobs.append(SimJob(
-            row["track_id"], row["youtube_id"], str(mp3),
-            str(cached), str(sidecar),
+            row["track_id"], row["youtube_id"], str(mp3), str(cached),
             preexisting=tuple(path for path in derived_cache_paths(str(mp3))
                               if path in preexisting_caches),
             pipeline_sha=sha, mp3_size=stat.st_size, mp3_mtime=stat.st_mtime,
@@ -616,7 +602,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
     return jobs, counts
 
 
-def _cache_miss_reason(cached: Path, sidecar: Path, sha: str,
+def _cache_miss_reason(cached: Path, sha: str,
                        mp3_size: int, mp3_mtime: float) -> str | None:
     """``None`` when the cache may be used, else the counter name for the miss."""
     if not cached.exists():
@@ -693,7 +679,6 @@ class TableStats(NamedTuple):
     look_ahead_sec: set
     skipped: list
     missing_reports: list
-    missing_sidecars: list
 
 
 def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableStats:
@@ -706,7 +691,6 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
     look_ahead = set()
     skipped: list = []
     missing_reports: list = []
-    missing_sidecars: list = []
 
     try:
         with open(tmp, "wb") as raw_file, \
@@ -720,11 +704,6 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 cached = report_path(data_dir, row["youtube_id"])
                 if not cached.exists():
                     missing_reports.append(track_id)
-                    continue
-                mel = data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz"
-                if (not mel.exists()
-                        or sidecar_generation(mel) != MEL_EXPORTER_VERSION):
-                    missing_sidecars.append(track_id)
                     continue
                 sections = sections_by_track.get(track_id)
                 if sections is None:
@@ -765,7 +744,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
         raise
 
     return TableStats(tracks, row_count, labels, intents, dropped,
-                      look_ahead, skipped, missing_reports, missing_sidecars)
+                      look_ahead, skipped, missing_reports)
 
 
 def _git(repo_root: Path, *args: str) -> str | None:
@@ -836,7 +815,6 @@ def write_meta(data_dir: Path, stats: TableStats, failures: list,
         "failed_tracks": [{"track_id": t, "detail": d} for t, d in failures],
         "skipped_tracks": [{"track_id": t, "detail": d} for t, d in stats.skipped],
         "missing_reports": stats.missing_reports,
-        "missing_sidecars": stats.missing_sidecars,
     }
     path = data_dir / META_FILE
     _write_json_pretty(path, meta)
@@ -903,8 +881,6 @@ def print_report(stats: TableStats, results: list, table_path: Path,
           f"measured, so a zero denominator means the reports predate it)")
     print(f"  tracks with no cached report : {len(stats.missing_reports)}"
           + (f"  {stats.missing_reports[:10]}" if stats.missing_reports else ""))
-    print(f"  tracks skipped, no sidecar   : {len(stats.missing_sidecars)}"
-          + (f"  {stats.missing_sidecars[:10]}" if stats.missing_sidecars else ""))
 
     print()
     print("class histogram")
