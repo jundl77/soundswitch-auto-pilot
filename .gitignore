@@ -17,4 +17,22 @@ spotify_details.json
 report.json
 # The Raveform corpus: ~90 GB, machine-local, never committed.  The ten eval-set
 # tracks are the deliberate exception and live in training/eval_audio/.
-training/data/
+#
+# Labels are committed, songs are not -- so hand-authored annotations are tracked
+# where the rest of the dataset's labels live.  Re-including a path this deep
+# needs a rung per level: a directory ignored with a trailing slash is pruned
+# before git ever looks inside it, so each level ignores its *contents* and
+# re-admits the one child below.  Nothing but *.hand.json is ever re-admitted;
+# the published segments.json stays ignored (widening this to it is one line).
+#
+# The first rung re-admits the directory rather than its contents, because
+# `training/data/` is also excluded from .git/info/exclude on at least one
+# machine; a rule there would prune the walk before any rung below could be
+# reached, and .gitignore is the only one of the two that every clone gets.
+!training/data/
+training/data/*
+!training/data/raveform/
+training/data/raveform/*
+!training/data/raveform/annotations/
+training/data/raveform/annotations/*
+!training/data/raveform/annotations/*.hand.json

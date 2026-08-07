@@ -9,11 +9,12 @@ from lib.audio_config import SAMPLE_RATE, BUFFER_SIZE
 
 async def _run_pipeline(components, duration_sec: float, event_buffer,
                         command_queue, pace_real_time: bool,
-                        report_path: str | None = None):
+                        report_path: str | None = None, monitor=None):
     from simulate import runner
     try:
         await runner.run_simulation(components, duration_sec,
-                                    pace_real_time=pace_real_time)
+                                    pace_real_time=pace_real_time,
+                                    monitor=monitor)
     finally:
         event_buffer.set_timing_log(command_queue.get_timing_log())
         if report_path:
@@ -41,14 +42,14 @@ async def run_file(args):
     if not os.path.isfile(args.audio):
         print(f'[simulate] error: audio file not found: {args.audio}')
         sys.exit(2)
-    if args.play_audio and not args.ui:
-        print('[simulate] error: --play-audio requires --ui '
-              '(audio cannot play at fast-simulation speed)')
-        sys.exit(2)
-    if args.ui:
-        await _run_file_realtime_ui(args)
+    if paced(args):
+        await _run_file_paced(args)
     else:
         await _run_file_fast(args)
+
+
+def paced(args) -> bool:
+    return bool(args.ui or args.output_device_index is not None)
 
 
 async def _run_file_fast(args):
@@ -80,10 +81,10 @@ def _session_buffer(look_ahead_sec: float, clock=None):
                        look_ahead_sec=look_ahead_sec)
 
 
-async def _with_viewer(event_buffer, port, run):
+async def _with_viewer(event_buffer, port, run, enabled: bool = True):
     from lib import ui_bridge
 
-    ui = ui_bridge.start(event_buffer, port)
+    ui = ui_bridge.start(event_buffer, port) if enabled else None
     try:
         await run()
         if ui is not None:
@@ -97,14 +98,31 @@ async def _with_viewer(event_buffer, port, run):
             ui.stop()
 
 
-async def _run_file_realtime_ui(args):
+def _open_monitor(output_device_index: int, delay_sec: float):
+    from lib.clients.pyaudio_client import PyAudioClient
+    from lib.delayed_monitor import DelayedMonitor
+
+    speaker = PyAudioClient(SAMPLE_RATE, BUFFER_SIZE,
+                            output_device_index=output_device_index)
+    speaker.start_streams(start_stream_out=True, start_stream_in=False)
+    print(f'[simulate] monitoring on device {speaker.output_device_index}, '
+          f'{delay_sec:.0f}s behind the analysis — you hear room time')
+    return speaker, DelayedMonitor(delay_sec, speaker.play)
+
+
+async def _run_file_paced(args):
     from simulate.fake_audio_client import FileAudioClient
     from simulate.runner import build_simulation, PLAYBACK_DELAY_SEC
 
     audio_client = FileAudioClient(SAMPLE_RATE, BUFFER_SIZE, args.audio)
     event_buffer = _session_buffer(PLAYBACK_DELAY_SEC)
-    components, command_queue = build_simulation(audio_client, event_buffer,
-                                                 threaded=True)
+    speaker = monitor = None
+    if args.output_device_index is not None:
+        speaker, monitor = _open_monitor(args.output_device_index,
+                                         PLAYBACK_DELAY_SEC)
+    components, command_queue = build_simulation(
+        audio_client, event_buffer, threaded=True,
+        silence_monitor=None if monitor is None else monitor.silence)
 
     try:
         import librosa
@@ -114,20 +132,16 @@ async def _run_file_realtime_ui(args):
 
     event_buffer.start()
 
-    if args.play_audio:
-        try:
-            import sounddevice as sd
-            import librosa as lr
-            audio_data, sr = lr.load(args.audio, sr=SAMPLE_RATE, mono=True)
-            sd.play(audio_data, samplerate=sr)
-            print('[simulate] audio playback started')
-        except ImportError as e:
-            print(f'[simulate] warning: {e} — audio playback skipped')
-
-    await _with_viewer(event_buffer, args.port,
-                       lambda: _run_pipeline(components, duration_sec,
-                                             event_buffer, command_queue, True,
-                                             args.report))
+    try:
+        await _with_viewer(event_buffer, args.port,
+                           lambda: _run_pipeline(components, duration_sec,
+                                                 event_buffer, command_queue,
+                                                 True, args.report,
+                                                 monitor=monitor),
+                           enabled=args.ui)
+    finally:
+        if speaker is not None:
+            speaker.close()
 
 
 async def run_realtime(args):
@@ -161,11 +175,16 @@ def add_simulate_subparser(subparsers):
     fp.add_argument('audio', help='Path to audio file (MP3 / WAV / FLAC)')
     fp.add_argument('--ui', action='store_true',
                     help='Real-time paced run with live Dash timeline (instead of fast headless)')
-    fp.add_argument('--play-audio', action='store_true',
-                    help='Play audio from speakers (requires --ui and sounddevice)')
     fp.add_argument('--report', default='report.json',
                     help='Report output path (default: report.json); under --ui '
                          'it is written when the track ends')
+    fp.add_argument('-o', '--output-device-index', type=int, default=None,
+                    metavar='IDX',
+                    help='Monitor the track on this audio output device, one '
+                         'playback delay behind the analysis (so you hear room '
+                         'time, matching the UI). Implies real-time pacing: '
+                         'passing it without --ui paces the run without a '
+                         'viewer. Device indices come from `auto_pilot list`.')
     fp.add_argument('--port', type=int, default=8050, help='Dash server port (--ui only)')
 
     rp = sub.add_parser('realtime', help='Simulate from microphone in real time')

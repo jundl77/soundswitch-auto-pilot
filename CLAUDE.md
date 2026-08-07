@@ -127,6 +127,7 @@ caller's thread".
 | `simulate/ui_wedge_rig.py` | The viewer under a slow callback, with no audio and no GPU: a seeded buffer, the real snapshot server and the real Dash app, with latency injected into every poll — `serve` reproduces the freeze in a browser, `profile` times the server callbacks without one |
 | `training/corpus_root.py` | Where the gitignored corpus is on this machine, stdlib-only â€” so a *show* can ask without importing the benchmark harness |
 | `training/inspect_report.py` | Report inspector â€” per-10s rms/beat/intent bins + intent timeline; the tool for checking a show against a track's structure |
+| `training/label_tool.py` | `auto_pilot label` â€” a Dash app over one track's waveform, onset curve and beat grid, where the owner cuts a track into sections in the raw Raveform vocabulary plus a per-boundary strength. A labelling has two homes and the split *is* the lifecycle: working state is scratch CSV under `<corpus>/tmp_labels/` -- resolved through `corpus_root` exactly as a committed label is, because two resolutions meant a relaunch from another worktree silently showed an empty labelling while the work sat elsewhere -- rewritten on every edit so the file is the state and the page only a view of it. **Both halves of "only a view" are load-bearing and neither was true at first**: the layout is a function, so every page load re-reads the file, and an edit arriving from a page whose sections disagree with the file is refused rather than applied. A layout built once served launch-time sections to every reload, and since that stale list is the State each edit is applied to, one edit after a reload rewrote the file as launch-time state plus that edit -- silently destroying every boundary made in between. The refusal covers what the re-read cannot: a second tab. A working file the tool cannot parse -- a time that is not a number, a label outside the vocabulary -- is refused by name at launch, before the decode, rather than raised as a traceback out of the pre-app path; and no edit may overwrite a file that could not be read, because that file is the only copy of whatever is being repaired. **Commit** promotes it into the dataset as `annotations/<track_id>.hand.json`, copying the audio into the corpus if it is not already there, and hands off to the corpus admission step if this branch has one. `segments.json` is never written to -- the benchmark hashes it. Places files only; git is the owner's action. Reads nothing from `lib/` or `simulate/`; the CLI reaches *it* the way the show reaches `corpus_root`, which is what keeps dash off the show's import path |
 | `training/run_eval_set.py` | The benchmark â€” the frozen eval set through the sim, scored against its labels; cuts and enforces `training/eval_set_baseline.json` |
 | `training/soak_nn.py` | The live soak: a player and a subject, real audio through real hardware for half an hour, sampled at 1 Hz |
 | `training/nn_determinism_proof.py` | Four runs per track in four interpreters â€” cold/cold, warm/warm, cold/warm â€” and the bytes compared |
@@ -445,6 +446,69 @@ dependency-surface probe enforces, and the viewer is killed with `taskkill /T`
 because the venv launcher re-execs and the pid the show holds is a parent (#181).
 The report path never went near any of this: it is still written in the show.
 
+**The simulation can be monitored on headphones, and it is the same monitor the
+live show uses.** `simulate file -o IDX` plays the decoded track out one playback
+delay behind the analysis, so the owner hears *room* time and what he hears lines
+up with the room-aligned UI beside it rather than running fourteen seconds ahead
+of it. The delay machinery is extracted rather than copied — one `DelayedMonitor`
+holds the buffer, the arm, and the drop-the-tail-on-silence rule, and both the
+live path and the simulation drive it. Copying it is how the two would drift, and
+the one bug this code has already had (a monitor delay that collapsed after the
+first stop) is exactly the kind that would then need finding twice. The stop gate
+applies unchanged: a gap shorter than the persistence window plays through, a
+real stop drops the queued tail and re-arms.
+
+**`--play-audio` is retired, and `-o` is what replaced it** (#267). It pushed the
+file at the speakers on its own, undelayed and outside the pipeline, which was
+defensible only while nothing else could make a sound. Beside `-o` it was worse
+than redundant: the two start together and play the same track fourteen seconds
+apart, so the flag's only remaining effect was to make the monitor it sits next
+to unusable. Retiring it is an owner ruling rather than a cleanup — one output
+path is the point.
+
+`-o` implies real-time pacing, because a monitor is meaningless at fast-sim
+speed; passing it without `--ui` paces the run with no viewer. Fast headless is
+untouched and stays the default — the monitor is a pure side effect that the
+report path never sees, which the digest is the check on. One caveat worth
+knowing: the queue drains one buffer per fed buffer, so the true lag is the delay
+minus one buffer period. That is the live path's behaviour too, preserved rather
+than introduced.
+
+**The delay is armed when the track starts, not when the rig was built.** A
+monitor that arms in its own constructor silently donates its whole delay to
+whatever happens next, and in the simulation what happens next is the model load
+and the decode — which on a cold run take longer than the delay itself, leaving
+the headphones playing level with the analysis and the room alignment `-o` exists
+for quietly gone. The live path never had this because it re-arms at the top of
+its loop; the sim now arms at the same place, so setup latency of any size is
+charged to nobody. This is the general shape of the bug: a delay measured from
+construction is a delay measured from an instant nothing else in the show shares.
+
+**The tail plays out at the end of a file, and the stop gate still decides
+whether it should.** The paced flush used to drain the command queue and then
+close the speaker, so the last playback delay's worth of monitored audio — the
+part the room had not reached yet — was never heard. It is drained now, one
+buffer per buffer period, exactly as the live path would have played it. That
+does not override the persistence gate: a stop that has already fired has cleared
+the buffer, so there is nothing to drain and the cut stands. Tail-plays-out and
+stop-cuts-the-tail are therefore one rule read at two different times, not two
+competing ones.
+
+**One Ctrl-C has to end the session, and the obvious way to wait on a child
+guarantees it cannot.** `Popen.wait()` on Windows is `WaitForSingleObject` with
+an infinite timeout: it releases the GIL without joining CPython's SIGINT event,
+so it cannot return early. The interrupt is *delivered and then held* — measured,
+not inferred: killing the viewer by hand released the wait and the
+`KeyboardInterrupt` fired five seconds late, at the first bytecode afterwards,
+while the line straight after the wait never ran at all. That makes the deadlock
+exact, because the only thing that kills the viewer is the handler the interrupt
+has not reached yet. A second Ctrl-C cannot help; it re-sets a flag that is
+already set. So the session waits on the viewer by polling, which costs one
+wake-up every fifth of a second and makes the interrupt land in the same
+millisecond it is sent. The report is unaffected either way — it is written from
+a `finally` around the pipeline, so an interrupt mid-track still writes what the
+run had.
+
 **Smoothness is bought in the browser and never from the server**: the poll stays
 at its tick, because a faster poll once starved the plotly bundle behind Chrome's
 connection limit, and a 10 Hz viewer once cost the audio loop four sheds. The
@@ -556,17 +620,89 @@ every other one, and the figure re-uses the snapshot the anchor stream just read
 instead of polling again -- so a tick still costs exactly one poll and the panels
 still cannot disagree about which snapshot they are drawing.
 
-**Stops are immediate; starts wait for the room.** The asymmetry is the spec, not
-an oversight: music starting has to travel the playback delay before anyone hears
-it, so a start and everything after it stays room-aligned -- but silence needs no
-look-ahead, because there is nothing left to hear. A detected stop therefore ends
-the song on the display at once, cuts the monitored output's buffered tail
-instead of playing it out, and discards the beats still in flight, which were
-never going to reach the room. Everything mid-play keeps the room alignment.
+**Stops are immediate once the silence has persisted; starts wait for the room.**
+The asymmetry is the spec, not an oversight: music starting has to travel the
+playback delay before anyone hears it, so a start and everything after it stays
+room-aligned -- but silence needs no look-ahead, because there is nothing left to
+hear. A stop therefore ends the song on the display, cuts the monitored output's
+buffered tail instead of playing it out, and discards the beats still in flight,
+which were never going to reach the room. Everything mid-play keeps the room
+alignment.
+
+What the first version of that got wrong is that **detected silence is not the
+same as a stopped set**. The gap between two tracks is silence too, so every
+song change threw away a playback delay's worth of tail the room was still
+enjoying. The whole bypass package therefore waits for the silence to *persist*:
+the monitor cut, the flush of lighting the room has not seen, the quiet floor,
+and the display's own reading of the stop are one thing that fires together
+after the window, or does not fire at all. A resume inside the window cancels
+it entirely and the room hears the natural gap a look-ahead later -- which is
+exactly what it would have heard from a DJ mixing on the desk. Nothing else
+moves: the stop is still detected when it is detected, its sound event is still
+recorded there, and the song-boundary reset and rebirth machinery still run at
+once. Those were gap-correct before the bypass existed, and the gate is not
+theirs to wear.
+
+**The bar grid on the timeline is the decoder's, and it is an instrument rather
+than decoration.** Every decision the decoder makes is expressed in bars, so a
+grid that disagreed with the music was previously findable only by attaching a
+profiler to a running show — which is how a half-tempo lock on a cold entry was
+eventually caught, with `bar_sec` inflated 2x. Drawn, that failure is the first
+thing anyone notices: the bars are visibly twice as wide as the music. So the
+snapshot carries the decoder's own edge list, the bar index that names the first
+of them, and the bar length it is currently working with, and the render draws
+downbeats emphasised, intra-bar beats as light ticks, and every fourth bar
+numbered with the decoder's *own* index rather than a screen position. A client
+that re-derived a grid from the beat stream would agree with the decoder exactly
+when it did not matter and disagree silently when it did.
+
+The intra-bar ticks subdivide each *measured* bar rather than a nominal one, so a
+grid that is wobbling shows it. **They stop at the edge of a re-anchor gap, and
+that exception is what keeps the grid an instrument.** Two consecutive edges are
+not always one bar: when the beat stream drops out the decoder re-anchors, and
+the span it leaves behind is a hole the grid never counted through. Subdividing
+it in fours drew four evenly-spaced beats across a ten-second dropout — the most
+confident-looking part of the picture would have been the part with no evidence
+under it at all, which is precisely the failure the grid was drawn to expose. A
+span wider than the bar period by more than a fixed tolerance is therefore left
+tick-less; its two downbeats are real decoder edges and stay drawn, so the gap
+reads as a gap rather than vanishing. The period is the decoder's published one
+when it has one and the median span otherwise. And the edges are converted to the buffer's clock
+by the publisher, which is the only place that holds both: the decoder counts in
+audio seconds that reset at a song boundary, the buffer stamps in session
+seconds that do not, and joining those two anywhere else is how a grid ends up
+drawn a track-length away from the beats it belongs to.
+
+**A shed chain and a model opinion look identical on screen, so the screen says
+which it is.** The show holds its current intent when the section stage sheds,
+and held ATMOSPHERIC through a shed is pixel-for-pixel what a confident
+ATMOSPHERIC decode looks like — which cost a day of debugging a model that was
+never asked. The snapshot therefore carries the watchdog's own reading: the
+level, the fault holding it, a **monotonic** shed count and a sheds-per-minute
+rate over the trailing minute. The counter is the load-bearing one: state is
+polled at a fixed step and a shed shorter than that step is invisible to a level
+poll but is exactly the flapping worth seeing, so the count is incremented at the
+watchdog's single transition point rather than sampled. The rate is what
+distinguishes a box that stumbled once from one that is failing continuously; the
+total is what says a quiet-looking run had a bad five minutes an hour ago.
+
+This is payload only. It is deliberately **not** in the report: the report is
+what the room saw, and a shed is a fact about this machine on this night, so
+putting it there would make two runs of the same audio on two machines produce
+different bytes. The digest is the check that this stayed true.
+
+**The display derives the gate rather than being told about it.** A stop reaches
+the room one window after it was recorded, and a stop with a start inside that
+window never reached the room at all -- so that pair is dropped from the render
+entirely and the song keeps its origin straight through the gap. This is the
+same move the look-ahead shift already makes: nothing stored moves, the room's
+version is derived from the sound events the snapshot already carries. The
+report and the digest are untouched, and the window is written down in exactly
+one place for both sides to read.
 
 **That cut applies to the start record too, not only to the beats behind it.** A
-start whose audio is still travelling when a stop lands never reaches the room
-either, so it is not a record the display may count a song from. Leaving it in is
+start whose audio is still travelling when the bypass fires never reaches the
+room either, so it is not a record the display may count a song from. Leaving it in is
 what made the remapped list non-monotonic -- starts move by the delay and stops do
 not -- and the two obvious ways to ask which record is current then disagreed: the
 last by list position, and the last by room time. Position was accidentally right;
@@ -646,7 +782,14 @@ python auto_pilot run 0 -i INPUT_DEVICE_IDX -o OUTPUT_DEVICE_IDX --no-os2l --ui
 # a cold run -- a warm cell cache replays the extractor on CPU)
 python auto_pilot simulate file path/to/song.mp3          # fast headless: report + plumbing evaluation
 python auto_pilot simulate file path/to/song.mp3 --ui     # real-time paced, threaded GPU stage, live Dash timeline
+python auto_pilot simulate file path/to/song.mp3 --ui -o 17  # ...and monitor it on device 17, one delay behind (room time)
+python auto_pilot simulate file path/to/song.mp3 -o 17     # monitor with no viewer; -o alone still paces in real time
 python auto_pilot simulate realtime                       # microphone input with live Dash timeline
+
+# Hand-label a song's sections. Edits autosave to <corpus>/tmp_labels/;
+# "commit to dataset" promotes them into the corpus annotations as *.hand.json.
+# Which speakers it plays through is picked in the page, not on the command line
+python auto_pilot label path/to/song.mp3                   # browser labeller on :8070
 
 # Inspect a report: per-10s rms/beat bins, intent timeline, distribution
 python auto_pilot simulate file path/to/song.mp3 --report report.json
@@ -1002,6 +1145,8 @@ session is therefore not a clean read of what the headless pipeline does.
 
 **Data location.** Everything lands in `training/data/raveform/` -- annotations, `manifest.csv`, `audio/`, the download state files, and the build outputs (`reports/`, `features/`, `training_table.csv.gz`, `splits.json`, `models/` and `posteriors/`) -- and is gitignored: the audio is ~13 GiB and is never committed. The committed `.gitignore` covers `training/data/`.
 
+**With exactly one exception, and it is the owner's rule rather than a technicality: labels are committed, songs are not.** Hand-authored annotations (`annotations/*.hand.json`, see the labelling tool) are the only thing under `training/data/` that git tracks. They are not derived from anything -- nobody can regenerate a human's judgement -- so losing them to a `.gitignore` written for a 90 GB corpus would be losing the one artifact in there that is genuinely irreplaceable. Re-including a path that deep needs a rung per directory level, because a directory excluded with a trailing slash is pruned before git looks inside it; the first rung re-admits `training/data/` itself, since at least one machine also excludes it from `.git/info/exclude`, which `.gitignore` can override but only if it names the same directory. The published `segments.json` is deliberately *not* re-admitted -- widening the exception to it is a one-line change and an owner decision.
+
 **This directory is now a production dependency, not just a research one.** The shipped encoder, the student's graph and the priors live under `models/`, and the show reads them at startup. `training/corpus_root.py` is the single stdlib-only answer to "where is it" -- `$RAVEFORM_DATA_DIR`, else the repo's copy, else the main worktree's -- and `lib/section_chain.py` asks it rather than reaching through the benchmark harness. That indirection is not cosmetic: resolving the path through `run_eval_set` pulled the table builder, the label evaluator, the acquisition scripts and a git subprocess into production startup, and any failure anywhere in that chain read as "this machine has no model", so the show quietly ran the degradation state on a box that had one.
 
 ---
@@ -1019,9 +1164,10 @@ session is therefore not a clean read of what the headless pipeline does.
 - **The GPU stage degrades by holding, and there is no second classifier.** `NN_SHED` means: stop consuming posteriors, hold the current intent, keep beats and the silence timer, log loudly on a rate limit, attempt reinit on a backoff that tops out at one attempt per half minute, resume on success. Three of the four named GPU failure modes (a raised CUDA fault, an out-of-memory, a dead context) are the same mechanism reached by different exceptions and are deliberately not told apart — a policy that branched on the message text would be a policy about strings. The fourth, a hung pass, raises nothing at all and is caught by a timeout from the audio thread.
 - **A shed keeps feeding the ring**, which looks like waste and is the opposite: the extractor's sample index *is* song time and is what every cell is stamped from, so a stage that stopped taking audio would come back with a clock that disagrees with the beat grid, silently, for the rest of the song. What a shed stops is the encoder pass, not the microseconds of resampling. Both edges of a gap clear state — entering drops the hand-off queue and resets the decoder, leaving resyncs past the gap and starts the student cold — because everything they hold describes audio from before it.
 - **VRAM pressure fails silently on Windows.** The WDDM driver spills to host memory under pressure and raises no OOM at all, so a run that has started crawling reads as a healthy one. The gate is therefore the *plateau* in reserved bytes, not the absence of an error: measured on this box it climbs while the 30 s ring fills and then sits flat.
-- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and the input side DROPS rather than queues, so falling behind costs audio, not latency. The ladder is now one rung with two inputs — drift (which the audio loop measures) and stage health (which only the stage can report, because a CUDA fault costs the loop's pacing nothing). Either input alone holds the door shut. If a log shows sustained shedding, the box is too slow or the GPU is unwell — that is the signal, not a nuisance warning.
+- **Backpressure is monitored, not assumed**: live audio arrives at exactly 1x and the input side DROPS rather than queues, so falling behind costs audio, not latency. The ladder is now one rung with two inputs — drift (which the audio loop measures) and stage health (which only the stage can report, because a CUDA fault costs the loop's pacing nothing). Either input alone holds the door shut. If a log shows sustained shedding, the box is too slow or the GPU is unwell — that is the signal, not a nuisance warning. **It is now also on screen**, because a log nobody is reading is not a signal (see Visualizer smoothness).
 - **Watching the show costs the show.** `--ui` serves Dash from the same process as the pipeline, so a viewer's callbacks and the pipeline contend for one GIL. One ordinary viewer measurably increased sheds over a single track (1 -> 5 against a control run); two stale viewers degraded it enough to reset the decoder repeatedly, and that show never left one intent for the whole track. A `--ui` session is not a clean read of headless behaviour, and its checksums are not comparable with a fast-sim baseline either.
 - **A soak or live run through a virtual audio cable needs the rig checked first.** A run whose default render endpoint is the cable never sees silence, so the silence gate never trips and no song boundary fires — a "song boundaries exercised" result under that configuration is vacuous. Measured with the machine actually quiet, the cable's idle RMS sits an order of magnitude *below* the gate, so the blocker is configuration (a media player left running was the real cause) rather than routing. The cable is also **not transparent**: measured round trip is about −3.6 dB with a tilted magnitude response and r ≈ 0.94, so the live pipeline analyses audibly different audio from the simulation. Sim/live show agreement is agreement *despite* that channel.
+- **`beats_cut` still banks at detection, not at the gate.** `set_playing(False)` counts every beat still travelling as never-heard the instant silence is detected, and the persistence gate deliberately did not move it — the recorder is the one thing the gate is not allowed to touch. When a gap cancels the bypass those beats *do* reach the room, so the displayed beat count under-reports by up to a look-ahead's worth of beats for every song change. Display only: nothing in the report, the training table or the digest reads it. Fixing it means either passing the window into the recorder or deriving the count in the render path, and both are a change to the machinery a ruling froze.
 - **Beat dropout false ATMOSPHERIC**: a beat tracker can miss beats during heavy sidechain compression. The beat-absence threshold guards against single-beat dropouts but not sustained artifacts. It matters more than it used to, because the bar grid is counted off the same stream: a gap longer than the decoder's own threshold re-anchors the grid rather than closing one bar across it.
 - **Tempo octave choice now moves the bar grid, not just a threshold.** BPM is octave-folded before anyone sees it, which is what the OS2L wire has always carried. The DROP tempo gate that originally motivated the fold died with the rule classifier, but a *tracker* octave flip is now visible in the show: on a drum & bass track a live run emitted a 30-second passage on the half-time grid, which moved the committed DROP by nearly a full decoder bar relative to the simulation. Fast genres remain the exposed case.
 - **ATMOSPHERIC is reachable now, and the entry that said otherwise is retired.** It used to be the only intent driven by a beat-absence timer, so on mastered EDM — whose intros and outros have beats — the timer never tripped and `intro`/`outro` were unreachable no matter how thresholds moved. `intro` and `outro` are decoder classes now, so the intent is committed from evidence; the timer survives as a second producer and the cold-start floor is a third. A live soak spent several minutes of a 35-minute session in ATMOSPHERIC.

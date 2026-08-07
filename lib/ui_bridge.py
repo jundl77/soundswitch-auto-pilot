@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -17,6 +18,7 @@ SNAPSHOT_PATH = '/snapshot'
 VIEWER_MODULE = 'simulate.visualizer_app'
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _KILL_GRACE_SEC = 5.0
+_VIEWER_POLL_SEC = 0.2
 
 
 def snapshot_port(ui_port: int) -> int:
@@ -119,7 +121,8 @@ class UiBridge:
                             f'`python -m {VIEWER_MODULE} --port {self._ui_port}`')
 
     def wait(self) -> None:
-        self._viewer.wait()
+        while self._viewer.poll() is None:
+            time.sleep(_VIEWER_POLL_SEC)
 
     def stop(self) -> None:
         self._stopping = True

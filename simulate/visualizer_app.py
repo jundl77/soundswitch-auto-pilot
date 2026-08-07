@@ -3,11 +3,13 @@ import http.client
 import json
 import logging
 import threading
+from statistics import median
 
 import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 
+from lib.engine.event_buffer import STOP_PERSISTENCE_SEC
 from lib.ui_bridge import SNAPSHOT_HOST, SNAPSHOT_PATH, snapshot_port
 from simulate.runner import TIMING_TOLERANCE_SEC
 
@@ -29,7 +31,15 @@ WARN_COLOR = '#f0883e'
 MUTED      = '#6e7681'
 POSTERIOR_FILL = '#58a6ff'
 
+HEALTH_FONT_SIZE = '14px'
+TIMING_FONT_SIZE = '12px'
+
 BEAT_MARKER_SIZE = 16
+BEATS_PER_BAR = 4
+BAR_LABEL_EVERY = 4
+BAR_SPAN_TOLERANCE = 1.5
+DOWNBEAT_COLOR = 'rgba(88,166,255,0.55)'
+BEAT_TICK_COLOR = 'rgba(88,166,255,0.22)'
 
 REFRESH_MS = 250
 VIEW_EVERY_TICKS = 2
@@ -81,17 +91,40 @@ def _intent_config(intent_key):
     return INTENT_CONFIG.get(intent_key, _DEFAULT_CONFIG)
 
 
+def _bridged(stop_t: float, start_t: float) -> bool:
+    return stop_t < start_t <= stop_t + STOP_PERSISTENCE_SEC
+
+
+def _elided(event: dict, snapshot: dict) -> bool:
+    others = snapshot.get('sound_events', [])
+    if event['playing']:
+        return any(_bridged(other['t'], event['t'])
+                   for other in others if not other['playing'])
+    return any(_bridged(event['t'], other['t'])
+               for other in others if other['playing'])
+
+
+def _room_stops(snapshot: dict) -> list:
+    return [event['t'] + STOP_PERSISTENCE_SEC
+            for event in snapshot.get('sound_events', [])
+            if not event['playing'] and not _elided(event, snapshot)]
+
+
 def _room_sound_events(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    events = snapshot.get('sound_events', [])
-    stops = [e['t'] for e in events if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
-    for event in events:
-        reaches_room_at = event['t'] + delay if event['playing'] else event['t']
-        cut = event['playing'] and any(event['t'] < stop <= reaches_room_at
-                                       for stop in stops)
-        if reaches_room_at <= now and not cut:
+    for event in snapshot.get('sound_events', []):
+        if _elided(event, snapshot):
+            continue
+        if event['playing']:
+            reaches_room_at = event['t'] + delay
+            if any(event['t'] < stop <= reaches_room_at for stop in stops):
+                continue
+        else:
+            reaches_room_at = event['t'] + STOP_PERSISTENCE_SEC
+        if reaches_room_at <= now:
             heard.append(dict(event, t=reaches_room_at))
     return heard
 
@@ -99,7 +132,7 @@ def _room_sound_events(snapshot: dict) -> list:
 def _heard_beats(snapshot: dict) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     heard = []
     for beat in snapshot.get('beats', []):
         reaches_room_at = beat['t'] + delay
@@ -132,10 +165,13 @@ def _song_origin(snapshot: dict) -> float | None:
 
 
 def _room_is_playing(snapshot: dict) -> bool:
+    now = snapshot.get('now', 0.0)
+    live = (bool(snapshot.get('is_playing'))
+            or any(stop > now for stop in _room_stops(snapshot)))
     last = _last_heard(snapshot)
     if last is not None:
-        return last['playing'] and bool(snapshot.get('is_playing'))
-    return not snapshot.get('sound_events') and bool(snapshot.get('is_playing'))
+        return last['playing'] and live
+    return not snapshot.get('sound_events') and live
 
 
 def _room_bpm(snapshot: dict) -> float:
@@ -146,7 +182,7 @@ def _room_bpm(snapshot: dict) -> float:
 def _beats_still_travelling(snapshot: dict) -> int:
     delay = snapshot.get('look_ahead_sec', 0.0)
     now = snapshot.get('now', 0.0)
-    stops = [e['t'] for e in snapshot.get('sound_events', []) if not e['playing']]
+    stops = _room_stops(snapshot)
     return sum(1 for beat in snapshot.get('beats', [])
                if beat['t'] + delay > now
                and not any(beat['t'] < stop <= beat['t'] + delay for stop in stops))
@@ -191,6 +227,43 @@ def _anchor(snapshot: dict) -> dict:
     }
 
 
+def _bar_grid(snapshot: dict, origin: float) -> tuple:
+    state = snapshot.get('decoder') or {}
+    edges = state.get('bar_edges') or []
+    if len(edges) < 2:
+        return [], []
+    delay = snapshot.get('look_ahead_sec', 0.0)
+    first_bar = state.get('first_bar') or 0
+    spans = [b - a for a, b in zip(edges, edges[1:])]
+    bar_sec = state.get('bar_sec') or median(spans)
+
+    shapes, annotations = [], []
+    for index, start in enumerate(edges[:-1]):
+        at = start + delay - origin
+        span = spans[index]
+        shapes.append(dict(
+            type='line', xref='x', yref='paper',
+            x0=at, x1=at, y0=0.0, y1=0.5,
+            line=dict(color=DOWNBEAT_COLOR, width=1.4),
+        ))
+        if span <= bar_sec * BAR_SPAN_TOLERANCE:
+            for beat in range(1, BEATS_PER_BAR):
+                tick = at + span * beat / BEATS_PER_BAR
+                shapes.append(dict(
+                    type='line', xref='x', yref='paper',
+                    x0=tick, x1=tick, y0=0.06, y1=0.20,
+                    line=dict(color=BEAT_TICK_COLOR, width=0.8),
+                ))
+        bar = first_bar + index
+        if bar % BAR_LABEL_EVERY == 0:
+            annotations.append(dict(
+                x=at, y=0.50, xref='x', yref='paper',
+                text=str(bar), showarrow=False, xanchor='left', yanchor='bottom',
+                font=dict(color=DOWNBEAT_COLOR, size=9, family='monospace'),
+            ))
+    return shapes, annotations
+
+
 def _build_timeline(snapshot: dict) -> go.Figure:
     origin = _song_origin(snapshot)
     now    = _display_now(snapshot, origin)
@@ -199,6 +272,11 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     left   = max(x0, 0.0)
 
     shapes, annotations, beat_x = [], [], []
+
+    if origin is not None:
+        grid_shapes, grid_labels = _bar_grid(snapshot, origin)
+        shapes.extend(grid_shapes)
+        annotations.extend(grid_labels)
 
     for entry in snapshot.get('intents', []) if origin is not None else ():
         start   = entry['t'] - origin
@@ -381,33 +459,93 @@ def _build_metrics(snapshot: dict) -> list:
     status_col  = '#3fb950' if is_playing else '#6e7681'
     status_lbl  = '● PLAYING' if is_playing else '◌ PAUSED'
 
-    timing_str, timing_col = _timing_health(snapshot.get('timing_stats', {}))
+    verdict_str, stream_strs, timing_col = _timing_health(
+        snapshot.get('timing_stats', {}))
+    shed = snapshot.get('shed') or {}
+    pill_str, pill_col = _shed_pill(shed)
+    rate_str, rate_col = _shed_rate(shed)
 
-    items = [
-        html.Span(status_lbl,   style={'color': status_col,  'marginRight': '20px', 'fontWeight': 'bold'}),
-        html.Span(f'room {room_text}', id='room-clock', style={'color': '#e6edf3', 'fontWeight': 'bold', 'marginRight': '10px'}),
-        html.Span(f'song {song_text}', id='song-clock', style={'color': MUTED, 'marginRight': '20px'}),
-        html.Span(f'{bpm:.0f} BPM',  style={'color': '#58a6ff', 'marginRight': '20px'}),
-        html.Span(f'{beats} beats',   style={'color': OK_COLOR, 'marginRight': '20px'}),
-        html.Span(f'intent: {intent_lbl}', style={'color': intent_col, 'fontWeight': 'bold', 'marginRight': '20px'}),
-        html.Span(timing_str, style={'color': timing_col}),
+    return [
+        _metric_row([
+            html.Span(status_lbl, style={'color': status_col,
+                                         'fontWeight': 'bold',
+                                         'minWidth': '11ch'}),
+            html.Span(f'room {room_text}', id='room-clock',
+                      style={'color': '#e6edf3', 'fontWeight': 'bold',
+                             'minWidth': '17ch'}),
+            html.Span(f'song {song_text}', id='song-clock',
+                      style={'color': MUTED, 'minWidth': '17ch'}),
+        ]),
+        _metric_row([
+            html.Span(f'{bpm:.0f} BPM', style={'color': '#58a6ff',
+                                               'minWidth': '9ch'}),
+            html.Span(f'{beats} beats', style={'color': OK_COLOR,
+                                               'minWidth': '12ch'}),
+            html.Span(f'intent: {intent_lbl}', style={'color': intent_col,
+                                                      'fontWeight': 'bold'}),
+        ]),
+        _metric_row([
+            html.Span(pill_str, style={'color': pill_col,
+                                       'fontWeight': 'bold',
+                                       'fontSize': HEALTH_FONT_SIZE,
+                                       'border': f'1px solid {pill_col}',
+                                       'borderRadius': '4px',
+                                       'padding': '2px 10px'}),
+            html.Span(rate_str, style={'color': rate_col}),
+        ], alignItems='center'),
+        _metric_row(
+            [html.Span(verdict_str, style={'color': timing_col,
+                                           'fontWeight': 'bold'})]
+            + [html.Span(text, style={'color': MUTED, 'minWidth': '21ch'})
+               for text in stream_strs],
+            fontSize=TIMING_FONT_SIZE, columnGap='16px', marginBottom='0',
+            marginTop='2px', paddingTop='7px',
+            borderTop=f'1px solid {BORDER}'),
     ]
-    return items
+
+
+def _metric_row(items: list, **overrides) -> html.Div:
+    style = {'display': 'flex', 'alignItems': 'baseline', 'flexWrap': 'wrap',
+             'columnGap': '22px', 'rowGap': '4px', 'marginBottom': '7px',
+             'fontVariantNumeric': 'tabular-nums'}
+    style.update(overrides)
+    return html.Div(items, style=style)
+
+
+def _shed_pill(shed: dict) -> tuple:
+    if not shed:
+        return 'health: —', MUTED
+    if shed.get('level', 'NONE') != 'NONE':
+        fault = shed.get('fault')
+        return (f'health: ◆ DEGRADED — holding intent'
+                f'{f" ({fault})" if fault else ""}'), WARN_COLOR
+    return 'health: ● LIVE', OK_COLOR
+
+
+def _shed_rate(shed: dict) -> tuple:
+    if not shed:
+        return 'sheds: —', MUTED
+    rate = shed.get('sheds_per_min', 0)
+    total = shed.get('sheds', 0)
+    text = f'sheds {rate}/min'
+    if total:
+        text += f'  ·  {total} this run'
+    return text, (WARN_COLOR if rate else MUTED)
 
 
 def _timing_health(stats: dict) -> tuple:
     by_label = stats.get('by_label') or {}
     if not by_label:
-        return 'cmd timing: —', MUTED
+        return 'cmd timing: —', [], MUTED
     tolerance_ms = TIMING_TOLERANCE_SEC * 1000
     worst = max(by_label, key=lambda label: by_label[label]['mean_error_ms'])
     late = by_label[worst]['mean_error_ms'] > tolerance_ms
-    streams = ' '.join(f'{label} {s["mean_delta_sec"]:.2f}s±{s["mean_error_ms"]:.0f}ms'
-                       for label, s in by_label.items())
+    streams = [f'{label} {s["mean_delta_sec"]:.2f}s ±{s["mean_error_ms"]:.0f}ms'
+               for label, s in by_label.items()]
     if late:
         return (f'cmd timing: {worst} misses its target by '
-                f'{by_label[worst]["mean_error_ms"]:.0f}ms  │  {streams}'), WARN_COLOR
-    return f'cmd timing: on target  │  {streams}', OK_COLOR
+                f'{by_label[worst]["mean_error_ms"]:.0f}ms'), streams, WARN_COLOR
+    return 'cmd timing: on target', streams, OK_COLOR
 
 
 STYLESHEET = '''
@@ -609,7 +747,7 @@ BLANK_SNAPSHOT = {
     'now': 0.0, 'look_ahead_sec': 0.0, 'is_playing': False,
     'beats': [], 'effects': [], 'intents': [], 'sound_events': [],
     'current_effect': None, 'bpm': 0.0, 'beats_detected': 0, 'intent': None,
-    'timing_stats': {}, 'decoder': {},
+    'timing_stats': {}, 'decoder': {}, 'shed': {},
 }
 
 POLL_TIMEOUT_SEC = 1.0
@@ -693,7 +831,7 @@ def build_app(snapshot_source) -> dash.Dash:
             html.Div(id='metrics', style={'flex': '1'}),
             html.Div('— fps', id='fps', style={'color': MUTED, 'marginLeft': '20px'}),
         ], style={
-            'display': 'flex', 'alignItems': 'center',
+            'display': 'flex', 'alignItems': 'flex-start',
             'padding': '10px 20px', 'borderTop': f'1px solid {BORDER}',
             'fontFamily': 'monospace', 'fontSize': '13px',
         }),

@@ -36,7 +36,14 @@ class PyAudioClient:
     def exhausted(self) -> bool:
         return False
 
-    def start_streams(self, start_stream_out: bool = False) -> None:
+    def start_streams(self, start_stream_out: bool = False,
+                      start_stream_in: bool = True) -> None:
+        if start_stream_in:
+            self._start_stream_in()
+        if start_stream_out:
+            self._start_stream_out()
+
+    def _start_stream_in(self) -> None:
         if self.input_device_index is None:
             default_input_device_info = self.py_audio.get_default_input_device_info()
             self.input_device_index = default_input_device_info['index']
@@ -52,21 +59,22 @@ class PyAudioClient:
                                             input=True,
                                             frames_per_buffer=self.buffer_size)
         self.stream_in.start_stream()
-        if start_stream_out:
-            if self.output_device_index is None:
-                default_output_device_info = self.py_audio.get_default_output_device_info()
-                self.output_device_index = default_output_device_info['index']
-                logging.info(f"[pyaudio] using default sound output device: {default_output_device_info['name']}")
-            else:
-                device_name = self.py_audio.get_device_info_by_index(self.output_device_index)["name"]
-                logging.info(f"[pyaudio] using sound output device: {device_name} (index: {self.output_device_index})")
-            self.stream_out = self.py_audio.open(format=pyaudio.paFloat32,
-                                                 channels=1,
-                                                 output_device_index=self.output_device_index,
-                                                 rate=self.sample_rate,
-                                                 output=True,
-                                                 frames_per_buffer=self.buffer_size)
-            self.stream_out.start_stream()
+
+    def _start_stream_out(self) -> None:
+        if self.output_device_index is None:
+            default_output_device_info = self.py_audio.get_default_output_device_info()
+            self.output_device_index = default_output_device_info['index']
+            logging.info(f"[pyaudio] using default sound output device: {default_output_device_info['name']}")
+        else:
+            device_name = self.py_audio.get_device_info_by_index(self.output_device_index)["name"]
+            logging.info(f"[pyaudio] using sound output device: {device_name} (index: {self.output_device_index})")
+        self.stream_out = self.py_audio.open(format=pyaudio.paFloat32,
+                                             channels=1,
+                                             output_device_index=self.output_device_index,
+                                             rate=self.sample_rate,
+                                             output=True,
+                                             frames_per_buffer=self.buffer_size)
+        self.stream_out.start_stream()
 
     def read(self) -> np.ndarray:
         assert self.stream_in is not None, "stream_in was None"
