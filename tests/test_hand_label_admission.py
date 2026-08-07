@@ -16,7 +16,6 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -27,9 +26,8 @@ for _path in (str(TRAINING_DIR), str(TRAINING_DIR / "raveform")):
 import build_clean_manifest as gate  # noqa: E402
 import hand_label_admission as admission  # noqa: E402
 import run_eval_set  # noqa: E402
-from build_training_table import load_sections_by_track, write_feature_sidecar  # noqa: E402
+from build_training_table import load_sections_by_track  # noqa: E402
 from nn.dataset import (  # noqa: E402
-    FRAME_SEC,
     SPLIT_NAMES,
     TrackRef,
     assign_split,
@@ -434,12 +432,7 @@ def test_candidate_tracks_include_a_hand_only_track(tmp_path):
         handle.write(",".join(gate.CLEAN_MANIFEST_HEADER) + "\n")
         handle.write("hand-ab12cd34ef56,hand-ab12cd34ef56,x.mp3,"
                      "120.05,120.0,120.0,ok,\n")
-    (data_dir / "features").mkdir()
-    mel = np.zeros((400, 40), dtype=np.float32)
-    write_feature_sidecar(data_dir / "features" / "hand-ab12cd34ef56.npz",
-                          mel, FRAME_SEC, FRAME_SEC)
-
-    candidates, _no_sidecar, no_annotation, _unlabeled = candidate_tracks(data_dir)
+    candidates, no_annotation, _unlabeled = candidate_tracks(data_dir)
 
     assert candidates == [TrackRef("hand-ab12cd34ef56", "hand-ab12cd34ef56",
                                    "Hand Artist - Hand Track")]

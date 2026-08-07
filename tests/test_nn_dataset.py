@@ -327,7 +327,8 @@ def test_make_splits_refuses_an_eval_track_it_cannot_name(tmp_path):
         make_splits(data_dir, eval_set_path=eval_set)
 
 
-def test_make_splits_skips_tracks_without_a_sidecar(tmp_path):
+def test_make_splits_places_a_track_without_a_mel_sidecar(tmp_path):
+    """The mel generation is dead; split membership no longer requires its file."""
     tracks = corpus_tracks(20)
     data_dir, eval_set = fake_corpus(tmp_path, tracks)
     (data_dir / "features" / f"{tracks[5][1]}.npz").unlink()
@@ -335,8 +336,8 @@ def test_make_splits_skips_tracks_without_a_sidecar(tmp_path):
     result = make_splits(data_dir, eval_set_path=eval_set)
 
     placed = set(result["train"]) | set(result["val"]) | set(result["test"])
-    assert tracks[5][1] not in placed
-    assert result["skipped_no_sidecar"] == [tracks[5][1]]
+    assert tracks[5][1] in placed
+    assert "skipped_no_sidecar" not in result
 
 
 # --------------------------------------------------------------------------- #

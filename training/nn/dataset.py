@@ -131,11 +131,9 @@ def _clean_manifest_rows(data_dir: Path) -> list:
 
 def candidate_tracks(data_dir: Path) -> tuple:
     data_dir = Path(data_dir)
-    features = data_dir / FEATURES_DIR
     by_track_id = {str(track.get("key")): track for track in load_all_tracks(data_dir)}
 
     candidates: list = []
-    no_sidecar: list = []
     no_annotation: list = []
     unlabeled: list = []
 
@@ -145,15 +143,12 @@ def candidate_tracks(data_dir: Path) -> tuple:
         if track is None:
             no_annotation.append(youtube_id)
             continue
-        if not (features / f"{youtube_id}.npz").exists():
-            no_sidecar.append(youtube_id)
-            continue
         if not label_spans(parse_sections(track)):
             unlabeled.append(youtube_id)
             continue
         candidates.append(TrackRef(row["track_id"], youtube_id, str(track.get("title", ""))))
 
-    return candidates, sorted(no_sidecar), sorted(no_annotation), sorted(unlabeled)
+    return candidates, sorted(no_annotation), sorted(unlabeled)
 
 
 def make_splits(data_dir, seed: int = SPLIT_SEED, *,
@@ -161,7 +156,7 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
     data_dir = Path(data_dir)
     path = data_dir / SPLITS_FILE
 
-    candidates, no_sidecar, no_annotation, unlabeled = candidate_tracks(data_dir)
+    candidates, no_annotation, unlabeled = candidate_tracks(data_dir)
 
     document = load_eval_set(Path(eval_set_path))
     eval_ids = frozenset(str(i) for i in document["youtube_ids"])
@@ -212,7 +207,6 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
         "ratios": dict(zip(SPLIT_NAMES, SPLIT_RATIOS)),
         "eval_set": sorted(eval_ids),
         "excluded_artist_names": sorted(artist_names),
-        "skipped_no_sidecar": no_sidecar,
         "skipped_no_annotation": no_annotation,
         "skipped_unlabeled": unlabeled,
         "candidates": len(candidates),
