@@ -801,22 +801,14 @@ def test_encoder_frame_times_sit_at_the_centre_of_the_receptive_field():
     assert times[1] - times[0] == pytest.approx(320.0 / SR)
 
 
-def _phase_b_dir() -> Path:
-    import run_eval_set
-
-    return Path(run_eval_set.corpus_dir()) / "models" / "phase_b"
-
-
 def _require_artifacts():
-    directory = _phase_b_dir()
-    affine = directory / "input_affine_F3.npz"
-    from lib.section_chain import MODEL_VERSION
+    from lib.section_chain import artifacts
 
-    onnx = (directory / MODEL_VERSION / "online_step.onnx")
-    if not affine.exists() or not onnx.exists():
-        pytest.skip(f"shipping artifacts absent under {directory} -- "
-                    f"they live in the gitignored corpus data directory")
-    return affine, onnx
+    found = artifacts()
+    if found.missing():
+        pytest.skip(f"shipping artifacts absent: {', '.join(found.missing())} "
+                    f"-- they live in the gitignored corpus data directory")
+    return found.affine, found.graph
 
 
 @pytest.mark.integration

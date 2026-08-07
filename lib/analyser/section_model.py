@@ -99,6 +99,21 @@ def check_graph_geometry(session, geometry: HeadGeometry) -> None:
     _axis(outputs[STATE_OUTPUT], -1, geometry.rnn_hidden, "rnn_hidden")
 
 
+def label_class_count(session) -> int | None:
+    """The label head's class axis as the graph itself declares it.
+
+    None when the axis is symbolic -- a graph that will not say how wide its
+    posterior is cannot be cross-checked against the vocabulary, and the chain
+    treats that as a refusal rather than a pass.
+    """
+    for port in session.get_outputs():
+        if port.name == LABEL_OUTPUT:
+            shape = list(port.shape)
+            axis = shape[-1] if shape else None
+            return int(axis) if isinstance(axis, int) else None
+    return None
+
+
 def _axis(shape: list, axis: int, wanted: int, field: str) -> None:
     found = shape[axis] if len(shape) >= abs(axis) else None
     if isinstance(found, int) and found != wanted:
@@ -148,6 +163,7 @@ class SectionModel:
         self._mean = mean
         self._session = (session_factory or session)(onnx_path)
         check_graph_geometry(self._session, self.geometry)
+        self.num_classes = label_class_count(self._session)
         self.reset()
 
     def reset(self) -> None:

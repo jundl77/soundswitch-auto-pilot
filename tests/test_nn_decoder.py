@@ -764,22 +764,24 @@ def test_a_config_of_known_knobs_round_trips(tmp_path):
     assert params.floor_bars == (1, 2, 3, 4, 5)
 
 
-def test_the_shipping_config_loads_and_is_the_frontier_pick():
-    """These are task1a_lag_sweep's lag-2 row, per the file's own provenance block."""
+def test_the_shipping_config_loads_and_is_the_l9_sweep_pick():
+    """These are the l9 decoder sweep's chosen row (#302), per the file's own
+    provenance block.  floor_bars is null on purpose: the floors come from the
+    l9 priors scaled by floor_scale, so a priors refit moves them."""
     params = load_decoder_config(SHIPPING_DECODER_CONFIG)
     document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
-    assert document["name"] == "reduced_plus_floors_x0.75"
+    assert document["name"] == "l9_sweep_pick"
     assert dataclasses.asdict(params) == {
         "lag_bars": 2,
         "class_prior_division": True,
-        "prior_strength": -0.25,
-        "drop_miss_cost": 0.4642,
+        "prior_strength": 0.25,
+        "drop_miss_cost": 6.8129,
         "boundary_weight": 4.0,
         "boundary_ref": 0.2,
         "boundary_tolerance_sec": 0.5,
         "min_coverage": 1,
-        "floor_scale": 1.25,
-        "floor_bars": (8, 8, 6, 9, 8),
+        "floor_scale": 0.5,
+        "floor_bars": None,
         "outro_escape": 0.02,
         "temperature": 1.0,
     }

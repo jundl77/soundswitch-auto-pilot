@@ -59,6 +59,22 @@ class DecodeParams:
 SHIPPING_DECODER_CONFIG = Path(__file__).with_name("decoder_config.json")
 
 
+def decoder_config_classes(path) -> tuple:
+    """The class space a decoder config was swept in, off its own record.
+
+    Required rather than optional: a config swept in one vocabulary and decoded
+    in another is exactly what the chain's space gate exists to refuse, and a
+    file that does not say cannot be checked.
+    """
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    space = document.get("class_space")
+    if not space:
+        raise ValueError(
+            f"{path}: decoder config records no class_space -- without it the "
+            f"space it was swept in cannot be checked against the vocabulary")
+    return tuple(space)
+
+
 def load_decoder_config(path) -> DecodeParams:
     document = json.loads(Path(path).read_text(encoding="utf-8"))
     chosen = document.get("chosen", document)

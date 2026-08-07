@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import NamedTuple
 
-MODEL_VERSION = "student_kd_t2_w05_s1234"
-_PHASE_B = "phase_b"
+MODEL_VERSION = "l9_w128_s1234"
+_GENERATION = "l9"
 _AFFINE = "input_affine_F3.npz"
 _GRAPH = "online_step.onnx"
 _PRIORS = "priors.json"
@@ -45,11 +45,10 @@ def corpus_dir() -> Path:
 
 def artifacts(data_dir=None) -> Artifacts:
     root = Path(data_dir) if data_dir is not None else corpus_dir()
-    phase_b = root / "models" / _PHASE_B
-    return Artifacts(affine=phase_b / _AFFINE,
-                     graph=phase_b / MODEL_VERSION / _GRAPH,
-                     priors=root / "models" / f"{_PHASE_B}_{MODEL_VERSION}"
-                     / _PRIORS)
+    generation = root / "models" / _GENERATION
+    return Artifacts(affine=generation / _AFFINE,
+                     graph=generation / MODEL_VERSION / _GRAPH,
+                     priors=generation / _PRIORS)
 
 
 def artifacts_present(data_dir=None) -> bool:
@@ -92,12 +91,37 @@ def resolve_backend(device: str | None = None, fp16: bool = True) -> dict:
             "precision": "fp16" if fp16 else "fp32"}
 
 
-def _check_class_space(priors) -> None:
+def _check_class_space(priors, model_classes, config_classes) -> None:
+    """The GATED_SPACE flip's fatal gate: every layer speaks the full vocabulary.
+
+    ``check_class_space`` tolerates a subset so the offline decoder can replay
+    older generations; the chain that lights a room may not.  A model, a priors
+    file and a decoder config that disagree about the class axis would decode
+    shifted or commit classes nobody swept, so construction refuses anything
+    short of the whole vocabulary, in order, at every layer (#268).
+    """
     from lib.engine.effect_definitions import intent_for_class
-    from lib.label_space import check_class_space
+    from lib.label_space import SECTION_LABELS, check_class_space
 
     check_class_space(priors.classes, "the decoder priors")
-    for name in priors.classes:
+    expected = SECTION_LABELS
+    if tuple(priors.classes) != expected:
+        raise ValueError(
+            f"the decoder priors name {len(priors.classes)} classes "
+            f"({', '.join(priors.classes)}), not the full vocabulary "
+            f"({', '.join(expected)}) the show decodes")
+    if tuple(config_classes) != expected:
+        raise ValueError(
+            f"the decoder config's class_space is {', '.join(config_classes)}, "
+            f"not the vocabulary {', '.join(expected)} -- it was swept in a "
+            f"different space than the one it would decode")
+    if model_classes != len(expected):
+        raise ValueError(
+            f"the model's label head is "
+            f"{'undeclared' if model_classes is None else f'{model_classes}-wide'}"
+            f" against the vocabulary's {len(expected)} classes -- the graph "
+            f"and the priors would disagree about what each column means")
+    for name in expected:
         intent_for_class(name)
 
 
@@ -107,10 +131,20 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
     from lib.analyser import mert_stream as M
     from lib.analyser.section_model import PosteriorStream, SectionModel
     from lib.engine.section_decoder import (SHIPPING_DECODER_CONFIG, Priors,
-                                            SectionDecoder, load_decoder_config)
+                                            SectionDecoder,
+                                            decoder_config_classes,
+                                            load_decoder_config)
 
     found = artifacts(data_dir)
     geometry, head, mean = read_geometry(data_dir)
+
+    # The space gate fires before the encoder loads: a chain whose layers
+    # disagree about the class axis must refuse construction, not the first bar.
+    model = SectionModel(found.graph, mean=mean, geometry=head)
+    priors = Priors.load(found.priors)
+    params = load_decoder_config(SHIPPING_DECODER_CONFIG)
+    _check_class_space(priors, model.num_classes,
+                       decoder_config_classes(SHIPPING_DECODER_CONFIG))
 
     stage = None if extractor is None else extractor(geometry)
     build_encoder = None
@@ -122,8 +156,7 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
 
         stage = M.MertStream(build_encoder(), geometry=geometry)
 
-    stream = PosteriorStream(stage, SectionModel(found.graph, mean=mean,
-                                                 geometry=head))
+    stream = PosteriorStream(stage, model)
     if watchdog is not None:
         from lib.analyser.gpu_stage import GpuStage
 
@@ -132,10 +165,7 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
 
     feature_latency_sec = (geometry.margin_sec + geometry.hop_sec
                            + head.future_sec)
-    priors = Priors.load(found.priors)
-    _check_class_space(priors)
-    decoder = SectionDecoder(priors,
-                             load_decoder_config(SHIPPING_DECODER_CONFIG),
+    decoder = SectionDecoder(priors, params,
                              feature_latency_sec=feature_latency_sec)
     logging.info(f'[chain] {MODEL_VERSION} on {_where(stage)} | '
                  f'feature latency {feature_latency_sec:.4f}s '

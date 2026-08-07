@@ -267,12 +267,16 @@ def test_the_two_paths_disagree_when_one_of_them_drops_a_knob(tmp_path):
     write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
 
     priors = toy_priors(floor=3)
-    shipped = load_decoder_config(SHIPPING_DECODER_CONFIG)
-    hot = dataclasses.replace(shipped, temperature=8.0)
+    # Neutralised around the shipped config: the l9 drop bonus saturates this
+    # toy decode to one class under any temperature, which would hide a
+    # dropped knob -- the very thing this test exists to catch.
+    base = dataclasses.replace(load_decoder_config(SHIPPING_DECODER_CONFIG),
+                               drop_miss_cost=1.0, prior_strength=0.0)
+    hot = dataclasses.replace(base, temperature=8.0)
     assert (inputs_from(npz, beats, hot).posteriors.tolist()
-            != inputs_from(npz, beats, shipped).posteriors.tolist())
+            != inputs_from(npz, beats, base).posteriors.tolist())
     assert ([label for _, label in decode_track(npz, beats, hot, priors=priors)]
-            != [label for _, label in decode_track(npz, beats, shipped, priors=priors)])
+            != [label for _, label in decode_track(npz, beats, base, priors=priors)])
 
 
 def test_one_decoder_instance_carries_nothing_between_tracks(tmp_path):

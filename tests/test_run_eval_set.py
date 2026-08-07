@@ -79,6 +79,7 @@ def result_document(tracks: dict, aggregate: dict | None = None,
         "eval_set": {"sha256": eval_sha, "tracks": len(tracks),
                      "youtube_ids": sorted(tracks)},
         "pipeline_sha": "deadbeef",
+        "space": GATED_SPACE,
         "aggregate": aggregate if aggregate is not None else metrics(),
         "tracks": tracks,
     }
@@ -595,12 +596,23 @@ def test_score_report_scores_every_reported_granularity():
     assert {RAW9, LEGACY_V1} == set(REPORTED_SPACES)
 
 
-def test_the_gated_space_is_the_legacy_fold_until_the_baseline_is_re_cut():
-    """Phase 2 flips this one constant and re-cuts the baseline in the same
-    commit; the raw-9 numbers ride along as reported-but-not-gated until then,
-    because re-cutting needs simulations."""
-    assert GATED_SPACE == LEGACY_V1
+def test_the_gated_space_is_the_raw_nine_the_decoder_commits():
+    """Phase 2's flip: the gate reads the vocabulary the show decodes.  The
+    legacy fold rides along as a reported view for comparability with the
+    banked record."""
+    assert GATED_SPACE == RAW9
     assert GATED_SPACE in REPORTED_SPACES
+    assert LEGACY_V1 in REPORTED_SPACES
+
+
+def test_a_baseline_cut_in_another_space_is_a_desync_not_a_comparison():
+    baseline = {"eval_set": {"sha256": "abc"}, "space": LEGACY_V1,
+                "tracks": {}, "aggregate": {}}
+    current = {"eval_set": {"sha256": "abc"}, "space": GATED_SPACE,
+               "tracks": {}, "aggregate": {}}
+    outcome = compare(baseline, current)
+    assert outcome.failed
+    assert any("space" in line for line in outcome.desync)
 
 
 def test_no_single_hardcoded_space_survives_in_the_runner():

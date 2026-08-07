@@ -58,12 +58,13 @@ BASELINE_FILE = REPO_ROOT / "training" / "eval_set_baseline.json"
 # Every granularity the run measures and prints.
 REPORTED_SPACES = (RAW9, LEGACY_V1)
 
-# The one the committed baseline gates, and the ONE CONSTANT phase 2 flips to
-# RAW9.  It stays on the retired fold until then because moving it changes the
-# ground truth every gated number is measured against, and re-cutting the
-# baseline needs simulations.  Only the LABEL side is held still by the fold
-# view; the prediction side moves with the engine like it always did.
-GATED_SPACE = LEGACY_V1
+# The one the committed baseline gates.  Phase 2's GATED_SPACE flip landed:
+# the show decodes the raw nine, so the gate reads the same vocabulary the
+# decoder commits.  The legacy fold stays a reported view for comparability
+# with the banked record, and compare() refuses a baseline whose recorded
+# space is not this one -- a gate reading macro-F1 across two different label
+# vocabularies would call that drift a regression or, worse, a pass.
+GATED_SPACE = RAW9
 
 STREAM = "intent"
 BOUNDARY_TOLERANCE_SEC = PRIMARY_TOLERANCE_SEC
@@ -464,6 +465,14 @@ def compare(baseline: dict, current: dict,
             f"the baseline was cut against a different eval set "
             f"({str(baseline_sha)[:12]}... on record, {str(current_sha)[:12]}... "
             f"on disk) -- re-cut it with --write-baseline"
+        )
+
+    baseline_space = baseline.get("space")
+    if baseline_space != GATED_SPACE:
+        desync.append(
+            f"the baseline gates the {baseline_space!r} space, this run gates "
+            f"{GATED_SPACE!r} -- every score would be read in a different "
+            f"vocabulary than it was cut in; re-cut it with --write-baseline"
         )
 
     baseline_tracks = baseline.get("tracks") or {}
