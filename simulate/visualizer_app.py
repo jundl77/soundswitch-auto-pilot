@@ -22,6 +22,15 @@ TIMELINE_LEAD_SEC = 0.5
 TIMELINE_PAD_SEC = 1.0
 TIMELINE_FULL_SEC = TIMELINE_WINDOW_SEC + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
 NOW_CURSOR_X = TIMELINE_WINDOW_SEC / TIMELINE_FULL_SEC
+TIMELINE_MARGIN_L_PX = 8
+TIMELINE_MARGIN_R_PX = 8
+# The cursor's fraction is of the AXIS, not of the container: ignoring the
+# figure margins parked it a constant ~7 px right of the axis' now, which at
+# this scale is ~150 ms of claimed future -- measured as a -146 ms crossing
+# bias on every marker, and worse the narrower the window.
+NOW_CURSOR_LEFT = (
+    f'calc({TIMELINE_MARGIN_L_PX}px + {NOW_CURSOR_X * 100:.4f}% - '
+    f'{NOW_CURSOR_X:.6f} * {TIMELINE_MARGIN_L_PX + TIMELINE_MARGIN_R_PX}px)')
 GLOW_BASE_PX = 16
 DARK_BG   = '#0d1117'
 CARD_BG   = '#111827'
@@ -137,17 +146,21 @@ def _room_sound_events(snapshot: dict) -> list:
     return heard
 
 
-def _heard_beats(snapshot: dict) -> list:
+def _room_beats(snapshot: dict, horizon_sec: float = 0.0) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
-    now = snapshot.get('now', 0.0)
+    limit = snapshot.get('now', 0.0) + horizon_sec
+    beats = []
     stops = _room_stops(snapshot)
-    heard = []
     for beat in snapshot.get('beats', []):
         reaches_room_at = beat['t'] + delay
         cut = any(beat['t'] < stop <= reaches_room_at for stop in stops)
-        if reaches_room_at <= now and not cut:
-            heard.append(dict(beat, t=reaches_room_at))
-    return heard
+        if reaches_room_at <= limit and not cut:
+            beats.append(dict(beat, t=reaches_room_at))
+    return beats
+
+
+def _heard_beats(snapshot: dict) -> list:
+    return _room_beats(snapshot)
 
 
 def _clock_text(seconds: float) -> str:
@@ -219,14 +232,19 @@ def _song_and_room(snapshot: dict) -> tuple:
 
 
 def _anchor(snapshot: dict) -> dict:
+    # Every beat is stamped one look-ahead before the room hears it, so the
+    # whole drawable window -- the lead included -- is known in advance and the
+    # browser can land each marker at exactly its room instant.
     origin = _song_origin(snapshot)
+    now = _display_now(snapshot, origin)
     beats = [] if origin is None else [
-        b['t'] - origin for b in _heard_beats(snapshot)
-        if b['t'] - origin >= 0.0]
+        round(b['t'] - origin, 3)
+        for b in _room_beats(snapshot, TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC)
+        if b['t'] - origin >= max(0.0, now - TIMELINE_WINDOW_SEC)]
     song, room = _song_and_room(snapshot)
     return {
-        'now':  _display_now(snapshot, origin),
-        'beat': beats[-1] if beats else None,
+        'now':  now,
+        'beats': beats,
         'song': song,
         'room': room,
         'span': TIMELINE_WINDOW_SEC,
@@ -279,7 +297,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
     x1     = now + TIMELINE_LEAD_SEC + TIMELINE_PAD_SEC
     left   = max(x0, 0.0)
 
-    shapes, annotations, beat_x = [], [], []
+    shapes, annotations = [], []
 
     if origin is not None:
         grid_shapes, grid_labels = _bar_grid(snapshot, origin)
@@ -327,24 +345,10 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 xanchor='left',
             ))
 
-        beat_x = [b['t'] - origin for b in _heard_beats(snapshot)
-                  if b['t'] - origin >= left]
-
-    beat_y = [0.25] * len(beat_x)
-    beat_size = [BEAT_MARKER_SIZE] * len(beat_x)
-
+    # Beats are deliberately NOT drawn here: a figure push arrives most of a
+    # second after the beat it carries, so the browser owns the markers (see
+    # ANIMATION_JS) and this figure carries everything that is known ahead.
     fig = go.Figure()
-    if beat_x:
-        fig.add_trace(go.Scatter(
-            x=beat_x, y=beat_y, mode='markers',
-            marker=dict(
-                symbol='line-ns', size=beat_size,
-                color='rgba(168,218,220,0.65)',
-                line=dict(color='rgba(168,218,220,0.65)', width=1.5),
-            ),
-            hoverinfo='skip',
-        ))
-
     fig.update_layout(
         shapes=shapes, annotations=annotations,
         xaxis=dict(
@@ -360,7 +364,8 @@ def _build_timeline(snapshot: dict) -> go.Figure:
         ),
         yaxis=dict(range=[0, 1], showticklabels=False, showgrid=False),
         plot_bgcolor=DARK_BG, paper_bgcolor=DARK_BG,
-        height=175, margin=dict(l=8, r=8, t=6, b=36),
+        height=175, margin=dict(l=TIMELINE_MARGIN_L_PX, r=TIMELINE_MARGIN_R_PX,
+                                t=6, b=36),
         uirevision='timeline', showlegend=False,
     )
     return fig
@@ -559,6 +564,10 @@ def _timing_health(stats: dict) -> tuple:
 STYLESHEET = '''
 .ss-lamp { transition: background 0.08s ease; }
 .ss-lamp.ss-on { box-shadow: 0 0 var(--ss-base) var(--ss-lamp); }
+.ss-beat { position: absolute; width: 2px; margin-left: -1px;
+           height: ''' + str(BEAT_MARKER_SIZE) + '''px;
+           left: -9999px;  /* off-screen until seated against the live range */
+           background: rgba(168,218,220,0.65); }
 @keyframes ss-pulse {
     from { box-shadow: 0 0 var(--ss-peak) var(--ss-lamp); }
     to   { box-shadow: 0 0 var(--ss-base) var(--ss-lamp); }
@@ -599,6 +608,7 @@ function(sync) {
     a.running = true;
 
     const RESEAT_PX = 24;
+    const HALF_MARKER_PX = ''' + str(BEAT_MARKER_SIZE // 2) + ''';
 
     const clock = (s) => {
         const t = Math.max(0, Math.floor(s));
@@ -618,6 +628,65 @@ function(sync) {
         if (!fl) return 0;
         if (fl.xaxis && fl.xaxis._length) return fl.xaxis._length;
         return fl.width - fl.margin.l - fl.margin.r;
+    };
+
+    const plotHeight = (gd) => {
+        const fl = gd._fullLayout;
+        if (!fl) return 0;
+        if (fl.yaxis && fl.yaxis._length) return fl.yaxis._length;
+        return fl.height - fl.margin.t - fl.margin.b;
+    };
+
+    // The anchor ships every drawable beat instant (the show knows each beat
+    // one look-ahead before the room hears it), so the markers are DOM nodes
+    // on the translated layer: they scroll on the compositor and cross the
+    // fixed cursor at exactly their room instant, instead of popping in most
+    // of a second late on the next figure push.
+    const syncBeats = () => {
+        const layer = document.getElementById('beat-layer');
+        if (!layer || a.markerList === a.beats) return;
+        a.markerList = a.beats || [];
+        a.markers = a.markers || {};
+        const keep = new Set(a.markerList.map((t) => t.toFixed(3)));
+        let changed = false;
+        for (const key of Object.keys(a.markers)) {
+            if (keep.has(key)) continue;
+            a.markers[key].remove();
+            delete a.markers[key];
+            changed = true;
+        }
+        for (const t of a.markerList) {
+            const key = t.toFixed(3);
+            if (a.markers[key]) continue;
+            const mark = document.createElement('div');
+            mark.className = 'ss-beat';
+            mark.dataset.t = key;
+            layer.appendChild(mark);
+            a.markers[key] = mark;
+            changed = true;
+        }
+        if (changed) a.seatedAt = null;
+    };
+
+    // Seated in axis px only when the range or the marker set moved; between
+    // seats the wrapper's transform is the only thing that moves them.
+    const seatBeats = (gd) => {
+        if (!gd || !gd.layout || !gd.layout.xaxis) return;
+        const range = gd.layout.xaxis.range;
+        const width = plotWidth(gd);
+        if (!range || !width) return;
+        const stamp = range[0] + ':' + range[1] + ':' + width;
+        if (a.seatedAt === stamp) return;
+        a.seatedAt = stamp;
+        const fl = gd._fullLayout;
+        const pps = width / (range[1] - range[0]);
+        const top = fl.margin.t + plotHeight(gd) * 0.75 - HALF_MARKER_PX;
+        for (const key of Object.keys(a.markers || {})) {
+            const mark = a.markers[key];
+            mark.style.left = (fl.margin.l
+                + (parseFloat(key) - range[0]) * pps).toFixed(2) + 'px';
+            mark.style.top = top.toFixed(2) + 'px';
+        }
     };
 
     // Scrolling by relayout re-renders every beat marker on every frame, which
@@ -641,14 +710,21 @@ function(sync) {
         el.style.transform = 'translate3d(' + (-dx).toFixed(2) + 'px,0,0)';
     };
 
+    // The glow fires when the room clock crosses the beat, not when an anchor
+    // happens to land -- the anchor cadence cost a median 154 ms of lag here.
     const pulse = (now) => {
-        if (a.beat == null) { a.pulsed = null; return; }
-        if (a.beat === a.pulsed) return;
-        a.pulsed = a.beat;
+        const beats = a.markerList || [];
+        let latest = null;
+        for (let i = beats.length - 1; i >= 0; i--) {
+            if (beats[i] <= now) { latest = beats[i]; break; }
+        }
+        if (latest == null) { a.pulsed = null; return; }
+        if (latest === a.pulsed) return;
+        a.pulsed = latest;
         document.querySelectorAll('.ss-lamp.ss-on').forEach((el) => {
             el.classList.remove('ss-pulse');
             void el.offsetWidth;
-            el.style.animationDelay = Math.min(0, a.beat - now) + 's';
+            el.style.animationDelay = Math.min(0, latest - now) + 's';
             el.classList.add('ss-pulse');
         });
     };
@@ -668,7 +744,9 @@ function(sync) {
     const frame = () => {
         const drift = a.frozen ? 0 : Math.min(1.5, (performance.now() - a.at) / 1000);
         const now = a.now + drift;
+        syncBeats();
         scroll(now);
+        seatBeats(document.querySelector('#timeline .js-plotly-plot'));
         tick('room-clock', 'room ', a.room, drift);
         tick('song-clock', 'song ', a.song, drift);
         pulse(now);
@@ -812,13 +890,19 @@ def build_app(snapshot_source) -> dash.Dash:
             'fontFamily': 'monospace', 'fontSize': '14px',
         }),
         html.Div([
-            html.Div(dcc.Graph(id='timeline',
-                               config={'displayModeBar': False}),
+            html.Div([dcc.Graph(id='timeline',
+                                config={'displayModeBar': False}),
+                      html.Div(id='beat-layer', style={
+                          'position': 'absolute', 'top': '0', 'left': '0',
+                          'right': '0', 'bottom': '0',
+                          'pointerEvents': 'none',
+                      })],
                      id='timeline-scroll',
-                     style={'willChange': 'transform'}),
+                     style={'willChange': 'transform',
+                            'position': 'relative'}),
             html.Div(id='now-cursor', style={
                 'position': 'absolute', 'top': '0', 'bottom': '0',
-                'left': f'{NOW_CURSOR_X * 100:.4f}%', 'width': '1px',
+                'left': NOW_CURSOR_LEFT, 'width': '1px',
                 'background': 'rgba(255,255,255,0.25)',
                 'pointerEvents': 'none',
             }),
