@@ -26,12 +26,13 @@ if _TRAINING_DIR not in sys.path:
     sys.path.insert(0, _TRAINING_DIR)
 
 from nn.decoder import (DecodeParams, FixedLagViterbi,  # noqa: E402
-                        SHIPPING_DECODER_CONFIG, load_decoder_config, temper)
+                        SHIPPING_DECODER_CONFIG, decoder_config_classes,
+                        load_decoder_config, temper)
 from nn.priors import Priors  # noqa: E402
 
 __all__ = ["BEATS_PER_BAR", "NOMINAL_BAR_SEC", "BarDecision", "BarObservation",
            "SectionDecoder", "DecodeParams", "Priors", "SHIPPING_DECODER_CONFIG",
-           "load_decoder_config"]
+           "decoder_config_classes", "load_decoder_config"]
 
 BEATS_PER_BAR = 4
 

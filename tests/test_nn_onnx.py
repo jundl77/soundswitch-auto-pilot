@@ -48,10 +48,10 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+from lib.label_space import NUM_SECTION_CLASSES  # noqa: E402
 from nn.dataset import (  # noqa: E402
     FRAME_SEC,
     LABEL_POOL,
-    NUM_CLASSES,
     WINDOW_FRAMES,
     load_sidecar,
 )
@@ -93,6 +93,10 @@ from nn.model import SectionCRNN  # noqa: E402
 MEL_BANDS = 40
 GOLDEN_FILE = Path(__file__).resolve().parent / "data" / "nn_onnx_golden.npz"
 GOLDEN_TOLERANCE = 1e-5
+# The reference is pinned to the class width it was cut at, so it keeps pinning
+# toolchain drift -- the thing it exists for -- across a change to the label
+# vocabulary, which would otherwise force it to be recut against itself.
+GOLDEN_CLASSES = 5
 PARITY_TOLERANCE = 1e-4
 # Weight gain for the seeded stand-in model -- see `seeded_model`.
 GAIN = 2.0
@@ -113,7 +117,8 @@ needs_corpus = pytest.mark.skipif(
 # --------------------------------------------------------------------------- #
 
 
-def seeded_model(seed: int = 20260726) -> SectionCRNN:
+def seeded_model(seed: int = 20260726,
+                 n_classes: int = NUM_SECTION_CLASSES) -> SectionCRNN:
     """The real architecture with weights drawn from a numpy seed.
 
     Not ``torch.manual_seed``: numpy's ``default_rng`` stream is a documented,
@@ -132,7 +137,7 @@ def seeded_model(seed: int = 20260726) -> SectionCRNN:
     ``running_mean`` next to it, so the rule survives an architecture edit that
     renumbers the ``Sequential``.
     """
-    model = SectionCRNN()
+    model = SectionCRNN(n_classes=n_classes)
     state = model.state_dict()
     normalised = {name.rsplit(".", 1)[0] for name in state if name.endswith("running_mean")}
     moments = {"weight": (1.0, 0.25), "bias": (0.0, 0.25),
@@ -206,7 +211,7 @@ def test_export_declares_a_dynamic_time_axis(tmp_path):
     axes = declared_axes(path)
 
     assert axes[INPUT_NAME] == ["batch", TIME_AXIS, MEL_BANDS]
-    assert axes[LABEL_OUTPUT] == ["batch", "time_pooled", NUM_CLASSES]
+    assert axes[LABEL_OUTPUT] == ["batch", "time_pooled", NUM_SECTION_CLASSES]
     assert axes[BOUNDARY_OUTPUT] == ["batch", TIME_AXIS]
 
 
@@ -216,7 +221,7 @@ def test_exported_graph_runs_at_a_length_it_was_not_traced_at(graph, frames):
 
     label, boundary = run_window(sess, seeded_mel(frames))
 
-    assert label.shape == (1, frames // LABEL_POOL, NUM_CLASSES)
+    assert label.shape == (1, frames // LABEL_POOL, NUM_SECTION_CLASSES)
     assert boundary.shape == (1, frames)
 
 
@@ -333,7 +338,7 @@ def test_golden_onnx_inference_matches_the_saved_reference(tmp_path):
     here -- where it is one number to look at -- instead of surfacing as an
     unexplained metric change three tasks later.
     """
-    _path, sess = exported(tmp_path)
+    _path, sess = exported(tmp_path, model=seeded_model(n_classes=GOLDEN_CLASSES))
 
     label, boundary = run_window(sess, seeded_mel())
 
@@ -505,7 +510,7 @@ def _indexed_mel(frames: int) -> np.ndarray:
 def _pooled(values: np.ndarray) -> np.ndarray:
     """Frame-rate values -> one column per class at the pooled rate."""
     grouped = values.reshape(-1, LABEL_POOL).mean(axis=1)
-    logits = np.zeros((len(grouped), NUM_CLASSES), dtype=np.float64)
+    logits = np.zeros((len(grouped), NUM_SECTION_CLASSES), dtype=np.float64)
     logits[:, 0] = grouped
     return logits
 
@@ -580,12 +585,12 @@ def test_label_posteriors_are_probabilities_on_the_pooled_grid():
     frames = 2 * WINDOW_FRAMES
     rng = np.random.default_rng(3)
     stub = _StubSession(
-        lambda index, _p: rng.normal(size=(len(index) // LABEL_POOL, NUM_CLASSES)),
+        lambda index, _p: rng.normal(size=(len(index) // LABEL_POOL, NUM_SECTION_CLASSES)),
         lambda index, _p: np.zeros_like(index))
 
     result = infer_track(stub, _indexed_mel(frames))
 
-    assert result.label_post.shape == (frames // LABEL_POOL, NUM_CLASSES)
+    assert result.label_post.shape == (frames // LABEL_POOL, NUM_SECTION_CLASSES)
     assert result.label_post.dtype == np.float32
     assert np.abs(result.label_post.sum(axis=1) - 1.0).max() < 1e-6
     assert (result.label_post >= 0.0).all()
@@ -678,7 +683,7 @@ def test_an_odd_frame_count_is_truncated_to_the_pooled_grid():
 
 def _arrays(seed=0, **geometry):
     rng = np.random.default_rng(seed)
-    label = rng.random((10, NUM_CLASSES)).astype(np.float32)
+    label = rng.random((10, NUM_SECTION_CLASSES)).astype(np.float32)
     shape = {"window_frames": WINDOW_FRAMES, "hop_frames": HOP_FRAMES,
              "edge_frames": EDGE_FRAMES, **geometry}
     track = TrackPosteriors(label / label.sum(1, keepdims=True),

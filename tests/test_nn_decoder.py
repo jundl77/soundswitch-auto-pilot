@@ -13,7 +13,8 @@ TRAINING_DIR = REPO_ROOT / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
-from build_training_table import V1_ORDER  # noqa: E402
+from lib.label_space import SECTION_LABELS  # noqa: E402
+from nn import priors as nn_priors  # noqa: E402
 from nn.decoder import (  # noqa: E402
     DEFAULT_BOUNDARY_REF,
     SHIPPING_DECODER_CONFIG,
@@ -31,12 +32,24 @@ from nn.priors import (  # noqa: E402
     Priors,
     bar_runs,
     fit_runs,
+    label_runs,
+    section_classes,
+    INTRO_FAMILY,
+    OUTRO_FAMILY,
     transition_allowed,
-    v1_runs,
 )
 
+# The shipping chain's five classes.  A subset of the vocabulary, in vocabulary
+# order, which ruling #264 requires to keep fitting, loading and decoding -- so
+# the trellis tests below are written against it rather than the full nine.
+SHIPPING_CLASSES = ("intro", "buildup", "breakdown", "drop", "outro")
+
 INTRO, BUILDUP, BREAKDOWN, DROP, OUTRO = range(5)
-INDEX = {label: i for i, label in enumerate(V1_ORDER)}
+INDEX = {label: i for i, label in enumerate(SHIPPING_CLASSES)}
+
+
+def fit_shipping(sequences, **kwargs) -> Priors:
+    return fit_runs(sequences, classes=SHIPPING_CLASSES, **kwargs)
 
 
 def corpus_runs():
@@ -50,7 +63,7 @@ def corpus_runs():
 
 
 def toy_priors(floor=4, hazard=0.25, class_prior=None, initial=None):
-    classes = V1_ORDER
+    classes = SHIPPING_CLASSES
     n = len(classes)
     transition = np.zeros((n, n), dtype=np.float64)
     for i, src in enumerate(classes):
@@ -86,7 +99,7 @@ def labels_of(decisions):
 
 
 def test_the_transition_rule_bars_intro_re_entry_outro_exit_and_self_loops():
-    for src in V1_ORDER:
+    for src in SHIPPING_CLASSES:
         assert not transition_allowed(src, "intro")
         assert not transition_allowed("outro", src)
         assert not transition_allowed(src, src)
@@ -95,11 +108,37 @@ def test_the_transition_rule_bars_intro_re_entry_outro_exit_and_self_loops():
     assert transition_allowed("breakdown", "outro")
 
 
+def test_the_structural_rule_is_about_families_not_single_classes():
+    """The measured fact -- nothing re-enters the introduction, nothing follows
+    the outro -- was measured while the folds collapsed each pair into one
+    class, so it was only ever true at family granularity."""
+    for src in SECTION_LABELS:
+        if src not in INTRO_FAMILY:
+            assert not transition_allowed(src, "intro")
+            assert not transition_allowed(src, "altintro")
+        if src not in OUTRO_FAMILY:
+            assert not transition_allowed("outro", src)
+            assert not transition_allowed("altoutro", src)
+
+
+def test_a_within_family_move_is_legal_because_that_is_the_owners_beat_in():
+    assert transition_allowed("altintro", "intro")
+    assert transition_allowed("intro", "altintro")
+    assert transition_allowed("outro", "altoutro")
+    assert transition_allowed("altoutro", "outro")
+
+
+def test_a_family_is_still_sealed_against_everything_outside_it():
+    assert not transition_allowed("drop", "altintro")
+    assert not transition_allowed("altoutro", "drop")
+    assert not transition_allowed("altintro", "altintro")
+
+
 def test_fitted_transition_rows_are_stochastic_and_illegal_entries_are_zero():
-    priors = fit_runs(corpus_runs())
-    for i, src in enumerate(V1_ORDER):
+    priors = fit_shipping(corpus_runs())
+    for i, src in enumerate(SHIPPING_CLASSES):
         row = priors.transition[i]
-        for j, dst in enumerate(V1_ORDER):
+        for j, dst in enumerate(SHIPPING_CLASSES):
             if not transition_allowed(src, dst):
                 assert row[j] == 0.0, f"{src}->{dst} must be structurally impossible"
         if src == "outro":
@@ -109,7 +148,7 @@ def test_fitted_transition_rows_are_stochastic_and_illegal_entries_are_zero():
 
 
 def test_log_transition_is_minus_inf_exactly_where_the_probability_is_zero():
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     zero = priors.transition == 0.0
     assert np.all(np.isneginf(priors.log_transition[zero]))
     assert np.all(np.isfinite(priors.log_transition[~zero]))
@@ -118,7 +157,7 @@ def test_log_transition_is_minus_inf_exactly_where_the_probability_is_zero():
 def test_buildup_fork_is_forced_near_uniform_despite_a_lopsided_corpus():
     runs = [[("intro", 16), ("buildup", 16), ("breakdown", 16), ("outro", 16)]] * 8
     runs += [[("intro", 16), ("buildup", 16), ("drop", 16), ("outro", 16)]] * 2
-    priors = fit_runs(runs)
+    priors = fit_shipping(runs)
     row = priors.transition[INDEX["buildup"]]
     assert row[INDEX["breakdown"]] == pytest.approx(row[INDEX["drop"]])
     combined = row[INDEX["breakdown"]] + row[INDEX["drop"]]
@@ -126,21 +165,21 @@ def test_buildup_fork_is_forced_near_uniform_despite_a_lopsided_corpus():
 
 
 def test_a_legal_but_unobserved_transition_keeps_a_little_mass():
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     assert priors.transition[INDEX["intro"], INDEX["outro"]] > 0.0
 
 
 def test_fitting_refuses_a_corpus_that_contradicts_the_structural_graph():
     bad = corpus_runs() + [[("intro", 16), ("outro", 16), ("drop", 16)]]
     with pytest.raises(RuntimeError, match="outro->drop"):
-        fit_runs(bad)
-    relaxed = fit_runs(bad, strict=False)
+        fit_shipping(bad)
+    relaxed = fit_shipping(bad, strict=False)
     assert relaxed.corpus["illegal_observed"]["outro->drop"] == 1
     assert relaxed.transition[INDEX["outro"], INDEX["drop"]] == 0.0
 
 
 def test_initial_distribution_is_fitted_not_assumed():
-    priors = fit_runs(corpus_runs() * 8)
+    priors = fit_shipping(corpus_runs() * 8)
     assert priors.initial.sum() == pytest.approx(1.0)
     assert priors.initial.argmax() == INDEX["intro"]
     assert priors.initial[INDEX["intro"]] > 0.9
@@ -148,14 +187,14 @@ def test_initial_distribution_is_fitted_not_assumed():
 
 
 def test_duration_floor_is_the_corpus_fifth_percentile_in_bars():
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     drop_bars = sorted([32, 32, 48, 16, 32])
     expected = max(1, int(round(float(np.percentile(drop_bars, 5.0)))))
     assert priors.floor_bars[INDEX["drop"]] == expected
 
 
 def test_duration_tail_is_the_geometric_that_halves_at_the_corpus_median():
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     index = INDEX["drop"]
     floor = int(priors.floor_bars[index])
     median = float(np.median([32, 32, 48, 16, 32]))
@@ -165,7 +204,7 @@ def test_duration_tail_is_the_geometric_that_halves_at_the_corpus_median():
 
 
 def test_floor_is_at_least_one_bar_even_for_a_degenerate_class():
-    priors = fit_runs([[("intro", 1), ("drop", 1), ("outro", 1)]])
+    priors = fit_shipping([[("intro", 1), ("drop", 1), ("outro", 1)]])
     assert np.all(priors.floor_bars >= 1)
     assert np.all(priors.hazard > 0.0)
     assert np.all(priors.hazard <= 1.0)
@@ -173,14 +212,14 @@ def test_floor_is_at_least_one_bar_even_for_a_degenerate_class():
 
 def test_class_prior_is_bar_occupancy_not_run_count():
     runs = [[("intro", 8), ("breakdown", 8), ("drop", 64), ("outro", 8)]] * 4
-    priors = fit_runs(runs)
+    priors = fit_shipping(runs)
     assert priors.class_prior.sum() == pytest.approx(1.0)
     assert priors.class_prior[INDEX["drop"]] == pytest.approx(64 / 88)
     assert priors.class_prior[INDEX["breakdown"]] == pytest.approx(8 / 88)
 
 
 def test_priors_json_round_trips_and_the_same_content_gives_the_same_bytes(tmp_path):
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     path = tmp_path / PRIORS_FILE
     priors.save(path)
     again = Priors.load(path)
@@ -193,22 +232,80 @@ def test_priors_json_round_trips_and_the_same_content_gives_the_same_bytes(tmp_p
 
 
 def test_priors_file_is_plain_json_with_no_infinities():
-    priors = fit_runs(corpus_runs())
+    priors = fit_shipping(corpus_runs())
     text = json.dumps(priors.to_dict())
     assert "Infinity" not in text and "NaN" not in text
 
 
-def test_v1_runs_folds_and_merges_across_a_dropped_sentinel():
+def test_label_runs_merge_across_a_dropped_sentinel_without_folding():
     sections = [
         (0.0, 10.0, "intro"),
         (10.0, 20.0, "drop"),
-        (20.0, 30.0, "breakdown"),
-        (30.0, 40.0, "cooldown"),
-        (40.0, 50.0, "altoutro"),
-        (50.0, 55.0, "end"),
+        (20.0, 30.0, "end"),
+        (30.0, 40.0, "drop"),
+        (40.0, 50.0, "cooldown"),
+        (50.0, 60.0, "altoutro"),
     ]
-    assert [run[2] for run in v1_runs(sections)] == [
-        "intro", "drop", "breakdown", "outro"]
+    assert label_runs(sections) == [
+        (0.0, 10.0, "intro"), (10.0, 40.0, "drop"),
+        (40.0, 50.0, "cooldown"), (50.0, 60.0, "altoutro")]
+
+
+def test_the_default_class_space_to_fit_in_is_the_whole_vocabulary():
+    assert section_classes() == SECTION_LABELS
+    assert fit_runs(corpus_runs()).classes == SECTION_LABELS
+
+
+def test_the_owners_beat_in_now_fits_instead_of_raising():
+    """``altintro`` -> ``intro`` was invisible while the folds collapsed the
+    pair.  Under family semantics it is an ordinary within-family move, so a
+    corpus carrying it fits rather than failing the strict gate."""
+    fitted = fit_runs([[("altintro", 8), ("intro", 8), ("drop", 8), ("outro", 8)]])
+    assert fitted.classes == SECTION_LABELS
+
+
+def test_a_cross_family_violation_still_fails_the_strict_gate_loudly():
+    with pytest.raises(RuntimeError, match="drop->intro"):
+        fit_runs([[("altintro", 8), ("drop", 8), ("intro", 8), ("outro", 8)]])
+
+
+def test_a_priors_file_naming_the_shipping_five_classes_still_loads(tmp_path):
+    path = tmp_path / PRIORS_FILE
+    fit_shipping(corpus_runs()).save(path)
+    assert Priors.load(path).classes == SHIPPING_CLASSES
+
+
+@pytest.mark.parametrize("classes, complaint", [
+    (("intro", "verse", "breakdown", "drop", "outro"), "vocabulary does not know"),
+    (("buildup", "intro", "breakdown", "drop", "outro"), "wrong order"),
+    (("intro", "intro", "breakdown", "drop", "outro"), "duplicate"),
+])
+def test_a_priors_file_whose_class_space_is_not_the_vocabulary_is_refused(
+        tmp_path, classes, complaint):
+    """Every table in the file is indexed by this list, so a wrong one loads
+    cleanly and decodes shifted."""
+    path = tmp_path / PRIORS_FILE
+    document = fit_shipping(corpus_runs()).to_dict()
+    document["classes"] = list(classes)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=complaint) as error:
+        Priors.load(path)
+    assert str(path) in str(error.value)
+
+
+def test_a_decoder_built_on_a_class_space_outside_the_vocabulary_is_refused():
+    """The floors, the class prior and the transition matrix are all positional."""
+    broken = toy_priors()._replace(
+        classes=("intro", "verse", "breakdown", "drop", "outro"))
+    with pytest.raises(ValueError, match="vocabulary does not know"):
+        FixedLagViterbi(broken, lag_bars=2)
+
+
+@pytest.mark.parametrize("name", ["v1_classes", "v1_runs"])
+def test_the_folded_class_space_is_gone_from_the_priors_module(name):
+    """Retired, not merely unused: a surviving alias is a second vocabulary."""
+    assert not hasattr(nn_priors, name)
 
 
 def test_bar_runs_counts_downbeats_and_never_reattributes_dropped_time():
@@ -667,22 +764,24 @@ def test_a_config_of_known_knobs_round_trips(tmp_path):
     assert params.floor_bars == (1, 2, 3, 4, 5)
 
 
-def test_the_shipping_config_loads_and_is_the_frontier_pick():
-    """These are task1a_lag_sweep's lag-2 row, per the file's own provenance block."""
+def test_the_shipping_config_loads_and_is_the_l9_sweep_pick():
+    """These are the l9 decoder sweep's chosen row (#302), per the file's own
+    provenance block.  floor_bars is null on purpose: the floors come from the
+    l9 priors scaled by floor_scale, so a priors refit moves them."""
     params = load_decoder_config(SHIPPING_DECODER_CONFIG)
     document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
-    assert document["name"] == "reduced_plus_floors_x0.75"
+    assert document["name"] == "l9_sweep_pick"
     assert dataclasses.asdict(params) == {
         "lag_bars": 2,
         "class_prior_division": True,
-        "prior_strength": -0.25,
-        "drop_miss_cost": 0.4642,
+        "prior_strength": 0.25,
+        "drop_miss_cost": 6.8129,
         "boundary_weight": 4.0,
         "boundary_ref": 0.2,
         "boundary_tolerance_sec": 0.5,
         "min_coverage": 1,
-        "floor_scale": 1.25,
-        "floor_bars": (8, 8, 6, 9, 8),
+        "floor_scale": 0.5,
+        "floor_bars": None,
         "outro_escape": 0.02,
         "temperature": 1.0,
     }

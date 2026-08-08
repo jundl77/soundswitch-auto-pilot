@@ -20,15 +20,24 @@ class LightIntent(Enum):
     BREAKDOWN   = 'breakdown'
     BUILDUP     = 'buildup'
     DROP        = 'drop'
-    PEAK        = 'peak'
 
 
+# PROVISIONAL for the four classes the vocabulary gained -- owner-pending.  The
+# real mapping is a product decision to be taken against measured per-class
+# energy and position profiles, not intuition, and this is the one dict that
+# changes when it is.  `cooldown` goes to BREAKDOWN because that is where
+# GROOVE's banks went under D7, so its documented semantic home still plays
+# GROOVE's lights.
 SECTION_CLASS_INTENTS: Dict[str, 'LightIntent'] = {
     'intro':     LightIntent.ATMOSPHERIC,
-    'outro':     LightIntent.ATMOSPHERIC,
+    'altintro':  LightIntent.ATMOSPHERIC,
     'buildup':   LightIntent.BUILDUP,
     'breakdown': LightIntent.BREAKDOWN,
+    'bridge':    LightIntent.BREAKDOWN,
     'drop':      LightIntent.DROP,
+    'cooldown':  LightIntent.BREAKDOWN,
+    'outro':     LightIntent.ATMOSPHERIC,
+    'altoutro':  LightIntent.ATMOSPHERIC,
 }
 
 
@@ -110,14 +119,15 @@ INTENT_EFFECTS: Dict[LightIntent, List[Effect]] = {
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1B),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1C),
     ],
+    # PEAK's banks live here now.  A long drop used to change bank family at
+    # eight bars; it now rotates over the wider pool instead, which keeps the
+    # variety that device existed for without an engine-derived state.
     LightIntent.DROP: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1D),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1E),
-        Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE),
-    ],
-    LightIntent.PEAK: [
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1F),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1G),
         Effect(type=EffectType.AUTOLOOP, source=EffectSource.MIDI, midi_channel=MidiChannel.AUTOLOOP_BANK_1H),
+        Effect(type=EffectType.SPECIAL_EFFECT, source=EffectSource.MIDI, midi_channel=MidiChannel.SPECIAL_EFFECT_STROBE),
     ],
 }

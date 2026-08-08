@@ -38,7 +38,10 @@ from eval_assets import (  # noqa: E402
 )
 from eval_assets import sections_by_track as sections_from_slice  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
+    LABEL_COLUMN,
+    LEGACY_V1,
     PRIMARY_TOLERANCE_SEC,
+    RAW9,
     SPACES,
     TrackBeats,
     aggregate,
@@ -52,7 +55,17 @@ from select_eval_set import EVAL_SET_FILE, load_eval_set, verify_inputs  # noqa:
 
 BASELINE_FILE = REPO_ROOT / "training" / "eval_set_baseline.json"
 
-SPACE = "v1"
+# Every granularity the run measures and prints.
+REPORTED_SPACES = (RAW9, LEGACY_V1)
+
+# The one the committed baseline gates.  Phase 2's GATED_SPACE flip landed:
+# the show decodes the raw nine, so the gate reads the same vocabulary the
+# decoder commits.  The legacy fold stays a reported view for comparability
+# with the banked record, and compare() refuses a baseline whose recorded
+# space is not this one -- a gate reading macro-F1 across two different label
+# vocabularies would call that drift a regression or, worse, a pass.
+GATED_SPACE = RAW9
+
 STREAM = "intent"
 BOUNDARY_TOLERANCE_SEC = PRIMARY_TOLERANCE_SEC
 
@@ -109,7 +122,7 @@ def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
     path, committed = labels_source(data_dir, labels)
     if committed:
         return sections_from_slice(load_labels(path))
-    return load_sections_by_track(Path(data_dir))
+    return load_sections_by_track(Path(data_dir), include_hand=False)
 
 
 def select_tracks(document: dict, only: list | None = None) -> list:
@@ -237,7 +250,7 @@ class TrackRun(NamedTuple):
     track_id: str
     youtube_id: str
     entry: dict
-    score: object
+    scores: dict
     wall_sec: float
 
 
@@ -259,10 +272,11 @@ def score_report(track_id: str, youtube_id: str, report: dict, sections: list):
         track_id=track_id,
         times=tuple(row["t_song"] for row in rows),
         intents=tuple(row["intent_at_beat"] for row in rows),
-        labels={name: tuple(row[spec.column] for row in rows)
+        labels={name: tuple(spec.view(row[LABEL_COLUMN]) for row in rows)
                 for name, spec in SPACES.items()},
     )
-    return score_track(track, SPACE), len(rows), stats
+    return ({space: score_track(track, space) for space in REPORTED_SPACES},
+            len(rows), stats)
 
 
 def track_metrics(score) -> dict:
@@ -278,23 +292,40 @@ def track_metrics(score) -> dict:
     }
 
 
-def track_entry(report: dict, score, rows: int, youtube_id: str,
+def space_facts(score) -> dict:
+    """The counts that depend on which vocabulary the labels were read in.
+
+    A coarser vocabulary merges classes, so it sees fewer label boundaries and
+    fewer class changes over the same beats.  Everything else a row records --
+    beats, rows, exposure, lateness, blackouts, intent changes -- is a fact
+    about the run rather than about the reading.
+    """
+    return {
+        "label_boundaries":
+            score.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_truth"],
+        "changes_class":
+            score.boundary["class"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_pred"],
+    }
+
+
+def space_block(score) -> dict:
+    return {**track_metrics(score), **space_facts(score)}
+
+
+def track_entry(report: dict, scores: dict, rows: int, youtube_id: str,
                 song_sec: float, stats=None) -> dict:
     from simulate.evaluator import report_checksum
 
+    gated = scores[GATED_SPACE]
     entry = {
         "youtube_id": youtube_id,
         "checksum": report_checksum(report),
         "beats": len(report.get("beats", [])),
         "rows": rows,
         "song_sec": round(float(song_sec), 3),
-        "exposure_sec": round(score.exposure_sec, 3),
+        "exposure_sec": round(gated.exposure_sec, 3),
         "changes_intent":
-            score.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_pred"],
-        "changes_class":
-            score.boundary["class"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_pred"],
-        "label_boundaries":
-            score.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_truth"],
+            gated.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_pred"],
     }
     if stats is not None:
         entry["late"] = int(stats.intent_blocks_late)
@@ -302,7 +333,9 @@ def track_entry(report: dict, score, rows: int, youtube_id: str,
         entry["silence_leading"] = int(stats.silence_blocks_leading)
         entry["silence_interior"] = int(stats.silence_blocks_interior)
         entry["silence_trailing"] = int(stats.silence_blocks_trailing)
-    entry.update(track_metrics(score))
+    entry.update(space_block(gated))
+    entry["spaces"] = {space: space_block(scores[space])
+                       for space in REPORTED_SPACES}
     return entry
 
 
@@ -316,28 +349,30 @@ def run_job(job: Job) -> TrackRun:
     track_id, youtube_id = job.track["track_id"], job.track["youtube_id"]
     report, song_sec, wall_sec = simulate_report(
         audio_path(Path(job.data_dir), youtube_id))
-    score, rows, stats = score_report(track_id, youtube_id, report, job.sections)
+    scores, rows, stats = score_report(track_id, youtube_id, report, job.sections)
     return TrackRun(track_id, youtube_id,
-                    track_entry(report, score, rows, youtube_id, song_sec, stats),
-                    score, wall_sec)
+                    track_entry(report, scores, rows, youtube_id, song_sec, stats),
+                    scores, wall_sec)
 
 
 def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
-                   aggregate_metrics: dict,
+                   aggregate_metrics: dict, aggregate_spaces: dict | None = None,
                    score_tolerance: float = DEFAULT_SCORE_TOLERANCE,
                    flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> dict:
     return {
         "schema": SCHEMA_VERSION,
         "eval_set": eval_set,
         "pipeline_sha": pipeline_sha_,
-        "space": SPACE,
+        "space": GATED_SPACE,
+        "reported_spaces": list(REPORTED_SPACES),
         "stream": STREAM,
         "boundary_tolerance_sec": BOUNDARY_TOLERANCE_SEC,
         "crispness_tolerance_sec": CRISPNESS_TOLERANCE_SEC,
         "gate": {"score_tolerance": score_tolerance,
                  "flicker_tolerance": flicker_tolerance,
                  "metrics": dict(GUARDED_METRICS)},
-        "aggregate": aggregate_metrics,
+        "aggregate": {**aggregate_metrics,
+                      "spaces": dict(aggregate_spaces or {})},
         "tracks": entries,
     }
 
@@ -432,6 +467,14 @@ def compare(baseline: dict, current: dict,
             f"on disk) -- re-cut it with --write-baseline"
         )
 
+    baseline_space = baseline.get("space")
+    if baseline_space != GATED_SPACE:
+        desync.append(
+            f"the baseline gates the {baseline_space!r} space, this run gates "
+            f"{GATED_SPACE!r} -- every score would be read in a different "
+            f"vocabulary than it was cut in; re-cut it with --write-baseline"
+        )
+
     baseline_tracks = baseline.get("tracks") or {}
     current_tracks = current.get("tracks") or {}
     subset = set(current_tracks) < set(baseline_tracks)
@@ -503,9 +546,9 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
         f'{aggregate_entry["flicker_per_min"]:>9.2f}'
     )
     lines.append(
-        f'  macro-F1 and accuracy in the {SPACE} space; boundary-F1 and flicker on '
-        f'the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s, crispness at '
-        f'+/-{CRISPNESS_TOLERANCE_SEC}s'
+        f'  macro-F1 and accuracy in the {GATED_SPACE} space; boundary-F1 and '
+        f'flicker on the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s, '
+        f'crispness at +/-{CRISPNESS_TOLERANCE_SEC}s'
     )
     lines.append(
         f'  late = intent blocks committed more than the playback delay after '
@@ -516,7 +559,36 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
             f'  the aggregate wall is ELAPSED across {min(workers, len(runs))} '
             f'workers, so it is less than the per-track column sums'
         )
+    lines += render_spaces(runs, aggregate_entry)
     return "\n".join(lines)
+
+
+def render_spaces(runs: list, aggregate_entry: dict) -> list:
+    """The same run read at every granularity -- one gated, the rest reported."""
+    lines = ["", f'  every granularity ({GATED_SPACE} is the gated one)',
+             f'  {"track_id":<20}' + "".join(
+                 f'{space + " macroF1":>19}{"acc":>7}{"bF1":>7}{"flick/m":>9}{"bnd":>6}'
+                 for space in REPORTED_SPACES),
+             "  " + "-" * (20 + 48 * len(REPORTED_SPACES))]
+    aggregate_spaces = aggregate_entry.get("spaces") or {}
+    rows = [(run.track_id, run.entry.get("spaces") or {}) for run in runs]
+    if aggregate_spaces:
+        rows.append(("(aggregate)", aggregate_spaces))
+    for track_id, blocks in rows:
+        cells = ""
+        for space in REPORTED_SPACES:
+            block = blocks.get(space)
+            if block is None:
+                cells += f'{"-":>48}'
+                continue
+            cells += (f'{block["macro_f1"]:>19.3f}{block["accuracy"]:>7.3f}'
+                      f'{block["boundary_f1"]:>7.3f}'
+                      f'{block["flicker_per_min"]:>9.2f}'
+                      f'{block["label_boundaries"]:>6}')
+        lines.append(f'  {track_id:<20}{cells}')
+    lines.append('  bnd = label boundaries the vocabulary can see; a coarser '
+                 'reading merges classes and sees fewer')
+    return lines
 
 
 def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
@@ -610,12 +682,15 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
     total_wall = time.monotonic() - started
     total_song = sum(result.entry["song_sec"] for result in runs)
 
-    corpus = aggregate([result.score for result in runs])
+    corpus = {space: aggregate([result.scores[space] for result in runs])
+              for space in REPORTED_SPACES}
     document = build_document(
         eval_set=eval_set_identity(eval_set_path, eval_document),
         pipeline_sha_=pipeline_sha(REPO_ROOT),
         entries={result.track_id: result.entry for result in runs},
-        aggregate_metrics=track_metrics(corpus),
+        aggregate_metrics=track_metrics(corpus[GATED_SPACE]),
+        aggregate_spaces={space: space_block(corpus[space])
+                          for space in REPORTED_SPACES},
     )
     return document, runs, total_song, total_wall
 

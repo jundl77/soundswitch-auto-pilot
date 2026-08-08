@@ -10,6 +10,7 @@ if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
 from eval_assets import EVAL_LABELS_FILE, committed_audio_path  # noqa: E402
+from evaluate_against_labels import LEGACY_V1, RAW9  # noqa: E402
 from run_eval_set import (  # noqa: E402
     AUDIO_MISSING_HINT,
     BASELINE_FILE,
@@ -19,7 +20,9 @@ from run_eval_set import (  # noqa: E402
     DEFAULT_FLICKER_TOLERANCE,
     DEFAULT_SCORE_TOLERANCE,
     EVAL_SET_FILE,
+    GATED_SPACE,
     GUARDED_METRICS,
+    REPORTED_SPACES,
     audio_path,
     build_document,
     build_jobs,
@@ -38,6 +41,8 @@ from run_eval_set import (  # noqa: E402
     score_report,
     select_tracks,
     shortest_track_ids,
+    space_facts,
+    track_entry,
     track_metrics,
     verify_ground_truth,
 )
@@ -74,6 +79,7 @@ def result_document(tracks: dict, aggregate: dict | None = None,
         "eval_set": {"sha256": eval_sha, "tracks": len(tracks),
                      "youtube_ids": sorted(tracks)},
         "pipeline_sha": "deadbeef",
+        "space": GATED_SPACE,
         "aggregate": aggregate if aggregate is not None else metrics(),
         "tracks": tracks,
     }
@@ -560,23 +566,110 @@ def test_a_report_matching_the_annotation_scores_one():
     sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
     blocks = [(0.0, 20.0, "atmospheric"), (20.0, 40.0, "drop"),
               (40.0, 60.5, "atmospheric")]
-    score, rows, _stats = score_report(
+    scores, rows, _stats = score_report(
         "t.1", "1", perfect_report(beat_times, blocks, 63.0), sections)
     assert rows == len(beat_times)
-    result = track_metrics(score)
-    assert result["macro_f1"] == pytest.approx(1.0)
-    assert result["accuracy"] == pytest.approx(1.0)
-    assert result["boundary_f1"] == pytest.approx(1.0)
-    assert result["flicker_per_min"] == pytest.approx(0.0)
+    for space in REPORTED_SPACES:
+        result = track_metrics(scores[space])
+        assert result["macro_f1"] == pytest.approx(1.0), space
+        assert result["accuracy"] == pytest.approx(1.0), space
+        assert result["boundary_f1"] == pytest.approx(1.0), space
+        assert result["flicker_per_min"] == pytest.approx(0.0), space
 
 
 def test_a_constant_intent_scores_far_below_one():
     beat_times = [0.5 * index for index in range(1, 121)]
     sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
     blocks = [(0.0, 60.5, "drop")]
-    score, _rows, _stats = score_report(
+    scores, _rows, _stats = score_report(
         "t.1", "1", perfect_report(beat_times, blocks, 63.0), sections)
-    assert track_metrics(score)["macro_f1"] < 0.5
+    assert track_metrics(scores[GATED_SPACE])["macro_f1"] < 0.5
+
+
+def test_score_report_scores_every_reported_granularity():
+    beat_times = [0.5 * index for index in range(1, 121)]
+    sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
+    blocks = [(0.0, 60.5, "drop")]
+    scores, _rows, _stats = score_report(
+        "t.1", "1", perfect_report(beat_times, blocks, 63.0), sections)
+    assert set(scores) == set(REPORTED_SPACES)
+    assert {RAW9, LEGACY_V1} == set(REPORTED_SPACES)
+
+
+def test_the_gated_space_is_the_raw_nine_the_decoder_commits():
+    """Phase 2's flip: the gate reads the vocabulary the show decodes.  The
+    legacy fold rides along as a reported view for comparability with the
+    banked record."""
+    assert GATED_SPACE == RAW9
+    assert GATED_SPACE in REPORTED_SPACES
+    assert LEGACY_V1 in REPORTED_SPACES
+
+
+def test_a_baseline_cut_in_another_space_is_a_desync_not_a_comparison():
+    baseline = {"eval_set": {"sha256": "abc"}, "space": LEGACY_V1,
+                "tracks": {}, "aggregate": {}}
+    current = {"eval_set": {"sha256": "abc"}, "space": GATED_SPACE,
+               "tracks": {}, "aggregate": {}}
+    outcome = compare(baseline, current)
+    assert outcome.failed
+    assert any("space" in line for line in outcome.desync)
+
+
+def test_no_single_hardcoded_space_survives_in_the_runner():
+    import run_eval_set
+
+    assert not hasattr(run_eval_set, "SPACE")
+
+
+def test_a_track_entry_reports_both_granularities_with_every_guarded_metric():
+    beat_times = [0.5 * index for index in range(1, 121)]
+    sections = [(0.0, 20.0, "intro"), (20.0, 40.0, "drop"), (40.0, 60.5, "outro")]
+    report = perfect_report(beat_times, [(0.0, 60.5, "drop")], 63.0)
+    scores, rows, stats = score_report("t.1", "1", report, sections)
+
+    built = track_entry(report, scores, rows, "1", 63.0, stats)
+
+    assert set(built["spaces"]) == set(REPORTED_SPACES)
+    for space, block in built["spaces"].items():
+        assert not [metric for metric in GUARDED_METRICS if metric not in block], space
+
+
+def test_the_gated_numbers_at_the_top_of_an_entry_are_the_gated_spaces_numbers():
+    """The baseline gate reads the top level, so it must name one space, not a mix."""
+    beat_times = [0.5 * index for index in range(1, 121)]
+    sections = [(0.0, 20.0, "breakdown"), (20.0, 40.0, "cooldown"),
+                (40.0, 60.5, "drop")]
+    report = perfect_report(beat_times, [(0.0, 60.5, "drop")], 63.0)
+    scores, rows, stats = score_report("t.1", "1", report, sections)
+
+    built = track_entry(report, scores, rows, "1", 63.0, stats)
+    gated = built["spaces"][GATED_SPACE]
+
+    for metric in GUARDED_METRICS:
+        assert built[metric] == gated[metric], metric
+    for fact in ("label_boundaries", "changes_class"):
+        assert built[fact] == gated[fact], fact
+
+
+def test_the_raw_space_never_sees_fewer_label_boundaries_than_the_fold():
+    """The legacy view can only merge classes, so it can only lose boundaries."""
+    beat_times = [0.5 * index for index in range(1, 121)]
+    sections = [(0.0, 20.0, "breakdown"), (20.0, 40.0, "cooldown"),
+                (40.0, 60.5, "drop")]
+    scores, _rows, _stats = score_report(
+        "t.1", "1", perfect_report(beat_times, [(0.0, 60.5, "drop")], 63.0), sections)
+
+    assert space_facts(scores[RAW9])["label_boundaries"] == 2
+    assert space_facts(scores[LEGACY_V1])["label_boundaries"] == 1
+
+
+def test_the_ungated_granularity_cannot_fail_the_gate_on_its_own():
+    """raw9 is REPORTED, not gated -- moving it must not stop a commit yet."""
+    baseline = result_document({"a.1": entry()})
+    current = result_document({"a.1": entry(
+        spaces={space: metrics(macro_f1=0.01) for space in REPORTED_SPACES})})
+
+    assert compare(baseline, current).failed is False
 
 
 def test_build_document_round_trips_through_json(tmp_path):
@@ -700,6 +793,20 @@ def test_a_count_fact_missing_from_the_baseline_is_a_failure_not_a_skip():
 
     assert outcome.failed
     assert any("silence_interior" in line for line in outcome.fact_drift)
+
+
+def test_the_printed_table_shows_the_ungated_granularity_beside_the_gated_one():
+    from run_eval_set import TrackRun, render_table
+
+    spaces = {space: dict(metrics(), label_boundaries=7, changes_class=5)
+              for space in REPORTED_SPACES}
+    run = TrackRun("a.1", "1", entry(spaces=spaces), {}, 3.0)
+    text = render_table([run], dict(metrics(), spaces=spaces), 300.0, 3.0)
+
+    for space in REPORTED_SPACES:
+        assert space in text
+    assert "(aggregate)" in text
+    assert text.isascii()
 
 
 def test_the_benchmark_runs_serial_unless_a_human_asks_otherwise():

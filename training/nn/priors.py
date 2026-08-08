@@ -58,9 +58,10 @@ from . import _TRAINING_DIR  # noqa: F401  (puts training/ on sys.path for the
 # (1.9 s, 1,127 modules) and ``build_training_table`` pulls the whole eval
 # pipeline; both are needed only to *fit* priors from the corpus, never to read
 # a fitted one.  They are therefore imported inside the functions that use them.
-# The alternative -- copying ``V1_ORDER`` and the label folds into this file --
-# would put the label vocabulary in two places, which is the one thing
-# ``nn/__init__`` exists to prevent.
+# ``lib.label_space`` is the exception, and is why it lives outside the training
+# tree at all: the vocabulary is stdlib-only, so the one definition of it costs
+# the show nothing and never has to be copied into a second place.
+from lib.label_space import SECTION_LABELS, check_class_space  # noqa: E402
 
 PRIORS_FILE = "priors.json"
 MODELS_DIR = "models"
@@ -85,16 +86,14 @@ UNIFORM_FORKS = {"buildup": ("breakdown", "drop")}
 PRIORS_VERSION = 1
 
 
-def v1_classes() -> tuple:
-    """The 5-class v1 label space -- read from the table builder, never copied.
+def section_classes() -> tuple:
+    """The class space to fit in: the whole published vocabulary.
 
-    A function rather than a module constant so that resolving it stays lazy:
-    used as a default argument it would be evaluated at import time and drag the
-    eval pipeline onto the decode path.  Callers that already hold a ``Priors``
-    should read ``priors.classes`` instead; this is for the fitting side.
+    Callers that already hold a ``Priors`` must read ``priors.classes`` instead
+    -- every table in a fitted object is indexed by the space it was fitted on,
+    which may be a subset of this one.
     """
-    from build_training_table import V1_ORDER
-    return tuple(V1_ORDER)
+    return SECTION_LABELS
 
 
 # --------------------------------------------------------------------------- #
@@ -102,27 +101,43 @@ def v1_classes() -> tuple:
 # --------------------------------------------------------------------------- #
 
 
+INTRO_FAMILY = frozenset({"intro", "altintro"})
+OUTRO_FAMILY = frozenset({"outro", "altoutro"})
+
+
 def transition_allowed(src: str, dst: str) -> bool:
     """Can a decoded section of class ``src`` be followed by one of ``dst``?
 
     Three rules, each a measured fact about the corpus rather than taste:
 
-    * **nothing enters intro** -- intro is pure-initial (0 of 3,747 train
-      transitions land on it); a track does not go back to its introduction.
-    * **nothing leaves outro** -- outro is terminal (0 of 525 train outros have
-      a successor); once the decoder commits an outro the track is over.
+    * **nothing enters the intro family** -- intro is pure-initial (0 of 3,747
+      train transitions land on it); a track does not go back to its
+      introduction.
+    * **nothing leaves the outro family** -- outro is terminal (0 of 525 train
+      outros have a successor); once the decoder commits an outro the track is
+      over.
     * **nothing self-transitions** -- the states are *merged runs*, so a
       self-loop is not a section change at all.  Persistence within a run is the
       duration model's job; putting it in the matrix too would double-count it.
+
+    The first two are stated over *families* because that is the granularity
+    they were measured at: the fold collapsed each pair into one class, so the
+    counts never distinguished ``altintro`` from ``intro``.  A within-family
+    move is therefore unmeasured rather than absent, and it is exactly the
+    beat-in the owner asked the vocabulary to be able to express.
     """
-    if dst == "intro" or src == "outro":
+    if src in INTRO_FAMILY and dst in INTRO_FAMILY:
+        return src != dst
+    if src in OUTRO_FAMILY and dst in OUTRO_FAMILY:
+        return src != dst
+    if dst in INTRO_FAMILY or src in OUTRO_FAMILY:
         return False
     return src != dst
 
 
 def legal_mask(classes=None) -> np.ndarray:
     """``[C, C]`` boolean: ``True`` where a transition is structurally legal."""
-    classes = v1_classes() if classes is None else tuple(classes)
+    classes = section_classes() if classes is None else tuple(classes)
     return np.array(
         [[transition_allowed(src, dst) for dst in classes] for src in classes],
         dtype=bool,
@@ -182,16 +197,20 @@ class Priors(NamedTuple):
         }
 
     @classmethod
-    def from_dict(cls, document: dict) -> "Priors":
+    def from_dict(cls, document: dict, source: str = "priors document") -> "Priors":
         version = int(document.get("version", 0))
         if version != PRIORS_VERSION:
             raise RuntimeError(
                 f"priors document is version {version}, this build reads "
                 f"{PRIORS_VERSION} -- refit rather than reinterpret"
             )
+        classes = tuple(document["classes"])
+        # Every table below is indexed by this list, so a space that is merely
+        # the right length loads cleanly and decodes the wrong classes.
+        check_class_space(classes, source)
         duration = document["duration"]
         return cls(
-            classes=tuple(document["classes"]),
+            classes=classes,
             initial=np.asarray(document["initial"], dtype=np.float64),
             transition=np.asarray(document["transition"], dtype=np.float64),
             floor_bars=np.asarray(duration["floor_bars"], dtype=np.int64),
@@ -220,7 +239,7 @@ class Priors(NamedTuple):
     @classmethod
     def load(cls, path) -> "Priors":
         with open(path, "r", encoding="utf-8") as handle:
-            return cls.from_dict(json.load(handle))
+            return cls.from_dict(json.load(handle), str(path))
 
 
 def _log(values: np.ndarray) -> np.ndarray:
@@ -234,20 +253,18 @@ def _log(values: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
-def v1_runs(sections: list) -> list:
-    """Published sections -> merged ``label_v1`` runs ``[(start, end, label)]``.
+def label_runs(sections: list) -> list:
+    """Published sections -> merged runs ``[(start, end, label)]``.
 
-    Two folds happen before the merge, so runs join across both: the canonical
-    map (``altintro``/``bridge``) and the v1 map (``cooldown`` -> breakdown,
-    ``altoutro`` -> outro).  The ``end`` sentinel is dropped, and a merge across
-    it joins the runs on either side -- consistent with ``canonical_runs`` --
-    but the sentinel's own time is never re-attributed, which is why bar counts
-    are summed per member rather than taken from the merged span.
+    The ``end`` sentinel is dropped and a merge across it joins the runs on
+    either side -- consistent with ``section_runs`` -- but the sentinel's own
+    time is never re-attributed, which is why bar counts are summed per member
+    rather than taken from the merged span.
     """
-    from build_training_table import canonical_coverage, label_v1
+    from build_training_table import label_coverage
     spans = sorted(
-        ((float(start), float(end), label_v1(label))
-         for start, end, label in canonical_coverage(sections)),
+        ((float(start), float(end), label)
+         for start, end, label in label_coverage(sections)),
         key=lambda span: span[0],
     )
     runs: list = []
@@ -260,19 +277,18 @@ def v1_runs(sections: list) -> list:
 
 
 def bar_runs(sections: list, downbeats: np.ndarray) -> list:
-    """Merged v1 runs as ``[(label, n_bars)]`` on a track's own bar grid.
+    """Merged runs as ``[(label, n_bars)]`` on a track's own bar grid.
 
     A run's length is the number of downbeats inside its *member* spans, summed
     -- not the downbeats between the merged run's start and end.  The two differ
     exactly when a dropped ``end`` sentinel sits between two members, and that
     sentinel's bars belong to nobody.
     """
-    from build_training_table import canonical_coverage, label_v1
+    from build_training_table import label_coverage
     downbeats = np.asarray(downbeats, dtype=np.float64)
     runs: list = []
     for start, end, label in sorted(
-            ((float(s), float(e), label_v1(l))
-             for s, e, l in canonical_coverage(sections)),
+            ((float(s), float(e), l) for s, e, l in label_coverage(sections)),
             key=lambda span: span[0]):
         bars = int(np.count_nonzero((downbeats >= start) & (downbeats < end)))
         if runs and runs[-1][0] == label:
@@ -290,10 +306,10 @@ def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
     everywhere.
     """
     from raveform_fetch_annotations import (
-        beat_csv_path, load_tracks, parse_beat_csv, parse_sections)
+        beat_csv_path, load_all_tracks, parse_beat_csv, parse_sections)
     data_dir = Path(data_dir)
     wanted = set(str(i) for i in youtube_ids)
-    by_id = {str(track.get("id")): track for track in load_tracks(data_dir)}
+    by_id = {str(track.get("id")): track for track in load_all_tracks(data_dir)}
 
     sequences: list = []
     skipped: list = []
@@ -337,7 +353,7 @@ def fit_runs(sequences, *, classes=None, smoothing: float = SMOOTHING,
     prior be tested against hand-written sequences on a machine that has never
     seen the corpus.
     """
-    classes = v1_classes() if classes is None else tuple(classes)
+    classes = section_classes() if classes is None else tuple(classes)
     index = {label: i for i, label in enumerate(classes)}
     n = len(classes)
     legal = legal_mask(classes)

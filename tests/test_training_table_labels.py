@@ -6,13 +6,14 @@ import math
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+import build_training_table  # noqa: E402
+from lib.label_space import SECTION_LABELS  # noqa: E402
 from build_training_table import (  # noqa: E402
     ANALYSER_RESET_SEC,
     BAR_POSITION_UNKNOWN,
@@ -20,8 +21,6 @@ from build_training_table import (  # noqa: E402
     CLEAN_MANIFEST_FILE,
     CONTINUOUS_COLUMNS,
     FEATURES_DIR,
-    MEL_EXPORTER_KEY,
-    MEL_EXPORTER_VERSION,
     NO_INTENT,
     REPORTS_DIR,
     SilenceBlocks,
@@ -33,18 +32,15 @@ from build_training_table import (  # noqa: E402
     silence_triggered,
     build_table,
     cache_is_fresh,
-    canonical_coverage,
+    label_coverage,
     format_row,
     join_track,
-    label_v1,
     load_ok_rows,
     realign_intents,
     pipeline_sha,
     report_path,
     select_jobs,
-    sidecar_generation,
     song_time_intents,
-    write_feature_sidecar,
     zscores,
     _read_json_gz,
     _write_json_gz,
@@ -79,7 +75,7 @@ def join(sections, beats, intents=None, **kwargs):
     return join_track("0001.abc", "abc", report(beats, intents, **kwargs), sections)
 
 
-def labels(rows: list, column: str = "label_canonical") -> list:
+def labels(rows: list, column: str = "label") -> list:
     return [row[column] for row in rows]
 
 
@@ -169,15 +165,7 @@ def test_boundary_is_half_open_so_a_beat_on_a_boundary_belongs_to_the_later_sect
     assert labels(rows) == ["drop"]
 
 
-def test_canonical_mapping_folds_altintro_and_bridge():
-    sections = [(0.0, 10.0, "altintro"), (10.0, 20.0, "bridge")]
-    rows, _stats = join(sections, [beat(5.0), beat(15.0)])
-
-    assert labels(rows) == ["intro", "breakdown"]
-    assert labels(rows, "label_raw") == ["altintro", "bridge"]
-
-
-def test_label_v1_merges_cooldown_into_breakdown_and_altoutro_into_outro():
+def test_the_join_carries_every_published_label_unfolded():
     sections = [
         (0.0, 10.0, "altintro"),
         (10.0, 20.0, "bridge"),
@@ -186,19 +174,32 @@ def test_label_v1_merges_cooldown_into_breakdown_and_altoutro_into_outro():
     ]
     rows, _stats = join(sections, [beat(t) for t in (5.0, 15.0, 25.0, 35.0)])
 
-    assert labels(rows, "label_canonical") == ["intro", "breakdown", "cooldown", "altoutro"]
-    assert labels(rows, "label_v1") == ["intro", "breakdown", "breakdown", "outro"]
+    assert labels(rows) == ["altintro", "bridge", "cooldown", "altoutro"]
 
 
-def test_label_v1_is_identity_on_the_five_class_space():
-    for label in ("intro", "buildup", "breakdown", "drop", "outro"):
-        assert label_v1(label) == label
+def test_every_vocabulary_label_survives_the_join():
+    sections = [(10.0 * i, 10.0 * (i + 1), label)
+                for i, label in enumerate(SECTION_LABELS)]
+    rows, _stats = join(sections, [beat(10.0 * i + 5.0)
+                                   for i in range(len(SECTION_LABELS))])
+
+    assert labels(rows) == list(SECTION_LABELS)
 
 
-def test_canonical_coverage_drops_sentinels_and_clamps():
-    spans = canonical_coverage([(0.0, 5.0, "altintro"), (5.0, 7.0, "end"), (7.0, 6.0, "drop")])
+def test_the_fold_machinery_is_gone_from_the_table_builder():
+    for retired in ("label_v1", "V1_MAP", "V1_ORDER", "CANONICAL_ORDER",
+                    "canonical_coverage", "raw_coverage"):
+        assert not hasattr(build_training_table, retired), retired
+    assert "label_canonical" not in TABLE_HEADER
+    assert "label_v1" not in TABLE_HEADER
+    assert "label_raw" not in TABLE_HEADER
+    assert "label" in TABLE_HEADER
 
-    assert spans == [(0.0, 5.0, "intro"), (7.0, 7.0, "drop")]
+
+def test_label_coverage_drops_sentinels_and_clamps():
+    spans = label_coverage([(0.0, 5.0, "altintro"), (5.0, 7.0, "end"), (7.0, 6.0, "drop")])
+
+    assert spans == [(0.0, 5.0, "altintro"), (7.0, 7.0, "drop")]
 
 
 def test_intent_blocks_are_shifted_back_by_the_look_ahead():
@@ -402,7 +403,7 @@ def test_every_feature_column_reads_a_key_the_report_still_carries():
     rows, _stats = join([(0.0, 30.0, "drop")], [live])
 
     derived = {"track_id", "youtube_id", "t_song", "intent_at_beat",
-               "label_canonical", "label_raw", "label_v1", "bar_position_unknown"}
+               "label", "bar_position_unknown"}
     derived |= {f"{column}_z" for column in CONTINUOUS_COLUMNS}
 
     assert set(rows[0]) - derived <= set(live)
@@ -481,15 +482,13 @@ def test_format_row_emits_the_header_order_as_strings():
     assert all(isinstance(field, str) for field in fields)
     assert fields[TABLE_HEADER.index("track_id")] == "0001.abc"
     assert fields[TABLE_HEADER.index("t_song")] == "1.500000"
-    assert fields[TABLE_HEADER.index("label_canonical")] == "drop"
+    assert fields[TABLE_HEADER.index("label")] == "drop"
 
 
 def write_corpus(tmp_path: Path, tracks: dict) -> tuple:
     rows = []
     sections_by_track = {}
-    (tmp_path / FEATURES_DIR).mkdir(parents=True, exist_ok=True)
     for track_id, (youtube, sections, payload) in sorted(tracks.items()):
-        (tmp_path / FEATURES_DIR / f"{youtube}.npz").write_bytes(b"npz")
         _write_json_gz(report_path(tmp_path, youtube), {
             "cache_version": CACHE_VERSION,
             "track_id": track_id,
@@ -521,8 +520,7 @@ def test_table_writes_the_header_and_one_row_per_labeled_beat(tmp_path):
     assert len(table) == 3
     assert stats.tracks == 1
     assert stats.rows == 2
-    assert stats.canonical["drop"] == 2
-    assert stats.v1["drop"] == 2
+    assert stats.labels["drop"] == 2
 
 
 def test_table_is_byte_identical_when_rebuilt_from_the_same_reports(tmp_path):
@@ -549,24 +547,24 @@ def test_an_unsimulated_track_is_recorded_not_silently_dropped(tmp_path):
 
     assert stats.tracks == 1
     assert stats.missing_reports == ["0009.zzz"]
-    assert stats.missing_sidecars == []
     assert stats.skipped == []
 
 
-def test_a_track_without_mel_features_contributes_no_rows(tmp_path):
+def test_a_track_with_no_mel_sidecar_joins_like_any_other(tmp_path):
+    """The mel generation is dead; a hand-admitted track never gets a sidecar."""
     rows, sections = write_corpus(tmp_path, {
         "0001.abc": ("abc", [(0.0, 30.0, "drop")], report([beat(1.0), beat(2.0)])),
-        "0002.def": ("def", [(0.0, 30.0, "intro")], report([beat(3.0)])),
+        "hand-f6b19b47d413": ("hand-f6b19b47d413", [(0.0, 30.0, "intro")],
+                              report([beat(3.0)])),
     })
-    (tmp_path / FEATURES_DIR / "def.npz").unlink()
+    assert not (tmp_path / FEATURES_DIR).exists()
 
     stats = build_table(tmp_path, rows, sections)
     table = read_table(tmp_path / TABLE_FILE)
 
-    assert stats.missing_sidecars == ["0002.def"]
-    assert stats.tracks == 1
-    assert stats.rows == 2
-    assert {row[0] for row in table[1:]} == {"0001.abc"}
+    assert stats.tracks == 2
+    assert stats.rows == 3
+    assert {row[0] for row in table[1:]} == {"0001.abc", "hand-f6b19b47d413"}
 
 
 def test_table_records_a_track_whose_report_is_unreadable(tmp_path):
@@ -608,8 +606,7 @@ def test_cache_without_a_report_is_stale():
                               "sha1", 100, 1.5)
 
 
-def stage_track(tmp_path: Path, sha: str = "sha1", sidecar: bool = True,
-                cached: bool = True) -> list:
+def stage_track(tmp_path: Path, sha: str = "sha1", cached: bool = True) -> list:
     mp3 = tmp_path / "audio" / "abc.mp3"
     mp3.parent.mkdir(parents=True, exist_ok=True)
     mp3.write_bytes(b"x" * 100)
@@ -621,9 +618,6 @@ def stage_track(tmp_path: Path, sha: str = "sha1", sidecar: bool = True,
             "mp3_size": stat.st_size, "mp3_mtime": stat.st_mtime,
             "report": report([beat(1.0)]),
         })
-    if sidecar:
-        (tmp_path / FEATURES_DIR).mkdir(parents=True, exist_ok=True)
-        (tmp_path / FEATURES_DIR / "abc.npz").write_bytes(b"npz")
     return [{"track_id": "0001.abc", "youtube_id": "abc", "mp3_path": str(mp3)}]
 
 
@@ -643,7 +637,7 @@ def test_a_fresh_cache_skips_the_simulation_entirely(tmp_path):
 
 
 def test_a_new_track_is_a_miss(tmp_path):
-    rows = stage_track(tmp_path, cached=False, sidecar=False)
+    rows = stage_track(tmp_path, cached=False)
 
     jobs, counts = select(tmp_path, rows)
 
@@ -670,15 +664,6 @@ def test_replacing_the_audio_invalidates_its_report(tmp_path):
     assert counts["miss_audio_changed"] == 1
 
 
-def test_a_missing_sidecar_is_not_a_reason_to_re_simulate(tmp_path):
-    rows = stage_track(tmp_path, sidecar=False)
-
-    jobs, counts = select(tmp_path, rows)
-
-    assert jobs == []
-    assert counts["hit"] == 1
-
-
 def test_an_unreadable_cache_is_a_miss_not_a_crash(tmp_path):
     rows = stage_track(tmp_path)
     report_path(tmp_path, "abc").write_bytes(b"truncated")
@@ -700,7 +685,7 @@ def test_force_ignores_a_perfectly_good_cache(tmp_path):
 
 
 def test_a_freshly_written_mp3_is_left_for_the_next_run(tmp_path):
-    rows = stage_track(tmp_path, cached=False, sidecar=False)
+    rows = stage_track(tmp_path, cached=False)
 
     jobs, counts = select_jobs(rows, tmp_path, sha="sha1", min_age_sec=3600.0)
 
@@ -709,7 +694,7 @@ def test_a_freshly_written_mp3_is_left_for_the_next_run(tmp_path):
 
 
 def test_a_missing_mp3_is_counted_not_dispatched(tmp_path):
-    rows = stage_track(tmp_path, cached=False, sidecar=False)
+    rows = stage_track(tmp_path, cached=False)
     Path(rows[0]["mp3_path"]).unlink()
 
     jobs, counts = select(tmp_path, rows)
@@ -719,7 +704,7 @@ def test_a_missing_mp3_is_counted_not_dispatched(tmp_path):
 
 
 def test_the_job_carries_the_stamp_the_cache_will_be_checked_against(tmp_path):
-    rows = stage_track(tmp_path, cached=False, sidecar=False)
+    rows = stage_track(tmp_path, cached=False)
     stat = Path(rows[0]["mp3_path"]).stat()
 
     jobs, _counts = select(tmp_path, rows)
@@ -727,54 +712,6 @@ def test_the_job_carries_the_stamp_the_cache_will_be_checked_against(tmp_path):
     assert jobs[0].pipeline_sha == "sha1"
     assert jobs[0].mp3_size == stat.st_size
     assert jobs[0].mp3_mtime == stat.st_mtime
-
-
-def stamp_sidecar(path: Path, version=MEL_EXPORTER_VERSION) -> None:
-    payload = {"mel": np.zeros((1, 40), dtype=np.float32)}
-    if version is not None:
-        payload[MEL_EXPORTER_KEY] = np.int32(version)
-    np.savez_compressed(path, **payload)
-
-
-def test_a_sidecar_from_another_exporter_generation_is_excluded_not_re_simulated(tmp_path):
-    rows = stage_track(tmp_path)
-    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz", MEL_EXPORTER_VERSION + 1)
-
-    jobs, counts = select(tmp_path, rows)
-
-    assert jobs == []
-    assert counts["hit"] == 1
-
-
-def test_a_sidecar_from_this_exporter_generation_is_a_hit(tmp_path):
-    rows = stage_track(tmp_path)
-    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz")
-
-    jobs, counts = select(tmp_path, rows)
-
-    assert jobs == []
-    assert counts["hit"] == 1
-
-
-def test_an_unstamped_sidecar_is_grandfathered_rather_than_rebuilt(tmp_path):
-    rows = stage_track(tmp_path)
-    stamp_sidecar(tmp_path / FEATURES_DIR / "abc.npz", version=None)
-
-    jobs, counts = select(tmp_path, rows)
-
-    assert jobs == []
-    assert counts["hit"] == 1
-
-
-def test_sidecar_generation_reads_the_stamp_and_defaults_to_one(tmp_path):
-    stamped, bare, junk = (tmp_path / n for n in ("s.npz", "b.npz", "j.npz"))
-    stamp_sidecar(stamped, 7)
-    stamp_sidecar(bare, version=None)
-    junk.write_bytes(b"not an npz")
-
-    assert sidecar_generation(stamped) == 7
-    assert sidecar_generation(bare) == 1
-    assert sidecar_generation(junk) == 1
 
 
 def test_the_cache_counters_partition_the_manifest(tmp_path):
@@ -794,7 +731,7 @@ def test_the_cache_counters_partition_the_manifest(tmp_path):
 
 
 def test_a_too_recent_track_is_not_also_counted_as_a_miss(tmp_path):
-    rows = stage_track(tmp_path, cached=False, sidecar=False)
+    rows = stage_track(tmp_path, cached=False)
 
     jobs, counts = select_jobs(rows, tmp_path, sha="sha1", min_age_sec=3600.0)
 
@@ -1030,11 +967,49 @@ def test_the_batch_deletes_the_cell_sidecar_it_wrote_even_beside_an_old_decode_c
     assert decode not in job.preexisting
 
 
+def test_by_default_both_derived_files_are_deleted(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+
+    assert paths_to_delete(_job_with(mp3_path=mp3)) == derived_cache_paths(mp3)
+
+
+def test_keeping_cells_still_deletes_the_decode_cache(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+    decode, cells = derived_cache_paths(mp3)
+
+    doomed = paths_to_delete(_job_with(mp3_path=mp3, keep_cells=True))
+
+    assert decode in doomed
+    assert cells not in doomed
+
+
+def test_keeping_cells_leaves_preexisting_files_alone(tmp_path):
+    from build_training_table import derived_cache_paths, paths_to_delete
+
+    mp3 = str(tmp_path / "0001.abc.mp3")
+    decode, cells = derived_cache_paths(mp3)
+    job = _job_with(mp3_path=mp3, preexisting=(decode, cells), keep_cells=True)
+
+    assert paths_to_delete(job) == ()
+
+
+def test_the_retention_flag_reaches_every_job(tmp_path):
+    rows = stage_track(tmp_path, cached=False)
+
+    jobs, _counts = select(tmp_path, rows, keep_cells=True)
+
+    assert all(job.keep_cells for job in jobs)
+
+
 def _job_with(**over):
     from build_training_table import SimJob
 
     fields = dict(track_id="0001", youtube_id="abc", mp3_path="a.mp3",
-                  report_path="c", sidecar_path="s", preexisting=(),
+                  report_path="c", preexisting=(),
                   pipeline_sha="sha", mp3_size=1, mp3_mtime=1.0)
     fields.update(over)
     return SimJob(**fields)

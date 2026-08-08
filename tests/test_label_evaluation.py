@@ -24,14 +24,16 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
-from build_training_table import (  # noqa: E402  (needs the path insert above)
-    CANONICAL_ORDER,
-    TABLE_HEADER,
-    V1_ORDER,
-)
+import build_training_table  # noqa: E402
+from build_training_table import TABLE_HEADER  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
+    INTENT_ORDER,
     INTENT_TO_LABELS,
+    LABEL_COLUMN,
+    LEGACY_V1,
     MAX_GAP_FACTOR,
+    PRIMARY_SPACE,
+    RAW9,
     SPACES,
     STREAM_ORDER,
     TOLERANCES_SEC,
@@ -42,6 +44,7 @@ from evaluate_against_labels import (  # noqa: E402
     class_changes,
     evaluate,
     flicker_instants,
+    fold_to_legacy_v1,
     intent_changes,
     label_boundaries,
     load_tracks,
@@ -51,7 +54,11 @@ from evaluate_against_labels import (  # noqa: E402
     score_track,
     typed_predictions,
 )
-from lib.engine.effect_definitions import LightIntent  # noqa: E402
+from lib.engine.effect_definitions import (  # noqa: E402
+    SECTION_CLASS_INTENTS,
+    LightIntent,
+)
+from lib.label_space import SECTION_LABELS  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -59,13 +66,15 @@ from lib.engine.effect_definitions import LightIntent  # noqa: E402
 # --------------------------------------------------------------------------- #
 
 
-def track(times, intents, v1, canonical=None, track_id="t"):
-    """A synthetic track; `canonical` defaults to `v1` when the test ignores it."""
+def track(times, intents, labels, track_id="t"):
+    """A synthetic track carrying RAW labels; each space's view derives its own."""
+    labels = tuple(labels)
     return TrackBeats(
         track_id=track_id,
         times=tuple(float(t) for t in times),
         intents=tuple(intents),
-        labels={"v1": tuple(v1), "canonical": tuple(canonical or v1)},
+        labels={name: tuple(spec.view(label) for label in labels)
+                for name, spec in SPACES.items()},
     )
 
 
@@ -77,17 +86,99 @@ def f1_of(score, label):
     return prf(*score.counts[label])[2]
 
 
+def empty_buckets(space=RAW9):
+    return {label: [] for label in SPACES[space].labels}
+
+
+# --------------------------------------------------------------------------- #
+# the label spaces -- one column, two views
+# --------------------------------------------------------------------------- #
+
+
+def test_exactly_two_spaces_exist_and_the_raw_nine_is_primary():
+    assert set(SPACES) == {RAW9, LEGACY_V1}
+    assert PRIMARY_SPACE == RAW9
+    assert SPACES[RAW9].labels == SECTION_LABELS
+
+
+def test_the_legacy_space_is_the_retired_five_class_vocabulary():
+    assert SPACES[LEGACY_V1].labels == ("intro", "buildup", "breakdown",
+                                        "drop", "outro")
+
+
+def test_a_space_is_a_view_over_the_one_label_column_not_a_column_of_its_own():
+    """There is one label column now, so a space cannot be keyed on a column."""
+    assert LABEL_COLUMN in TABLE_HEADER
+    assert [column for column in TABLE_HEADER
+            if column.startswith("label")] == [LABEL_COLUMN]
+    for spec in SPACES.values():
+        assert not hasattr(spec, "column")
+        assert callable(spec.view)
+
+
+def test_the_raw_space_view_is_the_identity_on_every_label():
+    for label in SECTION_LABELS:
+        assert SPACES[RAW9].view(label) == label
+
+
+def test_the_legacy_view_maps_every_one_of_the_nine_labels_into_its_own_space():
+    expected = {
+        "intro": "intro",
+        "altintro": "intro",
+        "buildup": "buildup",
+        "breakdown": "breakdown",
+        "bridge": "breakdown",
+        "drop": "drop",
+        "cooldown": "breakdown",
+        "outro": "outro",
+        "altoutro": "outro",
+    }
+    assert {label: fold_to_legacy_v1(label) for label in SECTION_LABELS} == expected
+    assert set(expected.values()) == set(SPACES[LEGACY_V1].labels)
+
+
+def test_the_legacy_view_reproduces_the_retired_canonical_then_v1_chain_exactly():
+    """Score-neutrality of the migration: the banked record stays comparable.
+
+    The retired pipeline folded twice -- ``end`` dropped, then
+    ``altintro``/``bridge`` into the canonical-7, then ``cooldown``/``altoutro``
+    into label_v1-5.  Composing those two steps by hand here is the whole
+    evidence that the surviving one-step view is the same function.
+    """
+    retired_canonical_fold = {"altintro": "intro", "bridge": "breakdown"}
+    retired_v1_fold = {"cooldown": "breakdown", "altoutro": "outro"}
+
+    for label in SECTION_LABELS:
+        canonical = retired_canonical_fold.get(label, label)
+        assert fold_to_legacy_v1(label) == retired_v1_fold.get(canonical, canonical)
+
+
+def test_the_legacy_fold_is_a_pure_function_nothing_downstream_stores():
+    """The fold survives ONLY here, applied at evaluation time.
+
+    A stage that persisted its output would put a second label space back into
+    the data, which is exactly what ruling #264 retired.
+    """
+    assert fold_to_legacy_v1("cooldown") == fold_to_legacy_v1("cooldown")
+    for name in ("label_v1", "V1_ORDER", "V1_MAP", "CANONICAL_ORDER",
+                 "canonical_coverage"):
+        assert not hasattr(build_training_table, name), name
+
+
+def test_an_unknown_label_passes_through_the_legacy_view_rather_than_being_invented():
+    assert fold_to_legacy_v1("chorus") == "chorus"
+
+
 # --------------------------------------------------------------------------- #
 # the mapping dict
 # --------------------------------------------------------------------------- #
 
 
-def test_every_light_intent_has_a_mapping_in_every_space():
-    for intent in LightIntent:
+def test_every_intent_a_section_class_can_produce_has_a_mapping_in_every_space():
+    for intent in SECTION_CLASS_INTENTS.values():
         assert intent.value in INTENT_TO_LABELS, intent
         for space in SPACES:
-            targets = INTENT_TO_LABELS[intent.value][space]
-            assert targets, f"{intent.value} has no target in {space}"
+            assert INTENT_TO_LABELS[intent.value][space], (intent.value, space)
 
 
 def test_mapping_targets_are_real_labels_of_their_space():
@@ -97,30 +188,55 @@ def test_mapping_targets_are_real_labels_of_their_space():
                 assert target in SPACES[space].labels, (intent, space, target)
 
 
-def test_spaces_match_the_training_table_vocabulary():
-    """A label the table can emit but the evaluator does not know is silent loss."""
-    assert SPACES["v1"].labels == V1_ORDER
-    assert set(SPACES["canonical"].labels) == set(CANONICAL_ORDER)
-    assert SPACES["v1"].column in TABLE_HEADER
-    assert SPACES["canonical"].column in TABLE_HEADER
+def test_the_raw_claim_map_is_the_inverse_of_the_shows_own_class_to_intent_map():
+    """The evaluator's notion of 'correct' must BE the mapping the show uses.
+
+    This fails loudly the moment the owner revises the provisional class ->
+    intent assignments, which is the point: a claim map that drifted from the
+    engine would score the show against lights it never plays.
+    """
+    inverse: dict = {}
+    for label in SECTION_LABELS:
+        inverse.setdefault(SECTION_CLASS_INTENTS[label].value, []).append(label)
+    assert {intent: per_space[RAW9]
+            for intent, per_space in INTENT_TO_LABELS.items()} == \
+        {intent: tuple(labels) for intent, labels in inverse.items()}
 
 
-def test_groove_maps_to_breakdown_in_v1_and_cooldown_in_canonical():
-    """GROOVE's semantic home is cooldown; v1 merges cooldown into breakdown."""
-    assert INTENT_TO_LABELS["groove"]["canonical"] == ("cooldown",)
-    assert INTENT_TO_LABELS["groove"]["v1"] == ("breakdown",)
+def test_the_live_intent_alphabet_carries_no_retired_intent():
+    assert "groove" not in INTENT_TO_LABELS and "peak" not in INTENT_TO_LABELS
+    assert set(INTENT_ORDER) == set(INTENT_TO_LABELS)
 
 
-def test_drop_and_peak_both_map_to_drop():
-    assert INTENT_TO_LABELS["drop"]["v1"] == ("drop",)
-    assert INTENT_TO_LABELS["peak"]["v1"] == ("drop",)
+def test_the_scored_alphabet_is_exactly_the_shows_own_alphabet():
+    """The intent layer is a pure mapped image of the classes -- no engine-derived
+    state like PEAK survives, so an intent the evaluator scores that the enum
+    cannot commit (or the reverse) is a bug in one of the two."""
+    assert set(INTENT_TO_LABELS) == {intent.value for intent in LightIntent}
+    assert set(INTENT_TO_LABELS) == {intent.value
+                                     for intent in SECTION_CLASS_INTENTS.values()}
 
 
-def test_atmospheric_is_position_blind_and_matches_intro_or_outro():
+def test_atmospheric_is_position_blind_and_matches_any_quiet_class():
     """An intent cannot know track position, so quiet == intro OR outro."""
-    assert set(INTENT_TO_LABELS["atmospheric"]["v1"]) == {"intro", "outro"}
-    assert set(INTENT_TO_LABELS["atmospheric"]["canonical"]) == {
-        "intro", "outro", "altoutro"}
+    assert INTENT_TO_LABELS["atmospheric"][RAW9] == (
+        "intro", "altintro", "outro", "altoutro")
+    assert INTENT_TO_LABELS["atmospheric"][LEGACY_V1] == ("intro", "outro")
+
+
+def test_breakdown_claims_the_three_stripped_classes_in_the_raw_space():
+    assert INTENT_TO_LABELS["breakdown"][RAW9] == ("breakdown", "bridge", "cooldown")
+    assert INTENT_TO_LABELS["breakdown"][LEGACY_V1] == ("breakdown",)
+
+
+def test_the_legacy_claims_are_the_historical_ones():
+    assert {intent: per_space[LEGACY_V1]
+            for intent, per_space in INTENT_TO_LABELS.items()} == {
+        "atmospheric": ("intro", "outro"),
+        "breakdown": ("breakdown",),
+        "buildup": ("buildup",),
+        "drop": ("drop",),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -164,19 +280,39 @@ def test_a_single_beat_track_weighs_nothing_instead_of_crashing():
 def test_a_perfect_timeline_scores_one_everywhere():
     times = steady(8)
     labels = ["intro"] * 2 + ["buildup"] * 2 + ["drop"] * 2 + ["breakdown"] * 2
-    intents = ["atmospheric"] * 2 + ["buildup"] * 2 + ["peak"] * 2 + ["groove"] * 2
-    score = score_track(track(times, intents, labels), "v1")
+    intents = ["atmospheric"] * 2 + ["buildup"] * 2 + ["drop"] * 2 + ["breakdown"] * 2
+    score = score_track(track(times, intents, labels), RAW9)
     assert score.accuracy == pytest.approx(1.0)
     assert score.macro_f1 == pytest.approx(1.0)
     for label in ("intro", "buildup", "drop", "breakdown"):
         assert f1_of(score, label) == pytest.approx(1.0)
 
 
-def test_a_constant_peak_timeline_scores_the_exact_degenerate_values():
+def test_the_new_classes_are_scored_correct_in_the_raw_space():
+    """altintro/bridge/cooldown/altoutro are real classes now, not folds."""
+    times = steady(8)
+    labels = ["altintro"] * 2 + ["bridge"] * 2 + ["cooldown"] * 2 + ["altoutro"] * 2
+    intents = ["atmospheric"] * 2 + ["breakdown"] * 4 + ["atmospheric"] * 2
+    score = score_track(track(times, intents, labels), RAW9)
+    assert score.accuracy == pytest.approx(1.0)
+    for label in ("altintro", "bridge", "cooldown", "altoutro"):
+        assert f1_of(score, label) == pytest.approx(1.0)
+
+
+def test_the_legacy_view_collapses_the_new_classes_onto_their_retired_homes():
+    times = steady(8)
+    labels = ["altintro"] * 2 + ["bridge"] * 2 + ["cooldown"] * 2 + ["altoutro"] * 2
+    intents = ["atmospheric"] * 2 + ["breakdown"] * 4 + ["atmospheric"] * 2
+    score = score_track(track(times, intents, labels), LEGACY_V1)
+    assert set(score.macro_classes) == {"intro", "breakdown", "outro"}
+    assert score.accuracy == pytest.approx(1.0)
+
+
+def test_a_constant_drop_timeline_scores_the_exact_degenerate_values():
     """All-DROP lights: perfect drop recall, precision == the drop time share."""
     times = steady(4)                       # 0.5 s each, 2.0 s total
     labels = ["drop", "drop", "breakdown", "intro"]
-    score = score_track(track(times, ["peak"] * 4, labels), "v1")
+    score = score_track(track(times, ["drop"] * 4, labels), RAW9)
     precision, recall, f1 = prf(*score.counts["drop"])
     assert recall == pytest.approx(1.0)
     assert precision == pytest.approx(0.5)
@@ -190,15 +326,15 @@ def test_the_confusion_matrix_is_in_seconds_not_beats():
     """Uneven beats: a slow stretch must outweigh a fast one, beat counts equal."""
     times = [0.0, 0.25, 0.5, 1.5]           # 0.25, 0.25, 1.0 s
     labels = ["drop", "drop", "breakdown", "breakdown"]
-    score = score_track(track(times, ["peak"] * 4, labels), "v1")
-    assert score.confusion["peak"]["drop"] == pytest.approx(0.5)
-    assert score.confusion["peak"]["breakdown"] == pytest.approx(1.0 + 0.25)
+    score = score_track(track(times, ["drop"] * 4, labels), RAW9)
+    assert score.confusion["drop"]["drop"] == pytest.approx(0.5)
+    assert score.confusion["drop"]["breakdown"] == pytest.approx(1.0 + 0.25)
 
 
 def test_beats_with_no_committed_intent_are_counted_but_never_scored():
     times = steady(4)
     labels = ["drop"] * 4
-    score = score_track(track(times, ["", "", "peak", "peak"], labels), "v1")
+    score = score_track(track(times, ["", "", "drop", "drop"], labels), RAW9)
     assert score.no_intent_sec == pytest.approx(1.0)
     assert score.no_intent_rows == 2
     assert sum(sum(row.values()) for row in score.confusion.values()) == pytest.approx(1.0)
@@ -209,33 +345,35 @@ def test_unpredicted_beats_are_located_relative_to_the_committed_ones():
     """An INTERIOR gap silently bridges the change stream, so it must be visible."""
     times = steady(6)
     labels = ["drop"] * 6
-    score = score_track(track(times, ["", "peak", "", "peak", "groove", ""], labels), "v1")
+    score = score_track(
+        track(times, ["", "drop", "", "drop", "breakdown", ""], labels), RAW9)
     assert (score.no_intent_leading, score.no_intent_interior,
             score.no_intent_trailing) == (1, 1, 1)
     assert score.no_intent_rows == 3
 
 
 def test_a_track_that_never_commits_counts_every_beat_as_leading():
-    score = score_track(track(steady(3), ["", "", ""], ["drop"] * 3), "v1")
+    score = score_track(track(steady(3), ["", "", ""], ["drop"] * 3), RAW9)
     assert (score.no_intent_leading, score.no_intent_interior,
             score.no_intent_trailing) == (3, 0, 0)
 
 
 def test_atmospheric_is_credited_against_intro_and_against_outro():
-    intro = score_track(track(steady(2), ["atmospheric"] * 2, ["intro"] * 2), "v1")
-    outro = score_track(track(steady(2), ["atmospheric"] * 2, ["outro"] * 2), "v1")
+    intro = score_track(track(steady(2), ["atmospheric"] * 2, ["intro"] * 2), RAW9)
+    outro = score_track(track(steady(2), ["atmospheric"] * 2, ["altoutro"] * 2), RAW9)
     assert intro.counts["intro"][0] > 0 and intro.counts["intro"][2] == 0
-    assert outro.counts["outro"][0] > 0 and outro.counts["outro"][2] == 0
+    assert outro.counts["altoutro"][0] > 0 and outro.counts["altoutro"][2] == 0
     assert intro.accuracy == pytest.approx(1.0)
     assert outro.accuracy == pytest.approx(1.0)
 
 
 def test_a_wrong_atmospheric_splits_its_false_positive_across_the_quiet_classes():
     """No single class may absorb the blame for an ambiguous prediction."""
-    score = score_track(track(steady(2), ["atmospheric"] * 2, ["drop"] * 2), "v1")
+    score = score_track(track(steady(2), ["atmospheric"] * 2, ["drop"] * 2), RAW9)
+    claimed = INTENT_TO_LABELS["atmospheric"][RAW9]
     assert score.counts["drop"][2] == pytest.approx(1.0)        # fn
-    assert score.counts["intro"][1] == pytest.approx(0.5)       # fp
-    assert score.counts["outro"][1] == pytest.approx(0.5)
+    for label in claimed:
+        assert score.counts[label][1] == pytest.approx(1.0 / len(claimed))
     assert score.accuracy == pytest.approx(0.0)
 
 
@@ -243,7 +381,7 @@ def test_macro_f1_covers_classes_that_are_present_or_predicted_only():
     """A class nothing can predict still drags the macro down -- that is the point."""
     times = steady(4)
     labels = ["intro", "intro", "drop", "drop"]
-    score = score_track(track(times, ["peak"] * 4, labels), "v1")
+    score = score_track(track(times, ["drop"] * 4, labels), RAW9)
     assert set(score.macro_classes) == {"intro", "drop"}
     assert score.macro_f1 == pytest.approx((0.0 + 2 / 3) / 2)
 
@@ -251,7 +389,7 @@ def test_macro_f1_covers_classes_that_are_present_or_predicted_only():
 def test_expressible_macro_excludes_classes_no_observed_intent_can_say():
     times = steady(4)
     labels = ["intro", "intro", "drop", "drop"]
-    score = score_track(track(times, ["peak"] * 4, labels), "v1")
+    score = score_track(track(times, ["drop"] * 4, labels), RAW9)
     assert set(score.expressible_classes) == {"drop"}
     assert score.macro_f1_expressible == pytest.approx(2 / 3)
 
@@ -292,12 +430,19 @@ def test_the_achievable_allocation_beats_every_other_allocation():
 
 def test_an_unknown_label_is_refused_rather_than_silently_dropped():
     with pytest.raises(ValueError, match="unknown label"):
-        score_track(track(steady(2), ["peak"] * 2, ["chorus"] * 2), "v1")
+        score_track(track(steady(2), ["drop"] * 2, ["chorus"] * 2), RAW9)
 
 
 def test_an_unknown_intent_is_refused_rather_than_silently_dropped():
     with pytest.raises(ValueError, match="unknown intent"):
-        score_track(track(steady(2), ["strobe"] * 2, ["drop"] * 2), "v1")
+        score_track(track(steady(2), ["strobe"] * 2, ["drop"] * 2), RAW9)
+
+
+def test_a_retired_intent_in_a_stale_table_is_refused_rather_than_scored():
+    """A table built before the intent alphabet shrank must fail, not read as new."""
+    for retired in ("groove", "peak"):
+        with pytest.raises(ValueError, match="unknown intent"):
+            score_track(track(steady(2), [retired] * 2, ["drop"] * 2), RAW9)
 
 
 # --------------------------------------------------------------------------- #
@@ -307,15 +452,15 @@ def test_an_unknown_intent_is_refused_rather_than_silently_dropped():
 
 def test_intent_changes_are_stamped_at_the_first_beat_carrying_the_new_intent():
     times = [0.0, 1.0, 2.0, 3.0]
-    changes = intent_changes(times, ["groove", "groove", "peak", "peak"])
-    assert changes == [(2.0, "peak")]
+    changes = intent_changes(times, ["breakdown", "breakdown", "drop", "drop"])
+    assert changes == [(2.0, "drop")]
 
 
 def test_the_first_committed_intent_is_not_a_change():
     """Rising from 'no intent yet' is the engine starting, not a musical move."""
     times = [0.0, 1.0, 2.0]
-    assert intent_changes(times, ["", "groove", "groove"]) == []
-    assert intent_changes(times, ["", "groove", "peak"]) == [(2.0, "peak")]
+    assert intent_changes(times, ["", "breakdown", "breakdown"]) == []
+    assert intent_changes(times, ["", "breakdown", "drop"]) == [(2.0, "drop")]
 
 
 def test_label_boundaries_use_the_same_first_beat_convention_as_predictions():
@@ -323,55 +468,64 @@ def test_label_boundaries_use_the_same_first_beat_convention_as_predictions():
     times = [0.0, 1.0, 2.0, 3.0]
     labels = ["intro", "intro", "drop", "drop"]
     assert label_boundaries(times, labels) == [(2.0, "drop")]
-    assert intent_changes(times, ["groove", "groove", "peak", "peak"])[0][0] == 2.0
+    assert intent_changes(times,
+                          ["atmospheric", "atmospheric", "drop", "drop"])[0][0] == 2.0
 
 
-def test_the_class_stream_ignores_moves_that_keep_the_label_class():
-    """A model predicting label classes cannot emit DROP -> PEAK, so scoring it
-    against a stream that counts those changes is not a comparison."""
+def test_the_intent_stream_and_the_class_stream_are_now_the_same_stream():
+    """With GROOVE and PEAK retired the intent -> claim map became injective:
+    no two live intents claim the same class, so every lighting change is also
+    a class change.  Asserted rather than assumed -- the two streams are still
+    computed independently, and printing one number twice would look like
+    corroboration."""
     times = steady(8)
-    intents = ["drop"] * 2 + ["peak"] * 2 + ["groove"] * 2 + ["breakdown"] * 2
-    labels = ["drop"] * 8
+    intents = (["atmospheric"] * 2 + ["buildup"] * 2 + ["drop"] * 2
+               + ["breakdown"] * 2)
+    labels = ["intro"] * 8
+    for space in SPACES:
+        claims = [INTENT_TO_LABELS[intent][space] for intent in INTENT_TO_LABELS]
+        assert len(set(claims)) == len(claims), space
+    score = score_track(track(times, intents, labels), RAW9)
     assert len(intent_changes(times, intents)) == 3
-    assert [t for t, _ in class_changes(times, intents, "v1")] == [2.0]
-    score = score_track(track(times, intents, labels), "v1")
-    assert score.boundary["intent"][2.0]["overall"]["n_pred"] == 3
-    assert score.boundary["class"][2.0]["overall"]["n_pred"] == 1
+    assert [t for t, _ in class_changes(times, intents, RAW9)] == [1.0, 2.0, 3.0]
+    for tol in TOLERANCES_SEC:
+        assert (score.boundary["intent"][tol]["overall"]
+                == score.boundary["class"][tol]["overall"])
+        assert score.flicker["intent"][tol] == score.flicker["class"][tol]
 
 
 def test_the_class_stream_can_never_flicker_more_than_the_intent_stream():
     times = steady(20)
-    intents = ["drop" if i % 2 else "peak" for i in range(16)] + ["groove"] * 4
-    score = score_track(track(times, intents, ["drop"] * 20), "v1")
+    intents = ["drop" if i % 2 else "breakdown" for i in range(16)] + ["buildup"] * 4
+    score = score_track(track(times, intents, ["drop"] * 20), RAW9)
     for tol in TOLERANCES_SEC:
         assert score.flicker["class"][tol] <= score.flicker["intent"][tol]
-    assert score.flicker["class"][2.0] < score.flicker["intent"][2.0]
 
 
-def test_the_class_stream_still_sees_a_real_class_change():
+def test_the_class_stream_names_the_classes_the_new_intent_claims():
     times = steady(4)
-    changes = class_changes(times, ["peak", "peak", "groove", "groove"], "v1")
+    changes = class_changes(times, ["drop", "drop", "breakdown", "breakdown"], RAW9)
     assert [t for t, _ in changes] == [1.0]
-    assert changes[0][1] == ("breakdown",)
+    assert changes[0][1] == ("breakdown", "bridge", "cooldown")
 
 
 def test_both_streams_are_reported_in_json_and_in_the_report():
     times = steady(8)
     labels = ["breakdown"] * 4 + ["drop"] * 4
-    intents = ["groove"] * 2 + ["breakdown"] * 2 + ["drop"] * 2 + ["peak"] * 2
+    intents = ["atmospheric"] * 2 + ["breakdown"] * 2 + ["buildup"] * 2 + ["drop"] * 2
     result = evaluate([track(times, intents, labels, track_id="x")])
-    space = result["spaces"]["v1"]
+    space = result["spaces"][RAW9]
     assert set(space["streams"]) == set(STREAM_ORDER)
     assert set(space["per_song"][0]["changes"]) == set(STREAM_ORDER)
     assert set(space["per_song"][0]["boundary_f1"]) == set(STREAM_ORDER)
     assert space["streams"]["intent"]["changes_total"] == 3
-    assert space["streams"]["class"]["changes_total"] == 1
+    assert space["streams"]["class"]["changes_total"] == 3
     text = render_report(result)
     assert "intent stream" in text.lower() and "class stream" in text.lower()
 
 
 def test_each_space_block_names_itself():
-    result = evaluate([track(steady(2), ["peak"] * 2, ["drop"] * 2)])
+    result = evaluate([track(steady(2), ["drop"] * 2, ["drop"] * 2)])
     for name, space in result["spaces"].items():
         assert space["space"] == name
 
@@ -411,8 +565,8 @@ def test_matching_is_symmetric_in_cardinality_and_order_independent():
 def test_a_perfect_timeline_has_boundary_f1_one_at_every_tolerance():
     times = steady(8)
     labels = ["intro"] * 4 + ["drop"] * 4
-    intents = ["atmospheric"] * 4 + ["peak"] * 4
-    score = score_track(track(times, intents, labels), "v1")
+    intents = ["atmospheric"] * 4 + ["drop"] * 4
+    score = score_track(track(times, intents, labels), RAW9)
     for stream in STREAM_ORDER:
         for tol in TOLERANCES_SEC:
             overall = score.boundary[stream][tol]["overall"]
@@ -423,10 +577,10 @@ def test_a_perfect_timeline_has_boundary_f1_one_at_every_tolerance():
 
 def test_events_never_match_across_track_boundaries():
     """Two tracks each starting at t=0 must not shadow each other's boundaries."""
-    a = track(steady(4), ["groove"] * 2 + ["peak"] * 2,
+    a = track(steady(4), ["breakdown"] * 2 + ["drop"] * 2,
               ["breakdown"] * 2 + ["drop"] * 2, track_id="a")
-    b = track(steady(4), ["peak"] * 4, ["drop"] * 4, track_id="b")
-    corpus = aggregate([score_track(a, "v1"), score_track(b, "v1")])
+    b = track(steady(4), ["drop"] * 4, ["drop"] * 4, track_id="b")
+    corpus = aggregate([score_track(a, RAW9), score_track(b, RAW9)])
     assert corpus.boundary["intent"][2.0]["overall"]["n_truth"] == 1
     assert corpus.boundary["intent"][2.0]["overall"]["n_pred"] == 1
     assert corpus.boundary["intent"][2.0]["overall"]["matched"] == 1
@@ -437,12 +591,12 @@ def test_events_never_match_across_track_boundaries():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_drop_boundary_is_only_credited_to_a_change_into_drop_or_peak():
+def test_a_drop_boundary_is_only_credited_to_a_change_into_drop():
     times = steady(8)
     labels = ["breakdown"] * 4 + ["drop"] * 4
-    hit = score_track(track(times, ["groove"] * 4 + ["peak"] * 4, labels), "v1")
+    hit = score_track(track(times, ["breakdown"] * 4 + ["drop"] * 4, labels), RAW9)
     assert hit.boundary["intent"][2.0]["by_type"]["drop"]["matched"] == 1
-    miss = score_track(track(times, ["groove"] * 4 + ["breakdown"] * 4, labels), "v1")
+    miss = score_track(track(times, ["breakdown"] * 4 + ["buildup"] * 4, labels), RAW9)
     assert miss.boundary["intent"][2.0]["by_type"]["drop"]["matched"] == 0
     assert miss.boundary["intent"][2.0]["by_type"]["drop"]["n_truth"] == 1
     assert miss.boundary["intent"][2.0]["by_type"]["drop"]["n_pred"] == 0
@@ -451,13 +605,13 @@ def test_a_drop_boundary_is_only_credited_to_a_change_into_drop_or_peak():
 def test_typed_counts_partition_the_overall_counts():
     """Typed predictions must PARTITION the stream, or a precision denominator
     silently counts one change twice.  ATMOSPHERIC is in the timeline precisely
-    because it claims two classes."""
+    because it claims four classes."""
     times = steady(15)
     labels = (["intro"] * 3 + ["buildup"] * 3 + ["drop"] * 3
-              + ["breakdown"] * 3 + ["outro"] * 3)
+              + ["cooldown"] * 3 + ["altoutro"] * 3)
     intents = (["atmospheric"] * 3 + ["buildup"] * 3 + ["drop"] * 3
                + ["breakdown"] * 3 + ["atmospheric"] * 3)
-    score = score_track(track(times, intents, labels), "v1")
+    score = score_track(track(times, intents, labels), RAW9)
     for stream in STREAM_ORDER:
         for tol in TOLERANCES_SEC:
             overall = score.boundary[stream][tol]["overall"]
@@ -468,23 +622,24 @@ def test_typed_counts_partition_the_overall_counts():
 
 
 def test_an_ambiguous_change_is_one_prediction_credited_to_one_class():
-    """ATMOSPHERIC claims intro AND outro; counting it in both inflates both."""
-    changes = [(10.0, ("intro", "outro"))]
-    empty = {"intro": [], "buildup": [], "breakdown": [], "drop": [], "outro": []}
-    near_intro = typed_predictions(changes, {**empty, "intro": [10.5], "outro": [40.0]})
+    """ATMOSPHERIC claims four quiet classes; counting it in each inflates all."""
+    claimed = INTENT_TO_LABELS["atmospheric"][RAW9]
+    changes = [(10.0, claimed)]
+    near_intro = typed_predictions(
+        changes, {**empty_buckets(), "intro": [10.5], "altoutro": [40.0]})
     assert near_intro["intro"] == [10.0]
-    assert near_intro["outro"] == []
-    near_outro = typed_predictions(changes, {**empty, "intro": [40.0], "outro": [10.5]})
-    assert near_outro["outro"] == [10.0]
+    assert near_intro["altoutro"] == []
+    near_outro = typed_predictions(
+        changes, {**empty_buckets(), "intro": [40.0], "altoutro": [10.5]})
+    assert near_outro["altoutro"] == [10.0]
     assert near_outro["intro"] == []
     for buckets in (near_intro, near_outro):
         assert sum(len(bucket) for bucket in buckets.values()) == len(changes)
 
 
 def test_an_ambiguous_change_with_nothing_to_match_still_lands_somewhere_once():
-    changes = [(10.0, ("intro", "outro"))]
-    empty = {"intro": [], "buildup": [], "breakdown": [], "drop": [], "outro": []}
-    buckets = typed_predictions(changes, empty)
+    changes = [(10.0, INTENT_TO_LABELS["atmospheric"][RAW9])]
+    buckets = typed_predictions(changes, empty_buckets())
     assert buckets["intro"] == [10.0]           # deterministic: first claimed
     assert sum(len(bucket) for bucket in buckets.values()) == 1
 
@@ -511,8 +666,8 @@ def test_flicker_forgives_a_double_change_at_one_boundary_that_precision_punishe
 def test_flicker_rate_is_per_minute_of_evaluated_time():
     times = steady(240, step=0.5)                   # 120 s of beats
     labels = ["drop"] * 240
-    intents = ["peak" if i % 2 else "groove" for i in range(240)]
-    score = score_track(track(times, intents, labels), "v1")
+    intents = ["drop" if i % 2 else "breakdown" for i in range(240)]
+    score = score_track(track(times, intents, labels), RAW9)
     corpus = aggregate([score])
     assert corpus.exposure_sec == pytest.approx(120.0)
     rate = corpus.flicker["intent"][2.0] / (corpus.exposure_sec / 60.0)
@@ -523,7 +678,8 @@ def test_flicker_rate_is_per_minute_of_evaluated_time():
 def test_the_flicker_denominator_is_show_time_not_predicted_time():
     """Using scored time would make the rate creep up as coverage falls."""
     times = steady(4)
-    score = score_track(track(times, ["", "peak", "groove", "peak"], ["drop"] * 4), "v1")
+    score = score_track(
+        track(times, ["", "drop", "breakdown", "drop"], ["drop"] * 4), RAW9)
     assert score.exposure_sec > score.scored_sec > 0
     loose = score.flicker["intent"][2.0]
     assert loose > 0
@@ -536,7 +692,7 @@ def test_the_flicker_denominator_is_show_time_not_predicted_time():
 def test_a_stable_correct_timeline_never_flickers():
     times = steady(8)
     labels = ["breakdown"] * 4 + ["drop"] * 4
-    score = score_track(track(times, ["groove"] * 4 + ["peak"] * 4, labels), "v1")
+    score = score_track(track(times, ["breakdown"] * 4 + ["drop"] * 4, labels), RAW9)
     for stream in STREAM_ORDER:
         for tol in TOLERANCES_SEC:
             assert score.flicker[stream][tol] == 0
@@ -548,8 +704,9 @@ def test_a_stable_correct_timeline_never_flickers():
 
 
 def test_corpus_counts_are_the_sum_of_the_song_counts():
-    a = score_track(track(steady(4), ["peak"] * 4, ["drop"] * 4, track_id="a"), "v1")
-    b = score_track(track(steady(4), ["groove"] * 4, ["drop"] * 4, track_id="b"), "v1")
+    a = score_track(track(steady(4), ["drop"] * 4, ["drop"] * 4, track_id="a"), RAW9)
+    b = score_track(track(steady(4), ["breakdown"] * 4, ["drop"] * 4, track_id="b"),
+                    RAW9)
     corpus = aggregate([a, b])
     for index in range(3):
         assert corpus.counts["drop"][index] == pytest.approx(
@@ -558,11 +715,11 @@ def test_corpus_counts_are_the_sum_of_the_song_counts():
 
 
 def test_worst_songs_are_ordered_by_score_then_id():
-    good = track(steady(4), ["peak"] * 4, ["drop"] * 4, track_id="good")
-    bad_a = track(steady(4), ["groove"] * 4, ["drop"] * 4, track_id="a-bad")
-    bad_b = track(steady(4), ["groove"] * 4, ["drop"] * 4, track_id="b-bad")
+    good = track(steady(4), ["drop"] * 4, ["drop"] * 4, track_id="good")
+    bad_a = track(steady(4), ["breakdown"] * 4, ["drop"] * 4, track_id="a-bad")
+    bad_b = track(steady(4), ["breakdown"] * 4, ["drop"] * 4, track_id="b-bad")
     result = evaluate([bad_b, good, bad_a], worst=2)
-    worst = [row["track_id"] for row in result["spaces"]["v1"]["worst_songs"]]
+    worst = [row["track_id"] for row in result["spaces"][RAW9]["worst_songs"]]
     assert worst == ["a-bad", "b-bad"]
 
 
@@ -591,28 +748,41 @@ def _write_table(path, rows):
 def test_load_tracks_groups_by_track_and_keeps_beat_order(tmp_path):
     path = tmp_path / "training_table.csv.gz"
     _write_table(path, [
-        {"track_id": "a", "t_song": "0.0", "intent_at_beat": "peak",
-         "label_v1": "drop", "label_canonical": "drop"},
+        {"track_id": "a", "t_song": "0.0", "intent_at_beat": "drop",
+         LABEL_COLUMN: "drop"},
         {"track_id": "a", "t_song": "0.5", "intent_at_beat": "",
-         "label_v1": "drop", "label_canonical": "drop"},
-        {"track_id": "b", "t_song": "1.0", "intent_at_beat": "groove",
-         "label_v1": "breakdown", "label_canonical": "cooldown"},
+         LABEL_COLUMN: "drop"},
+        {"track_id": "b", "t_song": "1.0", "intent_at_beat": "breakdown",
+         LABEL_COLUMN: "cooldown"},
     ])
     tracks = load_tracks(path)
     assert [t.track_id for t in tracks] == ["a", "b"]
     assert tracks[0].times == (0.0, 0.5)
-    assert tracks[0].intents == ("peak", "")
-    assert tracks[1].labels["canonical"] == ("cooldown",)
+    assert tracks[0].intents == ("drop", "")
+    assert tracks[1].labels[RAW9] == ("cooldown",)
+    assert tracks[1].labels[LEGACY_V1] == ("breakdown",)
+
+
+def test_load_tracks_derives_every_space_from_the_one_column(tmp_path):
+    path = tmp_path / "training_table.csv.gz"
+    _write_table(path, [
+        {"track_id": "a", "t_song": f"{index}.0", "intent_at_beat": "atmospheric",
+         LABEL_COLUMN: label}
+        for index, label in enumerate(SECTION_LABELS)
+    ])
+    loaded = load_tracks(path)[0]
+    assert loaded.labels[RAW9] == SECTION_LABELS
+    assert loaded.labels[LEGACY_V1] == tuple(
+        fold_to_legacy_v1(label) for label in SECTION_LABELS)
 
 
 def test_evaluate_reports_both_spaces_and_a_renderable_report():
     times = steady(12)
-    labels = ["intro"] * 3 + ["buildup"] * 3 + ["drop"] * 3 + ["breakdown"] * 3
-    canonical = ["intro"] * 3 + ["buildup"] * 3 + ["drop"] * 3 + ["cooldown"] * 3
-    intents = ["groove"] * 3 + ["buildup"] * 3 + ["peak"] * 3 + ["groove"] * 3
-    result = evaluate([track(times, intents, labels, canonical, track_id="x")])
-    assert set(result["spaces"]) == {"v1", "canonical"}
-    assert result["spaces"]["v1"]["macro_f1"] <= 1.0
+    labels = ["intro"] * 3 + ["buildup"] * 3 + ["drop"] * 3 + ["cooldown"] * 3
+    intents = ["atmospheric"] * 3 + ["buildup"] * 3 + ["drop"] * 3 + ["breakdown"] * 3
+    result = evaluate([track(times, intents, labels, track_id="x")])
+    assert set(result["spaces"]) == {RAW9, LEGACY_V1}
+    assert result["spaces"][RAW9]["macro_f1"] <= 1.0
     assert result["coverage"]["rows"] == 12
     text = render_report(result)
     for heading in ("CONFUSION", "PER-CLASS", "BOUNDARY", "FLICKER",
@@ -621,11 +791,17 @@ def test_evaluate_reports_both_spaces_and_a_renderable_report():
     assert text.isascii()                   # pasteable into any console/report
 
 
+def test_the_report_names_the_raw_space_first_because_it_is_primary():
+    result = evaluate([track(steady(4), ["drop"] * 4, ["drop"] * 4)])
+    text = render_report(result)
+    assert text.index(RAW9.upper()) < text.index(LEGACY_V1.upper())
+
+
 def test_evaluate_survives_a_corpus_with_nothing_to_score():
     result = evaluate([track([0.0], [""], ["drop"], track_id="empty")])
-    assert result["spaces"]["v1"]["macro_f1"] == 0.0
+    assert result["spaces"][RAW9]["macro_f1"] == 0.0
     assert math.isfinite(
-        result["spaces"]["v1"]["streams"]["intent"]["flicker_per_audience_minute"]["2.0"])
+        result["spaces"][RAW9]["streams"]["intent"]["flicker_per_audience_minute"]["2.0"])
     assert render_report(result)
 
 
@@ -633,11 +809,12 @@ def test_atmospheric_absence_is_reported_as_a_structural_finding():
     """A whole label family no observed intent can express is not a mistake."""
     times = steady(9)
     labels = ["intro"] * 3 + ["drop"] * 3 + ["buildup"] * 3
-    intents = ["groove"] * 3 + ["peak"] * 3 + ["buildup"] * 3
+    intents = ["breakdown"] * 3 + ["drop"] * 3 + ["buildup"] * 3
     result = evaluate([track(times, intents, labels)])
-    structural = result["spaces"]["v1"]["structural"]
-    assert structural["observed_intents"] == ["buildup", "groove", "peak"]
-    assert structural["unreachable_classes"] == ["intro", "outro"]
+    structural = result["spaces"][RAW9]["structural"]
+    assert structural["observed_intents"] == ["breakdown", "buildup", "drop"]
+    assert structural["unreachable_classes"] == ["intro", "altintro", "outro",
+                                                 "altoutro"]
     assert structural["unreachable_label_share"] == pytest.approx(1 / 3)
-    assert structural["macro_f1_upper_bound"] == pytest.approx(3 / 5)
+    assert structural["macro_f1_upper_bound"] == pytest.approx(5 / 9)
     assert structural["macro_f1_best_achievable"] < structural["macro_f1_upper_bound"]

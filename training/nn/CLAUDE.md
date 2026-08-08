@@ -62,7 +62,7 @@ The decoder's two input conditions are the whole point of the evaluation design:
 | `priors.py` | fits the decoder's structural priors from corpus bar runs |
 | `decoder.py` | fixed-lag Viterbi over an explicit-duration HSMM; commits per bar and never revises |
 | `evaluate_v1.py` | decode -> per-beat classes -> the side-by-side verdict against the rule classifier |
-| `sweep.py` | the decoder parameter search under the selection constraint |
+| `sweep.py` | the decoder parameter search under the selection constraint. A generation whose model ships as two seed candidates sweeps both at once: a list of posterior caches makes every row a per-seed pair whose selection macro is the seed MEAN and whose constraint flicker is the seed MAX, so the chosen config holds whichever seed is later exported. The base config, the latency budget and any registered extra axis are injectable for the same reason -- a generation's registration owns those choices, not this module's constants -- and the single-cache path is the committed 5-class search unchanged |
 
 Tests are `tests/test_nn_*.py` and are unit-level throughout: the heavy steps (training, inference, the sweep) live behind CLI entry points, not behind pytest.
 

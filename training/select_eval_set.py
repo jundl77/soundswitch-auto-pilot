@@ -18,12 +18,13 @@ per-track checksums and scores against exactly these tracks.
 Why these criteria, in this order
 ---------------------------------
 
-1. **All five v1 classes in one track.**  The evaluator scores in the v1 space
-   (``intro/buildup/breakdown/drop/outro``).  A track missing a class cannot
-   exercise the transitions into or out of it, so a benchmark built from such
-   tracks would be blind to a whole failure mode.  Applied as a *preference*
-   rather than a filter -- "where possible" -- so a sparsely populated BPM band
-   still contributes a track instead of silently dropping out of the set.
+1. **As many section classes in one track as possible.**  A track missing a
+   class cannot exercise the transitions into or out of it, so a benchmark
+   built from such tracks would be blind to a whole failure mode.  Applied as a
+   *preference* rather than a filter -- "where possible" -- so a sparsely
+   populated BPM band still contributes a track instead of silently dropping
+   out of the set.  The nine-class vocabulary makes full coverage rarer than
+   the retired five-class one did, which only sharpens the ranking.
 2. **BPM diversity.**  Intent classification thresholds onset density and beat
    spacing, both of which move with tempo; a benchmark clustered at 126 BPM
    would certify the classifier only for four-to-the-floor techno.  The corpus
@@ -33,9 +34,10 @@ Why these criteria, in this order
    spread, so the set spans the tempo range rather than the corpus histogram.
 3. **Duration 3-8 minutes.**  Long enough to contain a real arrangement, short
    enough that the whole set simulates inside the integration-test budget.
-4. **At least 8 section boundaries.**  Counted in the v1 space, i.e. the
-   transitions the evaluator can actually score.  A track with two boundaries
-   is a duration test, not a structure test.
+4. **At least 8 section boundaries.**  Counted over the published sections
+   with adjacent same-label runs merged, i.e. the transitions the evaluator can
+   actually score.  A track with two boundaries is a duration test, not a
+   structure test.
 5. **No two tracks from the same family.**  Two readings, at two strengths.
    The *artist* is the substantive guard and is hard: two tracks by the same
    producer are one measurement wearing two hats.  The ``track_id`` index block
@@ -83,6 +85,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # training/ for the eval-pipeline scripts, training/raveform/ for the
 # corpus-acquisition ones -- both are scripts, not packages.
 for _path in (
+    str(REPO_ROOT),
     str(Path(__file__).resolve().parent),
     str(REPO_ROOT / "training" / "raveform"),
 ):
@@ -90,7 +93,6 @@ for _path in (
         sys.path.insert(0, _path)
 
 from build_clean_manifest import CLEAN_MANIFEST_FILE, STATUS_OK  # noqa: E402
-from build_training_table import V1_ORDER, label_v1  # noqa: E402
 from eval_assets import artifacts_block  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     SEGMENTS_FILE,
@@ -98,7 +100,9 @@ from raveform_fetch_annotations import (  # noqa: E402
     load_tracks,
     parse_sections,
 )
-from raveform_manifest import canonical_runs  # noqa: E402
+from raveform_manifest import section_runs  # noqa: E402
+
+from lib.label_space import SECTION_LABELS  # noqa: E402
 
 EVAL_SET_FILE = REPO_ROOT / "training" / "eval_set.json"
 
@@ -108,8 +112,6 @@ DEFAULT_SIZE = 10
 MIN_DURATION_SEC = 180.0
 MAX_DURATION_SEC = 480.0
 MIN_BOUNDARIES = 8
-
-V1_CLASSES = frozenset(V1_ORDER)
 
 # A beat grid this short cannot give a trustworthy median inter-beat interval,
 # and a track that thin is not eval material anyway.
@@ -123,8 +125,8 @@ class Candidate(NamedTuple):
     youtube_id: str
     duration_sec: float
     bpm: float
-    boundaries: int          # v1-space transitions: len(runs) - 1
-    classes: frozenset       # v1 labels present in the track
+    boundaries: int          # section transitions: len(runs) - 1
+    classes: frozenset       # section labels present in the track
     genre: str
     title: str
     artist: str
@@ -134,26 +136,6 @@ class Candidate(NamedTuple):
 # --------------------------------------------------------------------------- #
 # Track facts
 # --------------------------------------------------------------------------- #
-
-
-def v1_runs(sections: list) -> list:
-    """RAW sections -> contiguous runs in the 5-class v1 space.
-
-    ``canonical_runs`` already drops the ``end`` sentinel and folds
-    ``altintro``/``bridge``; the v1 fold (``cooldown``->``breakdown``,
-    ``altoutro``->``outro``) can make two of its runs adjacent-and-equal, so
-    they are merged again here.  Without the second merge a
-    ``breakdown|cooldown`` pair would be counted as a boundary the evaluator
-    can never see.
-    """
-    runs: list = []
-    for start, end, label, _duration in canonical_runs(list(sections)):
-        mapped = label_v1(label)
-        if runs and runs[-1][2] == mapped:
-            runs[-1][1] = end
-        else:
-            runs.append([start, end, mapped])
-    return [tuple(run) for run in runs]
 
 
 def beat_grid_bpm(times: list) -> float | None:
@@ -219,7 +201,7 @@ def build_candidates(data_dir: Path, ok_rows: list, tracks: list) -> list:
         bpm = beat_grid_bpm(read_beat_times(beats_dir / f"{row['track_id']}.beat.csv"))
         if bpm is None:
             continue
-        runs = v1_runs(parse_sections(track))
+        runs = section_runs(parse_sections(track))
         title = str(track.get("title", ""))
         candidates.append(Candidate(
             track_id=row["track_id"],
@@ -227,7 +209,7 @@ def build_candidates(data_dir: Path, ok_rows: list, tracks: list) -> list:
             duration_sec=float(row["decoded_duration_sec"]),
             bpm=bpm,
             boundaries=max(0, len(runs) - 1),
-            classes=frozenset(label for _s, _e, label in runs) & V1_CLASSES,
+            classes=frozenset(label for _s, _e, label, _duration in runs),
             genre=str(track.get("genre", "")),
             title=title,
             artist=artist_of(title),
@@ -432,10 +414,10 @@ def select(candidates: list, size: int = DEFAULT_SIZE, seed: int = DEFAULT_SEED)
 def rationale_line(pick: Pick) -> str:
     """The one-liner recorded per track in ``eval_set.json``."""
     candidate = pick.candidate
-    classes = "/".join(label for label in V1_ORDER if label in candidate.classes)
+    classes = "/".join(label for label in SECTION_LABELS if label in candidate.classes)
     return (
         f"{candidate.track_id} {candidate.genre} {candidate.bpm:.1f} BPM, "
-        f"{candidate.duration_sec / 60.0:.1f} min, {candidate.boundaries} v1 boundaries, "
+        f"{candidate.duration_sec / 60.0:.1f} min, {candidate.boundaries} boundaries, "
         f"classes {classes} -- {pick.reason}"
     )
 
@@ -528,8 +510,8 @@ def build_document(picks: list, data_dir: Path, clean_rows: int, candidates: int
             "eligible": eligible,
             "criteria": {
                 "duration_sec": [MIN_DURATION_SEC, MAX_DURATION_SEC],
-                "min_v1_boundaries": MIN_BOUNDARIES,
-                "v1_classes": list(V1_ORDER),
+                "min_boundaries": MIN_BOUNDARIES,
+                "classes": list(SECTION_LABELS),
                 "prefer_unique_track_id_block": True,   # yields to BPM coverage
                 "unique_artist": True,                  # absolute
             },
@@ -554,8 +536,9 @@ def build_document(picks: list, data_dir: Path, clean_rows: int, candidates: int
                 "genre": pick.candidate.genre,
                 "bpm": round(pick.candidate.bpm, 2),
                 "duration_sec": round(pick.candidate.duration_sec, 3),
-                "v1_boundaries": pick.candidate.boundaries,
-                "v1_classes": [label for label in V1_ORDER if label in pick.candidate.classes],
+                "boundaries": pick.candidate.boundaries,
+                "classes": [label for label in SECTION_LABELS
+                            if label in pick.candidate.classes],
             }
             for pick in picks
         ],
@@ -582,14 +565,15 @@ def print_table(picks: list) -> None:
     print()
     print("selected eval set")
     print(f"  {'track_id':<20}{'youtube_id':<14}{'bpm':>7}{'min':>6}{'bnd':>5}"
-          f"  {'v1 classes':<38}{'genre':<20}{'why':<34}title")
+          f"  {'classes':<52}{'genre':<20}{'why':<34}title")
     for pick in picks:
         candidate = pick.candidate
-        classes = "/".join(label for label in V1_ORDER if label in candidate.classes)
+        classes = "/".join(label for label in SECTION_LABELS
+                           if label in candidate.classes)
         print(
             f"  {candidate.track_id:<20}{candidate.youtube_id:<14}"
             f"{candidate.bpm:>7.1f}{candidate.duration_sec / 60.0:>6.1f}"
-            f"{candidate.boundaries:>5}  {classes:<38}{candidate.genre:<20}"
+            f"{candidate.boundaries:>5}  {classes:<52}{candidate.genre:<20}"
             f"{pick.reason:<34}{candidate.title[:40]}"
         )
 
@@ -611,8 +595,9 @@ def print_summary(picks: list, clean_rows: int, candidates: int, eligible: int) 
     print(f"  duration spread          : {durations[0] / 60.0:.1f} - "
           f"{durations[-1] / 60.0:.1f} min  "
           f"(total {sum(durations) / 60.0:.1f} min)")
-    print("  v1 class coverage        : "
-          + "  ".join(f"{label} {covered.get(label, 0)}/{len(picks)}" for label in V1_ORDER))
+    print("  class coverage           : "
+          + "  ".join(f"{label} {covered.get(label, 0)}/{len(picks)}"
+                      for label in SECTION_LABELS))
     print(f"  distinct genres          : "
           f"{len({pick.candidate.genre for pick in picks})}  "
           f"({', '.join(sorted({pick.candidate.genre for pick in picks}))})")
@@ -737,7 +722,7 @@ def main(argv: list | None = None) -> int:
         # printer would hide which of the two it was.
         print(f"ERROR: no track in {len(candidates)} candidate(s) satisfies the "
               f"criteria (duration {MIN_DURATION_SEC:.0f}-{MAX_DURATION_SEC:.0f} s, "
-              f">= {MIN_BOUNDARIES} v1 boundaries) -- nothing written")
+              f">= {MIN_BOUNDARIES} boundaries) -- nothing written")
         return 1
     if len(picks) < DEFAULT_SIZE:
         print(f"WARNING: only {len(picks)}/{DEFAULT_SIZE} tracks satisfy the criteria "

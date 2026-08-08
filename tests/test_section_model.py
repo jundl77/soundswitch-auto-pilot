@@ -346,32 +346,30 @@ def test_the_session_is_pinned_to_one_thread_and_sequential_execution():
     assert options.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
 
 
-SHIPPED_ONNX_SHA = ("f1fe6ef7c3cc0dede24a7d572841b3eb2c381f12"
-                    "3868f67dcf0e1d0298aa33b4")
+SHIPPED_ONNX_SHA = ("b1ec063d1612c9192b2898221fdff3bc3d75d621"
+                    "4c4b989088e6daea465e6251")
 
 
 def _shipped():
-    import run_eval_set
+    from lib.section_chain import artifacts
 
-    directory = (Path(run_eval_set.corpus_dir()) / "models" / "phase_b")
-    from lib.section_chain import MODEL_VERSION
-
-    onnx = directory / MODEL_VERSION / "online_step.onnx"
-    affine = directory / "input_affine_F3.npz"
-    if not onnx.exists() or not affine.exists():
-        pytest.skip(f"shipping artifacts absent under {directory} -- "
-                    f"they live in the gitignored corpus data directory")
-    return onnx, affine
+    found = artifacts()
+    if found.missing():
+        pytest.skip(f"shipping artifacts absent: {', '.join(found.missing())} "
+                    f"-- they live in the gitignored corpus data directory")
+    return found.graph, found.affine
 
 
 @pytest.mark.integration
-def test_the_shipped_graph_is_the_one_the_frontier_was_measured_on():
+def test_the_shipped_graph_is_the_export_of_the_model_the_sweep_selected():
+    """w128 s1234 per #302; the sha pins the verified export of that checkpoint."""
     onnx, _affine = _shipped()
     head = S.load_head_geometry(onnx)
     assert head.sha256 == SHIPPED_ONNX_SHA
     assert S.session(onnx).get_providers() == ["CPUExecutionProvider"]
     assert S.sha256_file(onnx) == SHIPPED_ONNX_SHA
     assert (head.window_cells, head.future_cells, head.input_dim) == (46, 43, 2048)
+    assert S.label_class_count(S.session(onnx)) == 9
 
 
 @pytest.mark.integration

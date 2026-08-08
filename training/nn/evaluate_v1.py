@@ -21,6 +21,7 @@ from build_training_table import NO_INTENT, TABLE_FILE  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
     INTENT_ORDER,
     INTENT_TO_LABELS,
+    PRIMARY_SPACE,
     PRIMARY_TOLERANCE_SEC,
     SPACES,
     TOLERANCES_SEC,
@@ -54,7 +55,7 @@ MODEL_FILE = "model.onnx"
 EVAL_FILE = "eval_{split}.json"
 DECODER_CONFIG_FILE = "decoder_config.json"
 
-DEFAULT_SPACE = "v1"
+DEFAULT_SPACE = PRIMARY_SPACE
 
 _TP, _FP, _FN = 0, 1, 2
 
@@ -603,7 +604,7 @@ def render(report: dict) -> str:
         lines.append(f"{name:<34}{left:>13.{digits}f}{right:>13.{digits}f}"
                      f"{left - right:>+13.{digits}f}")
 
-    row("macro-F1 (v1)", nn["macro_f1"], rule["macro_f1"])
+    row(f"macro-F1 ({report['space']})", nn["macro_f1"], rule["macro_f1"])
     row("accuracy (time-weighted)", nn["accuracy"], rule["accuracy"])
     lines.append("-" * 78)
     for label in nn["per_class_f1"]:
@@ -629,7 +630,8 @@ def render(report: dict) -> str:
     lines.append("-" * 78)
     row("undecoded share of show", nn["undecoded_share"], rule["undecoded_share"])
     lines.append(f"changes committed: NN {nn['changes']}, rule {rule['changes']}")
-    for name, head in (("all 5 classes", report["head_to_head"]["full"]),
+    all_classes = f"all {len(SPACES[report['space']].labels)} classes"
+    for name, head in ((all_classes, report["head_to_head"]["full"]),
                        ("restricted", report["head_to_head"]["restricted"])):
         lines.append(
             f"per-track macro-F1 ({name}): NN better on "
@@ -667,7 +669,8 @@ def render(report: dict) -> str:
         f"(primary scoring is stricter: {nn['macro_f1']:.4f})")
     lines.append(
         f"  NN intent stream == class stream: {report['nn_streams_identical']} "
-        f"(a label-space model cannot express DROP -> PEAK; the rule's intent-stream "
+        f"(no live intent claims another's class since PEAK and GROOVE were "
+        f"retired, so the rule's streams coincide too; its intent-stream "
         f"flicker is {report['rule_intent_stream']['flicker_per_audience_minute']['2.0']:.3f}"
         f"/min)")
     return "\n".join(lines)

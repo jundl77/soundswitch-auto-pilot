@@ -20,12 +20,11 @@ from build_training_table import (  # noqa: E402
     FEATURES_DIR,
     MEL_BANDS,
     POOL_BUFFERS,
-    V1_ORDER,
-    canonical_coverage,
-    label_v1,
+    label_coverage,
 )
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
-from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
+from lib.label_space import LABEL_INDEX, NUM_SECTION_CLASSES  # noqa: E402
+from raveform_fetch_annotations import load_all_tracks, parse_sections  # noqa: E402
 from select_eval_set import EVAL_SET_FILE, artist_of, load_eval_set  # noqa: E402
 
 try:
@@ -53,9 +52,6 @@ LOG_MEL_PER_DB = math.log(10.0) / 20.0
 
 # torch's CrossEntropyLoss default, so a masked label passes straight in.
 IGNORE_INDEX = -100
-
-CLASS_INDEX = {label: index for index, label in enumerate(V1_ORDER)}
-NUM_CLASSES = len(V1_ORDER)
 
 SPLITS_FILE = "splits.json"
 SPLIT_NAMES = ("train", "val", "test")
@@ -135,11 +131,9 @@ def _clean_manifest_rows(data_dir: Path) -> list:
 
 def candidate_tracks(data_dir: Path) -> tuple:
     data_dir = Path(data_dir)
-    features = data_dir / FEATURES_DIR
-    by_track_id = {str(track.get("key")): track for track in load_tracks(data_dir)}
+    by_track_id = {str(track.get("key")): track for track in load_all_tracks(data_dir)}
 
     candidates: list = []
-    no_sidecar: list = []
     no_annotation: list = []
     unlabeled: list = []
 
@@ -149,15 +143,12 @@ def candidate_tracks(data_dir: Path) -> tuple:
         if track is None:
             no_annotation.append(youtube_id)
             continue
-        if not (features / f"{youtube_id}.npz").exists():
-            no_sidecar.append(youtube_id)
-            continue
-        if not v1_spans(parse_sections(track)):
+        if not label_spans(parse_sections(track)):
             unlabeled.append(youtube_id)
             continue
         candidates.append(TrackRef(row["track_id"], youtube_id, str(track.get("title", ""))))
 
-    return candidates, sorted(no_sidecar), sorted(no_annotation), sorted(unlabeled)
+    return candidates, sorted(no_annotation), sorted(unlabeled)
 
 
 def make_splits(data_dir, seed: int = SPLIT_SEED, *,
@@ -165,13 +156,13 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
     data_dir = Path(data_dir)
     path = data_dir / SPLITS_FILE
 
-    candidates, no_sidecar, no_annotation, unlabeled = candidate_tracks(data_dir)
+    candidates, no_annotation, unlabeled = candidate_tracks(data_dir)
 
     document = load_eval_set(Path(eval_set_path))
     eval_ids = frozenset(str(i) for i in document["youtube_ids"])
 
     titles = {str(track.get("id")): str(track.get("title", ""))
-              for track in load_tracks(data_dir)}
+              for track in load_all_tracks(data_dir)}
     recorded = {str(track.get("youtube_id")): str(track.get("title", ""))
                 for track in document.get("tracks") or []}
     eval_titles = {}
@@ -216,7 +207,6 @@ def make_splits(data_dir, seed: int = SPLIT_SEED, *,
         "ratios": dict(zip(SPLIT_NAMES, SPLIT_RATIOS)),
         "eval_set": sorted(eval_ids),
         "excluded_artist_names": sorted(artist_names),
-        "skipped_no_sidecar": no_sidecar,
         "skipped_no_annotation": no_annotation,
         "skipped_unlabeled": unlabeled,
         "candidates": len(candidates),
@@ -242,12 +232,8 @@ class TrackTargets(NamedTuple):
     label_pooled_mask: np.ndarray
 
 
-def v1_spans(sections: list) -> list:
-    spans = [
-        (start, end, label_v1(label))
-        for start, end, label in canonical_coverage(sections)
-    ]
-    return sorted(spans, key=lambda span: span[0])
+def label_spans(sections: list) -> list:
+    return sorted(label_coverage(sections), key=lambda span: span[0])
 
 
 def _label_frames(spans: list, times: np.ndarray) -> np.ndarray:
@@ -256,7 +242,7 @@ def _label_frames(spans: list, times: np.ndarray) -> np.ndarray:
         return labels
     starts = np.array([span[0] for span in spans], dtype=np.float64)
     ends = np.array([span[1] for span in spans], dtype=np.float64)
-    values = np.array([CLASS_INDEX[span[2]] for span in spans], dtype=np.int16)
+    values = np.array([LABEL_INDEX[span[2]] for span in spans], dtype=np.int16)
 
     index = np.searchsorted(starts, times, side="right") - 1
     covered = index >= 0
@@ -266,18 +252,21 @@ def _label_frames(spans: list, times: np.ndarray) -> np.ndarray:
     return labels
 
 
-def _boundaries_and_joins(spans: list) -> tuple:
+def _boundaries_and_gaps(spans: list) -> tuple:
+    """Every contiguous section change is a boundary; a hole is neither.
+
+    Two adjacent sections carrying the same label are still two sections the
+    annotator published, so their join is a boundary event even though the label
+    head sees nothing change across it.
+    """
     boundaries: list = []
-    joins: list = []
     gaps: list = []
     for before, after in zip(spans, spans[1:]):
         if after[0] > before[1] + 1e-9:
             gaps.append((before[1], after[0]))
-        elif before[2] == after[2]:
-            joins.append(after[0])
         else:
             boundaries.append(after[0])
-    return boundaries, joins, gaps
+    return boundaries, gaps
 
 
 def _pool_labels(label_frame: np.ndarray, pool: int = LABEL_POOL) -> tuple:
@@ -290,9 +279,9 @@ def _pool_labels(label_frame: np.ndarray, pool: int = LABEL_POOL) -> tuple:
     columns = grouped[voting].astype(np.int64)
     positions = np.tile(np.arange(pool), (groups, 1))[voting]
 
-    counts = np.zeros((groups, NUM_CLASSES), dtype=np.int64)
+    counts = np.zeros((groups, NUM_SECTION_CLASSES), dtype=np.int64)
     np.add.at(counts, (rows, columns), 1)
-    recency = np.full((groups, NUM_CLASSES), -1, dtype=np.int64)
+    recency = np.full((groups, NUM_SECTION_CLASSES), -1, dtype=np.int64)
     np.maximum.at(recency, (rows, columns), positions)
 
     outranks_recency = pool + 1
@@ -306,7 +295,7 @@ def track_targets(sections: list, n_frames: int, frame_sec: float = FRAME_SEC,
                   t0: float | None = None) -> TrackTargets:
     t0 = frame_sec if t0 is None else t0
     times = t0 + np.arange(n_frames, dtype=np.float64) * frame_sec
-    spans = v1_spans(sections)
+    spans = label_spans(sections)
 
     label_frame = _label_frames(spans, times)
     label_mask = label_frame >= 0
@@ -317,7 +306,7 @@ def track_targets(sections: list, n_frames: int, frame_sec: float = FRAME_SEC,
     if spans:
         first_start = spans[0][0]
         last_end = max(span[1] for span in spans)
-        boundaries, joins, gaps = _boundaries_and_joins(spans)
+        boundaries, gaps = _boundaries_and_gaps(spans)
 
         for instant in boundaries:
             boundary = np.maximum(
@@ -327,8 +316,6 @@ def track_targets(sections: list, n_frames: int, frame_sec: float = FRAME_SEC,
 
         radius = BOUNDARY_MASK_RADIUS_SEC
         deleted = np.zeros(n_frames, dtype=bool)
-        for instant in joins:
-            deleted |= np.abs(times - instant) <= radius
         for start, end in gaps:
             deleted |= (times >= start - radius) & (times <= end + radius)
         if deleted.any() and boundaries:
@@ -416,7 +403,7 @@ class WindowDataset(_TorchDataset):
         if sections_by_youtube_id is None:
             sections_by_youtube_id = {
                 str(track.get("id")): parse_sections(track)
-                for track in load_tracks(self.data_dir)
+                for track in load_all_tracks(self.data_dir)
             }
 
         features = self.data_dir / FEATURES_DIR
@@ -427,9 +414,9 @@ class WindowDataset(_TorchDataset):
             if not path.exists():
                 raise RuntimeError(f"missing mel sidecar for {youtube_id}: {path}")
             sections = sections_by_youtube_id.get(youtube_id) or []
-            if not v1_spans(sections):
+            if not label_spans(sections):
                 raise RuntimeError(
-                    f"no label_v1 sections for {youtube_id} -- it would train on "
+                    f"no labelled sections for {youtube_id} -- it would train on "
                     f"nothing but masked frames"
                 )
             n_frames = sidecar_shape(path)[0]

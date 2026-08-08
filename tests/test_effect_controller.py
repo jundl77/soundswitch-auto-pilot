@@ -45,7 +45,7 @@ async def test_change_effect_buildup_uses_bank1(effect_controller):
 
 @pytest.mark.asyncio
 async def test_change_effect_peak_uses_bank1(effect_controller):
-    await effect_controller.change_effect(LightIntent.PEAK)
+    await effect_controller.change_effect(LightIntent.BUILDUP)
     channel = effect_controller.last_effect.midi_channel.name
     assert 'BANK_1' in channel
 

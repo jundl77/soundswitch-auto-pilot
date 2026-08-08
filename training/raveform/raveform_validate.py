@@ -18,7 +18,7 @@ import build_clean_manifest as gate  # noqa: E402
 import raveform_download as downloader  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     beat_csv_path,
-    load_tracks,
+    load_all_tracks,
     parse_beat_csv,
     parse_sections,
     youtube_id as annotation_youtube_id,
@@ -304,7 +304,7 @@ def validate(
 ) -> dict:
     data_dir = Path(data_dir)
     rows = gate.load_manifest_rows(data_dir)
-    tracks = load_tracks(data_dir)
+    tracks = load_all_tracks(data_dir)
     durations = annotation_durations(tracks)
     failures = load_failures(downloader.failed_path(data_dir))
 

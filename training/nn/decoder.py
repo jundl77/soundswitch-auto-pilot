@@ -14,6 +14,8 @@ import numpy as np
 
 from .priors import Priors
 
+from lib.label_space import check_class_space  # noqa: E402
+
 # ~5.6 s at the corpus median bar of 1.875 s, inside the 8 s look-ahead budget.
 DEFAULT_LAG_BARS = 3
 
@@ -57,6 +59,22 @@ class DecodeParams:
 SHIPPING_DECODER_CONFIG = Path(__file__).with_name("decoder_config.json")
 
 
+def decoder_config_classes(path) -> tuple:
+    """The class space a decoder config was swept in, off its own record.
+
+    Required rather than optional: a config swept in one vocabulary and decoded
+    in another is exactly what the chain's space gate exists to refuse, and a
+    file that does not say cannot be checked.
+    """
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    space = document.get("class_space")
+    if not space:
+        raise ValueError(
+            f"{path}: decoder config records no class_space -- without it the "
+            f"space it was swept in cannot be checked against the vocabulary")
+    return tuple(space)
+
+
 def load_decoder_config(path) -> DecodeParams:
     document = json.loads(Path(path).read_text(encoding="utf-8"))
     chosen = document.get("chosen", document)
@@ -95,6 +113,9 @@ class FixedLagViterbi:
 
         self.priors = priors
         self.classes = tuple(priors.classes)
+        # The trellis is built positionally off this list; a space the vocabulary
+        # does not recognise would decode shifted rather than fail.
+        check_class_space(self.classes, "the priors handed to FixedLagViterbi")
         self.lag_bars = int(lag_bars)
         self.class_prior_division = bool(class_prior_division)
         self.prior_strength = float(prior_strength)

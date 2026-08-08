@@ -13,7 +13,11 @@ if str(TRAINING_DIR) not in sys.path:
 
 from build_training_table import NO_INTENT  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
+    INTENT_TO_LABELS,
+    LABEL_COLUMN,
+    PRIMARY_SPACE,
     PRIMARY_TOLERANCE_SEC,
+    RAW9,
     SPACES,
     TOLERANCES_SEC,
     TrackBeats,
@@ -28,6 +32,7 @@ from nn.decoder import (  # noqa: E402
     load_decoder_config,
 )
 from nn.evaluate_v1 import (  # noqa: E402
+    DEFAULT_SPACE,
     EVAL_FILE,
     UNDECODED,
     TrackInputs,
@@ -41,6 +46,7 @@ from nn.evaluate_v1 import (  # noqa: E402
     identity_claims,
     load_inputs,
     read_ids_file,
+    render,
     rule_equivalent_claims,
     score_predicted,
     sidecar_model_sha,
@@ -61,6 +67,8 @@ from tests.test_nn_decoder import (  # noqa: E402
 
 BREAKDOWN, DROP = 2, 3
 
+SPACE = DEFAULT_SPACE
+
 
 def steady(count, step=0.5, t0=0.0):
     return tuple(t0 + index * step for index in range(count))
@@ -72,8 +80,13 @@ def track(times, labels, intents=None, track_id="t"):
         track_id=track_id,
         times=tuple(times),
         intents=tuple(intents if intents is not None else [NO_INTENT] * len(labels)),
-        labels={space: labels for space in SPACES},
+        labels={name: tuple(spec.view(label) for label in labels)
+                for name, spec in SPACES.items()},
     )
+
+
+def test_the_default_space_is_the_primary_raw_vocabulary():
+    assert DEFAULT_SPACE == PRIMARY_SPACE == RAW9
 
 
 def test_beat_classes_reads_each_beat_off_the_bar_that_contains_it():
@@ -103,7 +116,7 @@ def test_beat_classes_refuses_more_labels_than_the_grid_has_bars():
 def test_undecoded_beats_are_excluded_from_every_class_count():
     scored = score_predicted(
         track(steady(6), ["intro"] * 2 + ["drop"] * 4),
-        "v1", (UNDECODED, UNDECODED, "drop", "drop", "drop", "drop"))
+        SPACE, (UNDECODED, UNDECODED, "drop", "drop", "drop", "drop"))
     assert scored.counts["intro"] == [0.0, 0.0, 0.0], \
         "an undecoded head must not read as an intro miss"
     assert scored.no_intent_sec == pytest.approx(1.0)
@@ -113,56 +126,59 @@ def test_undecoded_beats_are_excluded_from_every_class_count():
 def test_undecoded_beats_are_located_relative_to_the_decoded_ones():
     scored = score_predicted(
         track(steady(6), ["intro"] * 6),
-        "v1", (UNDECODED, "intro", "intro", "intro", UNDECODED, UNDECODED))
+        SPACE, (UNDECODED, "intro", "intro", "intro", UNDECODED, UNDECODED))
     assert (scored.no_intent_leading, scored.no_intent_interior,
             scored.no_intent_trailing) == (1, 0, 2)
 
 
 def test_undecoded_time_still_counts_as_show_time():
     scored = score_predicted(track(steady(4), ["drop"] * 4),
-                             "v1", (UNDECODED, UNDECODED, "drop", "drop"))
+                             SPACE, (UNDECODED, UNDECODED, "drop", "drop"))
     assert scored.exposure_sec == pytest.approx(2.0)
     assert scored.scored_sec == pytest.approx(1.0)
 
 
 def test_an_undecoded_gap_is_not_reported_as_a_state_change():
     scored = score_predicted(track(steady(6), ["drop"] * 6),
-                             "v1", ("drop", "drop", UNDECODED, UNDECODED,
+                             SPACE, ("drop", "drop", UNDECODED, UNDECODED,
                                     "drop", "drop"))
     assert scored.boundary["class"][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"] == 0
     assert scored.no_intent_interior == 2
 
 
 def test_identity_claims_map_every_class_to_exactly_itself():
-    claims = identity_claims("v1")
-    assert claims == {label: (label,) for label in SPACES["v1"].labels}
+    claims = identity_claims(SPACE)
+    assert claims == {label: (label,) for label in SPACES[SPACE].labels}
 
 
 def test_identity_claims_do_not_forgive_intro_predicted_over_outro():
-    scored = score_predicted(track(steady(4), ["outro"] * 4), "v1", ("intro",) * 4)
+    scored = score_predicted(track(steady(4), ["outro"] * 4), SPACE, ("intro",) * 4)
     assert scored.counts["outro"][2] > 0, "a network can know where it is in a track"
     assert scored.counts["intro"][1] > 0
     assert scored.f1("outro") == 0.0
 
 
 def test_rule_equivalent_claims_forgive_it_the_way_atmospheric_is_forgiven():
-    scored = score_predicted(track(steady(4), ["outro"] * 4), "v1", ("intro",) * 4,
-                             claims=rule_equivalent_claims("v1"))
+    scored = score_predicted(track(steady(4), ["outro"] * 4), SPACE, ("intro",) * 4,
+                             claims=rule_equivalent_claims(SPACE))
     assert scored.counts["outro"][0] > 0
     assert scored.f1("outro") == 1.0
 
 
 def test_an_ambiguous_claims_false_positive_is_split_not_duplicated():
-    scored = score_predicted(track(steady(4), ["drop"] * 4), "v1", ("intro",) * 4,
-                             claims=rule_equivalent_claims("v1"))
-    assert scored.counts["intro"][1] == pytest.approx(scored.counts["outro"][1])
-    assert (scored.counts["intro"][1] + scored.counts["outro"][1]
+    scored = score_predicted(track(steady(4), ["drop"] * 4), SPACE, ("intro",) * 4,
+                             claims=rule_equivalent_claims(SPACE))
+    quiet = INTENT_TO_LABELS["atmospheric"][SPACE]
+    for label in quiet:
+        assert scored.counts[label][1] == pytest.approx(
+            scored.counts[quiet[0]][1]), label
+    assert (sum(scored.counts[label][1] for label in quiet)
             == pytest.approx(scored.scored_sec))
 
 
 def test_identity_claims_make_the_intent_and_class_streams_identical():
     scored = score_predicted(track(steady(8), ["intro"] * 4 + ["outro"] * 4),
-                             "v1", ("intro",) * 4 + ("outro",) * 4)
+                             SPACE, ("intro",) * 4 + ("outro",) * 4)
     for tolerance in TOLERANCES_SEC:
         assert (scored.boundary["intent"][tolerance]["overall"]
                 == scored.boundary["class"][tolerance]["overall"])
@@ -172,8 +188,8 @@ def test_identity_claims_make_the_intent_and_class_streams_identical():
 
 def test_rule_equivalent_claims_hide_an_intro_outro_switch_from_the_class_stream():
     scored = score_predicted(track(steady(8), ["intro"] * 4 + ["outro"] * 4),
-                             "v1", ("intro",) * 4 + ("outro",) * 4,
-                             claims=rule_equivalent_claims("v1"))
+                             SPACE, ("intro",) * 4 + ("outro",) * 4,
+                             claims=rule_equivalent_claims(SPACE))
     assert scored.boundary["intent"][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"] == 1
     assert scored.boundary["class"][PRIMARY_TOLERANCE_SEC]["overall"]["n_pred"] == 0
 
@@ -181,16 +197,16 @@ def test_rule_equivalent_claims_hide_an_intro_outro_switch_from_the_class_stream
 def test_a_change_far_from_any_boundary_counts_as_flicker():
     labels = ["drop"] * 12
     predicted = ["drop"] * 5 + ["breakdown"] + ["drop"] * 6
-    scored = score_predicted(track(steady(12, step=1.0), labels), "v1", predicted)
+    scored = score_predicted(track(steady(12, step=1.0), labels), SPACE, predicted)
     assert scored.flicker["class"][PRIMARY_TOLERANCE_SEC] == 2, \
         "one spurious bar is a change out and a change back"
 
 
 def test_scores_aggregate_with_the_rule_baselines_aggregator():
     first = score_predicted(track(steady(4), ["drop"] * 4, track_id="a"),
-                            "v1", ("drop",) * 4)
+                            SPACE, ("drop",) * 4)
     second = score_predicted(track(steady(4), ["drop"] * 4, track_id="b"),
-                             "v1", ("intro",) * 4)
+                             SPACE, ("intro",) * 4)
     total = aggregate([first, second])
     assert total.tracks == 2
     assert total.counts["drop"][0] == pytest.approx(first.counts["drop"][0])
@@ -199,8 +215,8 @@ def test_scores_aggregate_with_the_rule_baselines_aggregator():
 
 def test_a_perfect_prediction_scores_one_and_a_constant_one_does_not():
     labels = ["intro"] * 4 + ["drop"] * 4
-    perfect = score_predicted(track(steady(8), labels), "v1", tuple(labels))
-    lazy = score_predicted(track(steady(8), labels), "v1", ("drop",) * 8)
+    perfect = score_predicted(track(steady(8), labels), SPACE, tuple(labels))
+    lazy = score_predicted(track(steady(8), labels), SPACE, ("drop",) * 8)
     assert perfect.macro_f1 == pytest.approx(1.0)
     assert lazy.macro_f1 < perfect.macro_f1
 
@@ -251,12 +267,16 @@ def test_the_two_paths_disagree_when_one_of_them_drops_a_knob(tmp_path):
     write_beat_csv(beats, bars=24, bar_sec=2.0, t0=0.5)
 
     priors = toy_priors(floor=3)
-    shipped = load_decoder_config(SHIPPING_DECODER_CONFIG)
-    hot = dataclasses.replace(shipped, temperature=8.0)
+    # Neutralised around the shipped config: the l9 drop bonus saturates this
+    # toy decode to one class under any temperature, which would hide a
+    # dropped knob -- the very thing this test exists to catch.
+    base = dataclasses.replace(load_decoder_config(SHIPPING_DECODER_CONFIG),
+                               drop_miss_cost=1.0, prior_strength=0.0)
+    hot = dataclasses.replace(base, temperature=8.0)
     assert (inputs_from(npz, beats, hot).posteriors.tolist()
-            != inputs_from(npz, beats, shipped).posteriors.tolist())
+            != inputs_from(npz, beats, base).posteriors.tolist())
     assert ([label for _, label in decode_track(npz, beats, hot, priors=priors)]
-            != [label for _, label in decode_track(npz, beats, shipped, priors=priors)])
+            != [label for _, label in decode_track(npz, beats, base, priors=priors)])
 
 
 def test_one_decoder_instance_carries_nothing_between_tracks(tmp_path):
@@ -294,8 +314,7 @@ def test_decode_beats_places_the_bar_decisions_on_the_beat_grid(tmp_path):
 def test_a_missing_track_fails_loud_instead_of_shrinking_the_split(tmp_path):
     table = tmp_path / "empty.csv.gz"
     with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
-        handle.write("track_id,youtube_id,t_song,intent_at_beat,"
-                     "label_canonical,label_v1\n")
+        handle.write(f"track_id,youtube_id,t_song,intent_at_beat,{LABEL_COLUMN}\n")
     with pytest.raises(RuntimeError, match="missing inputs"):
         load_inputs(tmp_path, ["nosuchtrack"], table_path=table)
     kept, skipped = load_inputs(tmp_path, ["nosuchtrack"], table_path=table,
@@ -307,10 +326,9 @@ def loadable_track(data_dir, youtube_id="abc", model_sha=None):
     track_id = f"0001.{youtube_id}"
     table = data_dir / "table.csv.gz"
     with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
-        handle.write("track_id,youtube_id,t_song,intent_at_beat,"
-                     "label_canonical,label_v1\n")
+        handle.write(f"track_id,youtube_id,t_song,intent_at_beat,{LABEL_COLUMN}\n")
         for index in range(8):
-            handle.write(f"{track_id},{youtube_id},{index * 2.0},drop,drop,drop\n")
+            handle.write(f"{track_id},{youtube_id},{index * 2.0},drop,drop\n")
 
     beats = data_dir / "annotations" / "beats"
     beats.mkdir(parents=True, exist_ok=True)
@@ -394,9 +412,9 @@ def test_two_different_id_lists_do_not_land_on_each_other(tmp_path):
 
 def test_per_track_head_to_head_separates_the_two_readings():
     labels = ["intro"] * 2 + ["drop"] * 6
-    nn = [score_predicted(track(steady(8), labels, track_id="a"), "v1",
+    nn = [score_predicted(track(steady(8), labels, track_id="a"), SPACE,
                           ("intro",) * 2 + ("drop",) * 3 + ("breakdown",) * 3)]
-    rule = [score_predicted(track(steady(8), labels, track_id="a"), "v1",
+    rule = [score_predicted(track(steady(8), labels, track_id="a"), SPACE,
                             ("drop",) * 8)]
     rows = _per_track_deltas(nn, rule, ["drop"])
     assert rows[0]["delta"] > 0, "over all classes the NN wins -- it names intro"
@@ -404,6 +422,51 @@ def test_per_track_head_to_head_separates_the_two_readings():
         "on `drop` alone the always-drop stream has the better F1"
     assert _head_to_head(rows, "delta")["nn_better"] == 1
     assert _head_to_head(rows, "restricted_delta")["rule_better"] == 1
+
+
+def _side_block(space=SPACE) -> dict:
+    tolerances = {f"{tolerance}": {"f1": 0.5, "to_drop": {"f1": 0.5}}
+                  for tolerance in TOLERANCES_SEC}
+    return {
+        "macro_f1": 0.5, "accuracy": 0.5, "undecoded_share": 0.1, "changes": 7,
+        "per_class_f1": {label: 0.5 for label in SPACES[space].labels},
+        "drop": {"recall": 0.5, "precision": 0.5},
+        "boundary": tolerances,
+        "flicker_per_audience_minute": {f"{t}": 0.5 for t in TOLERANCES_SEC},
+    }
+
+
+def _head(count=1) -> dict:
+    return {"tracks": count, "nn_better": 1, "rule_better": 0, "tied": 0,
+            "min_delta": 0.0, "median_delta": 0.0, "max_delta": 0.0}
+
+
+def minimal_report(space=SPACE) -> dict:
+    side = {"nn": _side_block(space), "rule": _side_block(space)}
+    return {
+        "split": "val", "tracks": 1, "space": space,
+        "primary": side,
+        "rule_equivalent_claims": side,
+        "rule_intent_stream": _side_block(space),
+        "nn_streams_identical": True,
+        "expressible_comparison": {
+            "classes": ["drop"], "unreachable_for_rule": ["intro"],
+            "nn_macro_f1": 0.5, "rule_macro_f1": 0.4, "delta": 0.1},
+        "rule_structural": {"macro_f1_best_achievable": 0.4,
+                            "macro_f1_upper_bound": 0.6},
+        "head_to_head": {"full": _head(), "restricted": _head()},
+    }
+
+
+def test_the_report_names_the_class_count_from_the_vocabulary_not_a_literal():
+    """'all 5 classes' was hardcoded; the vocabulary is nine classes now."""
+    text = render(minimal_report())
+    assert f"all {len(SPACES[SPACE].labels)} classes" in text
+    assert "all 5 classes" not in text
+
+
+def test_the_report_names_the_space_it_scored_rather_than_a_baked_in_one():
+    assert f"macro-F1 ({SPACE})" in render(minimal_report())
 
 
 def test_enumerate_configs_is_a_deterministic_joint_grid():

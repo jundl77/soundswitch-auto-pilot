@@ -21,10 +21,12 @@ the intent vocabulary and the label vocabulary are different alphabets, and
 flattening one into the other before looking at it hides exactly the failures
 worth seeing.
 
-**(b) Macro-F1 in two spaces.**  ``v1`` (5 classes) is primary: it is the space
-the neural classifier trains on, so its numbers are the ones a model will be
-compared against.  ``canonical`` (7 classes) is diagnostic -- it keeps
-``cooldown`` and ``altoutro`` separate, which is where GROOVE actually lives.
+**(b) Macro-F1 in two spaces.**  ``raw9`` is primary: the corpus vocabulary
+unfolded, which is the only label space the pipeline now stores.  ``legacy_v1``
+(5 classes) is diagnostic -- it is a pure VIEW over the same column, kept so the
+figures banked before ruling #264 stay comparable.  A space is therefore a
+function of a label, not a column of its own; ``SpaceSpec.view`` is that
+function and ``fold_to_legacy_v1`` is the only surviving fold in the repo.
 
 **(c) Boundary-F1** at three tolerances: state-change instants against label
 boundary instants, overall and broken out per boundary type (``-> drop`` is the
@@ -37,7 +39,8 @@ on average but twitches every four seconds is unusable on a dance floor.
 (c) and (d) are reported for TWO change streams -- the intent stream (every
 lighting change; the owner's continuity metric) and the class stream (changes
 of label class only; the only fair comparand for a model that predicts label
-classes and therefore cannot express DROP -> PEAK).  See ``STREAM_ORDER``.
+classes).  Since GROOVE and PEAK were retired the two are provably the same
+stream, which is asserted rather than assumed.  See ``STREAM_ORDER``.
 
 **(e) Worst-15 songs** with their confusion rows, so failures can be listened to.
 
@@ -100,59 +103,85 @@ for _path in (str(REPO_ROOT), str(REPO_ROOT / "training")):
         sys.path.insert(0, _path)
 
 from build_training_table import (  # noqa: E402  (needs the path inserts above)
-    CANONICAL_ORDER,
     NO_INTENT,
     TABLE_FILE,
-    V1_ORDER,
 )
+from lib.label_space import SECTION_LABELS  # noqa: E402
+
+# The one column the table now carries a label in; a space is a view over it.
+LABEL_COLUMN = "label"
+
+# --------------------------------------------------------------------------- #
+# The label spaces -- one column, two views
+# --------------------------------------------------------------------------- #
+
+RAW9 = "raw9"
+LEGACY_V1 = "legacy_v1"
+PRIMARY_SPACE = RAW9
+
+LEGACY_V1_LABELS = ("intro", "buildup", "breakdown", "drop", "outro")
+
+# The composition of the two retired folds: `altintro`/`bridge` into the
+# canonical-7, then `cooldown`/`altoutro` into label_v1-5.  This is the ONLY
+# place a fold survives, it runs at evaluation time, and nothing stores its
+# output -- a persisted fold would put a second label space back into the data.
+_LEGACY_V1_FOLD = {
+    "altintro": "intro",
+    "bridge": "breakdown",
+    "cooldown": "breakdown",
+    "altoutro": "outro",
+}
+
+
+def raw_label(label: str) -> str:
+    return label
+
+
+def fold_to_legacy_v1(label: str) -> str:
+    return _LEGACY_V1_FOLD.get(label, label)
+
+
+@dataclasses.dataclass(frozen=True)
+class SpaceSpec:
+    name: str
+    labels: tuple[str, ...]
+    view: object         # str -> str, applied to the one label column
+    caption: str
+
+
+SPACES: dict[str, SpaceSpec] = {
+    RAW9: SpaceSpec(RAW9, SECTION_LABELS, raw_label,
+                    "primary -- the corpus vocabulary, unfolded"),
+    LEGACY_V1: SpaceSpec(LEGACY_V1, LEGACY_V1_LABELS, fold_to_legacy_v1,
+                         "diagnostic -- the retired 5-class fold, so the "
+                         "banked record stays comparable"),
+}
 
 # --------------------------------------------------------------------------- #
 # The mapping -- the one dict the owner iterates on
 # --------------------------------------------------------------------------- #
 
 # Intent -> the annotator label(s) that intent is CORRECT for, per space.
+# Written out rather than derived: this is the owner's iteration surface, and a
+# test pins it against the inverse of the engine's own SECTION_CLASS_INTENTS so
+# a revision there fails here instead of silently rescoring the show.
 #
 # A tuple with more than one member means the intent is genuinely ambiguous
 # about which label it claims: it is credited against whichever of them is
 # actually there, and its false positive is split across them when neither is.
-#
-#   atmospheric  quiet with no beat.  intro and outro are the same sound in
-#                different places, and an intent cannot know track position.
-#                (`altoutro` is the same structural role as `outro`; it survives
-#                only in the canonical space.)
-#   groove       steady mid-energy dance-floor loop.  Its semantic home is
-#                `cooldown` -- the post-drop groove that keeps the floor moving.
-#                v1 merges `cooldown` into `breakdown`, so in v1 groove and
-#                breakdown are correct for the same class and become
-#                indistinguishable; that merge is the NN spec's, not ours.
-#   drop/peak    both mean "maximum arrangement"; the annotator has one word.
+# ATMOSPHERIC is the only such intent -- quiet is `intro` at the start of a
+# track and `outro` at the end, and an intent cannot know track position.
 INTENT_TO_LABELS: dict[str, dict[str, tuple[str, ...]]] = {
-    #  intent          v1 (primary, 5-class)          canonical (diagnostic, 7-class)
-    "atmospheric": {"v1": ("intro", "outro"), "canonical": ("intro", "outro", "altoutro")},
-    "breakdown":   {"v1": ("breakdown",),     "canonical": ("breakdown",)},
-    "groove":      {"v1": ("breakdown",),     "canonical": ("cooldown",)},
-    "buildup":     {"v1": ("buildup",),       "canonical": ("buildup",)},
-    "drop":        {"v1": ("drop",),          "canonical": ("drop",)},
-    "peak":        {"v1": ("drop",),          "canonical": ("drop",)},
+    #  intent          raw9 (primary)                              legacy_v1 (diagnostic)
+    "atmospheric": {RAW9: ("intro", "altintro", "outro", "altoutro"),
+                    LEGACY_V1: ("intro", "outro")},
+    "buildup":     {RAW9: ("buildup",),                   LEGACY_V1: ("buildup",)},
+    "breakdown":   {RAW9: ("breakdown", "bridge", "cooldown"),
+                    LEGACY_V1: ("breakdown",)},
+    "drop":        {RAW9: ("drop",),                      LEGACY_V1: ("drop",)},
 }
 
-INTENT_ORDER = ("atmospheric", "breakdown", "groove", "buildup", "drop", "peak")
-
-
-@dataclasses.dataclass(frozen=True)
-class SpaceSpec:
-    name: str
-    column: str          # the training-table column holding this space's labels
-    labels: tuple[str, ...]
-    caption: str
-
-
-SPACES: dict[str, SpaceSpec] = {
-    "v1": SpaceSpec("v1", "label_v1", V1_ORDER,
-                    "primary -- the space the NN classifier trains on"),
-    "canonical": SpaceSpec("canonical", "label_canonical", CANONICAL_ORDER,
-                           "diagnostic -- keeps cooldown and altoutro separate"),
-}
+INTENT_ORDER = ("atmospheric", "breakdown", "buildup", "drop")
 
 # Boundary tolerances.  +/-2 s and +/-4 s are the plan's; +/-0.5 s is the NN
 # spec's strict tier and sits at this table's beat-quantisation floor.
@@ -161,24 +190,24 @@ TOLERANCES_SEC = (0.5, 2.0, 4.0)
 # The tolerance the headline flicker number and the worst-song ranking use.
 PRIMARY_TOLERANCE_SEC = 2.0
 
-# Two change streams, because "how often did it change" has two honest answers
-# and they are not interchangeable:
+# Two change streams, because "how often did it change" had two honest answers:
 #
 #   intent  the committed LightIntent stream.  Every change here is a lighting
 #           change -- the engine re-picks an effect on each one -- so this is
 #           the show as an audience experiences it, and it is the owner's
 #           continuity metric.
 #   class   the same stream mapped into the label space FIRST, then
-#           differenced, so a DROP -> PEAK or GROOVE -> BREAKDOWN move (same
-#           label class, different lights) is not counted.  A model predicting
-#           in `label_v1` emits a class stream by construction, so this is the
-#           only stream a model may be compared against.
+#           differenced, so a move between two intents claiming the same class
+#           is not counted.  A model predicting label classes emits a class
+#           stream by construction, so this is the only stream a model may be
+#           compared against.
 #
-# The intent stream is a superset of the class stream: on this corpus 15.5% of
-# intent changes leave the v1 class unchanged.  Quoting an intent-stream flicker
-# rate at a model that can only produce class changes overstates the model's
-# advantage; quoting a class-stream rate at the owner understates what the room
-# sees.  Both are reported everywhere.
+# The intent stream is a superset of the class stream, and used to be a strict
+# one: DROP -> PEAK and GROOVE -> BREAKDOWN changed the lights without changing
+# the class, and 15.5% of this corpus's intent changes did exactly that.  Both
+# of those intents are now retired and the claim map is injective, so the two
+# streams coincide.  Both are still computed independently and reported -- the
+# equality is a test, not an assumption.
 STREAM_ORDER = ("intent", "class")
 
 # A beat may claim at most this multiple of its track's median beat interval.
@@ -217,7 +246,7 @@ def load_tracks(table_path: Path) -> list[TrackBeats]:
             times.setdefault(track_id, []).append(float(row["t_song"]))
             intents[track_id].append(row["intent_at_beat"])
             for space, spec in SPACES.items():
-                labels[space][track_id].append(row[spec.column])
+                labels[space][track_id].append(spec.view(row[LABEL_COLUMN]))
     return [
         TrackBeats(
             track_id=track_id,
@@ -287,10 +316,9 @@ def class_changes(times, intents, space: str) -> list[tuple[float, tuple]]:
     """``(t, claimed_labels)`` for every change of the CLAIMED LABEL CLASS.
 
     The intent is mapped into the label space before differencing, so a move
-    between two intents that claim the same class -- DROP to PEAK, or GROOVE to
-    BREAKDOWN in v1 -- is not a change here even though the lights changed.
-    This is the stream a model predicting in the label space can produce, and
-    therefore the only fair comparand for one.
+    between two intents that claim the same class is not a change here even
+    though the lights changed.  This is the stream a model predicting in the
+    label space can produce, and therefore the only fair comparand for one.
     """
     claims = [(t, INTENT_TO_LABELS[intent][space])
               for t, intent in zip(times, intents) if intent != NO_INTENT]
@@ -889,7 +917,7 @@ def evaluate(tracks: list[TrackBeats], worst: int = WORST_SONGS) -> dict:
 
     # Coverage is a property of the table, not of a label space: every space
     # sees the same beats and the same weights, so any of them can report it.
-    reference = corpus_by_space["v1"]
+    reference = corpus_by_space[PRIMARY_SPACE]
     result["coverage"] = {
         "tracks": len(tracks),
         "rows": reference.rows,
@@ -1000,7 +1028,7 @@ def _per_class_block(space_result: dict) -> list[str]:
     lines.append("")
     lines.append(f'  DROP specifically -- the show-critical class: '
                  f'recall {drop["recall"]:.3f} '
-                 f'(the lights are in DROP/PEAK for {100.0 * drop["recall"]:.1f}% of')
+                 f'(the lights are in DROP for {100.0 * drop["recall"]:.1f}% of')
     lines.append(f'  real drop time), precision {drop["precision"]:.3f} '
                  f'(they are wrong {100.0 * (1 - drop["precision"]):.1f}% of the time '
                  f'they claim it),')
@@ -1013,9 +1041,9 @@ def _boundary_block(space_result: dict) -> list[str]:
     lines = [
         "  Two streams, two questions.  Use the INTENT stream to ask how the show",
         "  behaved: every one of those changes re-picked a lighting effect.  Use the",
-        "  CLASS stream to compare against a model that predicts label classes -- it",
-        "  cannot express a DROP -> PEAK move, so scoring it against intent-stream",
-        "  numbers would credit it for changes it is structurally unable to make.",
+        "  CLASS stream to compare against a model that predicts label classes.  The",
+        "  two coincide now that no two live intents claim the same class; they are",
+        "  still measured apart so the day that stops holding is visible here.",
         "",
         f'  {"stream":<8}{"boundary set":<16}{"tol":>7}{"truth":>9}{"pred":>9}'
         f'{"matched":>9}{"precision":>11}{"recall":>9}{"f1":>8}',
@@ -1185,11 +1213,11 @@ def render_report(result: dict) -> str:
     ]
     for intent in INTENT_ORDER:
         per_space = result["intent_to_labels"][intent]
-        lines.append(f'    {intent:<12} v1: {"|".join(per_space["v1"]):<14} '
-                     f'canonical: {"|".join(per_space["canonical"])}')
+        lines.append(f'    {intent:<12}' + "  ".join(
+            f'{space}: {"|".join(per_space[space])}' for space in SPACES))
     lines.append("")
 
-    for space in ("v1", "canonical"):
+    for space in SPACES:
         space_result = result["spaces"][space]
         lines += _heading(f'{space.upper()} SPACE ({space_result["caption"]})')
         lines += ["", "  CONFUSION MATRIX -- intent (rows) x label (columns), minutes", ""]

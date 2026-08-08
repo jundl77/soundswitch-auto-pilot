@@ -673,7 +673,11 @@ def test_the_override_is_not_needed_when_a_dash_is_present(song, corpus):
     assert 'committed' in status
 
 
-def test_commit_still_places_the_files_when_no_admission_step_exists(song, corpus):
+def test_commit_still_places_the_files_when_no_admission_step_exists(
+        song, corpus, monkeypatch):
+    # This branch has the admission step, so its absence is simulated: a None
+    # sys.modules entry makes the import raise, which is the pre-admission state.
+    monkeypatch.setitem(sys.modules, label_tool.ADMISSION_MODULE, None)
     result = commit_labels(str(song), load_labels(str(song)), 214.842, TITLE)
     assert result['admitted'] is False
     assert 'admission pending' in result['admission']

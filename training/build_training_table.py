@@ -37,10 +37,15 @@ from build_clean_manifest import (  # noqa: E402
     STATUS_OK,
     is_settled,
 )
-from raveform_fetch_annotations import load_tracks, parse_sections  # noqa: E402
-from raveform_manifest import CANONICAL_DROP, CANONICAL_MAP, canonical_runs  # noqa: E402
+from raveform_fetch_annotations import (  # noqa: E402
+    load_all_tracks,
+    load_tracks,
+    parse_sections,
+)
+from raveform_manifest import section_runs  # noqa: E402
 
 from lib.audio_config import BUFFER_SIZE, SAMPLE_RATE  # noqa: E402
+from lib.label_space import DROPPED_LABELS, SECTION_LABELS  # noqa: E402
 from lib.engine.event_buffer import CLASSIFIER_TRIGGER, SILENCE_TRIGGER  # noqa: E402
 
 from corpus_root import default_data_dir  # noqa: E402,F401
@@ -66,9 +71,7 @@ TABLE_HEADER = (
     "bpm",
     "rms",
     "intent_at_beat",
-    "label_canonical",
-    "label_raw",
-    "label_v1",
+    "label",
     "bar_position_unknown",
 ) + tuple(f"{column}_z" for column in CONTINUOUS_COLUMNS)
 
@@ -76,16 +79,11 @@ NO_INTENT = ""
 
 BAR_POSITION_UNKNOWN = 1
 
-V1_MAP = {"cooldown": "breakdown", "altoutro": "outro"}
-V1_ORDER = ("intro", "buildup", "breakdown", "drop", "outro")
-CANONICAL_ORDER = ("intro", "buildup", "drop", "breakdown", "cooldown", "outro", "altoutro")
-
 MEL_BANDS = 40
 POOL_BUFFERS = 8
 
 MEL_EXPORTER_VERSION = 1
 MEL_EXPORTER_KEY = "exporter_version"
-_UNSTAMPED_SIDECAR_GENERATION = 1
 
 ANALYSER_RESET_SEC = 900.0
 
@@ -113,34 +111,28 @@ def _clamped_spans(sections: list) -> list:
     ]
 
 
-def canonical_coverage(sections: list) -> list:
-    """Canonical-vocabulary spans, per published section -- never per merged run."""
+def label_coverage(sections: list) -> list:
+    """Labelled spans, per published section -- never per merged run.
+
+    A merged run's span can swallow a dropped sentinel sitting between two
+    members, and that time belongs to neither neighbour.
+    """
     return [
-        (start, end, CANONICAL_MAP.get(label, label))
-        for start, end, label in _clamped_spans(sections)
-        if label not in CANONICAL_DROP
+        span for span in _clamped_spans(sections) if span[2] not in DROPPED_LABELS
     ]
 
 
-def raw_coverage(sections: list) -> list:
-    return _clamped_spans(sections)
-
-
 def dropped_coverage(sections: list) -> list:
-    return [span for span in _clamped_spans(sections) if span[2] in CANONICAL_DROP]
+    return [span for span in _clamped_spans(sections) if span[2] in DROPPED_LABELS]
 
 
 def labeled_bounds(sections: list) -> tuple:
-    runs = canonical_runs(list(sections))
+    runs = section_runs(list(sections))
     if not runs:
         return None, None
     first_start = float(runs[0][0])
     last_end = max(max(float(start), float(end)) for start, end, _label, _dur in runs)
     return first_start, last_end
-
-
-def label_v1(label: str) -> str:
-    return V1_MAP.get(label, label)
 
 
 def song_time_intents(blocks: list, look_ahead_sec: float,
@@ -298,8 +290,7 @@ class JoinStats(NamedTuple):
 def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) -> tuple:
     """One track's report + annotation -> ``(rows, JoinStats)``; pure, no I/O."""
     beats = sorted(report.get("beats", []), key=lambda record: float(record["t"]))
-    coverage = Timeline(canonical_coverage(sections))
-    raw = Timeline(raw_coverage(sections))
+    coverage = Timeline(label_coverage(sections))
     sentinels = Timeline(dropped_coverage(sections))
     first_start, last_end = labeled_bounds(sections)
 
@@ -345,9 +336,7 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
             "bpm": float(record.get("bpm", 0.0)),
             "rms": float(record.get("rms", 0.0)),
             "intent_at_beat": intent,
-            "label_canonical": label,
-            "label_raw": raw.at(t) or "",
-            "label_v1": label_v1(label),
+            "label": label,
             "bar_position_unknown": BAR_POSITION_UNKNOWN,
         })
 
@@ -411,26 +400,16 @@ def write_feature_sidecar(path, mel: np.ndarray, frame_sec: float, t0: float) ->
         raise
 
 
-def sidecar_generation(path: Path) -> int:
-    try:
-        with np.load(path) as archive:
-            if MEL_EXPORTER_KEY in archive.files:
-                return int(archive[MEL_EXPORTER_KEY])
-    except (OSError, ValueError, EOFError, KeyError):
-        pass
-    return _UNSTAMPED_SIDECAR_GENERATION
-
-
 class SimJob(NamedTuple):
     track_id: str
     youtube_id: str
     mp3_path: str
     report_path: str
-    sidecar_path: str
     preexisting: tuple
     pipeline_sha: str
     mp3_size: int
     mp3_mtime: float
+    keep_cells: bool = False
 
 
 class SimResult(NamedTuple):
@@ -453,6 +432,14 @@ def derived_cache_paths(mp3_path: str) -> tuple:
 
     return (decode_cache_path(mp3_path),
             str(sidecar_path(mp3_path, FileAudioClient.decode_path)))
+
+
+def paths_to_delete(job: SimJob) -> tuple:
+    return tuple(
+        path for path in derived_cache_paths(job.mp3_path)
+        if path not in job.preexisting
+        and not (job.keep_cells and path.endswith(".mertcells.npz"))
+    )
 
 
 def _write_json_gz(path: Path, payload: dict) -> None:
@@ -526,9 +513,7 @@ def simulate_track(job: SimJob) -> SimResult:
         return SimResult(job.track_id, False, f"{type(exc).__name__}: {exc}"[:300],
                          0, 0, 0, time.monotonic() - started)
     finally:
-        for path in derived_cache_paths(job.mp3_path):
-            if path in job.preexisting:
-                continue
+        for path in paths_to_delete(job):
             try:
                 os.unlink(path)
             except OSError:
@@ -547,7 +532,7 @@ def load_ok_rows(data_dir: Path) -> list:
     for track_id, seconds in rejected:
         print(f"  SKIP {track_id}: {seconds / 60.0:.1f} min reaches MusicAnalyser's "
               f"{ANALYSER_RESET_SEC / 60.0:.0f}-minute self-reset -- its beats and "
-              f"its mel sidecar would no longer describe the same audio", flush=True)
+              f"its features would no longer describe the same audio", flush=True)
     if not rows:
         raise RuntimeError(f"no ok rows in {path} -- nothing to build from")
     rows.sort(key=lambda row: row["track_id"])
@@ -568,14 +553,15 @@ def _reject_past_the_analyser_reset(rows: list) -> tuple:
     return kept, rejected
 
 
-def load_sections_by_track(data_dir: Path) -> dict:
-    return {str(track["key"]): parse_sections(track) for track in load_tracks(data_dir)}
+def load_sections_by_track(data_dir: Path, include_hand: bool = True) -> dict:
+    tracks = load_all_tracks(data_dir) if include_hand else load_tracks(data_dir)
+    return {str(track["key"]): parse_sections(track) for track in tracks}
 
 
 def select_jobs(rows: list, data_dir: Path, force: bool = False,
                 min_age_sec: float = MIN_AGE_SEC,
                 preexisting_caches: set | None = None,
-                sha: str | None = None) -> tuple:
+                sha: str | None = None, keep_cells: bool = False) -> tuple:
     """``(jobs, counts)`` -- which tracks still need simulating, and why."""
     now = time.time()
     preexisting_caches = preexisting_caches or set()
@@ -586,7 +572,6 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
     for row in rows:
         mp3 = Path(row["mp3_path"])
         cached = report_path(data_dir, row["youtube_id"])
-        sidecar = data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz"
         try:
             stat = mp3.stat()
         except OSError:
@@ -596,7 +581,7 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
         if force:
             reason = "miss_forced"
         else:
-            reason = _cache_miss_reason(cached, sidecar, sha, stat.st_size, stat.st_mtime)
+            reason = _cache_miss_reason(cached, sha, stat.st_size, stat.st_mtime)
             if reason is None:
                 counts["hit"] += 1
                 continue
@@ -607,17 +592,17 @@ def select_jobs(rows: list, data_dir: Path, force: bool = False,
 
         counts[reason] += 1
         jobs.append(SimJob(
-            row["track_id"], row["youtube_id"], str(mp3),
-            str(cached), str(sidecar),
+            row["track_id"], row["youtube_id"], str(mp3), str(cached),
             preexisting=tuple(path for path in derived_cache_paths(str(mp3))
                               if path in preexisting_caches),
             pipeline_sha=sha, mp3_size=stat.st_size, mp3_mtime=stat.st_mtime,
+            keep_cells=keep_cells,
         ))
     jobs.sort(key=lambda job: job.track_id)
     return jobs, counts
 
 
-def _cache_miss_reason(cached: Path, sidecar: Path, sha: str,
+def _cache_miss_reason(cached: Path, sha: str,
                        mp3_size: int, mp3_mtime: float) -> str | None:
     """``None`` when the cache may be used, else the counter name for the miss."""
     if not cached.exists():
@@ -688,30 +673,24 @@ def _print_progress(done: int, total: int, started: float, every: int) -> None:
 class TableStats(NamedTuple):
     tracks: int
     rows: int
-    canonical: collections.Counter
-    v1: collections.Counter
-    raw: collections.Counter
+    labels: collections.Counter
     intents: collections.Counter
     dropped: collections.Counter
     look_ahead_sec: set
     skipped: list
     missing_reports: list
-    missing_sidecars: list
 
 
 def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableStats:
     path = data_dir / TABLE_FILE
     tmp = path.with_suffix(path.suffix + ".part")
     tracks = row_count = 0
-    canonical = collections.Counter()
-    v1 = collections.Counter()
-    raw = collections.Counter()
+    labels = collections.Counter()
     intents = collections.Counter()
     dropped = collections.Counter()
     look_ahead = set()
     skipped: list = []
     missing_reports: list = []
-    missing_sidecars: list = []
 
     try:
         with open(tmp, "wb") as raw_file, \
@@ -725,11 +704,6 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 cached = report_path(data_dir, row["youtube_id"])
                 if not cached.exists():
                     missing_reports.append(track_id)
-                    continue
-                mel = data_dir / FEATURES_DIR / f"{row['youtube_id']}.npz"
-                if (not mel.exists()
-                        or sidecar_generation(mel) != MEL_EXPORTER_VERSION):
-                    missing_sidecars.append(track_id)
                     continue
                 sections = sections_by_track.get(track_id)
                 if sections is None:
@@ -761,9 +735,7 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                 dropped["silence_blocks_interior"] += stats.silence_blocks_interior
                 dropped["silence_blocks_trailing"] += stats.silence_blocks_trailing
                 for joined_row in joined:
-                    canonical[joined_row["label_canonical"]] += 1
-                    v1[joined_row["label_v1"]] += 1
-                    raw[joined_row["label_raw"]] += 1
+                    labels[joined_row["label"]] += 1
                     intents[joined_row["intent_at_beat"] or "(none)"] += 1
                     writer.writerow(format_row(joined_row))
         tmp.replace(path)
@@ -771,8 +743,8 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
         tmp.unlink(missing_ok=True)
         raise
 
-    return TableStats(tracks, row_count, canonical, v1, raw, intents, dropped,
-                      look_ahead, skipped, missing_reports, missing_sidecars)
+    return TableStats(tracks, row_count, labels, intents, dropped,
+                      look_ahead, skipped, missing_reports)
 
 
 def _git(repo_root: Path, *args: str) -> str | None:
@@ -829,11 +801,7 @@ def write_meta(data_dir: Path, stats: TableStats, failures: list,
         "tracks": stats.tracks,
         "rows": stats.rows,
         "look_ahead_sec": sorted(stats.look_ahead_sec),
-        "class_histogram": {
-            "canonical": _ordered_counts(stats.canonical, CANONICAL_ORDER),
-            "v1": _ordered_counts(stats.v1, V1_ORDER),
-            "raw": _ordered_counts(stats.raw, ()),
-        },
+        "class_histogram": _ordered_counts(stats.labels, SECTION_LABELS),
         "intent_histogram": _ordered_counts(stats.intents, ()),
         "dropped_beats": dict(sorted(stats.dropped.items())),
         "features": {
@@ -847,7 +815,6 @@ def write_meta(data_dir: Path, stats: TableStats, failures: list,
         "failed_tracks": [{"track_id": t, "detail": d} for t, d in failures],
         "skipped_tracks": [{"track_id": t, "detail": d} for t, d in stats.skipped],
         "missing_reports": stats.missing_reports,
-        "missing_sidecars": stats.missing_sidecars,
     }
     path = data_dir / META_FILE
     _write_json_pretty(path, meta)
@@ -914,15 +881,10 @@ def print_report(stats: TableStats, results: list, table_path: Path,
           f"measured, so a zero denominator means the reports predate it)")
     print(f"  tracks with no cached report : {len(stats.missing_reports)}"
           + (f"  {stats.missing_reports[:10]}" if stats.missing_reports else ""))
-    print(f"  tracks skipped, no sidecar   : {len(stats.missing_sidecars)}"
-          + (f"  {stats.missing_sidecars[:10]}" if stats.missing_sidecars else ""))
 
     print()
-    print("class histogram (canonical)")
-    _print_histogram(stats.canonical, stats.rows)
-    print()
-    print("class histogram (v1)")
-    _print_histogram(stats.v1, stats.rows)
+    print("class histogram")
+    _print_histogram(stats.labels, stats.rows)
     print()
     print("committed intent at beat")
     _print_histogram(stats.intents, stats.rows)
@@ -990,7 +952,18 @@ def main(argv: list | None = None) -> int:
         "--table-only", action="store_true",
         help="skip the simulations and re-join the cached reports on disk",
     )
+    parser.add_argument(
+        "--simulate-only", action="store_true",
+        help="run the simulations and stop before the table join",
+    )
+    parser.add_argument(
+        "--keep-cell-sidecars", action="store_true",
+        help="keep each track's extractor cell sidecar beside the audio; "
+             "the decode cache is still deleted per track",
+    )
     args = parser.parse_args(argv)
+    if args.table_only and args.simulate_only:
+        parser.error("--table-only and --simulate-only are mutually exclusive")
 
     data_dir = args.data_dir.resolve()
     started = time.time()
@@ -1018,6 +991,7 @@ def main(argv: list | None = None) -> int:
         jobs, cache_counts = select_jobs(
             rows, data_dir, force=args.force, min_age_sec=args.min_age_sec,
             preexisting_caches=preexisting_caches, sha=sha,
+            keep_cells=args.keep_cell_sidecars,
         )
         if args.limit:
             jobs = jobs[: args.limit]
@@ -1027,6 +1001,17 @@ def main(argv: list | None = None) -> int:
         if jobs:
             print(f"  {args.workers} worker(s)", flush=True)
             results = run_simulations(jobs, workers=args.workers)
+
+    if args.simulate_only:
+        failures = [(result.track_id, result.detail)
+                    for result in results if not result.ok]
+        for track_id, detail in failures:
+            print(f"  FAIL {track_id}: {detail}", flush=True)
+        print(f"simulate-only: {sum(1 for result in results if result.ok)}"
+              f"/{len(results)} simulated, {len(failures)} failed, "
+              f"{(time.time() - started) / 60:.1f} min -- table join skipped",
+              flush=True)
+        return 1 if failures else 0
 
     print("stage B: joining beats to labels ...", flush=True)
     stats = build_table(data_dir, rows, sections_by_track)

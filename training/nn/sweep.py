@@ -130,18 +130,62 @@ def summarise(result: dict, space: str) -> dict:
     }
 
 
-def run_configs(cache: InputCache, priors: Priors, configs, *,
+CRISPNESS_TOLERANCE_SEC = 0.5
+
+
+def summarise_multi(results: list, space: str) -> dict:
+    """One row over several posterior sets of the same generation (seeds).
+
+    Selection reads ``macro_f1`` (the seed mean) and ``flicker_per_min`` (the
+    seed MAX -- a ceiling any exported seed must clear, so the constraint holds
+    whichever seed ships).  Everything per-seed survives under ``seeds``.
+    """
+    rows = [summarise(result, space) for result in results]
+    for row, result in zip(rows, results):
+        row["crispness_05"] = round(float(
+            result["score"].boundary_prf("class", CRISPNESS_TOLERANCE_SEC)[2]), 6)
+
+    def mean(key):
+        return round(sum(float(row[key]) for row in rows) / len(rows), 6)
+
+    return {
+        "params": rows[0]["params"],
+        "macro_f1": mean("macro_f1"),
+        "flicker_per_min": round(max(float(row["flicker_per_min"])
+                                     for row in rows), 6),
+        "flicker_per_min_mean": mean("flicker_per_min"),
+        "accuracy": mean("accuracy"),
+        "drop_recall": mean("drop_recall"),
+        "drop_precision": mean("drop_precision"),
+        "drop_f1": mean("drop_f1"),
+        "boundary_f1_2s": mean("boundary_f1_2s"),
+        "crispness_05": mean("crispness_05"),
+        "to_drop_boundary_f1_2s": mean("to_drop_boundary_f1_2s"),
+        "changes": sum(row["changes"] for row in rows),
+        "undecoded_share": mean("undecoded_share"),
+        "seeds": rows,
+    }
+
+
+def run_configs(cache, priors: Priors, configs, *,
                 space: str = DEFAULT_SPACE, stage: str = "",
                 seen: dict | None = None, log=None) -> list:
     seen = {} if seen is None else seen
+    caches = list(cache) if isinstance(cache, (list, tuple)) else None
     rows: list = []
     for params in configs:
         if params in seen:
             continue
         started = time.perf_counter()
-        result = evaluate_config(cache.for_params(params), priors, params,
-                                 space=space, claims=identity_claims(space))
-        row = summarise(result, space)
+        if caches is None:
+            result = evaluate_config(cache.for_params(params), priors, params,
+                                     space=space, claims=identity_claims(space))
+            row = summarise(result, space)
+        else:
+            results = [evaluate_config(one.for_params(params), priors, params,
+                                       space=space, claims=identity_claims(space))
+                       for one in caches]
+            row = summarise_multi(results, space)
         row["stage"] = stage
         row["seconds"] = round(time.perf_counter() - started, 3)
         seen[params] = row
@@ -178,11 +222,11 @@ def select_config(rows, flicker_ceiling: float, *,
     return eligible_configs[0][3]
 
 
-def ablate(cache: InputCache, priors: Priors, chosen: DecodeParams, seen: dict, *,
-           space: str = DEFAULT_SPACE, log=None) -> tuple:
+def ablate(cache, priors: Priors, chosen: DecodeParams, seen: dict, *,
+           space: str = DEFAULT_SPACE, log=None, axes: dict | None = None) -> tuple:
     curves: dict = {}
     fresh: list = []
-    for axis, values in ABLATION_AXES.items():
+    for axis, values in (ABLATION_AXES if axes is None else axes).items():
         if log is not None:
             log({"stage_start": f"ablation:{axis}", "configs": len(values)})
         curve = []
@@ -221,7 +265,7 @@ def sensitivity(rows, axis: str) -> dict:
     }
 
 
-def refinement_axes(best: DecodeParams) -> dict:
+def refinement_axes(best: DecodeParams, extra_axes: dict | None = None) -> dict:
     def around(values, chosen):
         values = list(values)
         if chosen not in values:
@@ -230,17 +274,24 @@ def refinement_axes(best: DecodeParams) -> dict:
         window = values[max(0, index - 1):index + 2]
         return tuple(sorted(set(window)))
 
-    return {
+    axes = {
         "prior_strength": around(PRIOR_STRENGTHS, best.prior_strength),
         "drop_miss_cost": around(DROP_MISS_COSTS, best.drop_miss_cost),
         "boundary_weight": around(BOUNDARY_WEIGHTS, best.boundary_weight),
         "boundary_ref": around(BOUNDARY_REFS, best.boundary_ref),
         "floor_scale": around(FLOOR_SCALES, best.floor_scale),
     }
+    for name, values in (extra_axes or {}).items():
+        axes[name] = around(values, getattr(best, name))
+    return axes
 
 
-def run_sweep(cache: InputCache, priors: Priors, *, space: str = DEFAULT_SPACE,
-              flicker_ceiling: float, quick: bool = False, log=None) -> dict:
+def run_sweep(cache, priors: Priors, *, space: str = DEFAULT_SPACE,
+              flicker_ceiling: float, quick: bool = False, log=None,
+              base: DecodeParams | None = None,
+              budget_bars: int = LATENCY_BUDGET_BARS,
+              extra_stage_axes: dict | None = None) -> dict:
+    base = DecodeParams() if base is None else base
     seen: dict = {}
     rows: list = []
     stages: list = []
@@ -254,34 +305,42 @@ def run_sweep(cache: InputCache, priors: Priors, *, space: str = DEFAULT_SPACE,
         rows.extend(produced)
         stages.append({"name": name, "requested": len(configs),
                        "evaluated": len(produced)})
-        return DecodeParams(**select_config(seen.values(), flicker_ceiling)["params"])
+        return DecodeParams(**select_config(seen.values(), flicker_ceiling,
+                                            budget_bars=budget_bars)["params"])
 
     if quick:
-        stage("quick", QUICK_AXES, DecodeParams())
+        stage("quick", QUICK_AXES, base)
     else:
         best = stage("prior_x_dropcost",
                      {"prior_strength": PRIOR_STRENGTHS,
-                      "drop_miss_cost": DROP_MISS_COSTS}, DecodeParams())
+                      "drop_miss_cost": DROP_MISS_COSTS}, base)
         best = stage("boundary_weight_x_ref",
                      {"boundary_weight": BOUNDARY_WEIGHTS,
                       "boundary_ref": BOUNDARY_REFS}, best)
         best = stage("floor_scale", {"floor_scale": FLOOR_SCALES}, best)
+        for name, values in (extra_stage_axes or {}).items():
+            best = stage(name, {name: values}, best)
         best = stage("lag_bars", {"lag_bars": LAG_BARS}, best)
-        stage("joint_refine", refinement_axes(best), best)
+        stage("joint_refine", refinement_axes(best, extra_stage_axes), best)
 
-    anchor = DecodeParams(**select_config(rows, flicker_ceiling)["params"])
-    curves, fresh = ablate(cache, priors, anchor, seen, space=space, log=log)
+    anchor = DecodeParams(**select_config(rows, flicker_ceiling,
+                                          budget_bars=budget_bars)["params"])
+    ablation_axes = dict(ABLATION_AXES)
+    ablation_axes.update(extra_stage_axes or {})
+    curves, fresh = ablate(cache, priors, anchor, seen, space=space, log=log,
+                           axes=ablation_axes)
     rows.extend(fresh)
     stages.append({"name": "ablation", "requested": sum(len(v) for v in curves.values()),
                    "evaluated": len(fresh)})
 
-    chosen = select_config(rows, flicker_ceiling)
+    chosen = select_config(rows, flicker_ceiling, budget_bars=budget_bars)
     return {
         "rows": rows,
         "chosen": chosen,
         "anchor": dataclasses.asdict(anchor),
         "anchor_is_chosen": chosen["params"] == dataclasses.asdict(anchor),
         "flicker_ceiling": flicker_ceiling,
+        "budget_bars": budget_bars,
         "stages": stages,
         "lag_curve": sorted(curves.get("lag_bars", []),
                             key=lambda row: row["params"]["lag_bars"]),
