@@ -524,16 +524,40 @@ are easy to undo by accident:
   because the loop re-seated it, the window on screen is right, so there is no
   seam to get wrong and no ordering to coordinate.
 
-What is animated: the window scroll and both clocks (from their own bases), and
-the beat glow, which is a CSS keyframe retriggered per beat with a negative
-animation-delay so a beat arriving mid-poll starts its decay where it landed.
-What is stepwise **by design** is data arrival -- new beats and new intent blocks
-appear at the poll rate, and beat markers are Plotly nodes rebuilt on every
-figure push, so there is no stable element for an enter-transition to attach to.
-The now-cursor moves at no rate at all: in a window that always ends a fixed lead
-past now its screen position is a constant, so it is a plain positioned div
-outside the translated layer -- as a plotted shape it rode the transform and
-jittered against the very thing it measures.
+What is animated: the window scroll, both clocks (from their own bases), the
+beat markers, and the beat glow. What is stepwise **by design** is data arrival
+-- new intent blocks and grid edges appear at the poll rate -- and that is
+invisible precisely because everything the figure carries is known ahead of its
+room instant and scrolls in through the pad rather than popping in at the
+cursor. The now-cursor moves at no rate at all: in a window that always ends a
+fixed lead past now its screen position is a constant, so it is a plain
+positioned div outside the translated layer -- as a plotted shape it rode the
+transform and jittered against the very thing it measures. That constant is a
+fraction of the *axis*, not of the container: the figure's margins put the two
+a few pixels apart, and a container-fraction cursor measurably claimed ~150 ms
+of future at typical widths -- more the narrower the window, since the pixel
+offset is fixed and the seconds-per-pixel is not.
+
+**Beats left the figure, because a figure push is most of a second late and a
+beat is known one look-ahead early.** Drawing beat markers from the figure
+stream meant a marker could only appear after its room instant had passed a
+snapshot poll, ridden the every-other-tick figure cadence and been rendered --
+measured in a visible browser against the anchor's own room clock, a median 513
+ms and p95 742 ms after the monitored audio, one to two whole beat periods,
+which the `-o` monitor made audible for the first time. That lag is the
+cadence, not a defect, and no poll rate inside the measured constraints (the
+connection-limit starvation, the shed history) can close it -- but it never
+needed to move: the show stamps every beat a full playback delay before the
+room hears it. So the anchor ships every drawable beat instant -- the heard
+window plus the lead, a tiny list -- and the browser owns the markers: DOM
+nodes on the translated layer, seated in axis pixels only when the range or the
+list moves, so a marker scrolls on the compositor and crosses the fixed cursor
+at exactly its room instant. The glow retriggers off the same list when the
+room clock crosses the beat, not when an anchor happens to land (which was a
+median 154 ms late). The figure draws no beats at all, so the two renderers
+have nothing to disagree about; the stop-cut and re-base rules moved into the
+shipped list unchanged, which is what keeps a cut beat off the screen and a
+song boundary from double-drawing repeated song times.
 
 **The timeline shows a song, not a session, and the song is the room's.** Its
 zero is the instant the room *hears* a track start; the axis, its ticks and both
