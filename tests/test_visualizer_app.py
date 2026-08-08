@@ -691,6 +691,65 @@ def test_a_start_still_waits_for_the_room_although_a_stop_does_not():
     assert V._song_origin(dict(resuming, now=94.0)) == pytest.approx(94.0)
 
 
+def _stop_annotations(fig) -> list:
+    return [a for a in fig.layout.annotations if 'STOP' in a.text]
+
+
+def test_a_stop_still_travelling_is_drawn_where_the_room_will_hear_it():
+    # Detected at 60, persisted (heard) at 62; origin is 14, so the marker
+    # rides the lead strip at song-t 48 and crosses the cursor at 62.
+    fig = V._build_timeline(_stopping(now=61.0))
+    stops = _stop_annotations(fig)
+    assert [a.x for a in stops] == [pytest.approx(48.0)]
+    assert stops[0].xanchor == 'right'
+    line = next(s for s in fig.layout.shapes
+                if s.type == 'line' and s.line.dash == 'dash')
+    assert line.x0 == pytest.approx(48.0)
+
+
+def test_a_stop_marker_waits_until_it_enters_the_drawn_strip():
+    assert _stop_annotations(V._build_timeline(_stopping(now=60.2))) == []
+
+
+def test_the_stop_marker_crossing_is_the_instant_the_song_ends():
+    assert V._room_markers(_stopping(now=61.0)) == [(14.0, True), (62.0, False)]
+    assert V._build_timeline(_stopping(now=62.0)).layout.shapes == ()
+
+
+def test_a_heard_stop_is_not_double_counted_as_pending():
+    assert V._room_markers(_stopping(now=62.0)).count((62.0, False)) == 1
+
+
+def test_a_resume_inside_the_window_leaves_no_stop_marker_at_all():
+    pending = _snapshot(now=100.6, look_ahead_sec=14.0, is_playing=False,
+                        sound_events=[{'t': 0.0, 'playing': True},
+                                      {'t': 100.0, 'playing': False}])
+    resumed = _snapshot(now=101.6, look_ahead_sec=14.0, sound_events=[
+        {'t': 0.0, 'playing': True}, {'t': 100.0, 'playing': False},
+        {'t': 101.5, 'playing': True}])
+    assert (102.0, False) in V._room_markers(pending)
+    assert _stop_annotations(V._build_timeline(pending)) != []
+    assert V._room_markers(resumed) == [(14.0, True)]
+    assert _stop_annotations(V._build_timeline(resumed)) == []
+
+
+def test_a_start_still_travelling_when_the_bypass_fires_gets_no_marker():
+    markers = V._room_markers(_burst())
+    assert [t for t, is_start in markers if is_start] == [14.0]
+    assert V._build_timeline(_burst()).layout.shapes == ()
+
+
+def test_the_previous_songs_boundaries_stay_out_of_the_new_songs_window():
+    fig = V._build_timeline(_two_songs(now=100.0))
+    assert [a.x for a in fig.layout.annotations if 'START' in a.text] == [0.0]
+    assert _stop_annotations(fig) == []
+
+
+def test_the_start_marker_scrolls_out_with_the_window():
+    fig = V._build_timeline(_mid_play(now=50.0))
+    assert [a for a in fig.layout.annotations if 'START' in a.text] == []
+
+
 def test_the_beats_still_in_the_air_at_a_stop_are_never_heard():
     silenced = _stopping(now=70.0, beats_detected=900, beats_cut=2,
                          beats=[{'t': 50.0, 'bpm': 128.0},
