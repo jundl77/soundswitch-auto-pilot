@@ -49,23 +49,28 @@ class MusicAnalyser:
         self._reset_state()
 
     def _roll_song_clock(self) -> None:
+        # The horizon is about memory, not music: re-locking madmom mid-audio
+        # gains or loses beats, and every one rotates the bar grid's four-count
+        # permanently. Its online state is bounded, so the beat stream survives.
         playing = self.is_playing
-        self._reset_state()
+        self._reset_song_clock()
         self.is_playing = playing
 
     def _reset_state(self) -> None:
         self._rhythm.reset()
         self._beat_stream_times: deque = deque(maxlen=_BPM_BEAT_WINDOW)
-
-        self.is_playing: bool = False
-        self.song_start_time: datetime.datetime = self._clock.now()
-        self.song_current_time: datetime.datetime = self._clock.now()
-        self.silence_period_start: datetime.datetime = self._clock.now()
         self.last_bpm: float = 0.0
         self.beat_count: int = 0
         self.time_to_last_beat_sec: float = 0
         self.last_beat_detected: datetime.datetime = self._clock.now()
         self.last_note_detected: datetime.datetime = self._clock.now()
+        self._reset_song_clock()
+
+    def _reset_song_clock(self) -> None:
+        self.is_playing: bool = False
+        self.song_start_time: datetime.datetime = self._clock.now()
+        self.song_current_time: datetime.datetime = self._clock.now()
+        self.silence_period_start: datetime.datetime = self._clock.now()
         self._rms_window: deque = deque(maxlen=_ENERGY_WINDOW_BUFFERS)
 
     def get_song_current_duration(self) -> datetime.timedelta:
