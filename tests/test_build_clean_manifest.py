@@ -442,3 +442,68 @@ def test_require_tools_accepts_a_tool_that_exists():
 def test_require_tools_names_the_missing_tool():
     with pytest.raises(RuntimeError, match="definitely-not-a-real-tool"):
         require_tools(("definitely-not-a-real-tool",))
+
+
+def test_genre_is_appended_so_the_existing_clean_columns_do_not_move():
+    assert CLEAN_MANIFEST_HEADER[-1] == "genre"
+    assert CLEAN_MANIFEST_HEADER[:-1] == (
+        "track_id", "youtube_id", "mp3_path", "ffprobe_duration_sec",
+        "decoded_duration_sec", "annotation_duration_sec", "status", "detail")
+
+
+def test_load_manifest_rows_reads_the_genre_column(tmp_path):
+    data_dir = tmp_path
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(data_dir / "manifest.csv", "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(("track_id", "youtube_id", "n_sections", "total_sec", "genre"))
+        writer.writerow(("0002.kfJQCu-Jbec", "kfJQCu-Jbec", 11, "429.964", "Trance"))
+
+    assert load_manifest_rows(data_dir)[0].genre == "Trance"
+
+
+def test_load_manifest_rows_of_a_pre_genre_manifest_records_no_genre(tmp_path):
+    _write_manifest(tmp_path, [("0002.kfJQCu-Jbec", "kfJQCu-Jbec", 11, "429.964")])
+
+    assert load_manifest_rows(tmp_path)[0].genre == ""
+
+
+def test_select_candidates_carries_the_genre_into_the_job(tmp_path):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    settled = audio / "bbb.mp3"
+    settled.write_bytes(b"x")
+    _age(settled, 3600)
+
+    jobs, _missing, _fresh = select_candidates(
+        [ManifestRow("0002.bbb", "bbb", 200.0, "Tech House")], tmp_path,
+        now=time.time())
+
+    assert [job.genre for job in jobs] == ["Tech House"]
+
+
+@needs_ffmpeg
+def test_check_track_keeps_the_genre_it_was_handed(tmp_path):
+    junk = tmp_path / "junk.mp3"
+    junk.write_bytes(b"this is not an mp3, it is a sentence." * 64)
+
+    result = check_track(TrackJob("0001.junk", "junk", str(junk), 300.0, "Techno"))
+
+    assert result.genre == "Techno"
+
+
+def test_write_clean_manifest_carries_the_genre(tmp_path):
+    from build_clean_manifest import CheckResult
+
+    results = [
+        CheckResult("0001.a", "a", "a.mp3", 300.0, 300.0, 300.0, STATUS_OK, "",
+                    "Drum & Bass"),
+        CheckResult("0002.b", "b", "b.mp3", 300.0, 300.0, 300.0, STATUS_OK, ""),
+    ]
+    path = write_clean_manifest(tmp_path, results)
+
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows[0]["genre"] == "Drum & Bass"
+    assert rows[1]["genre"] == ""

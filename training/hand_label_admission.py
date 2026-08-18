@@ -33,6 +33,7 @@ from raveform_fetch_annotations import (  # noqa: E402
     HAND_LABEL_SOURCE,
     annotations_dir,
     beat_csv_path,
+    genre_of,
     load_all_tracks,
     load_hand_tracks,
     parse_beat_csv,
@@ -145,7 +146,7 @@ def load_clean_results(data_dir: Path) -> list:
                 _duration(row["ffprobe_duration_sec"]),
                 _duration(row["decoded_duration_sec"]),
                 _duration(row["annotation_duration_sec"]),
-                row["status"], row["detail"],
+                row["status"], row["detail"], row.get("genre") or "",
             )
             for row in csv.DictReader(handle)
         ]
@@ -192,7 +193,7 @@ def admit(track_id: str, audio: Path | None = None, labels: Path | None = None,
 
     result = gate.check_track(gate.TrackJob(
         str(record["key"]), youtube_id(record), str(mp3),
-        float(record["duration"])))
+        float(record["duration"]), genre_of(record)))
     upsert_clean_row(corpus, result)
     if result.status != gate.STATUS_OK:
         raise RuntimeError(

@@ -16,13 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from lib.label_space import DROPPED_LABELS, SECTION_LABELS  # noqa: E402
 from raveform_fetch_annotations import (  # noqa: E402
     annotations_dir,
+    genre_of,
     load_all_tracks,
     parse_sections,
     youtube_id,
 )
 
 MANIFEST_FILE = "manifest.csv"
-MANIFEST_HEADER = ("track_id", "youtube_id", "n_sections", "total_sec")
+MANIFEST_HEADER = ("track_id", "youtube_id", "n_sections", "total_sec", "genre")
 
 
 def section_length(start: float, end: float) -> float:
@@ -141,6 +142,7 @@ def build_manifest_rows(tracks: list) -> list:
                 youtube_id(track),
                 len(sections),
                 f"{float(track['duration']):.3f}",
+                genre_of(track),
             )
         )
     rows.sort(key=lambda row: row[0])

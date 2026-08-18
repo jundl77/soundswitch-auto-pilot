@@ -243,6 +243,10 @@ def youtube_id(track: dict) -> str:
     return str(track["id"])
 
 
+def genre_of(track: dict) -> str:
+    return str(track.get("genre") or "")
+
+
 def parse_beat_csv(path: Path) -> list:
     with open(path, "r", encoding="utf-8", newline="") as handle:
         return [
@@ -296,6 +300,8 @@ def merge_hand_tracks(published: list, hand: list) -> list:
             override["sections"] = record["sections"]
             override["duration"] = record["duration"]
             override["source"] = str(record.get("source", HAND_LABEL_SOURCE))
+            if genre_of(record):
+                override["genre"] = genre_of(record)
             merged[index] = override
     return merged
 

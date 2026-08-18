@@ -955,3 +955,38 @@ def test_one_ctrl_c_ends_the_labeller(tmp_path):
             subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
                            capture_output=True)
             process.wait(timeout=10)
+
+
+def test_a_labelling_with_no_genre_omits_the_key_rather_than_guessing():
+    record = to_annotation(SECTIONS, 214.842, 'hand-abc123', 'hand-abc123.mp3',
+                           TITLE)
+    assert 'genre' not in record
+
+
+def test_a_labelling_records_the_genre_the_owner_typed():
+    record = to_annotation(SECTIONS, 214.842, 'hand-abc123', 'hand-abc123.mp3',
+                           TITLE, genre='Techno')
+    assert record['genre'] == 'Techno'
+
+
+def test_a_blank_genre_is_no_genre():
+    record = to_annotation(SECTIONS, 214.842, 'hand-abc123', 'hand-abc123.mp3',
+                           TITLE, genre='   ')
+    assert 'genre' not in record
+
+
+def test_commit_writes_the_genre_through_the_dispatcher(song, corpus, song_id):
+    apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
+               title=TITLE, genre='Drum & Bass')
+    record = json.loads(
+        (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert record['genre'] == 'Drum & Bass'
+
+
+def test_commit_without_a_genre_writes_a_record_that_has_none(song, corpus,
+                                                              song_id):
+    apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
+               title=TITLE)
+    record = json.loads(
+        (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert 'genre' not in record
