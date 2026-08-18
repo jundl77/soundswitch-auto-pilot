@@ -774,6 +774,21 @@ audible to nobody. Cutting first makes the two provably the same answer, and tha
 equivalence is the property worth pinning rather than either reading on its own:
 one rule decides, so neither can drift from the other.
 
+**The song's boundaries are drawn on the timeline, and the stop is drawn before
+it is heard.** A START marker sits on the zero it defines and scrolls out with
+the window; a STOP marker has nowhere else to live, because the instant the room
+hears a persisted stop is the same instant the display ends the song and blanks
+the axis -- so the still-travelling stop is drawn in the lead strip like every
+other known future, translates in on the compositor, and crosses the cursor at
+exactly its room instant. Both markers are derived from the same gate-filtered
+room lists the clock re-base reads, never re-derived: a stop a resume cancelled
+is retracted from the strip before the room ever reaches it, and a start still
+in flight when the bypass fires never gets a marker at all, because neither
+boundary ever reached the room. They are figure shapes rather than DOM nodes --
+boundaries arrive per song, not per second, so a START popping in a poll late is
+imperceptible, and the pending STOP is known ahead so its crossing is exact
+anyway.
+
 **The blackout that follows is recorded, and it says who asked for it.** A stop
 drops the lighting still queued and puts the rig on a quiet floor at once, and
 that floor is a real thing the room saw, so the report states it rather than

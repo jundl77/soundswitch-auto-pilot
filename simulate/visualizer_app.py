@@ -138,6 +138,18 @@ def _room_sound_events(snapshot: dict) -> list:
     return heard
 
 
+def _room_markers(snapshot: dict) -> list:
+    # Heard boundaries, plus the stop still travelling: that one rides the lead
+    # strip and crosses the cursor at exactly its room instant -- the instant
+    # the display ends the song, so afterwards there is no axis to draw it on.
+    # A resume inside the window elides it before the room ever reaches it.
+    now = snapshot.get('now', 0.0)
+    heard = [(event['t'], event['playing'])
+             for event in _room_sound_events(snapshot)]
+    pending = [(stop, False) for stop in _room_stops(snapshot) if stop > now]
+    return heard + pending
+
+
 def _room_beats(snapshot: dict, horizon_sec: float = 0.0) -> list:
     delay = snapshot.get('look_ahead_sec', 0.0)
     limit = snapshot.get('now', 0.0) + horizon_sec
@@ -318,13 +330,12 @@ def _build_timeline(snapshot: dict) -> go.Figure:
             ))
 
     if origin is not None:
-        for ev in _room_sound_events(snapshot):
-            t = ev['t'] - origin
-            if t < left:
+        for t_room, is_start in _room_markers(snapshot):
+            t = t_room - origin
+            if t < left or t > x1:
                 continue
-            is_start = ev['playing']
-            color    = '#3fb950' if is_start else '#f85149'
-            label    = '▶ START' if is_start else '■ STOP'
+            color = '#3fb950' if is_start else '#f85149'
+            label = '▶ START' if is_start else '■ STOP'
             shapes.append(dict(
                 type='line', xref='x', yref='paper',
                 x0=t, x1=t, y0=0, y1=1,
@@ -334,7 +345,7 @@ def _build_timeline(snapshot: dict) -> go.Figure:
                 x=t, y=0.04, xref='x', yref='paper',
                 text=label, showarrow=False,
                 font=dict(color=color, size=9, family='monospace'),
-                xanchor='left',
+                xanchor='left' if is_start else 'right',
             ))
 
     # Beats are deliberately NOT drawn here: a figure push arrives most of a
