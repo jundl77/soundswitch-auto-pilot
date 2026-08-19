@@ -10,10 +10,19 @@ import pytest  # noqa: E402
 import raveform_manifest  # noqa: E402
 from lib.label_space import DROPPED_LABELS  # noqa: E402
 from raveform_manifest import (  # noqa: E402
+    MANIFEST_HEADER,
+    build_manifest_rows,
     raw_runs,
     section_length,
     section_runs,
 )
+
+
+def _track(key="0001.aaa", youtube="aaa", duration=150.0, **extra) -> dict:
+    record = {"key": key, "id": youtube, "duration": duration,
+              "sections": [{"name": "intro", "start": 0.0, "end": duration}]}
+    record.update(extra)
+    return record
 
 
 def test_section_length_is_the_plain_difference():
@@ -140,3 +149,24 @@ def test_raw_runs_neither_drops_nor_merges():
 
 def test_raw_runs_clamps_negative_lengths_too():
     assert raw_runs([(5.0006, 5.0, "outro")]) == [(5.0006, 5.0, "outro", 0.0)]
+
+
+def test_the_manifest_carries_the_published_genre():
+    row, = build_manifest_rows([_track(genre="Techno")])
+    assert row[MANIFEST_HEADER.index("genre")] == "Techno"
+
+
+def test_a_track_with_no_genre_manifests_an_empty_cell():
+    row, = build_manifest_rows([_track()])
+    assert row[MANIFEST_HEADER.index("genre")] == ""
+
+
+def test_genre_is_appended_so_the_existing_columns_do_not_move():
+    assert MANIFEST_HEADER == ("track_id", "youtube_id", "n_sections",
+                               "total_sec", "genre")
+
+
+def test_every_manifest_row_is_the_width_of_the_header():
+    rows = build_manifest_rows([_track(genre="Trance"), _track(key="0002.bbb",
+                                                               youtube="bbb")])
+    assert all(len(row) == len(MANIFEST_HEADER) for row in rows)

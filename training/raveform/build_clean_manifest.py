@@ -34,6 +34,7 @@ CLEAN_MANIFEST_HEADER = (
     "annotation_duration_sec",
     "status",
     "detail",
+    "genre",
 )
 
 STATUS_OK = "ok"
@@ -55,6 +56,7 @@ class ManifestRow(NamedTuple):
     track_id: str
     youtube_id: str
     annotation_duration_sec: float
+    genre: str = ""
 
 
 class TrackJob(NamedTuple):
@@ -62,6 +64,7 @@ class TrackJob(NamedTuple):
     youtube_id: str
     mp3_path: str
     annotation_duration_sec: float
+    genre: str = ""
 
 
 class CheckResult(NamedTuple):
@@ -73,6 +76,7 @@ class CheckResult(NamedTuple):
     annotation_duration_sec: float
     status: str
     detail: str
+    genre: str = ""
 
 
 def duration_tolerance(annotation_duration_sec: float) -> float:
@@ -204,6 +208,7 @@ def check_track(job: TrackJob) -> CheckResult:
         job.annotation_duration_sec,
         status,
         _first_line(detail),
+        job.genre,
     )
 
 
@@ -221,14 +226,15 @@ def load_manifest_rows(data_dir: Path) -> list:
     if path.exists():
         with open(path, "r", encoding="utf-8", newline="") as handle:
             rows = [
-                ManifestRow(row["track_id"], row["youtube_id"], float(row["total_sec"]))
+                ManifestRow(row["track_id"], row["youtube_id"],
+                            float(row["total_sec"]), row.get("genre") or "")
                 for row in csv.DictReader(handle)
             ]
     else:
         rows = [
-            ManifestRow(track_id, youtube_id, float(total_sec))
-            for track_id, youtube_id, _n_sections, total_sec in build_manifest_rows(
-                load_all_tracks(data_dir)
+            ManifestRow(track_id, youtube_id, float(total_sec), genre)
+            for track_id, youtube_id, _n_sections, total_sec, genre in (
+                build_manifest_rows(load_all_tracks(data_dir))
             )
         ]
     if not rows:
@@ -271,6 +277,7 @@ def select_candidates(
                     row.youtube_id,
                     str(path),
                     row.annotation_duration_sec,
+                    row.genre,
                 )
             )
     jobs.sort(key=lambda job: job.track_id)
@@ -328,6 +335,7 @@ def write_clean_manifest(data_dir: Path, results: list) -> Path:
                         _format_duration(result.annotation_duration_sec),
                         result.status,
                         result.detail,
+                        result.genre,
                     )
                 )
         tmp.replace(path)

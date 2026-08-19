@@ -35,6 +35,7 @@ from build_training_table import (  # noqa: E402
     label_coverage,
     format_row,
     join_track,
+    load_genres_by_track,
     load_ok_rows,
     realign_intents,
     pipeline_sha,
@@ -402,7 +403,7 @@ def test_every_feature_column_reads_a_key_the_report_still_carries():
     live = {"t": 1.0, "bpm": 128.0, "strength": 0.0, "change": False, "rms": 0.1}
     rows, _stats = join([(0.0, 30.0, "drop")], [live])
 
-    derived = {"track_id", "youtube_id", "t_song", "intent_at_beat",
+    derived = {"track_id", "youtube_id", "genre", "t_song", "intent_at_beat",
                "label", "bar_position_unknown"}
     derived |= {f"{column}_z" for column in CONTINUOUS_COLUMNS}
 
@@ -1080,3 +1081,65 @@ def test_the_join_reports_where_the_blackout_fell():
 
     assert (stats.silence_blocks_leading, stats.silence_blocks_interior,
             stats.silence_blocks_trailing) == (0, 1, 0)
+
+
+def test_the_join_stamps_every_row_of_a_track_with_its_genre():
+    rows, _stats = join_track("0001.abc", "abc",
+                              report([beat(1.0), beat(2.0)]),
+                              [(0.0, 30.0, "drop")], "Techno")
+
+    assert [row["genre"] for row in rows] == ["Techno", "Techno"]
+
+
+def test_a_track_with_no_genre_joins_an_empty_cell():
+    rows, _stats = join([(0.0, 30.0, "drop")], [beat(1.0)])
+
+    assert rows[0]["genre"] == ""
+
+
+def test_genre_is_a_table_column():
+    assert "genre" in TABLE_HEADER
+
+
+def test_the_table_takes_each_track_genre_from_the_annotation(tmp_path):
+    rows, sections = write_corpus(tmp_path, {
+        "0001.abc": ("abc", [(0.0, 30.0, "drop")], report([beat(1.0)])),
+        "0002.def": ("def", [(0.0, 30.0, "drop")], report([beat(2.0)])),
+    })
+
+    build_table(tmp_path, rows, sections,
+                {"0001.abc": "Techno", "0002.def": "Trance"})
+    table = read_table(tmp_path / TABLE_FILE)
+
+    column = TABLE_HEADER.index("genre")
+    assert [row[column] for row in table[1:]] == ["Techno", "Trance"]
+
+
+def test_the_table_leaves_a_track_with_no_annotated_genre_empty(tmp_path):
+    rows, sections = write_corpus(tmp_path, {
+        "0001.abc": ("abc", [(0.0, 30.0, "drop")], report([beat(1.0)])),
+    })
+
+    build_table(tmp_path, rows, sections, {})
+    table = read_table(tmp_path / TABLE_FILE)
+
+    assert table[1][TABLE_HEADER.index("genre")] == ""
+
+
+def test_the_genre_lookup_follows_the_hand_label_precedence(tmp_path):
+    annotations = tmp_path / "annotations"
+    annotations.mkdir(parents=True)
+    with open(annotations / "segments.json", "w", encoding="utf-8") as handle:
+        json.dump([{"key": "0001.abc", "id": "abc", "title": "A - B",
+                    "duration": 30.0, "genre": "Techno",
+                    "sections": [{"name": "drop", "start": 0.0, "end": 30.0}]}],
+                  handle)
+    (annotations / "abc.hand.json").write_text(json.dumps(
+        {"schema": 1, "source": "hand_label", "id": "abc", "title": "A - B",
+         "duration": 30.0, "genre": "Trance",
+         "sections": [{"name": "drop", "start": 0.0, "end": 30.0}]}),
+        encoding="utf-8")
+
+    assert load_genres_by_track(tmp_path) == {"0001.abc": "Trance"}
+    assert load_genres_by_track(tmp_path, include_hand=False) == {
+        "0001.abc": "Techno"}

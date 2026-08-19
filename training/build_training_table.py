@@ -38,6 +38,7 @@ from build_clean_manifest import (  # noqa: E402
     is_settled,
 )
 from raveform_fetch_annotations import (  # noqa: E402
+    genre_of,
     load_all_tracks,
     load_tracks,
     parse_sections,
@@ -67,6 +68,7 @@ CONTINUOUS_COLUMNS = (
 TABLE_HEADER = (
     "track_id",
     "youtube_id",
+    "genre",
     "t_song",
     "bpm",
     "rms",
@@ -287,7 +289,8 @@ class JoinStats(NamedTuple):
     silence_blocks_trailing: int
 
 
-def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) -> tuple:
+def join_track(track_id: str, youtube_id_: str, report: dict, sections: list,
+               genre: str = "") -> tuple:
     """One track's report + annotation -> ``(rows, JoinStats)``; pure, no I/O."""
     beats = sorted(report.get("beats", []), key=lambda record: float(record["t"]))
     coverage = Timeline(label_coverage(sections))
@@ -332,6 +335,7 @@ def join_track(track_id: str, youtube_id_: str, report: dict, sections: list) ->
         rows.append({
             "track_id": track_id,
             "youtube_id": youtube_id_,
+            "genre": genre,
             "t_song": t,
             "bpm": float(record.get("bpm", 0.0)),
             "rms": float(record.get("rms", 0.0)),
@@ -558,6 +562,11 @@ def load_sections_by_track(data_dir: Path, include_hand: bool = True) -> dict:
     return {str(track["key"]): parse_sections(track) for track in tracks}
 
 
+def load_genres_by_track(data_dir: Path, include_hand: bool = True) -> dict:
+    tracks = load_all_tracks(data_dir) if include_hand else load_tracks(data_dir)
+    return {str(track["key"]): genre_of(track) for track in tracks}
+
+
 def select_jobs(rows: list, data_dir: Path, force: bool = False,
                 min_age_sec: float = MIN_AGE_SEC,
                 preexisting_caches: set | None = None,
@@ -681,7 +690,8 @@ class TableStats(NamedTuple):
     missing_reports: list
 
 
-def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableStats:
+def build_table(data_dir: Path, rows: list, sections_by_track: dict,
+                genres_by_track: dict | None = None) -> TableStats:
     path = data_dir / TABLE_FILE
     tmp = path.with_suffix(path.suffix + ".part")
     tracks = row_count = 0
@@ -715,7 +725,9 @@ def build_table(data_dir: Path, rows: list, sections_by_track: dict) -> TableSta
                     skipped.append((track_id, f"unreadable report: {exc}"))
                     continue
 
-                joined, stats = join_track(track_id, row["youtube_id"], report, sections)
+                joined, stats = join_track(
+                    track_id, row["youtube_id"], report, sections,
+                    (genres_by_track or {}).get(track_id, ""))
                 look_ahead.add(float(report.get("metrics", {}).get("look_ahead_sec", 0.0)))
                 tracks += 1
                 row_count += len(joined)
@@ -975,6 +987,7 @@ def main(argv: list | None = None) -> int:
 
     rows = load_ok_rows(data_dir)
     sections_by_track = load_sections_by_track(data_dir)
+    genres_by_track = load_genres_by_track(data_dir)
     print(f"clean manifest: {len(rows)} ok track(s); "
           f"{len(sections_by_track)} annotated track(s)")
 
@@ -1014,7 +1027,7 @@ def main(argv: list | None = None) -> int:
         return 1 if failures else 0
 
     print("stage B: joining beats to labels ...", flush=True)
-    stats = build_table(data_dir, rows, sections_by_track)
+    stats = build_table(data_dir, rows, sections_by_track, genres_by_track)
     elapsed = time.time() - started
     failures = [(result.track_id, result.detail) for result in results if not result.ok]
     meta_path = write_meta(data_dir, stats, failures, elapsed, cache_counts, sha)

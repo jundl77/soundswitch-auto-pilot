@@ -50,8 +50,14 @@ The committed shape is the corpus's own section shape plus one key::
     {"schema": 1, "source": "hand_label", "id": "hand-<sha256(audio)[:12]>",
      "title": "Artist - Track", "artist": "Artist" | null,
      "audio": "<file in the corpus audio dir>", "duration": <seconds>,
+     "genre": "<genre>",  # only when the owner typed one
      "sections": [{"name": "<label>", "start": <s>, "end": <s>,
                    "strength": "major" | "minor"}, ...]}
+
+`genre` is the published corpus's own per-track field, carried from here through
+the manifest to the training table. It is the one key that is simply **absent**
+when unset rather than null: a published track always has one, a hand label need
+not, and an empty string in that column would be a genre nobody named.
 
 **A track is identified by its bytes, not by its filename, and that decides the
 `id`.** Commit hashes the audio and looks it up in the corpus's own
@@ -308,7 +314,8 @@ def title_artist(title: str, no_artist: bool = False) -> str:
 
 
 def to_annotation(sections: list, duration: float, identifier: str,
-                  audio_name: str, title: str, no_artist: bool = False) -> dict:
+                  audio_name: str, title: str, no_artist: bool = False,
+                  genre: str = None) -> dict:
     ordered = normalise(sections)
     spans = []
     for index, entry in enumerate(ordered):
@@ -317,11 +324,14 @@ def to_annotation(sections: list, duration: float, identifier: str,
         spans.append({'name': entry['label'], 'start': entry['start'],
                       'end': round(end, TIME_DECIMALS),
                       'strength': entry['strength']})
-    return {'schema': HAND_LABEL_SCHEMA, 'source': 'hand_label',
-            'id': identifier, 'title': title.strip(),
-            'artist': title_artist(title, no_artist), 'audio': audio_name,
-            'duration': round(float(duration), TIME_DECIMALS),
-            'sections': spans}
+    record = {'schema': HAND_LABEL_SCHEMA, 'source': 'hand_label',
+              'id': identifier, 'title': title.strip(),
+              'artist': title_artist(title, no_artist), 'audio': audio_name,
+              'duration': round(float(duration), TIME_DECIMALS),
+              'sections': spans}
+    if (genre or '').strip():
+        record['genre'] = genre.strip()
+    return record
 
 
 def from_annotation(record: dict) -> list:
@@ -360,7 +370,8 @@ def admit_track(identifier: str, audio: Path, labels: Path) -> tuple:
 
 
 def commit_labels(audio_path: str, sections: list, duration: float,
-                  title: str, no_artist: bool = False) -> dict:
+                  title: str, no_artist: bool = False,
+                  genre: str = None) -> dict:
     identifier, native = resolve_identity(audio_path)
     copied = native is None
     if native is not None:
@@ -371,7 +382,7 @@ def commit_labels(audio_path: str, sections: list, duration: float,
         shutil.copy2(audio_path, home)
     path = hand_label_path(identifier)
     record = to_annotation(sections, duration, identifier, home.name, title,
-                           no_artist)
+                           no_artist, genre)
     write_atomically(path, json.dumps(record, indent=2, ensure_ascii=False) + '\n')
     admitted, admission = admit_track(identifier, home, path)
     return {'labels': path, 'audio': home, 'copied': copied,
@@ -519,7 +530,7 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                new_label: str = None, new_strength: str = DEFAULT_STRENGTH,
                row_labels: list = (), row_strengths: list = (),
                duration: float = 0.0, title: str = '',
-               no_artist: bool = False) -> tuple:
+               no_artist: bool = False, genre: str = '') -> tuple:
     """Apply one UI event and write the result. `None` means "leave it alone".
 
     The file is the state, so a page whose sections disagree with it has lost
@@ -554,7 +565,8 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                 f'out of this title, so a track without one is never checked '
                 f'for contamination and nothing anywhere says so')
         return None, commit_status(
-            commit_labels(audio_path, sections, duration, title, no_artist))
+            commit_labels(audio_path, sections, duration, title, no_artist,
+                          genre))
     if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
         return None, None
     if trigger == 'mark':
@@ -987,6 +999,13 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
                                      'background': CARD_BG, 'color': TEXT,
                                      'border': f'1px solid {BORDER}',
                                      'fontFamily': 'monospace'}),
+                    dcc.Input(id='genre', value='', placeholder='genre',
+                              debounce=False,
+                              style={'marginLeft': '8px', 'width': '130px',
+                                     'padding': '6px 10px', 'borderRadius': '6px',
+                                     'background': CARD_BG, 'color': TEXT,
+                                     'border': f'1px solid {BORDER}',
+                                     'fontFamily': 'monospace'}),
                     dcc.Checklist(id='no-artist', options=[{'label': 'no artist',
                                                             'value': 'yes'}],
                                   value=[], inline=True,
@@ -1055,15 +1074,16 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         State('new-strength', 'value'),
         State('title', 'value'),
         State('no-artist', 'value'),
+        State('genre', 'value'),
         prevent_initial_call=True,
     )
     def edit(mark_clicks, save_clicks, commit_clicks, nudges, deletes,
              row_labels, row_strengths, sections, cursor, new_label,
-             new_strength, title, no_artist):
+             new_strength, title, no_artist, genre):
         updated, status = apply_edit(
             audio_path, callback_context.triggered_id, sections, cursor,
             new_label, new_strength, row_labels, row_strengths, track.duration,
-            title, bool(no_artist))
+            title, bool(no_artist), genre or '')
         return (dash.no_update if updated is None else updated,
                 dash.no_update if status is None else status)
 

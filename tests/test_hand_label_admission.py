@@ -477,3 +477,66 @@ def test_the_table_join_reads_hand_wins(tmp_path):
     assert hand_wins["0001.native00001"][0] == (0.0, 30.0, "intro")
     assert published_only["0001.native00001"] == [
         (0.0, 60.0, "intro"), (60.0, 140.0, "drop"), (140.0, 150.0, "end")]
+
+
+# --------------------------------------------------------------------------- #
+# Genre through the merged view
+# --------------------------------------------------------------------------- #
+
+
+def test_a_hand_override_keeps_the_published_genre(tmp_path):
+    override = hand_record(identifier="native00001")
+    data_dir = make_corpus(
+        tmp_path, [dict(published_record(), genre="Techno")], [override])
+
+    assert load_all_tracks(data_dir)[0]["genre"] == "Techno"
+
+
+def test_a_hand_genre_wins_over_the_published_one(tmp_path):
+    override = dict(hand_record(identifier="native00001"), genre="Trance")
+    data_dir = make_corpus(
+        tmp_path, [dict(published_record(), genre="Techno")], [override])
+
+    assert load_all_tracks(data_dir)[0]["genre"] == "Trance"
+
+
+def test_a_hand_only_track_without_a_genre_carries_none(tmp_path):
+    data_dir = make_corpus(tmp_path, [], [hand_record()])
+
+    assert "genre" not in load_all_tracks(data_dir)[0]
+
+
+def test_a_hand_only_track_manifests_an_empty_genre(tmp_path):
+    from raveform_manifest import MANIFEST_HEADER, build_manifest_rows
+
+    data_dir = make_corpus(tmp_path, [], [hand_record()])
+    row, = build_manifest_rows(load_all_tracks(data_dir))
+
+    assert row[MANIFEST_HEADER.index("genre")] == ""
+
+
+def test_a_hand_only_track_with_a_genre_manifests_it(tmp_path):
+    from raveform_manifest import MANIFEST_HEADER, build_manifest_rows
+
+    data_dir = make_corpus(tmp_path, [], [dict(hand_record(), genre="Techno")])
+    row, = build_manifest_rows(load_all_tracks(data_dir))
+
+    assert row[MANIFEST_HEADER.index("genre")] == "Techno"
+
+
+def test_upserting_a_clean_row_keeps_every_other_track_genre(tmp_path):
+    with open(tmp_path / gate.CLEAN_MANIFEST_FILE, "w", encoding="utf-8",
+              newline="") as handle:
+        handle.write(",".join(gate.CLEAN_MANIFEST_HEADER) + "\n")
+        handle.write("0001.native00001,native00001,x.mp3,"
+                     "150.0,150.0,150.0,ok,,Techno\n")
+
+    admission.upsert_clean_row(tmp_path, gate.CheckResult(
+        "hand-ab12cd34ef56", "hand-ab12cd34ef56", "y.mp3", 120.0, 120.0, 120.0,
+        gate.STATUS_OK, ""))
+
+    with open(tmp_path / gate.CLEAN_MANIFEST_FILE, "r", encoding="utf-8",
+              newline="") as handle:
+        rows = {row["track_id"]: row["genre"] for row in csv.DictReader(handle)}
+
+    assert rows == {"0001.native00001": "Techno", "hand-ab12cd34ef56": ""}
