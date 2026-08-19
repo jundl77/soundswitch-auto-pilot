@@ -165,10 +165,11 @@ class _FakeRhythm:
         self._events = RhythmEvents
         self.fire_on = set()
         self.calls = 0
+        self.resets = 0
         self.pending_latency_sec = 0.0
 
     def reset(self):
-        pass
+        self.resets += 1
 
     def process(self, buffer):
         index, self.calls = self.calls, self.calls + 1
@@ -236,6 +237,51 @@ async def test_the_fifteen_minute_roll_is_not_a_song_boundary():
     assert analyser.is_song_playing() is True
     assert analyser.get_song_current_duration() < datetime.timedelta(minutes=1), \
         'the song clock was not rolled'
+
+
+async def test_the_fifteen_minute_roll_keeps_the_beat_lock():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    analyser._rhythm = _FakeRhythm()
+    analyser._rhythm.fire_on = {2, 6}
+
+    loud = np.full(256, 0.2, dtype=np.float32)
+    for _ in range(8):
+        clock.advance(0.1)
+        await analyser.analyse(loud.copy())
+    assert analyser.beat_count == 2
+    bpm_window = list(analyser._beat_stream_times)
+
+    analyser.song_start_time = clock.now() - datetime.timedelta(minutes=16)
+    clock.advance(0.1)
+    await analyser.analyse(loud.copy())
+
+    assert analyser.get_song_current_duration() < datetime.timedelta(minutes=1), \
+        'the song clock was not rolled'
+    assert analyser._rhythm.resets == 0, \
+        'the roll re-locked madmom mid-audio; a gained or lost beat rotates the bar grid'
+    assert analyser.beat_count == 2, \
+        'the OS2L beat position re-based mid-song'
+    assert list(analyser._beat_stream_times) == bpm_window, \
+        'the BPM window was torn down mid-lock'
+
+
+async def test_a_real_sound_stop_still_relocks_the_tracker():
+    clock = VirtualClock()
+    analyser = _make_analyser(clock)
+    analyser._rhythm = _FakeRhythm()
+
+    loud = np.full(256, 0.2, dtype=np.float32)
+    for _ in range(8):
+        clock.advance(0.1)
+        await analyser.analyse(loud.copy())
+    assert analyser._rhythm.resets == 0
+
+    for _ in range(8):
+        clock.advance(0.1)
+        await analyser.analyse(np.zeros(256, dtype=np.float32))
+    assert analyser._rhythm.resets > 0, \
+        'a song boundary must still re-lock the tracker'
 
 
 async def test_a_song_reset_does_not_clear_the_drift_watchdog(analyser):

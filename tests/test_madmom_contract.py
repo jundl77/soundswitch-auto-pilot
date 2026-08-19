@@ -87,6 +87,60 @@ def test_processors_expose_reset_so_the_analyser_need_not_rebuild_models():
     assert callable(DBNBeatTrackingProcessor.reset)
 
 
+def test_online_state_is_bounded_so_the_roll_may_keep_the_beat_lock():
+    # The 15-min roll keeps the tracker's lock, which is only sound if nothing
+    # in the online stack grows with audio fed. Diff every array shape and
+    # container length in the live object graph across 4x more locked audio;
+    # what accumulates is scalars (DBN counter, last_beat, tempo, our hop
+    # count). _pending is exempt: it is the sub-hop remainder, bounded by one
+    # hop by construction.
+    import numpy as np
+    from lib.analyser.madmom_rhythm import MadmomRhythm, SAMPLE_RATE
+
+    def click(seconds, t0):
+        n = int(seconds * SAMPLE_RATE)
+        t = (np.arange(n) + int(t0 * SAMPLE_RATE)) / SAMPLE_RATE
+        phase = t % (60.0 / 128.0)
+        return ((phase < 0.05) * 0.6
+                * np.sin(2 * np.pi * 80.0 * phase / 0.05)).astype(np.float32)
+
+    def graph(obj, path='r', seen=None, out=None, depth=0):
+        seen = set() if seen is None else seen
+        out = {} if out is None else out
+        if depth > 12 or id(obj) in seen:
+            return out
+        seen.add(id(obj))
+        if isinstance(obj, np.ndarray):
+            out[path] = obj.shape
+        elif isinstance(obj, (list, tuple, dict)):
+            out[path] = len(obj)
+            values = obj.values() if isinstance(obj, dict) else obj
+            for i, value in enumerate(values):
+                graph(value, f'{path}[{i}]', seen, out, depth + 1)
+        elif hasattr(obj, '__dict__'):
+            for key, value in vars(obj).items():
+                graph(value, f'{path}.{key}', seen, out, depth + 1)
+        return out
+
+    def feed(rhythm, seconds, t0):
+        audio = click(seconds, t0)
+        beats = 0
+        for i in range(0, len(audio) - 256, 256):
+            beats += len(rhythm.process(audio[i:i + 256]).beats)
+        return beats
+
+    rhythm = MadmomRhythm(SAMPLE_RATE)
+    feed(rhythm, 5.0, 0.0)
+    before = graph(rhythm)
+    assert feed(rhythm, 20.0, 5.0) > 20, \
+        'the DBN never locked; the diff would prove nothing'
+    after = graph(rhythm)
+
+    grown = {p for p in before.keys() | after.keys()
+             if before.get(p) != after.get(p) and not p.endswith('._pending')}
+    assert not grown, f'online state grew with audio fed: {sorted(grown)[:10]}'
+
+
 def test_the_live_path_never_imports_the_offline_downbeat_tracker():
     from pathlib import Path
     lib = Path(__file__).parent.parent / 'lib'
