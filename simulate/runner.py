@@ -75,13 +75,31 @@ def load_section_chain(watchdog=None, audio_client=None):
         return section_chain.build_section_chain(watchdog=watchdog)
 
     plan = _cell_cache_plan(audio_client)
+    tracker_plan = _tracker_cache_plan(audio_client)
     if plan is not None:
-        replay, reason = cell_cache.open_replay(
-            *plan, expected_samples=_expected_samples(audio_client))
-        if replay is not None:
-            logging.info(f'[sim] replaying cached extractor cells ← {plan[0].name}')
-            return section_chain.build_section_chain(extractor=lambda _: replay)
-        logging.info(f'[sim] extractor cells: {reason} — this run needs the GPU')
+        expected = _expected_samples(audio_client)
+        replay, reason = cell_cache.open_replay(*plan,
+                                                expected_samples=expected)
+        tracker_replay = None
+        if tracker_plan is not None:
+            from simulate import tracker_cache
+
+            tracker_replay, tracker_reason = tracker_cache.open_replay(
+                *tracker_plan, expected_samples=expected)
+        else:
+            tracker_reason = "no_tracker"
+        # One decision for both caches: a run is warm only when every stage
+        # this machine would run can be replayed.
+        if replay is not None and (tracker_plan is None
+                                   or tracker_replay is not None):
+            logging.info(f'[sim] replaying cached extractor cells '
+                         f'← {plan[0].name}'
+                         + ('' if tracker_replay is None
+                            else f' and tracker chunks ← {tracker_plan[0].name}'))
+            return section_chain.build_section_chain(
+                extractor=lambda _: replay, tracker=tracker_replay)
+        logging.info(f'[sim] extractor cells: {reason} / tracker chunks: '
+                     f'{tracker_reason} — this run needs the GPU')
 
     if _SECTION_CHAIN is _UNBUILT:
         _SECTION_CHAIN = (section_chain.build_section_chain()
@@ -92,7 +110,8 @@ def load_section_chain(watchdog=None, audio_client=None):
     _SECTION_CHAIN.decoder.reset()
     if plan is None:
         return _SECTION_CHAIN
-    return cell_cache.recording_chain(_SECTION_CHAIN, *plan)
+    return cell_cache.recording_chain(_SECTION_CHAIN, *plan,
+                                      tracker_plan=tracker_plan)
 
 
 def _artifacts_or_degrade() -> bool:
@@ -123,6 +142,21 @@ def _cell_cache_plan(audio_client):
     return (cell_cache.sidecar_path(path, decode),
             cell_cache.cache_key(geometry, source_rate=SAMPLE_RATE,
                                  audio_path=path, decode_path=decode))
+
+
+def _tracker_cache_plan(audio_client):
+    from lib import section_chain
+    from lib.analyser import bar_tracker
+    from simulate import tracker_cache
+
+    path = getattr(audio_client, 'path', None)
+    decode = getattr(audio_client, 'decode_path', None)
+    if path is None or decode is None or not section_chain.bar_tracker_present():
+        return None
+    record = bar_tracker.load_record(section_chain.generation_dir())
+    return (tracker_cache.sidecar_path(path, decode),
+            tracker_cache.cache_key(record, source_rate=SAMPLE_RATE,
+                                    audio_path=path, decode_path=decode))
 
 
 _UNBUILT = object()

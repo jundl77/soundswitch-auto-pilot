@@ -2,218 +2,229 @@
   "contract": "byte-deterministic, cold or warm",
   "tracks": {
     "NyEKXA7_6z0.mp3": {
-      "checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+      "checksum": "61172b80c23ae7275637d103d783f1bff960eaefb7040312b0708d903f637fb3",
       "cold_across_processes": true,
       "cold_matches_warm": true,
       "extractor_bytes_across_processes": true,
       "runs": [
         {
-          "cells_sha256": "657cbe90bc25b40be5f184526178c0fc39ba9f28e5ce458aba976ed5b25cf919",
-          "checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+          "cells_sha256": "9cbeec398d6bde9d3bacb56aa5f2612578aa5c1c7b1b4c3bbe17e87c586390b9",
+          "checksum": "61172b80c23ae7275637d103d783f1bff960eaefb7040312b0708d903f637fb3",
           "intents": [
             "atmospheric",
-            "breakdown",
             "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
-            "buildup",
-            "breakdown"
+            "atmospheric"
           ],
           "mode": "cold",
-          "wall_sec": 93.27
+          "tracker_sha256": "225977bf35cdae52268447a76380be76407cec9fee37129b9d5fa5ab14e42085",
+          "wall_sec": 96.16
         },
         {
-          "cells_sha256": "657cbe90bc25b40be5f184526178c0fc39ba9f28e5ce458aba976ed5b25cf919",
-          "checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+          "cells_sha256": "9cbeec398d6bde9d3bacb56aa5f2612578aa5c1c7b1b4c3bbe17e87c586390b9",
+          "checksum": "61172b80c23ae7275637d103d783f1bff960eaefb7040312b0708d903f637fb3",
           "intents": [
             "atmospheric",
-            "breakdown",
             "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
-            "buildup",
-            "breakdown"
+            "atmospheric"
           ],
           "mode": "cold",
-          "wall_sec": 91.78
+          "tracker_sha256": "225977bf35cdae52268447a76380be76407cec9fee37129b9d5fa5ab14e42085",
+          "wall_sec": 93.66
         },
         {
-          "cells_sha256": "657cbe90bc25b40be5f184526178c0fc39ba9f28e5ce458aba976ed5b25cf919",
-          "checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+          "cells_sha256": "9cbeec398d6bde9d3bacb56aa5f2612578aa5c1c7b1b4c3bbe17e87c586390b9",
+          "checksum": "61172b80c23ae7275637d103d783f1bff960eaefb7040312b0708d903f637fb3",
           "intents": [
             "atmospheric",
-            "breakdown",
             "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
-            "buildup",
-            "breakdown"
+            "atmospheric"
           ],
           "mode": "warm",
-          "wall_sec": 42.03
+          "tracker_sha256": "225977bf35cdae52268447a76380be76407cec9fee37129b9d5fa5ab14e42085",
+          "wall_sec": 44.33
         },
         {
-          "cells_sha256": "657cbe90bc25b40be5f184526178c0fc39ba9f28e5ce458aba976ed5b25cf919",
-          "checksum": "18514d9be55606d44d5a5039132ba9f4f72ef2eb3a1b5c4e364dacb4b23a3c3b",
+          "cells_sha256": "9cbeec398d6bde9d3bacb56aa5f2612578aa5c1c7b1b4c3bbe17e87c586390b9",
+          "checksum": "61172b80c23ae7275637d103d783f1bff960eaefb7040312b0708d903f637fb3",
           "intents": [
             "atmospheric",
-            "breakdown",
             "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
-            "buildup",
-            "breakdown"
+            "atmospheric"
           ],
           "mode": "warm",
-          "wall_sec": 41.95
+          "tracker_sha256": "225977bf35cdae52268447a76380be76407cec9fee37129b9d5fa5ab14e42085",
+          "wall_sec": 44.64
         }
       ],
+      "tracker_bytes_across_processes": true,
       "warm_across_processes": true
     },
     "PNpXKsge4xM.mp3": {
-      "checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+      "checksum": "9431c87970a0d61c906dd560e63af3ec8faeabc5985dfa21f86187cf97f35b3d",
       "cold_across_processes": true,
       "cold_matches_warm": true,
       "extractor_bytes_across_processes": true,
       "runs": [
         {
-          "cells_sha256": "b3a9819eef9bb9957ee38ee10abf9245496c8c2f8087163403a3137729a89d19",
-          "checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+          "cells_sha256": "21d30e7adc28f24bc0b2b9dab441478af566e4a06305e877ed9b9ae3878e43dc",
+          "checksum": "9431c87970a0d61c906dd560e63af3ec8faeabc5985dfa21f86187cf97f35b3d",
           "intents": [
             "atmospheric",
+            "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "atmospheric"
           ],
           "mode": "cold",
-          "wall_sec": 66.19
+          "tracker_sha256": "9e9422aacca3b675016d8743aa783ccbef4458756a29e9b778150f37e2bbe4bf",
+          "wall_sec": 72.83
         },
         {
-          "cells_sha256": "b3a9819eef9bb9957ee38ee10abf9245496c8c2f8087163403a3137729a89d19",
-          "checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+          "cells_sha256": "21d30e7adc28f24bc0b2b9dab441478af566e4a06305e877ed9b9ae3878e43dc",
+          "checksum": "9431c87970a0d61c906dd560e63af3ec8faeabc5985dfa21f86187cf97f35b3d",
           "intents": [
             "atmospheric",
+            "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "atmospheric"
           ],
           "mode": "cold",
-          "wall_sec": 66.22
+          "tracker_sha256": "9e9422aacca3b675016d8743aa783ccbef4458756a29e9b778150f37e2bbe4bf",
+          "wall_sec": 69.83
         },
         {
-          "cells_sha256": "b3a9819eef9bb9957ee38ee10abf9245496c8c2f8087163403a3137729a89d19",
-          "checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+          "cells_sha256": "21d30e7adc28f24bc0b2b9dab441478af566e4a06305e877ed9b9ae3878e43dc",
+          "checksum": "9431c87970a0d61c906dd560e63af3ec8faeabc5985dfa21f86187cf97f35b3d",
           "intents": [
             "atmospheric",
+            "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "atmospheric"
           ],
           "mode": "warm",
-          "wall_sec": 31.12
+          "tracker_sha256": "9e9422aacca3b675016d8743aa783ccbef4458756a29e9b778150f37e2bbe4bf",
+          "wall_sec": 31.69
         },
         {
-          "cells_sha256": "b3a9819eef9bb9957ee38ee10abf9245496c8c2f8087163403a3137729a89d19",
-          "checksum": "71d2ce08f210a9d60efcc55daa907fbdf45ba1cc5f2f204b311f3917658e875c",
+          "cells_sha256": "21d30e7adc28f24bc0b2b9dab441478af566e4a06305e877ed9b9ae3878e43dc",
+          "checksum": "9431c87970a0d61c906dd560e63af3ec8faeabc5985dfa21f86187cf97f35b3d",
           "intents": [
             "atmospheric",
+            "buildup",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "breakdown",
             "drop",
-            "peak",
             "atmospheric"
           ],
           "mode": "warm",
-          "wall_sec": 30.0
+          "tracker_sha256": "9e9422aacca3b675016d8743aa783ccbef4458756a29e9b778150f37e2bbe4bf",
+          "wall_sec": 32.12
         }
       ],
+      "tracker_bytes_across_processes": true,
       "warm_across_processes": true
     },
     "SBnxzXkc_qw.mp3": {
-      "checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+      "checksum": "526608a508b12aeee79adffb4ecc8381ef1557d28b70635f0eacf5acacba3a1b",
       "cold_across_processes": true,
       "cold_matches_warm": true,
       "extractor_bytes_across_processes": true,
       "runs": [
         {
-          "cells_sha256": "d8885ea70afcf93c0350e51e4f9c1d555cd3e0f5f364a53e3cdb5810d4db6ab5",
-          "checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+          "cells_sha256": "f524fbfcc96895f0b43e678e764985dd1ab16be1fb496e726af8256b3a4514ce",
+          "checksum": "526608a508b12aeee79adffb4ecc8381ef1557d28b70635f0eacf5acacba3a1b",
           "intents": [
             "atmospheric",
             "buildup",
-            "breakdown"
+            "drop",
+            "breakdown",
+            "drop",
+            "breakdown",
+            "drop"
           ],
           "mode": "cold",
-          "wall_sec": 103.03
+          "tracker_sha256": "4c0ccad84e1c2db1aec8ffe315b5185c24b97285c0542372e90a95b8669e3162",
+          "wall_sec": 104.19
         },
         {
-          "cells_sha256": "d8885ea70afcf93c0350e51e4f9c1d555cd3e0f5f364a53e3cdb5810d4db6ab5",
-          "checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+          "cells_sha256": "f524fbfcc96895f0b43e678e764985dd1ab16be1fb496e726af8256b3a4514ce",
+          "checksum": "526608a508b12aeee79adffb4ecc8381ef1557d28b70635f0eacf5acacba3a1b",
           "intents": [
             "atmospheric",
             "buildup",
-            "breakdown"
+            "drop",
+            "breakdown",
+            "drop",
+            "breakdown",
+            "drop"
           ],
           "mode": "cold",
-          "wall_sec": 102.23
+          "tracker_sha256": "4c0ccad84e1c2db1aec8ffe315b5185c24b97285c0542372e90a95b8669e3162",
+          "wall_sec": 105.09
         },
         {
-          "cells_sha256": "d8885ea70afcf93c0350e51e4f9c1d555cd3e0f5f364a53e3cdb5810d4db6ab5",
-          "checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+          "cells_sha256": "f524fbfcc96895f0b43e678e764985dd1ab16be1fb496e726af8256b3a4514ce",
+          "checksum": "526608a508b12aeee79adffb4ecc8381ef1557d28b70635f0eacf5acacba3a1b",
           "intents": [
             "atmospheric",
             "buildup",
-            "breakdown"
+            "drop",
+            "breakdown",
+            "drop",
+            "breakdown",
+            "drop"
           ],
           "mode": "warm",
-          "wall_sec": 47.59
+          "tracker_sha256": "4c0ccad84e1c2db1aec8ffe315b5185c24b97285c0542372e90a95b8669e3162",
+          "wall_sec": 49.8
         },
         {
-          "cells_sha256": "d8885ea70afcf93c0350e51e4f9c1d555cd3e0f5f364a53e3cdb5810d4db6ab5",
-          "checksum": "d25e344fa65e394c0e71a7259365d1ce41d40abfb5f40c4e61584c7242a92212",
+          "cells_sha256": "f524fbfcc96895f0b43e678e764985dd1ab16be1fb496e726af8256b3a4514ce",
+          "checksum": "526608a508b12aeee79adffb4ecc8381ef1557d28b70635f0eacf5acacba3a1b",
           "intents": [
             "atmospheric",
             "buildup",
-            "breakdown"
+            "drop",
+            "breakdown",
+            "drop",
+            "breakdown",
+            "drop"
           ],
           "mode": "warm",
-          "wall_sec": 46.97
+          "tracker_sha256": "4c0ccad84e1c2db1aec8ffe315b5185c24b97285c0542372e90a95b8669e3162",
+          "wall_sec": 49.17
         }
       ],
+      "tracker_bytes_across_processes": true,
       "warm_across_processes": true
     }
   }
