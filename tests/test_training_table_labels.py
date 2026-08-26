@@ -936,9 +936,10 @@ def test_the_batch_tidies_every_file_one_simulation_leaves(tmp_path):
     mp3 = tmp_path / "0001.abc.mp3"
     derived = derived_cache_paths(str(mp3))
 
-    assert len(derived) == 2
+    assert len(derived) == 3
     assert any(path.endswith(".npy") for path in derived)
     assert any(path.endswith(".mertcells.npz") for path in derived)
+    assert any(path.endswith(".bartracker.npz") for path in derived)
     assert all(Path(path).parent == tmp_path for path in derived)
 
 
@@ -949,15 +950,16 @@ def test_pre_existing_caches_of_both_kinds_are_seen(tmp_path):
     audio.mkdir()
     (audio / "a.mp3.44100.npy").write_bytes(b"")
     (audio / "b.mp3.librosa.mertcells.npz").write_bytes(b"")
+    (audio / "c.mp3.librosa.bartracker.npz").write_bytes(b"")
 
-    assert len(find_caches(tmp_path)) == 2
+    assert len(find_caches(tmp_path)) == 3
 
 
 def test_the_batch_deletes_the_cell_sidecar_it_wrote_even_beside_an_old_decode_cache(tmp_path):
     from build_training_table import derived_cache_paths
 
     mp3 = tmp_path / "0001.abc.mp3"
-    decode, cells = derived_cache_paths(str(mp3))
+    decode, cells, _chunks = derived_cache_paths(str(mp3))
 
     job = _job_with(preexisting=(decode,))
     assert decode in job.preexisting
@@ -980,20 +982,22 @@ def test_keeping_cells_still_deletes_the_decode_cache(tmp_path):
     from build_training_table import derived_cache_paths, paths_to_delete
 
     mp3 = str(tmp_path / "0001.abc.mp3")
-    decode, cells = derived_cache_paths(mp3)
+    decode, cells, chunks = derived_cache_paths(mp3)
 
     doomed = paths_to_delete(_job_with(mp3_path=mp3, keep_cells=True))
 
     assert decode in doomed
     assert cells not in doomed
+    assert chunks not in doomed
 
 
 def test_keeping_cells_leaves_preexisting_files_alone(tmp_path):
     from build_training_table import derived_cache_paths, paths_to_delete
 
     mp3 = str(tmp_path / "0001.abc.mp3")
-    decode, cells = derived_cache_paths(mp3)
-    job = _job_with(mp3_path=mp3, preexisting=(decode, cells), keep_cells=True)
+    decode, cells, chunks = derived_cache_paths(mp3)
+    job = _job_with(mp3_path=mp3, preexisting=(decode, cells, chunks),
+                    keep_cells=True)
 
     assert paths_to_delete(job) == ()
 

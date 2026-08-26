@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
+
+# The worktree's own tree, not whatever the editable install points at.
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 SR, BUFFER = 44100, 256
 BUDGET_MS = 1000.0 * BUFFER / SR
