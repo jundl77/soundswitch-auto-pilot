@@ -669,9 +669,11 @@ def default_workers() -> int:
 # The serial cold path accumulates working set per track (#334: the singleton
 # chain's CUDA arena never shrinks and each track's object graph dies in
 # reference cycles the generational GC frees late), so every batch runs in
-# child processes recycled after a fixed number of tracks.  Determinism makes
-# recycling invisible: report bytes are proven equal cold or warm, in any
-# process (training/nn_determinism_proof.json).
+# child processes recycled after a fixed number of tracks.  Recycling is a
+# fresh executor per slice, not max_tasks_per_child -- the executor's own
+# respawn wedged on this box (worker exited, no replacement for minutes).
+# Determinism makes recycling invisible: report bytes are proven equal cold
+# or warm, in any process (training/nn_determinism_proof.json).
 TRACKS_PER_WORKER_PROCESS = 12
 
 
@@ -680,14 +682,16 @@ def run_simulations(jobs: list, workers: int, progress_every: int = 10) -> list:
         return []
     results = []
     started = time.time()
+    width = max(1, workers)
+    stride = TRACKS_PER_WORKER_PROCESS * width
     try:
-        with concurrent.futures.ProcessPoolExecutor(
-                max_workers=max(1, workers),
-                max_tasks_per_child=TRACKS_PER_WORKER_PROCESS) as pool:
-            for index, result in enumerate(pool.map(simulate_track, jobs, chunksize=1),
-                                           start=1):
-                results.append(result)
-                _print_progress(index, len(jobs), started, progress_every)
+        for lo in range(0, len(jobs), stride):
+            with concurrent.futures.ProcessPoolExecutor(max_workers=width) as pool:
+                for result in pool.map(simulate_track, jobs[lo:lo + stride],
+                                       chunksize=1):
+                    results.append(result)
+                    _print_progress(len(results), len(jobs), started,
+                                    progress_every)
     except concurrent.futures.process.BrokenProcessPool as exc:
         print(f"  WARNING: worker pool broke after {len(results)}/{len(jobs)} "
               f"track(s): {exc}.  Re-run to continue -- cached reports are kept.",
