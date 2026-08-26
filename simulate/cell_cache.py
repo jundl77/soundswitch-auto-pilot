@@ -231,10 +231,18 @@ class RecordingStream(PosteriorStream):
         self.stream.save()
 
 
-def recording_chain(chain, path, key: dict):
-    return chain._replace(
-        stream=RecordingStream(Recorder(chain.stream.stream, path, key),
-                               chain.stream.model))
+def recording_chain(chain, path, key: dict, tracker_plan=None):
+    from lib.section_chain import SectionStream
+
+    posteriors = RecordingStream(
+        Recorder(chain.stream.posteriors.stream, path, key),
+        chain.stream.posteriors.model)
+    tracker = chain.stream.tracker
+    if tracker is not None and tracker_plan is not None:
+        from simulate.tracker_cache import TrackerRecorder
+
+        tracker = TrackerRecorder(tracker, *tracker_plan)
+    return chain._replace(stream=SectionStream(posteriors, tracker))
 
 
 def _write_archive(path: Path, arrays: dict) -> bool:

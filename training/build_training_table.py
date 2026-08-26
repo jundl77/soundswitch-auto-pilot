@@ -433,16 +433,19 @@ def decode_cache_path(mp3_path: str) -> str:
 def derived_cache_paths(mp3_path: str) -> tuple:
     from simulate.cell_cache import sidecar_path
     from simulate.fake_audio_client import FileAudioClient
+    from simulate.tracker_cache import sidecar_path as tracker_sidecar_path
 
     return (decode_cache_path(mp3_path),
-            str(sidecar_path(mp3_path, FileAudioClient.decode_path)))
+            str(sidecar_path(mp3_path, FileAudioClient.decode_path)),
+            str(tracker_sidecar_path(mp3_path, FileAudioClient.decode_path)))
 
 
 def paths_to_delete(job: SimJob) -> tuple:
     return tuple(
         path for path in derived_cache_paths(job.mp3_path)
         if path not in job.preexisting
-        and not (job.keep_cells and path.endswith(".mertcells.npz"))
+        and not (job.keep_cells and path.endswith((".mertcells.npz",
+                                                   ".bartracker.npz")))
     )
 
 
@@ -635,7 +638,8 @@ def find_caches(data_dir: Path) -> set:
     if not audio_dir.exists():
         return set()
     return {str(path) for path in audio_dir.glob("*.npy")} | {
-        str(path) for path in audio_dir.glob("*.mertcells.npz")}
+        str(path) for path in audio_dir.glob("*.mertcells.npz")} | {
+        str(path) for path in audio_dir.glob("*.bartracker.npz")}
 
 
 _CORES_RESERVED_FOR_OS = 2

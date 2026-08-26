@@ -14,6 +14,8 @@ spotify_details.json
 # D12's extractor cell cache (<audio>.<decoder>.mertcells.npz), the same rule one
 # layer up: derived from the audio, machine-local, never committed.
 *.mertcells.npz
+# The bar tracker's chunk cache, same rule again (simulate/tracker_cache.py).
+*.bartracker.npz
 report.json
 # The Raveform corpus: ~90 GB, machine-local, never committed.  The ten eval-set
 # tracks are the deliberate exception and live in training/eval_audio/.
