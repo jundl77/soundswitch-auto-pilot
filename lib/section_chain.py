@@ -32,6 +32,72 @@ class SectionChain(NamedTuple):
             stop()
 
 
+class SectionStream:
+    """The posterior stream and the optional bar tracker as one stage.
+
+    One object for both entry points: the GPU thread drives feed/due/run_pass,
+    the inline simulation drives push_audio, and the mixed item list (Posterior
+    and TrackerChunk) rides the existing hand-off unchanged.
+    """
+
+    def __init__(self, posteriors, tracker=None) -> None:
+        self.posteriors = posteriors
+        self.tracker = tracker
+
+    @property
+    def stream(self):
+        return self.posteriors.stream
+
+    @property
+    def model(self):
+        return self.posteriors.model
+
+    def push_audio(self, samples):
+        from lib.analyser.section_model import Drained
+
+        self.feed(samples)
+        out: list = []
+        while self.due():
+            out.extend(self.run_pass())
+        return Drained(False, out)
+
+    def feed(self, samples) -> None:
+        self.posteriors.feed(samples)
+        if self.tracker is not None:
+            self.tracker.feed(samples)
+
+    def due(self) -> bool:
+        return (self.posteriors.due()
+                or (self.tracker is not None and self.tracker.due()))
+
+    def run_pass(self) -> list:
+        if self.posteriors.due():
+            return self.posteriors.run_pass()
+        if self.tracker is not None and self.tracker.due():
+            return self.tracker.run_pass()
+        return []
+
+    def resync(self):
+        record = self.posteriors.resync()
+        if self.tracker is not None:
+            self.tracker.resync()
+        return record
+
+    def set_encoder(self, encoder) -> None:
+        self.posteriors.set_encoder(encoder)
+
+    def reset(self) -> None:
+        self.posteriors.reset()
+        if self.tracker is not None:
+            self.tracker.reset()
+
+    def stop(self) -> None:
+        for stage in (self.posteriors, self.tracker):
+            stop = getattr(stage, "stop", None)
+            if stop is not None:
+                stop()
+
+
 def corpus_dir() -> Path:
     import sys
 
@@ -57,6 +123,20 @@ def artifacts_present(data_dir=None) -> bool:
     except (OSError, ValueError) as error:
         logging.warning(f'[chain] cannot resolve the corpus directory '
                         f'({error!r}) — treating the model as absent')
+        return False
+
+
+def generation_dir(data_dir=None) -> Path:
+    root = Path(data_dir) if data_dir is not None else corpus_dir()
+    return root / "models" / _GENERATION
+
+
+def bar_tracker_present(data_dir=None) -> bool:
+    from lib.analyser import bar_tracker
+
+    try:
+        return bar_tracker.tracker_present(generation_dir(data_dir))
+    except (OSError, ValueError):
         return False
 
 
@@ -127,7 +207,7 @@ def _check_class_space(priors, model_classes, config_classes) -> None:
 
 def build_section_chain(data_dir=None, *, device: str | None = None,
                         fp16: bool = True, watchdog=None,
-                        extractor=None) -> SectionChain:
+                        extractor=None, tracker=None) -> SectionChain:
     from lib.analyser import mert_stream as M
     from lib.analyser.section_model import PosteriorStream, SectionModel
     from lib.engine.section_decoder import (SHIPPING_DECODER_CONFIG, Priors,
@@ -156,22 +236,46 @@ def build_section_chain(data_dir=None, *, device: str | None = None,
 
         stage = M.MertStream(build_encoder(), geometry=geometry)
 
-    stream = PosteriorStream(stage, model)
+    if tracker is None:
+        tracker = _build_tracker(data_dir, device)
+
+    stream = SectionStream(PosteriorStream(stage, model), tracker)
     if watchdog is not None:
         from lib.analyser.gpu_stage import GpuStage
 
         stream = GpuStage(stream, watchdog, reinit=build_encoder)
         stream.start()
 
+    phase = None
+    if tracker is not None:
+        from lib.engine.bar_phase import BarPhaseFusion
+
+        phase = BarPhaseFusion(tracker, watchdog)
+
     feature_latency_sec = (geometry.margin_sec + geometry.hop_sec
                            + head.future_sec)
     decoder = SectionDecoder(priors, params,
-                             feature_latency_sec=feature_latency_sec)
+                             feature_latency_sec=feature_latency_sec,
+                             phase=phase)
     logging.info(f'[chain] {MODEL_VERSION} on {_where(stage)} | '
                  f'feature latency {feature_latency_sec:.4f}s '
                  f'(F {geometry.margin_sec:g} + hop {geometry.hop_sec:g} + '
-                 f'head {head.future_sec:g})')
+                 f'head {head.future_sec:g}) | bar grid: '
+                 f'{"counting" if tracker is None else "fused tracker"}')
     return SectionChain(stream, decoder, feature_latency_sec)
+
+
+def _build_tracker(data_dir, device):
+    """The tracker is optional-absent, never optional-broken: no artifacts is
+    the counting grid, artifacts that fail verification are fatal (#332)."""
+    from lib.analyser import bar_tracker
+
+    generation = generation_dir(data_dir)
+    if not bar_tracker.tracker_present(generation):
+        logging.info('[chain] no bar tracker artifacts — the bar grid is the '
+                     'counting rule')
+        return None
+    return bar_tracker.load_bar_tracker(generation, device=device)
 
 
 def _where(stage) -> str:

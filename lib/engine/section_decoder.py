@@ -73,7 +73,8 @@ class BarObservation(NamedTuple):
 
 class SectionDecoder:
     def __init__(self, priors: Priors, params: DecodeParams | None = None, *,
-                 feature_latency_sec: float = 0.0) -> None:
+                 feature_latency_sec: float = 0.0, phase=None) -> None:
+        self._phase = phase
         self.params = params or DecodeParams()
         if self.params.min_coverage > 1:
             raise ValueError(
@@ -105,6 +106,9 @@ class SectionDecoder:
             self._bar_position: int = _FIRST_BEAT_BAR_POSITION
             self._last_beat_sec: float | None = None
             self._committed_class: int | None = None
+            self._phase_prev: int | None = None
+            if self._phase is not None:
+                self._phase.reset()
         self._cells: deque = deque()
         self._newest_cell_sec: float = -np.inf
         self._restart_committer_at(0)
@@ -161,6 +165,8 @@ class SectionDecoder:
 
     def push_beat(self, at_sec: float) -> list:
         at_sec = float(at_sec)
+        if self._phase is not None:
+            return self._push_tracked_beat(at_sec)
         if self._re_anchoring(at_sec):
             self._re_anchor(at_sec)
         elif self._bar_position == 0:
@@ -168,6 +174,25 @@ class SectionDecoder:
         self._bar_position = (self._bar_position + 1) % BEATS_PER_BAR
         self._last_beat_sec = at_sec
         return self._advance()
+
+    def _push_tracked_beat(self, at_sec: float) -> list:
+        """The fused grid: bar lines where the committed position wraps to 0
+        (phase_tracking.edges_from_positions' rule, the one #331 decoded)."""
+        if self._re_anchoring(at_sec):
+            self._re_anchor(at_sec)
+            self._phase.reanchor(at_sec)
+            self._phase_prev = 0
+        else:
+            position = self._phase.push_beat(at_sec)
+            if position == 0 and self._phase_prev != 0:
+                self._append_edge(at_sec)
+            self._phase_prev = position
+        self._last_beat_sec = at_sec
+        return self._advance()
+
+    def push_evidence(self, chunk) -> None:
+        if self._phase is not None:
+            self._phase.push_chunk(chunk)
 
     def _re_anchoring(self, at_sec: float) -> bool:
         return (self._last_beat_sec is not None

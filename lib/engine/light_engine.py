@@ -10,6 +10,7 @@ from lib.engine.event_buffer import SILENCE_TRIGGER, STOP_PERSISTENCE_SEC
 from lib.clients.midi_client import SETTLE_SEC, MidiClient
 from lib.clients.os2l_client import Os2lClient
 from lib.clients.overlay_client import OverlayClient, OverlayEffect
+from lib.analyser.bar_tracker import TrackerChunk
 from lib.analyser.music_analyser import MusicAnalyser
 from lib.analyser.music_analyser_handler import IMusicAnalyserHandler
 from lib.clock import Clock, SYSTEM_CLOCK
@@ -219,6 +220,9 @@ class LightEngine(IMusicAnalyserHandler):
             self._committed = None
             self._publish_decoder_state(None)
         for posterior in drained.posteriors:
+            if isinstance(posterior, TrackerChunk):
+                self.section_decoder.push_evidence(posterior)
+                continue
             await self._commit(self.section_decoder.push_posterior(
                 posterior.time_sec, posterior.posterior, posterior.boundary))
             await self._refresh_on_boundary(posterior.boundary,
