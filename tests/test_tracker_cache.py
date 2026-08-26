@@ -47,9 +47,9 @@ class _FakeTracker:
 def _key(tmp_path):
     audio = tmp_path / "song.mp3"
     audio.write_bytes(b"x" * 100)
-    return audio, tracker_cache.cache_key(RECORD, source_rate=44100,
-                                          audio_path=audio,
-                                          decode_path="librosa")
+    return audio, tracker_cache.cache_key(
+        RECORD, source_rate=44100, audio_path=audio, decode_path="librosa",
+        backend={"device": "cpu", "precision": "fp32"})
 
 
 def _record_session(path, key):
@@ -95,6 +95,8 @@ def test_misses_are_named(tmp_path):
     assert tracker_cache.open_replay(path, changed)[1] == "miss_geometry"
     changed = dict(key, decode="ffmpeg")
     assert tracker_cache.open_replay(path, changed)[1] == "miss_decode_path"
+    changed = dict(key, backend={"device": "cuda", "precision": "fp32"})
+    assert tracker_cache.open_replay(path, changed)[1] == "miss_backend"
     assert tracker_cache.open_replay(path, key,
                                      expected_samples=9999)[1] == "miss_truncated"
 

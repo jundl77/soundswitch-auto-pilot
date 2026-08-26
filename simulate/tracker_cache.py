@@ -44,7 +44,9 @@ def sidecar_path(audio_path, decode_path: str) -> Path:
 
 
 def cache_key(record: dict, *, source_rate: int, audio_path,
-              decode_path: str) -> dict:
+              decode_path: str, backend: dict | None = None) -> dict:
+    from lib import section_chain
+
     stat = Path(audio_path).stat()
     return {
         "schema": SCHEMA,
@@ -52,6 +54,10 @@ def cache_key(record: dict, *, source_rate: int, audio_path,
         "decode": str(decode_path),
         "checkpoint_sha256": record["sha256"],
         "geometry": dict(record["geometry"]),
+        # The tracker runs fp32, but which device computed a chunk is part of
+        # what it is -- cell_cache's own rule.
+        "backend": dict(backend if backend is not None
+                        else section_chain.resolve_backend(fp16=False)),
         "source_rate": int(source_rate),
         "audio_size": stat.st_size,
         "audio_mtime": stat.st_mtime,
@@ -64,6 +70,7 @@ def miss_reason(stored: dict, wanted: dict) -> str | None:
                           ("decode", "miss_decode_path"),
                           ("checkpoint_sha256", "miss_checkpoint"),
                           ("geometry", "miss_geometry"),
+                          ("backend", "miss_backend"),
                           ("source_rate", "miss_source_rate"),
                           ("audio_size", "miss_audio_changed"),
                           ("audio_mtime", "miss_audio_changed")):
