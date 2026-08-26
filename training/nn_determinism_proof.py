@@ -26,6 +26,13 @@ def sidecar_for(mp3: str) -> Path:
     return sidecar_path(mp3, FileAudioClient.decode_path)
 
 
+def tracker_sidecar_for(mp3: str) -> Path:
+    from simulate.fake_audio_client import FileAudioClient
+    from simulate.tracker_cache import sidecar_path
+
+    return sidecar_path(mp3, FileAudioClient.decode_path)
+
+
 def sha256_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -37,8 +44,10 @@ async def run_once(mp3: str, mode: str) -> dict:
     from simulate.runner import run_fast_simulation
 
     sidecar = sidecar_for(mp3)
+    tracker_sidecar = tracker_sidecar_for(mp3)
     if mode == "cold":
         sidecar.unlink(missing_ok=True)
+        tracker_sidecar.unlink(missing_ok=True)
 
     wall = time.monotonic()
     _, event_buffer, command_queue = await run_fast_simulation(
@@ -51,6 +60,8 @@ async def run_once(mp3: str, mode: str) -> dict:
         "checksum": report_checksum(report),
         "cells_sha256": (sha256_of(sidecar.read_bytes())
                          if sidecar.exists() else None),
+        "tracker_sha256": (sha256_of(tracker_sidecar.read_bytes())
+                           if tracker_sidecar.exists() else None),
         "intents": [block["intent"] for block in report["intents"]],
         "wall_sec": round(wall, 2),
     }
@@ -80,6 +91,8 @@ def prove(mp3: str) -> dict:
         "cold_matches_warm": report_same(cold_a, warm_a),
         "extractor_bytes_across_processes":
             cold_a["cells_sha256"] == cold_b["cells_sha256"],
+        "tracker_bytes_across_processes":
+            cold_a["tracker_sha256"] == cold_b["tracker_sha256"],
         "checksum": cold_a["checksum"],
     }
 

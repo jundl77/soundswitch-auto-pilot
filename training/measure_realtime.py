@@ -93,7 +93,7 @@ async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
     stage = chain.stream
 
     pass_ms: list = []
-    inner = stage.posteriors.run_pass
+    inner = stage.posteriors.posteriors.run_pass
 
     def timed_pass():
         started = time.perf_counter()
@@ -102,7 +102,8 @@ async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
         finally:
             pass_ms.append((time.perf_counter() - started) * 1000.0)
 
-    stage.posteriors.run_pass = timed_pass
+    stage.posteriors.posteriors.run_pass = timed_pass
+    tracker = stage.posteriors.tracker
 
     midi, os2l, overlay = StubMidiClient(), StubOs2lClient(), StubOverlayClient()
     queue = DelayedCommandQueue(PLAYBACK_DELAY_SEC)
@@ -174,6 +175,11 @@ async def _paced_loop(audio: np.ndarray, out_rows: list) -> dict:
         'gpu_overflows': int(stage.overflows),
         'gpu_reinits': int(stage.reinits),
         'gpu_resyncs': int(stage.resyncs),
+        'tracker_pass_ms': (spread(list(tracker.pass_sec), 1000.0)
+                            if tracker is not None else None),
+        'tracker_passes': (int(tracker.passes) if tracker is not None else 0),
+        'tracker_alive': (bool(tracker.alive) if tracker is not None else None),
+        'tracker_stride_ms': 2500.0,
         'queue_depth': spread(depths),
         'queue_capacity': int(stage._queue_passes),
         'pacing_error_ms': spread(pacing_ms),
@@ -224,6 +230,15 @@ def main() -> None:
               f'max {gpu["max"]:.1f} ms  '
               f'({100 * gpu["mean"] / paced["gpu_hop_ms"]:.1f}% of the '
               f'{paced["gpu_hop_ms"]:.0f} ms hop)')
+        if paced['tracker_pass_ms']:
+            tracker_row = paced['tracker_pass_ms']
+            print(f'bar tracker: {paced["tracker_passes"]} passes, '
+                  f'mean {tracker_row["mean"]:.1f} ms  '
+                  f'p99 {tracker_row["p99"]:.1f} ms  '
+                  f'max {tracker_row["max"]:.1f} ms  '
+                  f'({100 * tracker_row["mean"] / paced["tracker_stride_ms"]:.1f}% '
+                  f'of the {paced["tracker_stride_ms"]:.0f} ms stride, '
+                  f'alive={paced["tracker_alive"]})')
         depth = paced['queue_depth']
         print(f'hand-off  : depth mean {depth["mean"]:.3f}  max {depth["max"]:.0f} '
               f'of {paced["queue_capacity"]}, {paced["gpu_overflows"]} overflow(s)')
