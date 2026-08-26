@@ -11,6 +11,7 @@ What lives here:
 |---|---|
 | `madmom_rhythm.py` | 256-sample buffers -> beat instants and a tempo |
 | `mert_stream.py` | 44.1 kHz audio -> pooled label cells, one encoder pass per hop |
+| `bar_tracker.py` | 44.1 kHz audio -> downbeat activations for the newest trailing-window region, one Beat This forward per stride |
 | `section_model.py` | one cell -> one class posterior and one boundary score |
 | `gpu_stage.py` | the two above, on their own thread, and what the show does when they stop |
 | `drift_watchdog.py` | pacing and stage health -> one shed level |
@@ -405,25 +406,16 @@ both have moved:
 
 ## Known Limitations
 
-- **There is no live downbeat tracker, and the bar grid is counted.** Bars are
-  four beats, counted from one beat into the stream rather than from its first
-  beat: madmom's online warm-up costs the first annotated beat, so the first
-  beat the runtime sees is already bar position 1 and calling it 0 rotated the
-  grid before a single slip had happened. Measured on the production beat stream
-  the count costs about 0.14 crispness@0.5 s against an expert grid, the anchor
-  recovers about a third of that, and **all** the rest is placement -- the class
-  decisions are nearly grid-invariant; they land at a displaced instant. The
-  remaining cause is phase slips (a median of two per track), not beat timing,
-  whose correlation with the damage is approximately zero. This is a
-  phase-*tracking* problem, not a one-shot phase *decision*: an oracle frozen
-  phase covers only about two thirds of a track, and a boundary-logit phase vote
-  lost to plain counting on every configuration tried, twice, on two unrelated
-  designs.
-  An offline downbeat head and bar-phase decoder do exist in `training/nn/`,
-  unwired and parked: their v1 scoring ran on the aubio beat stream and was
-  removed when madmom replaced it (owner decisions #81/#133), so
-  `training/nn/CLAUDE.md` carries the removal note and `docs/migration-evidence.md`
-  the successor numbers.
+- **The bar grid is tracked; counting is the degradation state.** The bar
+  tracker (`bar_tracker.py` + `lib/engine/bar_phase.py`, adopted by #332 off
+  the #322-#331 campaign) supplies downbeat evidence that the cyclic bar-phase
+  HMM fuses with the beat count, forward-only; with no evidence the grid is
+  exactly the counted one, warm-up anchor included -- the measured first-beat
+  prior makes the old fallback the fixed point of the new mechanism. What the
+  tracker does not fix is the beat stream itself: identical evidence on expert
+  beats scores about 0.11 higher downbeat F1, so madmom's slips are now the
+  live grid's binding cost. The parked offline downbeat head in `training/nn/`
+  stays parked; the shipped tracker is the c2a fine-tune.
 - **Section-boundary latency is now a chain, not a vote window.** A committed
   intent trails the audio it describes by the feature latency plus the
   committer's lag -- around 13.7 s at the corpus median bar, and proportional to
@@ -452,10 +444,9 @@ both have moved:
 
 ## Future Work
 
-- **Continuous bar tracking.** The single largest lever on the show's crispness,
-  and the one thing the integration shipped a priced fallback for. 57 of 215
-  validation tracks already need nothing; the rest need a tracker that
-  re-anchors after a slip, which nothing on the measured estimator surface does.
+- **The beat source.** With bar tracking shipped, the remaining live-grid cost
+  is madmom's own slips -- the fused evidence on expert beats scores ~0.11
+  higher than on the live stream.
 - **Export MERT to ONNX**, dropping `torch` and `transformers` from the live
   path. Removes the last training-shaped dependency from the show and a large
   amount of install; unmeasured, so it follows the model rather than leading it.
