@@ -525,6 +525,23 @@ def simulate_track(job: SimJob) -> SimResult:
                 os.unlink(path)
             except OSError:
                 pass
+        _release_track_memory()
+
+
+def _release_track_memory() -> None:
+    """Collect the track's cyclic garbage now and hand cached CUDA blocks back
+    to the driver -- numpy-heavy cycles otherwise wait on a gen-2 pass, and on
+    an oversubscribed card the cached blocks live in host RAM (WDDM spill)."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def load_ok_rows(data_dir: Path) -> list:
@@ -649,19 +666,24 @@ def default_workers() -> int:
     return max(1, (os.cpu_count() or 4) - _CORES_RESERVED_FOR_OS)
 
 
+# The serial cold path accumulates working set per track (#334: the singleton
+# chain's CUDA arena never shrinks and each track's object graph dies in
+# reference cycles the generational GC frees late), so every batch runs in
+# child processes recycled after a fixed number of tracks.  Determinism makes
+# recycling invisible: report bytes are proven equal cold or warm, in any
+# process (training/nn_determinism_proof.json).
+TRACKS_PER_WORKER_PROCESS = 12
+
+
 def run_simulations(jobs: list, workers: int, progress_every: int = 10) -> list:
     if not jobs:
         return []
     results = []
     started = time.time()
-    if workers <= 1:
-        for index, job in enumerate(jobs, start=1):
-            results.append(simulate_track(job))
-            _print_progress(index, len(jobs), started, progress_every)
-        return results
-
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=max(1, workers),
+                max_tasks_per_child=TRACKS_PER_WORKER_PROCESS) as pool:
             for index, result in enumerate(pool.map(simulate_track, jobs, chunksize=1),
                                            start=1):
                 results.append(result)
