@@ -15,8 +15,8 @@ $Stamp    = Get-Date -Format "yyyyMMdd-HHmmss"
 $StateFile = "$Camp\state.json"
 $SupLog   = "$Camp\logs\supervisor.$Stamp.log"
 $DiskFloorGB = 20.0
-$RamGateMB   = 900       # D5: available-MB gate; the 2 GB law is already breached by owner processes (1.28 GB at launch)
-$RamBrakeMB  = 400       # emergency brake: 3 consecutive minutes under this kills the child
+$RamGateMB   = 600       # D5 rev2: owner directive "start everything"; GPU freed by show exit; brake below covers the floor
+$RamBrakeMB  = 300       # 3 consecutive minutes under this kills the child
 $Overlay  = "$Camp\drop_demotion_overlay.json"
 
 New-Item -ItemType Directory -Force "$Camp\logs" | Out-Null
