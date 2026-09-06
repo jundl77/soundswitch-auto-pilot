@@ -1036,6 +1036,15 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 | `nn/sweep.py` | cached posteriors -> the decoder parameter search and `<data-dir>/models/v1/decoder_config.json` (best val macro-F1 subject to the baseline's flicker and the latency budget) |
 | `nn/downbeat_*.py`, `nn/evaluate_downbeat.py`, `nn/compare_runs.py` | the downbeat chain: a second head, a bar-phase decoder and their verdict harness. Offline and parked -- nothing in `lib/` imports any of it, and the show counts bars instead. Mapped in `training/nn/CLAUDE.md` |
 | `phase_tracking/*.py` | the live bar grid priced without a GPU: candidate phase trackers over the cached madmom streams, a no-decode sweep on phase accuracy, and a gate that decodes each candidate on the shipping config against the shipping fallback. It produced the anchor the runtime now uses; `tests/test_section_decoder_equivalence.py` holds the two grids together |
+| `third_party/tp_record.py` | the quarantined third-party annotation record: its shape, its IO, its invariants, and the per-source filename that *is* the quarantine |
+| `third_party/rwc_convert.py` | AIST CHORUS labels + the 2025 preprocessed beat grid + RWC metadata -> one third-party record per RWC-Pop track, labels verbatim |
+| `third_party/salami_convert.py` | SALAMI 2.0 **raw** annotator files -> third-party records: all three layers kept, unnamed and silent spans masked rather than sectioned, no beat grid written |
+| `third_party/harmonix_convert.py` | the Harmonix Set's segment and beat files -> third-party records; expert grid written straight through, odd-meter and mid-bar tracks counted and named |
+| `third_party/salami_title_join.py` | recover title-named SALAMI audio already on disk by joining filename to id on two independent signals; originals are never moved |
+| `third_party/tp_admission.py` | `hand_label_admission` for annotations we did not author: same gate, same published beat-grid format, every output inside the quarantine and no split assigned |
+| `third_party/tp_fetch_queue.py` | SALAMI's remainder + the Harmonix selection -> one merged fetch queue, because there is one downloader |
+| `third_party/tp_download.py` | `raveform_download` for that queue: same politeness contract, same failure classifier and retry set imported rather than copied, keyed on track id |
+| `third_party/tp_supervisor.py` | the patient unattended resume for it, reading the downloader's own retry set and writing a fresh cycle log per relaunch |
 
 `clean_manifest.csv` is the boundary between "audio we happen to have" and "audio we are willing to learn from". Only its `ok` rows may feed a training table or an evaluation run.
 
@@ -1057,7 +1066,7 @@ Decisions that belong here rather than in the code:
 - **Checksums are a baseline, not a verification.** YouTube publishes no canonical hashes, so there is nothing to check the corpus *against*. `checksums.sha256` (sha256sum format, OK files only) records what passed the decode check on the day it passed, so a later re-validation can prove the bytes have not drifted. That baseline plus the decode gate is the entire correctness mechanism this corpus can have.
 - **Recovery is selective, not blanket.** A plain downloader re-run skips every recorded failure and a `--retry-failed` re-run re-polls genuinely dead videos forever. So the failure reasons split into *permanent* (the video is gone, private, age-gated or geo-blocked) and *transient* (YouTube refused this client). Only the transient ones — plus `other`, the unclassified bucket, which is far likelier to be something unnamed than a video that vanished silently — are worth re-attempting, and the script derives its own retry hints from that same set so its advice can never be narrower than the advice that works.
 - **A permanent condition always outranks a transient one.** YouTube's permanent errors habitually carry transient-looking text: a private video ends with "Use --cookies-from-browser", an age gate opens with "Sign in to confirm your age". Every mis-classification found in this pipeline was a transient bucket sitting above a permanent one and swallowing a dead video, and the cost was never the wrong label alone — retry passes re-poll it forever and a run of them aborts a healthy run. The bucket table is ordered permanent-first for that reason, and tests use the wording yt-dlp really emits, since a strawman fixture is what let those bugs survive.
-- **A 403 on the media URL is our problem, not YouTube's policy.** It means a signature/nsig challenge could not be solved, which is a property of the toolchain, not of the video. It gets its own reason bucket rather than folding into `bot_check` because the two demand opposite remedies, and reporting one as the other sends the owner after credentials they do not need. **The remedy that was actually needed is patience**: all 68 recorded 403 events resolved on re-attempt, which is why they sit in a retryable bucket rather than with the dead videos. The diagnosis, for the record: a JS runtime that is installed but not *visible to the running process* explains only 19 of them (a shell started before the install carries a stale PATH — "installed" must be checked from the runner). The other 43 happened while a runtime *was* visible, and yt-dlp names the cause itself in four of those records — its remote challenge-solver components are opt-in and were not enabled. That was never acted on because it never had to be. If a future refresh hits a 403 wall that survives repeated patient re-runs, *then* it becomes a decision; nothing is pre-built for it here.
+- **A 403 on the media URL is our problem, not YouTube's policy.** It means a signature/nsig challenge could not be solved, which is a property of the toolchain, not of the video. It gets its own reason bucket rather than folding into `bot_check` because the two demand opposite remedies, and reporting one as the other sends the owner after credentials they do not need. **The remedy that was actually needed is patience**: all 68 recorded 403 events resolved on re-attempt, which is why they sit in a retryable bucket rather than with the dead videos. The diagnosis, for the record: a JS runtime that is installed but not *visible to the running process* explains only 19 of them (a shell started before the install carries a stale PATH — "installed" must be checked from the runner). The other 43 happened while a runtime *was* visible, and yt-dlp names the cause itself in four of those records — its remote challenge-solver components are opt-in and were not enabled. That was never acted on because it never had to be. **That future refresh has now happened, and patience was not the remedy.** The third-party fetch hit a 403 wall that failed 3 of 3 patient re-attempts within seconds — no wait, no jitter and no re-run cleared it, because the cause was on YouTube's side rather than ours: SABR was forced on the web clients and yt-dlp fell back to a client whose media URL 403s, a shift the then-current stable release predated. A newer build cleared it 3 of 3. So the remedy is **toolchain currency**, and the bucket stays retryable because a stale toolchain and a transient refusal are indistinguishable from the record — what changed is that "re-run it later" is now the second thing to try, not the only one. Nothing else moves: no cookies, no credentials, no IP tricks, ever.
 - **Running it detached, and stopping it.** The long sweeps run as detached OS processes that outlive the session. Two things about that are not guessable and cost real data when guessed wrong. **Stopping requires `taskkill /PID <pid> /T`** — the venv's `python.exe` is a trampoline that re-execs the real interpreter, so killing the recorded PID alone leaves the actual downloader orphaned and still fetching, invisible to the next run's bookkeeping. **Re-issuing the detached launch command truncates `download.log`** — the redirect reopens the file, so a relaunch silently destroys the previous run's evidence. Redirect to a new filename per cycle (the supervisor does this: `download.cycle<N>.log`).
 - **The corpus data directory holds *ops copies* of the scripts, and they drift.** Both `raveform_download.py` and `raveform_supervisor.py` are copied next to the corpus, and a supervised refresh runs **those copies, not the branch**. So whenever either changes, refresh both and confirm it: `cmp <data-dir>/raveform_download.py training/raveform/raveform_download.py` and the same for `raveform_supervisor.py` — they must be byte-identical to the branch blob. This is not hypothetical. The supervisor used to live *only* in the gitignored data directory, unversioned and unreviewable, and the ops downloader beside it carried the pre-`http_403` classifier while the supervisor hardcoded `--retry-reasons bot_check`; the next refresh would have stranded every recoverable 403 while the branch looked correct. Both files are now on the branch, and the supervisor reads `RETRYABLE_REASONS` out of the downloader sitting beside it rather than keeping its own copy — but the copy step itself is still manual, which is why the `cmp` is written down.
 - **A beat is labelled by its own section, never by a merged run.** Merging adjacent same-label sections answers "how long is a musical section"; it must not answer "what is playing at time t". A merged run's *span* can swallow a dropped `end` sentinel sitting between two members, and that time is explicitly not the surrounding label's. So the beat-to-label join looks up the individual published section (clamped) and uses the merged runs only to find where the labelled region of a track starts and stops.
@@ -1069,7 +1078,78 @@ Decisions that belong here rather than in the code:
 - **The corpus stops short of the analyser's self-reset.** `MusicAnalyser` throws its rolling state away every 15 minutes, and the mel exporter has no such reset, so past that horizon a track's beats and its features describe the same audio from different states — and the join would produce wrong rows with no error and no counter. Tracks at or past it are dropped from the build with a line saying why. The corpus tops out 0.11 s under it, so this is a live edge rather than a hypothetical one.
 - **The batch cleans up after itself, and only after itself.** The simulation now leaves *two* derived files beside each mp3 -- the decoded samples (~7.7x the mp3) and D12's extractor cell sidecar (~25 MB a track, ~35 GiB over the corpus) -- and neither buys this batch anything, because it simulates a track at most once. Each worker deletes both as soon as the features are out, in a `finally` so a failed track cannot leak one. Files that existed before the run started are left where they were -- tidying is scoped to what this run created.
 - **Feature parity with the runtime used to be enforced by a golden test, and the thing it guarded is gone.** The mel exporter rebuilt the analyser's aubio objects rather than borrowing them, and a unit test fed both sides the same buffers and demanded identical energies. The filterbank is deleted, so the exporter is too: sidecars on disk are now a *record* of the corpus's mel grid rather than something reproducible, and `load_sidecar` refuses one whose recorded geometry disagrees. The live model's own train==deploy question moved to the encoder's resampler, where it is measured the same way (see D4 in the ML/DSP section).
-- **Prerequisites.** `yt-dlp` and `ffmpeg` on PATH, plus a JavaScript runtime (Deno or Node) *visible to the running process*. Installed is not the same as visible: a shell or detached process started before the install inherits a stale environment block, so check from the actual runner, not from a fresh terminal. Downloads **can** fail with `HTTP Error 403: Forbidden` — not *will*: the whole 1,387-track corpus was fetched under exactly this setup, and every 403 that occurred was cleared by patient re-attempts.
+- **Prerequisites.** `yt-dlp` and `ffmpeg` on PATH, plus a JavaScript runtime (Deno or Node) *visible to the running process*. Installed is not the same as visible: a shell or detached process started before the install inherits a stale environment block, so check from the actual runner, not from a fresh terminal. Downloads **can** fail with `HTTP Error 403: Forbidden` — not *will*: the whole 1,387-track corpus was fetched under exactly this setup, and every 403 that occurred *there* was cleared by patient re-attempts. That is a fact about that refresh and not a rule — the 403 bullet above records a later wall that patience could not clear at all, and the yt-dlp build itself is the variable.
+
+### Third-party section annotations, and why they are quarantined
+
+The corpus is Techno-heavy and contains no pop at all, so three outside sources
+of expert section annotation were authorised to widen it: **RWC-Pop**, **SALAMI**
+and the **Harmonix Set**. `training/third_party/` is the acquisition half of
+that, and it stops there on purpose -- **acquiring a label is a separate decision
+from learning from it**, and nothing here maps a third-party label into the
+show's nine classes.
+
+- **They get their own source kind, and they must never be `*.hand.json`.** That
+  suffix carries the owner's-ear merge precedence, which wins by *filename* and
+  never consults a source field, so a converted RWC section written there would
+  silently outrank the published annotation for any track it collided with. The
+  record shape is therefore a per-source suffix sitting beside the hand records,
+  and `tp_record.py` is the one place that shape is defined.
+- **The exclusion from every corpus consumer is structural, not policed.** The
+  merged annotation view globs a strict hand suffix, so a third-party record is
+  invisible to it -- and therefore to the training-table join, the split builder,
+  the priors refit, the manifest and the acquisition validator -- without any of
+  them gaining a check. That was *verified* against the artifacts rather than
+  assumed, which is what makes the quarantine cost no gate: there is no filter to
+  forget to apply, because nothing looks.
+- **What placement quarantines is the audio and the two manifests.**
+  `manifest.csv` and `clean_manifest.csv` are read *wholesale* by split candidacy
+  and by the corpus validator, so a third-party row in either would enter the
+  corpus's own accounting immediately; they and the audio live in a third-party
+  directory instead. Annotation JSONs and beat grids stay in the normal
+  directories precisely because those are only ever read by exact path from a
+  tracks list a quarantined id is absent from.
+- **Labels are stored exactly as the source states them.** Mapping into the
+  show's label space is a later, registered training decision; performing it at
+  storage time destroys the ground truth and cannot be undone. So RWC keeps
+  `chorus A` and `pre-chorus`, SALAMI keeps its similarity variant letters, and
+  Harmonix keeps its 126 lowercase function names.
+- **Expert beats are kept and never regenerated.** madmom's offline tracker runs
+  only for a source that ships no grid -- SALAMI. RWC and Harmonix carry
+  hand-checked downbeats, and running a tracker over them would replace
+  measurement with estimate.
+- **A source's grid may not fit the show's assumptions, and that is reported
+  rather than folded.** Both RWC and Harmonix contain bars longer than four
+  beats, and Harmonix has tracks that begin mid-bar. Folding either into fours
+  would fabricate downbeats no annotator marked, so the ingestion counts and
+  names those tracks and leaves the ruling to the owner.
+- **An unlabelled span is a hole, not a tail.** SALAMI's `no_function` means the
+  annotator named nothing there, so it becomes an explicit masked span rather
+  than a section, and a beat inside one carries its own sentinel in the grid.
+  Reusing the shared `end` sentinel would have made an *interior* hole
+  indistinguishable from the end of the annotation, and any consumer that
+  truncates at the first sentinel would then have discarded the back half of the
+  track. This is the corpus's existing unlabelled-audio rule made visible instead
+  of inferred.
+- **The same cleanliness gate admits a third-party track as a downloaded one.**
+  Duration is decoded and measured, never copied from a record; a failed gate is
+  recorded with its reason and refused. RWC is the evidence that the path works
+  end to end: 100 of 100 admitted, with decoded and annotation duration agreeing
+  to under a millisecond on every track.
+- **One queue, one downloader.** Two concurrent downloaders would double the
+  request rate against YouTube, which the corpus's politeness contract forbids,
+  so SALAMI's remainder and the Harmonix selection are merged into a single
+  sequential run under the same supervisor pattern. The supervisor reads the
+  downloader's own retry set rather than keeping a copy -- the drift between
+  those two is a bug this project has already come within one refresh of
+  shipping.
+- **Harmonix is selected on its published DTW alignment score, and that score is
+  a first filter rather than the gate.** It measures how straight the warping
+  path is, which is provably blind to a *uniform* speed offset -- a track played
+  a few percent fast warps to a straight line of the wrong gradient and scores
+  well. So the tracks the dataset itself annotates as needing a speed correction
+  are excluded by name regardless of their score, and the real verification
+  remains the cleanliness gate decoding the audio.
 
 ### Label-aligned evaluation
 
