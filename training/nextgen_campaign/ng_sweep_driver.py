@@ -41,7 +41,10 @@ L9_CAMPAIGN = DATA / "models" / "l9_campaign"
 REGISTERED_CEILING = 0.274220
 BUDGET_BARS = 2
 OUTRO_ESCAPES = (0.0, 0.01, 0.02, 0.04)
-MIN_FREE_GB = 4.0
+# D5: the campaign runs under the owner's standing contention ruling -- the
+# supervisor parks upstream at 900 MB available, so this stage's own floor sits
+# under it, on AVAILABLE memory (what psutil.virtual_memory().available reads).
+DEFAULT_RAM_GATE_MB = 700
 
 SMOKE_AXES = {
     "PRIOR_STRENGTHS": (0.0, 0.25),
@@ -122,15 +125,17 @@ def main() -> int:
     parser.add_argument("--priors", type=Path, default=None)
     parser.add_argument("--out-config", type=Path, default=None)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--ram-gate-mb", type=float, default=DEFAULT_RAM_GATE_MB)
     args = parser.parse_args()
     if not args.smoke and args.arm is None:
         parser.error("--arm is required unless --smoke")
 
     below_normal()
-    free_gb = psutil.virtual_memory().available / 2**30
-    if free_gb < MIN_FREE_GB:
-        raise RuntimeError(f"only {free_gb:.1f} GB RAM free; the gate is "
-                           f"{MIN_FREE_GB} GB -- yielding rather than starting")
+    available_mb = psutil.virtual_memory().available / 2**20
+    if available_mb < args.ram_gate_mb:
+        raise RuntimeError(f"only {available_mb:.0f} MB available; the gate is "
+                           f"{args.ram_gate_mb:.0f} MB -- yielding rather than "
+                           f"starting")
 
     if args.smoke:
         apply_smoke_grid()

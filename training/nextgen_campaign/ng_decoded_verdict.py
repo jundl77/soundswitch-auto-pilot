@@ -52,7 +52,8 @@ COMMITTED_CONFIG = MAIN / "training" / "nn" / "decoder_config.json"
 SHIPPED_CONFIG = DATA / "models" / "l9" / "decoder_config.json"
 SEGMENTS = DATA / "annotations" / "segments.json"
 CORE6 = ("intro", "buildup", "breakdown", "drop", "cooldown", "outro")
-MIN_FREE_GB = 4.0
+# D5: available-memory floor under the supervisor's 900 MB park threshold.
+MIN_AVAILABLE_MB = 700
 
 sys.path.insert(0, str(L9_CAMPAIGN))
 from l9_decoder_reference import decoded_drop_deficit, drop_spans_by_id  # noqa: E402
@@ -169,12 +170,23 @@ def markdown(rows: dict, genre_rows: dict, skipped: dict, ceiling: float) -> str
     return "\n".join(lines)
 
 
+def ram_gate_mb() -> float:
+    for n, argument in enumerate(sys.argv[1:], 1):
+        if argument.startswith("--ram-gate-mb="):
+            return float(argument.split("=", 1)[1])
+        if argument == "--ram-gate-mb" and n < len(sys.argv) - 1:
+            return float(sys.argv[n + 1])
+    return MIN_AVAILABLE_MB
+
+
 def main() -> int:
     allow_missing = "--allow-missing-arms" in sys.argv[1:]
-    free_gb = psutil.virtual_memory().available / 2**30
-    if free_gb < MIN_FREE_GB:
-        raise RuntimeError(f"only {free_gb:.1f} GB RAM free; the gate is "
-                           f"{MIN_FREE_GB} GB -- yielding rather than starting")
+    gate_mb = ram_gate_mb()
+    available_mb = psutil.virtual_memory().available / 2**20
+    if available_mb < gate_mb:
+        raise RuntimeError(f"only {available_mb:.0f} MB available; the gate is "
+                           f"{gate_mb:.0f} MB -- yielding rather than "
+                           f"starting")
 
     committed_cfg = json.loads(COMMITTED_CONFIG.read_text(encoding="utf-8"))
     shipped_cfg = json.loads(SHIPPED_CONFIG.read_text(encoding="utf-8"))
