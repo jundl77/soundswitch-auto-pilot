@@ -107,6 +107,17 @@ be eyeballed against the audio at labelling time. It is read from
 `<corpus>/annotations/beats/<track_id>.hand.beat.csv` -- the published grids are
 named by a corpus key this tool never sees, so a generated one is the only kind
 it can find. Columns are the published ones, `time` and `downbeat`.
+
+**A refusal nobody sees is the same as silence, so refusals are loud.** Every
+launch mints a token (track path plus a random id) baked into the page; each
+mutation sends it back, and a mismatch -- a tab left over from an earlier
+launch, talking to a process now serving another song -- is refused before the
+labels file is even read. The tab is also told it is dead weight without having
+to press anything: an interval polls `/token`, and a mismatch or an unreachable
+server raises a full-width banner and disables commit. Status and refusal text
+render in a coloured strip beside the commit controls, green for success and
+red for refusal, because the first real stale-tab incident looked like a commit
+that did nothing at all.
 """
 import csv
 import hashlib
@@ -152,8 +163,23 @@ FRAME = 1024
 HOP = 512
 FFT_CHUNK = 512
 TICK_MS = 250
+STALE_TICK_MS = 3000
 NUDGES = (-0.5, -0.1, 0.1, 0.5)
 TIME_DECIMALS = 3
+
+STATUS_OK = '#3fb950'
+STATUS_BAD = '#f85149'
+REFUSAL_MARKS = ('refused', 'FAILED', 'unreadable', 'no longer controls')
+STATUS_BASE = {'margin': '0 20px 10px', 'padding': '8px 12px',
+               'borderRadius': '6px', 'fontSize': '13px', 'minHeight': '18px',
+               'color': MUTED, 'border': f'1px solid {BORDER}'}
+STALE_BANNER_STYLE = {'position': 'sticky', 'top': '0', 'zIndex': '1000',
+                      'padding': '14px 20px', 'background': '#b71c1c',
+                      'color': '#ffffff', 'fontSize': '16px',
+                      'fontWeight': 'bold', 'textAlign': 'center'}
+STALE_BANNER_TEXT = ('THIS TAB NO LONGER CONTROLS A SONG — the tool was '
+                     'relaunched. Close this tab and use the freshly opened '
+                     'one.')
 
 
 TMP_LABELS_DIR_NAME = 'tmp_labels'
@@ -526,11 +552,40 @@ def saved_status(path: Path, sections: list) -> str:
             f'{len(sections)} sections → {path}')
 
 
+def launch_token(audio_path: str) -> str:
+    return f'{Path(audio_path).resolve()}::{os.urandom(8).hex()}'
+
+
+def stale_token_refusal(page_token, server_token) -> str:
+    """A page minted by an earlier launch may not mutate this launch's file.
+
+    The launcher kills and restarts the tool per song, so an old tab keeps
+    LOOKING alive while its every assumption -- which song, which labels file
+    -- belongs to a dead process. Token identity is the only check that runs
+    before the file is read, because with the tool now serving another song
+    the sections-disagree guard would compare against the wrong file.
+    """
+    if server_token is None or page_token == server_token:
+        return None
+    return ('refused: this tab belongs to an earlier launch and no longer '
+            'controls a song — close it and use the freshly opened tab, '
+            'nothing was changed')
+
+
+def status_style(message: str) -> dict:
+    bad = any(mark in message for mark in REFUSAL_MARKS)
+    color = STATUS_BAD if bad else STATUS_OK
+    return dict(STATUS_BASE, color=color, fontWeight='bold',
+                border=f'1px solid {color}',
+                background='#2d1214' if bad else '#12261a')
+
+
 def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                new_label: str = None, new_strength: str = DEFAULT_STRENGTH,
                row_labels: list = (), row_strengths: list = (),
                duration: float = 0.0, title: str = '',
-               no_artist: bool = False, genre: str = '') -> tuple:
+               no_artist: bool = False, genre: str = '',
+               page_token: str = None, server_token: str = None) -> tuple:
     """Apply one UI event and write the result. `None` means "leave it alone".
 
     The file is the state, so a page whose sections disagree with it has lost
@@ -539,8 +594,13 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
     plus this one edit, silently dropping every boundary made in between, so a
     disagreement is refused with a message instead. A file that cannot be parsed
     at all is refused the same way, because overwriting it would destroy the
-    only copy of whatever the owner was trying to repair.
+    only copy of whatever the owner was trying to repair. A page from another
+    launch entirely is refused before the file is even read -- see
+    `stale_token_refusal`.
     """
+    refusal = stale_token_refusal(page_token, server_token)
+    if refusal is not None:
+        return None, refusal
     try:
         on_disk = disk_labels(audio_path)
     except LabelFileError as error:
@@ -886,6 +946,26 @@ function (deviceId) {
 }
 """
 
+STALE_JS = """
+async function (tick, token, style) {
+    const HOLD = window.dash_clientside.no_update;
+    let stale = window.__stale || false;
+    if (!stale) {
+        // A failed request is stale too: the server this page came from is
+        // gone, and whatever answers on this port next serves another song.
+        try {
+            const reply = await fetch('/token', {cache: 'no-store'});
+            stale = !reply.ok || (await reply.text()) !== token;
+        } catch (error) {
+            stale = true;
+        }
+    }
+    if (!stale) { return [HOLD, HOLD]; }
+    window.__stale = true;
+    return [Object.assign({}, style, {display: 'block'}), true];
+}
+"""
+
 SEEK_SLOP_PX = 4
 
 CURSOR_JS = """
@@ -942,6 +1022,7 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
     so a reload is a re-read and the page is only ever a view of it.
     """
     name = Path(audio_path).name
+    token = launch_token(audio_path)
     app = dash.Dash(__name__, title=f'label · {name}')
 
     @app.server.route('/audio')
@@ -951,9 +1032,15 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         return flask.send_file(audio_path, mimetype=audio_mimetype(audio_path),
                                conditional=True)
 
+    @app.server.route('/token')
+    def serve_token():
+        return flask.Response(token, mimetype='text/plain')
+
     def serve_layout():
         sections = load_labels(audio_path)
         return html.Div([
+            html.Div(STALE_BANNER_TEXT, id='stale-banner',
+                     style=dict(STALE_BANNER_STYLE, display='none')),
             html.Div([
                 html.Span(name, style={'color': TEXT}),
                 html.Span(f'  ·  {clock_text(track.duration)}  ·  {labels_path(audio_path)}',
@@ -1019,15 +1106,16 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
                           'alignItems': 'center'}),
             ], style={'display': 'flex', 'alignItems': 'center',
                       'padding': '4px 20px 12px'}),
+            html.Div(id='status', style=dict(STATUS_BASE)),
             dcc.Graph(id='timeline', figure=build_figure(track, sections, beats),
                       config={'displayModeBar': False, 'scrollZoom': True}),
-            html.Div(id='status', style={'padding': '10px 20px', 'color': MUTED,
-                                         'fontSize': '13px'}),
             html.Div(build_rows(sections), id='table', style={'padding': '0 20px 40px'}),
             dcc.Store(id='sections', data=sections),
             dcc.Store(id='cursor', data=0.0),
             dcc.Store(id='sink-echo'),
+            dcc.Store(id='launch-token', data=token),
             dcc.Interval(id='tick', interval=TICK_MS),
+            dcc.Interval(id='stale-tick', interval=STALE_TICK_MS),
         ], style={'background': DARK_BG, 'minHeight': '100vh',
                   'fontFamily': 'monospace'})
 
@@ -1058,9 +1146,19 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         prevent_initial_call=True,
     )
 
+    app.clientside_callback(
+        STALE_JS,
+        Output('stale-banner', 'style'),
+        Output('commit', 'disabled'),
+        Input('stale-tick', 'n_intervals'),
+        State('launch-token', 'data'),
+        State('stale-banner', 'style'),
+    )
+
     @app.callback(
         Output('sections', 'data'),
         Output('status', 'children'),
+        Output('status', 'style'),
         Input('mark', 'n_clicks'),
         Input('save', 'n_clicks'),
         Input('commit', 'n_clicks'),
@@ -1075,17 +1173,19 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         State('title', 'value'),
         State('no-artist', 'value'),
         State('genre', 'value'),
+        State('launch-token', 'data'),
         prevent_initial_call=True,
     )
     def edit(mark_clicks, save_clicks, commit_clicks, nudges, deletes,
              row_labels, row_strengths, sections, cursor, new_label,
-             new_strength, title, no_artist, genre):
+             new_strength, title, no_artist, genre, page_token):
         updated, status = apply_edit(
             audio_path, callback_context.triggered_id, sections, cursor,
             new_label, new_strength, row_labels, row_strengths, track.duration,
-            title, bool(no_artist), genre or '')
+            title, bool(no_artist), genre or '', page_token, token)
         return (dash.no_update if updated is None else updated,
-                dash.no_update if status is None else status)
+                dash.no_update if status is None else status,
+                dash.no_update if status is None else status_style(status))
 
     @app.callback(
         Output('table', 'children'),
