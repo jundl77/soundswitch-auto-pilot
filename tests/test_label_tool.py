@@ -870,6 +870,33 @@ def test_the_page_carries_its_launch_token_and_the_server_serves_it(tmp_path):
                                   if 'sections.data' in k)
 
 
+def test_a_commit_click_immediately_shows_a_pending_status(tmp_path):
+    """The commit takes ~30 s server-side, so the click itself must say so:
+    a clientside callback on the commit button writes the pending text into
+    the status strip, and the server's stamped result overwrites it."""
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    app = label_tool.build_app(str(audio), _track())
+
+    entry = next(c for c in app._callback_list
+                 if c.get('clientside_function')
+                 and 'status.children@' in c['output'])
+    assert 'status.style@' in entry['output']
+    assert entry['inputs'] == [{'id': 'commit', 'property': 'n_clicks'}]
+    assert entry['prevent_initial_call'] is True
+
+    js = next(s for s in app._inline_scripts if 'window.__stale' in s
+              and json.dumps(label_tool.COMMIT_PENDING_TEXT) in s)
+    assert json.dumps(label_tool.COMMIT_PENDING_STYLE) in js
+
+
+def test_the_pending_style_is_neither_the_success_nor_the_refusal_style():
+    pending = label_tool.COMMIT_PENDING_STYLE
+    assert pending['color'] not in (label_tool.STATUS_OK, label_tool.STATUS_BAD)
+    assert pending != label_tool.status_style('saved ✓ 12:00:00 · 3 sections')
+    assert pending != label_tool.status_style('commit refused: a title is required')
+
+
 def test_the_audio_route_names_the_type_the_file_actually_is(tmp_path):
     """Any input ffmpeg can decode is accepted, so the type is not a constant."""
     def served(name: str) -> str:
