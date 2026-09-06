@@ -72,15 +72,19 @@ is: a `hand-` prefix means new audio, anything else means an override.
 Being content-addressed also matters for the split assignment, which hashes the
 id: renaming a file must not move a track between train and val.
 
-The `title` is required, and **commit is blocked until it is in `Artist - Track`
-form**, because the benchmark's artist-exclusion guard reads it:
-`select_eval_set.artist_of` takes everything before the dash, so a track without
-one is never checked for contamination and nothing anywhere records that it was
-skipped. A release that genuinely has no artist credit is admitted by ticking
-"no artist", which stores `"artist": null` -- the difference between "there is
-none" and "nobody filled it in" is the whole reason the field is written down
-rather than re-derived. This started as a warning and was not enough: the first
-real hand label went in as `is it beautiful`.
+The page collects the artist and the track title in **two fields**, and commit
+composes the stored `Artist - Track` title itself, because the benchmark's
+artist-exclusion guard reads it: `select_eval_set.artist_of` takes everything
+before the dash, so a track without one is never checked for contamination and
+nothing anywhere records that it was skipped. The composed form used to be the
+owner's job, and typing the separator by hand failed twice in one afternoon --
+once on a unicode dash that did not match it. A track title is required, and an
+empty artist is refused unless the release genuinely has no artist credit,
+admitted by ticking "no artist", which stores `"artist": null` -- the
+difference between "there is none" and "nobody filled it in" is the whole
+reason the field is written down rather than re-derived. This started as a
+warning and was not enough: the first real hand label went in as
+`is it beautiful`.
 
 `name`/`start`/`end` are exactly what `parse_sections` in
 `raveform/raveform_fetch_annotations.py` reads, so a consumer can treat a hand
@@ -189,7 +193,13 @@ HAND_ID_PREFIX = 'hand-'
 HAND_ID_LENGTH = 12
 CHECKSUMS_FILE = 'checksums.sha256'
 ARTIST_SEPARATOR = ' - '
+_DASH_VARIANTS = dict.fromkeys(
+    map(ord, '‐‑‒–—―⁃−'), '-')
 _YOUTUBE_ID = re.compile(r'^[A-Za-z0-9_-]{11}$')
+
+
+def plain_dashes(text: str) -> str:
+    return (text or '').translate(_DASH_VARIANTS)
 
 
 def tmp_labels_dir() -> Path:
@@ -319,14 +329,32 @@ def _published_record(identifier: str) -> dict:
     return {}
 
 
+def split_credit(record: dict) -> tuple:
+    """One record's (artist, title), whichever of the two shapes it stores.
+
+    A hand or published record carries the composed `Artist - Track` title (the
+    hand one beside its own artist field); a third-party record carries the two
+    separately. Either way the page wants them apart.
+    """
+    title = str(record.get('title') or '').strip()
+    artist = str(record.get('artist') or '').strip()
+    if artist and title.startswith(f'{artist}{ARTIST_SEPARATOR}'):
+        title = title[len(artist) + len(ARTIST_SEPARATOR):].strip()
+    elif not artist and ARTIST_SEPARATOR in title:
+        head, _, tail = title.partition(ARTIST_SEPARATOR)
+        artist, title = head.strip(), tail.strip()
+    return artist, title
+
+
 def known_metadata(audio_path: str) -> dict:
     """What the dataset already knows about these bytes, as a prefill.
 
     Precedence is an existing hand label for the id, then a third-party source
-    annotation, then the published record, then the filename stem. A prefill
-    only -- the commit gate still judges the form, and nothing here may raise.
+    annotation, then the published record, then the filename stem (which lands
+    whole in the title, artist left to the owner). A prefill only -- the commit
+    gate still judges the form, and nothing here may raise.
     """
-    known = {'title': None, 'genre': None}
+    known = {'artist': None, 'title': None, 'genre': None}
     try:
         identifier, native = resolve_identity(audio_path)
         records = [_json_record(hand_label_path(identifier))]
@@ -336,12 +364,10 @@ def known_metadata(audio_path: str) -> dict:
         if native is not None:
             records.append(_published_record(identifier))
         for record in records:
-            title = str(record.get('title') or '').strip()
-            artist = str(record.get('artist') or '').strip()
-            if title and artist and ARTIST_SEPARATOR not in title:
-                title = f'{artist}{ARTIST_SEPARATOR}{title}'
+            artist, title = split_credit(record)
+            if title and not known['title']:
+                known['artist'], known['title'] = artist or None, title
             genre = str(record.get('genre') or '').strip()
-            known['title'] = known['title'] or (title or None)
             known['genre'] = known['genre'] or (genre or None)
     except Exception:
         pass
@@ -618,6 +644,11 @@ def saved_status(path: Path, sections: list) -> str:
             f'{len(sections)} sections → {path}')
 
 
+def stamped(message: str) -> str:
+    """A repeated identical refusal must still visibly change on screen."""
+    return f'{message}  ·  {time.strftime("%H:%M:%S")}'
+
+
 def launch_token(audio_path: str) -> str:
     return f'{Path(audio_path).resolve()}::{os.urandom(8).hex()}'
 
@@ -649,7 +680,7 @@ def status_style(message: str) -> dict:
 def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
                new_label: str = None, new_strength: str = DEFAULT_STRENGTH,
                row_labels: list = (), row_strengths: list = (),
-               duration: float = 0.0, title: str = '',
+               duration: float = 0.0, artist: str = '', title: str = '',
                no_artist: bool = False, genre: str = '',
                page_token: str = None, server_token: str = None) -> tuple:
     """Apply one UI event and write the result. `None` means "leave it alone".
@@ -678,21 +709,26 @@ def apply_edit(audio_path: str, trigger, sections: list, cursor: float = 0.0,
     if trigger == 'save':
         return None, saved_status(save_labels(audio_path, sections), sections)
     if trigger == 'commit':
-        title = (title or '').strip()
+        artist = plain_dashes(artist).strip()
+        title = plain_dashes(title).strip()
         if not title:
             return None, ('commit refused: a title is required — the dataset\'s '
                           'artist guard reads it, and a track without one is '
                           'invisible to the benchmark contamination check')
-        if ARTIST_SEPARATOR not in title and not no_artist:
+        if artist:
+            return None, commit_status(
+                commit_labels(audio_path, sections, duration,
+                              f'{artist}{ARTIST_SEPARATOR}{title}', False,
+                              genre))
+        if not no_artist:
             return None, (
-                f'commit refused: title needs "Artist{ARTIST_SEPARATOR}Track", '
-                f'or tick "no artist" if it genuinely has none. The benchmark '
-                f'keeps eval-set artists out of training by parsing the artist '
-                f'out of this title, so a track without one is never checked '
-                f'for contamination and nothing anywhere says so')
+                'commit refused: the artist field is empty — fill it in, or '
+                'tick "no artist" if the release genuinely has none. The '
+                'benchmark keeps eval-set artists out of training by reading '
+                'this field, so a track without one is never checked for '
+                'contamination and nothing anywhere says so')
         return None, commit_status(
-            commit_labels(audio_path, sections, duration, title, no_artist,
-                          genre))
+            commit_labels(audio_path, sections, duration, title, True, genre))
     if isinstance(trigger, dict) and not 0 <= trigger['index'] < len(sections):
         return None, None
     if trigger == 'mark':
@@ -1146,9 +1182,16 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
                     html.Button('save now', id='save',
                                 style=dict(BUTTON_STYLE, marginLeft='10px',
                                            color='#3fb950')),
+                    dcc.Input(id='artist', value=known['artist'] or '',
+                              placeholder='artist', debounce=False,
+                              style={'marginLeft': '10px', 'width': '120px',
+                                     'padding': '6px 10px', 'borderRadius': '6px',
+                                     'background': CARD_BG, 'color': TEXT,
+                                     'border': f'1px solid {BORDER}',
+                                     'fontFamily': 'monospace'}),
                     dcc.Input(id='title', value=known['title'],
-                              placeholder='Artist - Track', debounce=False,
-                              style={'marginLeft': '10px', 'width': '260px',
+                              placeholder='track title', debounce=False,
+                              style={'marginLeft': '8px', 'width': '150px',
                                      'padding': '6px 10px', 'borderRadius': '6px',
                                      'background': CARD_BG, 'color': TEXT,
                                      'border': f'1px solid {BORDER}',
@@ -1238,6 +1281,7 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         State('cursor', 'data'),
         State('new-label', 'value'),
         State('new-strength', 'value'),
+        State('artist', 'value'),
         State('title', 'value'),
         State('no-artist', 'value'),
         State('genre', 'value'),
@@ -1246,13 +1290,14 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
     )
     def edit(mark_clicks, save_clicks, commit_clicks, nudges, deletes,
              row_labels, row_strengths, sections, cursor, new_label,
-             new_strength, title, no_artist, genre, page_token):
+             new_strength, artist, title, no_artist, genre, page_token):
         updated, status = apply_edit(
             audio_path, callback_context.triggered_id, sections, cursor,
             new_label, new_strength, row_labels, row_strengths, track.duration,
-            title, bool(no_artist), genre or '', page_token, token)
+            artist or '', title, bool(no_artist), genre or '', page_token,
+            token)
         return (dash.no_update if updated is None else updated,
-                dash.no_update if status is None else status,
+                dash.no_update if status is None else stamped(status),
                 dash.no_update if status is None else status_style(status))
 
     @app.callback(

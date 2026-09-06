@@ -351,6 +351,16 @@ def test_refusals_render_red_and_successes_green():
         assert label_tool.status_style(message)['color'] == label_tool.STATUS_OK
 
 
+def test_a_repeated_identical_refusal_still_visibly_changes(monkeypatch):
+    clock = iter(['12:00:00', '12:00:01'])
+    monkeypatch.setattr(label_tool.time, 'strftime', lambda fmt: next(clock))
+    message = 'commit refused: the artist field is empty'
+    first, second = label_tool.stamped(message), label_tool.stamped(message)
+    assert first != second
+    assert first.startswith(message) and first.endswith('12:00:00')
+    assert label_tool.status_style(first)['color'] == label_tool.STATUS_BAD
+
+
 def test_a_labels_file_that_cannot_be_parsed_refuses_every_edit(song_file):
     save_labels(str(song_file), SECTIONS)
     labels_path(str(song_file)).write_text('start,label\n', encoding='utf-8')
@@ -457,6 +467,8 @@ def song_id(song):
 
 
 TITLE = 'Ferry Corsten - Is It Beautiful'
+ARTIST = 'Ferry Corsten'
+TRACK = 'Is It Beautiful'
 
 
 def test_the_working_file_lives_in_the_scratch_workspace_not_beside_the_audio(
@@ -652,11 +664,11 @@ def test_a_second_commit_of_new_audio_copies_nothing_further(song, corpus):
 def test_commit_reports_both_paths_through_the_dispatcher(song, corpus, song_id):
     sections = load_labels(str(song))
     updated, status = apply_edit(str(song), 'commit', sections, duration=214.842,
-                                 title=TITLE)
+                                 artist=ARTIST, title=TRACK)
     assert updated is None
     assert f'{song_id}.hand.json' in status and 'audio copied' in status
     _, status = apply_edit(str(song), 'commit', sections, duration=214.842,
-                           title=TITLE)
+                           artist=ARTIST, title=TRACK)
     assert 'audio already at' in status
 
 
@@ -671,12 +683,13 @@ def test_commit_is_refused_without_a_title_and_writes_nothing(song, corpus):
     assert not (corpus / 'audio').exists()
 
 
-def test_a_title_with_no_artist_dash_is_refused_and_writes_nothing(song, corpus):
+def test_an_empty_artist_is_refused_by_name_and_writes_nothing(song, corpus):
     """The prefill for the owner's first real file was exactly this shape."""
     updated, status = apply_edit(str(song), 'commit', load_labels(str(song)),
                                  duration=214.842, title='is it beautiful')
     assert updated is None
     assert status.startswith('commit refused')
+    assert 'artist field' in status
     assert 'no artist' in status and 'contamination' in status
     assert list((corpus / 'annotations').glob('*.hand.json')) == []
     assert not (corpus / 'audio').exists()
@@ -696,12 +709,13 @@ def test_a_release_with_genuinely_no_artist_goes_through_the_override(
     assert record['artist'] is None, 'absent honestly, not absent by omission'
 
 
-def test_a_dash_title_records_the_artist_the_guard_will_read(song, corpus,
-                                                             song_id):
+def test_commit_composes_the_stored_title_the_guard_will_read(song, corpus,
+                                                              song_id):
     apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
-               title='Ferry Corsten - Is It Beautiful')
+               artist=ARTIST, title=TRACK)
     record = json.loads(
         (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert record['title'] == TITLE
     assert record['artist'] == 'Ferry Corsten'
 
     sys.path.insert(0, str(TRAINING_DIR))
@@ -709,9 +723,19 @@ def test_a_dash_title_records_the_artist_the_guard_will_read(song, corpus,
     assert artist_of(record['title']) == artist_of('Ferry Corsten - anything')
 
 
-def test_the_override_is_not_needed_when_a_dash_is_present(song, corpus):
+def test_pasted_unicode_dashes_are_stored_as_plain_ones(song, corpus, song_id):
+    apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
+               artist='K‐nflict', title='Beck−ning – VIP')
+    record = json.loads(
+        (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
+    assert record['artist'] == 'K-nflict'
+    assert record['title'] == 'K-nflict - Beck-ning - VIP'
+
+
+def test_the_override_is_not_needed_when_the_artist_is_filled(song, corpus):
     _, status = apply_edit(str(song), 'commit', load_labels(str(song)),
-                           duration=214.842, title=TITLE, no_artist=False)
+                           duration=214.842, artist=ARTIST, title=TRACK,
+                           no_artist=False)
     assert 'committed' in status
 
 
@@ -1043,7 +1067,7 @@ def test_a_blank_genre_is_no_genre():
 
 def test_commit_writes_the_genre_through_the_dispatcher(song, corpus, song_id):
     apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
-               title=TITLE, genre='Drum & Bass')
+               artist=ARTIST, title=TRACK, genre='Drum & Bass')
     record = json.loads(
         (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
     assert record['genre'] == 'Drum & Bass'
@@ -1052,7 +1076,7 @@ def test_commit_writes_the_genre_through_the_dispatcher(song, corpus, song_id):
 def test_commit_without_a_genre_writes_a_record_that_has_none(song, corpus,
                                                               song_id):
     apply_edit(str(song), 'commit', load_labels(str(song)), duration=214.842,
-               title=TITLE)
+               artist=ARTIST, title=TRACK)
     record = json.loads(
         (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
     assert 'genre' not in record
@@ -1080,17 +1104,17 @@ def test_known_metadata_walks_the_precedence_ladder(corpus):
                     encoding='utf-8')
 
     assert label_tool.known_metadata(str(audio)) == {
-        'title': 'Owner - Corrected', 'genre': 'DnB'}
+        'artist': 'Owner', 'title': 'Corrected', 'genre': 'DnB'}
     hand.unlink()
     assert label_tool.known_metadata(str(audio)) == {
-        'title': 'Ciara - 1, 2 Step', 'genre': 'R&B'}
+        'artist': 'Ciara', 'title': '1, 2 Step', 'genre': 'R&B'}
     source.unlink()
     assert label_tool.known_metadata(str(audio)) == {
-        'title': 'Published Title', 'genre': 'Trance'}
+        'artist': None, 'title': 'Published Title', 'genre': 'Trance'}
     (corpus / 'annotations' / 'segments.json').write_text('[]',
                                                           encoding='utf-8')
     assert label_tool.known_metadata(str(audio)) == {
-        'title': default_title(str(audio)), 'genre': None}
+        'artist': None, 'title': default_title(str(audio)), 'genre': None}
 
 
 def test_known_metadata_finds_the_hand_label_of_new_audio_by_its_id(corpus):
@@ -1103,43 +1127,48 @@ def test_known_metadata_finds_the_hand_label_of_new_audio_by_its_id(corpus):
         encoding='utf-8')
 
     assert identifier.startswith('hand-')
-    assert label_tool.known_metadata(str(audio)) == {'title': 'Owner - Redo',
-                                                     'genre': 'R&B'}
+    assert label_tool.known_metadata(str(audio)) == {
+        'artist': 'Owner', 'title': 'Redo', 'genre': 'R&B'}
 
 
-def test_known_metadata_does_not_double_an_artist_already_in_the_title(corpus):
+def test_known_metadata_strips_the_artist_out_of_a_composed_title(corpus):
     audio = _third_party_song(corpus)
     (corpus / 'annotations' / 'hx-0001_12step.harmonix.json').write_text(
         json.dumps({'title': 'Ciara - 1, 2 Step', 'artist': 'Ciara'}),
         encoding='utf-8')
 
-    assert label_tool.known_metadata(str(audio))['title'] == 'Ciara - 1, 2 Step'
+    known = label_tool.known_metadata(str(audio))
+    assert known['artist'] == 'Ciara'
+    assert known['title'] == '1, 2 Step'
 
 
 def test_known_metadata_never_raises(tmp_path, monkeypatch):
-    assert label_tool.known_metadata(
-        str(tmp_path / 'ghost.mp3')) == {'title': 'ghost', 'genre': None}
+    assert label_tool.known_metadata(str(tmp_path / 'ghost.mp3')) == {
+        'artist': None, 'title': 'ghost', 'genre': None}
 
     song = tmp_path / 'a_song.mp3'
     song.write_bytes(b'bytes')
     def broken():
         raise OSError('no corpus on this machine')
     monkeypatch.setattr(label_tool, 'corpus_dir', broken)
-    assert label_tool.known_metadata(str(song)) == {'title': 'a song',
-                                                    'genre': None}
+    assert label_tool.known_metadata(str(song)) == {
+        'artist': None, 'title': 'a song', 'genre': None}
 
 
-def test_the_layout_prefills_title_and_genre_from_known_metadata(song, corpus):
+def test_the_layout_prefills_artist_title_and_genre_from_known_metadata(
+        song, corpus):
     _publish(corpus, 'kUP_iJuoq9g', song.read_bytes())
     (corpus / 'annotations' / 'kUP_iJuoq9g.hand.json').write_text(
         json.dumps({'title': TITLE, 'genre': 'Trance'}), encoding='utf-8')
 
     served = label_tool.build_app(str(song), _track()).layout()
-    assert _find(served, 'title').value == TITLE
+    assert _find(served, 'artist').value == ARTIST
+    assert _find(served, 'title').value == TRACK
     assert _find(served, 'genre').value == 'Trance'
 
 
 def test_the_layout_falls_back_to_the_filename_prefill(song_file, corpus):
     served = label_tool.build_app(str(song_file), _track()).layout()
+    assert _find(served, 'artist').value == ''
     assert _find(served, 'title').value == default_title(str(song_file))
     assert _find(served, 'genre').value == ''
