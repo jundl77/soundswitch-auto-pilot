@@ -58,6 +58,12 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
                           "future_cells", "future_sec", "label_frame_sec",
                           "sha256")
 
+# Which arm's priors/decoder-config a chain decodes under.  HOS (#342) trains
+# on arm H's labels with six tracks oversampled, so its labels -- and
+# therefore its priors and first-read config -- are arm H's own files; only
+# the student export differs.
+CHAIN_ARTIFACTS = {"H": "H", "HD": "HD", "HOS": "H"}
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -91,12 +97,13 @@ def build_shadow(chain: str) -> Path:
         if not source.is_file():
             continue
         target = generation / source.name
-        if chain in ("H", "HD"):
+        label = CHAIN_ARTIFACTS.get(chain)
+        if label:
             if source.name == "priors.json":
-                shutil.copy2(CAMP / f"priors_{chain}.json", target)
+                shutil.copy2(CAMP / f"priors_{label}.json", target)
                 continue
             if source.name == "decoder_config.json":
-                shutil.copy2(CAMP / f"decoder_config_{chain}.json", target)
+                shutil.copy2(CAMP / f"decoder_config_{label}.json", target)
                 continue
         shutil.copy2(source, target)
 
@@ -114,12 +121,12 @@ def build_shadow(chain: str) -> Path:
         shutil.copy2(MAIN / "training" / "nn" / name, nn_dir / name)
     config_source = (MAIN / "training" / "nn" / "decoder_config.json"
                      if chain == "anchor"
-                     else CAMP / f"decoder_config_{chain}.json")
+                     else CAMP / f"decoder_config_{CHAIN_ARTIFACTS[chain]}.json")
     shutil.copy2(config_source, nn_dir / "decoder_config.json")
 
     print(f"shadow {root} built (bar_tracker: {how}; decoder config: "
           f"{config_source})")
-    if chain in ("H", "HD") and not (run_dir / "online_step.onnx").exists():
+    if chain in CHAIN_ARTIFACTS and not (run_dir / "online_step.onnx").exists():
         print(f"NOTE: {run_dir / 'online_step.onnx'} absent -- run export-arm "
               f"before simulating this chain")
     return root
@@ -362,14 +369,15 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("build-shadow")
-    p.add_argument("--chain", choices=("anchor", "H", "HD"), required=True)
+    p.add_argument("--chain", choices=("anchor", "H", "HD", "HOS"),
+                   required=True)
 
     p = sub.add_parser("export-arm")
-    p.add_argument("--arm", choices=("H", "HD"), required=True)
+    p.add_argument("--arm", choices=("H", "HD", "HOS"), required=True)
     p.add_argument("--run", default=None)
 
     p = sub.add_parser("sim")
-    p.add_argument("--chain", choices=("shipped", "anchor", "H", "HD"),
+    p.add_argument("--chain", choices=("shipped", "anchor", "H", "HD", "HOS"),
                    required=True)
     p.add_argument("--track", required=True, help="opus | dwmu | path")
     p.add_argument("--report", type=Path, default=None)

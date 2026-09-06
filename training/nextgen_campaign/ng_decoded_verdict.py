@@ -15,6 +15,7 @@ train-split, and that is asserted (annotations/*.hand.json vs the val ids)
 rather than assumed.
 """
 import ctypes
+import dataclasses
 import datetime
 import hashlib
 import json
@@ -36,8 +37,8 @@ import psutil  # noqa: E402
 
 from nn.decoder import decoder_config_classes, load_decoder_config  # noqa: E402
 from nn.evaluate_v1 import (  # noqa: E402
-    beat_classes, build_decoder, decode_bars, identity_claims, load_inputs,
-    restricted_macro_f1, score_predicted, split_ids, write_json)
+    UNDECODED, beat_classes, build_decoder, decode_bars, identity_claims,
+    load_inputs, restricted_macro_f1, score_predicted, split_ids, write_json)
 from nn.priors import Priors  # noqa: E402
 
 from evaluate_against_labels import aggregate  # noqa: E402
@@ -52,6 +53,15 @@ COMMITTED_CONFIG = MAIN / "training" / "nn" / "decoder_config.json"
 SHIPPED_CONFIG = DATA / "models" / "l9" / "decoder_config.json"
 SEGMENTS = DATA / "annotations" / "segments.json"
 CORE6 = ("intro", "buildup", "breakdown", "drop", "cooldown", "outro")
+# Owner ruling: drop, breakdown, buildup, bridge are what matters (bridge may
+# be confused with breakdown).  bridge-merged is a RE-SCORE of the decoded
+# timeline under the fold on both truth and prediction -- the fold changes
+# TP/FP/FN structure, so it is never arithmetic on the 9-class F1s.
+CORE4 = ("drop", "breakdown", "buildup", "bridge")
+CORE4_FOLDED = ("drop", "breakdown", "buildup")
+OWNER_RULING = ("I dont care a ton about intro/outro/altoutro etc. - the most "
+                "important are drop, breakdown, buildup, bridge (might also "
+                "be confused with breakdown).")
 # D5: available-memory floor under the supervisor's 900 MB park threshold.
 MIN_AVAILABLE_MB = 700
 
@@ -80,6 +90,21 @@ for _arm in ("H", "HD"):
                     f" seed {_seed}",
         }
 
+# #342: arm H-OS is arm H's recipe with the owner's six hand tracks
+# oversampled 16x (duplicated ids in splits_hos.json; the dataset multiplies
+# slots, no dedup on the path).  Labels are unchanged, so the row is decoded
+# under arm H's swept config + refit priors -- the handoff's first-read
+# choice; a re-sweep would be its own recorded decision.
+RUNS["ng_HOS_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_HOS_w128_s1234",
+    "report": CAMP / "ng_HOS_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_H.json",
+    "priors": CAMP / "priors_H.json",
+    "role": "nextgen arm H-OS (#342: H + owner's 6 hand tracks oversampled "
+            "16x via splits_hos.json; decoded under arm H's config/priors), "
+            "seed 1234",
+}
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,
@@ -97,6 +122,21 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _fold_bridge(label: str) -> str:
+    return "breakdown" if label == "bridge" else label
+
+
+def fold_bridge_track(track):
+    labels = dict(track.labels)
+    labels["raw9"] = tuple(_fold_bridge(one) for one in labels["raw9"])
+    return dataclasses.replace(track, labels=labels)
+
+
+def fold_bridge_predicted(predicted) -> tuple:
+    return tuple(one if one == UNDECODED else _fold_bridge(one)
+                 for one in predicted)
 
 
 def row_of(total) -> dict:
@@ -135,8 +175,9 @@ def assert_val_is_published(ids) -> dict:
 
 
 def markdown(rows: dict, genre_rows: dict, skipped: dict, ceiling: float) -> str:
-    cols = ("macro_f1_9", "core6_macro", "accuracy", "crispness_05",
-            "boundary_f1_2s", "to_drop_boundary_f1_2s", "changes")
+    cols = ("macro_f1_9", "core4_macro", "core4_bridge_merged", "core6_macro",
+            "accuracy", "crispness_05", "boundary_f1_2s",
+            "to_drop_boundary_f1_2s", "changes")
     lines = ["# NG decoded verdict (val-215, raw9, per-arm swept configs)", ""]
     header = "| run | " + " | ".join(cols) + " | flicker@2s (vs ceiling) | deficit | undecoded |"
     lines += [header, "|" + "---|" * (len(cols) + 4)]
@@ -237,18 +278,27 @@ def main() -> int:
                                f"{skipped[:3]}")
 
         decoder = build_decoder(priors, params)
-        scores, segments = {}, {}
+        scores, folded_scores, segments = {}, {}, {}
         for n, item in enumerate(inputs, 1):
             bar_labels = decode_bars(item, decoder)
             segments[item.youtube_id] = (item.edges, bar_labels)
             predicted = beat_classes(item.times, item.edges, bar_labels)
+            track = item.as_track_beats()
             scores[item.youtube_id] = score_predicted(
-                item.as_track_beats(), "raw9", predicted,
+                track, "raw9", predicted, claims=identity_claims("raw9"))
+            folded_scores[item.youtube_id] = score_predicted(
+                fold_bridge_track(track), "raw9",
+                fold_bridge_predicted(predicted),
                 claims=identity_claims("raw9"))
             if n % 50 == 0:
                 print(f"  {run}: decoded {n}/{len(inputs)}", flush=True)
         order = [item.youtube_id for item in inputs]
-        row = row_of(aggregate([scores[i] for i in order]))
+        total = aggregate([scores[i] for i in order])
+        row = row_of(total)
+        row["core4_macro"] = round(float(restricted_macro_f1(total, CORE4)), 6)
+        folded_total = aggregate([folded_scores[i] for i in order])
+        row["core4_bridge_merged"] = round(
+            float(restricted_macro_f1(folded_total, CORE4_FOLDED)), 6)
         row["decoded_drop_deficit"] = decoded_drop_deficit(segments, spans_by_id)
         row["decoded_drop_deficit_caveat"] = DEFICIT_CAVEAT
         row["weight_hash"] = report["weight_hash"]
@@ -290,7 +340,9 @@ def main() -> int:
                 "deficit": f"{deficit['DEFICIT_sections']}"
                            f"/{deficit['drop_sections_seen']}",
             }
-        print(f"{run}: macro_9 {row['macro_f1_9']:.6f}  core6 "
+        print(f"{run}: macro_9 {row['macro_f1_9']:.6f}  core4 "
+              f"{row['core4_macro']:.6f}  core4_bm "
+              f"{row['core4_bridge_merged']:.6f}  core6 "
               f"{row['core6_macro']:.6f}  drop {row['per_class_f1']['drop']:.6f}"
               f"  crisp {row['crispness_05']:.6f}  flicker@2 "
               f"{row['flicker_per_audience_minute']['2.0']:.6f}  deficit "
@@ -320,6 +372,17 @@ def main() -> int:
                                    "NOT RUN -- shipped row skipped",
         },
         "val_ground_truth": val_truth,
+        "core4": {
+            "ruling_verbatim": OWNER_RULING,
+            "core4_macro_classes": list(CORE4),
+            "core4_bridge_merged_classes": list(CORE4_FOLDED),
+            "method": "core4_macro is the mean per-class F1 over the four on "
+                      "the 9-class score; core4_bridge_merged folds bridge "
+                      "into breakdown on BOTH truth and prediction and "
+                      "re-scores the same decoded timeline (the legacy_v1 "
+                      "fold-as-a-view pattern), then takes the macro over the "
+                      "three -- never arithmetic on 9-class F1s",
+        },
         "committed_config": {"path": str(COMMITTED_CONFIG),
                              "sha256": sha256_file(COMMITTED_CONFIG)},
         "flicker_ceiling_per_min": ceiling,
