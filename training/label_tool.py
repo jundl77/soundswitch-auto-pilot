@@ -121,7 +121,10 @@ to press anything: an interval polls `/token`, and a mismatch or an unreachable
 server raises a full-width banner and disables commit. Status and refusal text
 render in a coloured strip beside the commit controls, green for success and
 red for refusal, because the first real stale-tab incident looked like a commit
-that did nothing at all.
+that did nothing at all. A commit click paints an amber pending line into the
+same strip clientside, immediately -- the admission decodes the audio and
+generates a beat grid, ~30 s with nothing on screen otherwise -- and the
+server's stamped verdict overwrites it.
 """
 import csv
 import hashlib
@@ -173,10 +176,17 @@ TIME_DECIMALS = 3
 
 STATUS_OK = '#3fb950'
 STATUS_BAD = '#f85149'
+STATUS_PENDING = '#d29922'
 REFUSAL_MARKS = ('refused', 'FAILED', 'unreadable', 'no longer controls')
 STATUS_BASE = {'margin': '0 20px 10px', 'padding': '8px 12px',
                'borderRadius': '6px', 'fontSize': '13px', 'minHeight': '18px',
                'color': MUTED, 'border': f'1px solid {BORDER}'}
+COMMIT_PENDING_TEXT = ('committing… decoding the audio and generating the '
+                       'beat grid, this can take ~30 s')
+COMMIT_PENDING_STYLE = dict(STATUS_BASE, color=STATUS_PENDING,
+                            fontWeight='bold',
+                            border=f'1px solid {STATUS_PENDING}',
+                            background='#2b2008')
 STALE_BANNER_STYLE = {'position': 'sticky', 'top': '0', 'zIndex': '1000',
                       'padding': '14px 20px', 'background': '#b71c1c',
                       'color': '#ffffff', 'fontSize': '16px',
@@ -1068,6 +1078,15 @@ async function (tick, token, style) {
 }
 """
 
+COMMIT_PENDING_JS = """
+function (clicks) {
+    const HOLD = window.dash_clientside.no_update;
+    if (!clicks || window.__stale) { return [HOLD, HOLD]; }
+    return [PENDING_TEXT, PENDING_STYLE];
+}
+""".replace('PENDING_TEXT', json.dumps(COMMIT_PENDING_TEXT)).replace(
+    'PENDING_STYLE', json.dumps(COMMIT_PENDING_STYLE))
+
 SEEK_SLOP_PX = 4
 
 CURSOR_JS = """
@@ -1264,6 +1283,14 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         Input('stale-tick', 'n_intervals'),
         State('launch-token', 'data'),
         State('stale-banner', 'style'),
+    )
+
+    app.clientside_callback(
+        COMMIT_PENDING_JS,
+        Output('status', 'children', allow_duplicate=True),
+        Output('status', 'style', allow_duplicate=True),
+        Input('commit', 'n_clicks'),
+        prevent_initial_call=True,
     )
 
     @app.callback(
