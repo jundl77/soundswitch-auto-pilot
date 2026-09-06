@@ -309,6 +309,48 @@ def test_a_stale_page_may_not_commit_or_save_either(song_file, corpus):
     assert list((corpus / 'annotations').glob('*.hand.json')) == []
 
 
+def test_a_tab_from_an_earlier_launch_is_refused_before_the_file_is_read(
+        song_file, corpus):
+    """The launcher restarts the tool per song, so an old tab looks alive while
+    its process is dead. With the server on another song, the sections-disagree
+    guard would compare against the wrong file, so token identity runs first."""
+    sections = load_labels(str(song_file))
+    for trigger in ('mark', 'save', 'commit'):
+        updated, status = apply_edit(
+            str(song_file), trigger, sections, cursor=31.25,
+            new_label='buildup', duration=214.842, title=TITLE,
+            page_token='launch-of-song-a', server_token='launch-of-song-b')
+        assert updated is None
+        assert 'no longer controls' in status
+    assert not labels_path(str(song_file)).exists()
+    assert list((corpus / 'annotations').glob('*.hand.json')) == []
+
+
+def test_a_matching_token_changes_nothing_about_an_edit(song_file):
+    token = label_tool.launch_token(str(song_file))
+    updated, status = apply_edit(
+        str(song_file), 'mark', load_labels(str(song_file)), cursor=31.25,
+        new_label='buildup', page_token=token, server_token=token)
+    assert updated is not None and 'saved' in status
+
+
+def test_two_launches_of_the_same_file_mint_different_tokens(song_file):
+    one, two = (label_tool.launch_token(str(song_file)) for _ in range(2))
+    assert one != two
+    assert str(song_file) in one and str(song_file) in two
+
+
+def test_refusals_render_red_and_successes_green():
+    for message in ('commit refused: a title is required',
+                    'edit refused: page is older than the labels on disk',
+                    label_tool.stale_token_refusal('old', 'new'),
+                    'committed ✓ ... admission FAILED (RuntimeError: x)'):
+        assert label_tool.status_style(message)['color'] == label_tool.STATUS_BAD
+    for message in ('saved ✓ 12:00:00 · 3 sections → x',
+                    'committed ✓ 4 sections · grid + manifest row added'):
+        assert label_tool.status_style(message)['color'] == label_tool.STATUS_OK
+
+
 def test_a_labels_file_that_cannot_be_parsed_refuses_every_edit(song_file):
     save_labels(str(song_file), SECTIONS)
     labels_path(str(song_file)).write_text('start,label\n', encoding='utf-8')
@@ -778,6 +820,30 @@ def test_a_page_reload_serves_the_labels_on_disk_not_the_ones_from_launch(
     apply_edit(str(song_file), 'mark', _find(served, 'sections').data,
                cursor=200.0, new_label='outro', duration=track.duration)
     assert len(load_labels(str(song_file))) == 5
+
+
+def test_the_page_carries_its_launch_token_and_the_server_serves_it(tmp_path):
+    """The stale-tab wiring end to end, minus the browser: the token baked into
+    the layout is the one `/token` answers, the banner starts hidden, and the
+    edit callback declares the token as State so every mutation sends it."""
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    app = label_tool.build_app(str(audio), _track())
+    served = app.layout()
+
+    token = _find(served, 'launch-token').data
+    reply = app.server.test_client().get('/token')
+    assert reply.get_data(as_text=True) == token
+    assert _find(served, 'stale-banner').style['display'] == 'none'
+
+    other = label_tool.build_app(str(audio), _track())
+    assert other.server.test_client().get('/token').get_data(
+        as_text=True) != token, 'a relaunch mints a new token'
+
+    spec = next(v for k, v in app.callback_map.items() if 'sections.data' in k)
+    assert any(s['id'] == 'launch-token' for s in spec['state'])
+    assert 'status.style' in next(k for k in app.callback_map
+                                  if 'sections.data' in k)
 
 
 def test_the_audio_route_names_the_type_the_file_actually_is(tmp_path):
