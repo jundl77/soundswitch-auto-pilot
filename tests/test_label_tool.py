@@ -1056,3 +1056,90 @@ def test_commit_without_a_genre_writes_a_record_that_has_none(song, corpus,
     record = json.loads(
         (corpus / 'annotations' / f'{song_id}.hand.json').read_text('utf-8'))
     assert 'genre' not in record
+
+
+def _third_party_song(corpus, payload=b'a third-party recording'):
+    audio = corpus / 'third_party' / 'audio' / 'harmonix' / 'hx-0001_12step.mp3'
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(payload)
+    return audio
+
+
+def test_known_metadata_walks_the_precedence_ladder(corpus):
+    payload = b'the same recording everywhere'
+    audio = _third_party_song(corpus, payload)
+    _publish(corpus, 'kUP_iJuoq9g', payload)
+    (corpus / 'annotations' / 'segments.json').write_text(json.dumps(
+        [{'id': 'kUP_iJuoq9g', 'title': 'Published Title', 'genre': 'Trance',
+          'sections': []}]), encoding='utf-8')
+    source = corpus / 'annotations' / 'hx-0001_12step.harmonix.json'
+    source.write_text(json.dumps({'title': '1, 2 Step', 'artist': 'Ciara',
+                                  'genre': 'R&B'}), encoding='utf-8')
+    hand = corpus / 'annotations' / 'kUP_iJuoq9g.hand.json'
+    hand.write_text(json.dumps({'title': 'Owner - Corrected', 'genre': 'DnB'}),
+                    encoding='utf-8')
+
+    assert label_tool.known_metadata(str(audio)) == {
+        'title': 'Owner - Corrected', 'genre': 'DnB'}
+    hand.unlink()
+    assert label_tool.known_metadata(str(audio)) == {
+        'title': 'Ciara - 1, 2 Step', 'genre': 'R&B'}
+    source.unlink()
+    assert label_tool.known_metadata(str(audio)) == {
+        'title': 'Published Title', 'genre': 'Trance'}
+    (corpus / 'annotations' / 'segments.json').write_text('[]',
+                                                          encoding='utf-8')
+    assert label_tool.known_metadata(str(audio)) == {
+        'title': default_title(str(audio)), 'genre': None}
+
+
+def test_known_metadata_finds_the_hand_label_of_new_audio_by_its_id(corpus):
+    audio = _third_party_song(corpus)
+    identifier = resolve_identity(str(audio))[0]
+    (corpus / 'annotations' / f'{identifier}.hand.json').write_text(
+        json.dumps({'title': 'Owner - Redo'}), encoding='utf-8')
+    (corpus / 'annotations' / 'hx-0001_12step.harmonix.json').write_text(
+        json.dumps({'title': '1, 2 Step', 'artist': 'Ciara', 'genre': 'R&B'}),
+        encoding='utf-8')
+
+    assert identifier.startswith('hand-')
+    assert label_tool.known_metadata(str(audio)) == {'title': 'Owner - Redo',
+                                                     'genre': 'R&B'}
+
+
+def test_known_metadata_does_not_double_an_artist_already_in_the_title(corpus):
+    audio = _third_party_song(corpus)
+    (corpus / 'annotations' / 'hx-0001_12step.harmonix.json').write_text(
+        json.dumps({'title': 'Ciara - 1, 2 Step', 'artist': 'Ciara'}),
+        encoding='utf-8')
+
+    assert label_tool.known_metadata(str(audio))['title'] == 'Ciara - 1, 2 Step'
+
+
+def test_known_metadata_never_raises(tmp_path, monkeypatch):
+    assert label_tool.known_metadata(
+        str(tmp_path / 'ghost.mp3')) == {'title': 'ghost', 'genre': None}
+
+    song = tmp_path / 'a_song.mp3'
+    song.write_bytes(b'bytes')
+    def broken():
+        raise OSError('no corpus on this machine')
+    monkeypatch.setattr(label_tool, 'corpus_dir', broken)
+    assert label_tool.known_metadata(str(song)) == {'title': 'a song',
+                                                    'genre': None}
+
+
+def test_the_layout_prefills_title_and_genre_from_known_metadata(song, corpus):
+    _publish(corpus, 'kUP_iJuoq9g', song.read_bytes())
+    (corpus / 'annotations' / 'kUP_iJuoq9g.hand.json').write_text(
+        json.dumps({'title': TITLE, 'genre': 'Trance'}), encoding='utf-8')
+
+    served = label_tool.build_app(str(song), _track()).layout()
+    assert _find(served, 'title').value == TITLE
+    assert _find(served, 'genre').value == 'Trance'
+
+
+def test_the_layout_falls_back_to_the_filename_prefill(song_file, corpus):
+    served = label_tool.build_app(str(song_file), _track()).layout()
+    assert _find(served, 'title').value == default_title(str(song_file))
+    assert _find(served, 'genre').value == ''

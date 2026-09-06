@@ -284,6 +284,72 @@ def default_title(audio_path: str) -> str:
     return re.sub(r'[_\s]+', ' ', stem).strip()
 
 
+SEGMENTS_FILE = 'segments.json'
+THIRD_PARTY_DIR = 'third_party'
+
+
+def _json_record(path: Path) -> dict:
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _source_annotation(audio_path: str) -> Path:
+    path = Path(audio_path).resolve()
+    try:
+        if (path.parents[1].name == 'audio'
+                and path.parents[2].name == THIRD_PARTY_DIR):
+            return annotations_dir() / f'{path.stem}.{path.parent.name}.json'
+    except IndexError:
+        pass
+    return None
+
+
+def _published_record(identifier: str) -> dict:
+    try:
+        tracks = json.loads(
+            (annotations_dir() / SEGMENTS_FILE).read_text(encoding='utf-8'))
+        for track in tracks:
+            if isinstance(track, dict) and str(track.get('id', '')) == identifier:
+                return track
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
+def known_metadata(audio_path: str) -> dict:
+    """What the dataset already knows about these bytes, as a prefill.
+
+    Precedence is an existing hand label for the id, then a third-party source
+    annotation, then the published record, then the filename stem. A prefill
+    only -- the commit gate still judges the form, and nothing here may raise.
+    """
+    known = {'title': None, 'genre': None}
+    try:
+        identifier, native = resolve_identity(audio_path)
+        records = [_json_record(hand_label_path(identifier))]
+        source = _source_annotation(audio_path)
+        if source is not None:
+            records.append(_json_record(source))
+        if native is not None:
+            records.append(_published_record(identifier))
+        for record in records:
+            title = str(record.get('title') or '').strip()
+            artist = str(record.get('artist') or '').strip()
+            if title and artist and ARTIST_SEPARATOR not in title:
+                title = f'{artist}{ARTIST_SEPARATOR}{title}'
+            genre = str(record.get('genre') or '').strip()
+            known['title'] = known['title'] or (title or None)
+            known['genre'] = known['genre'] or (genre or None)
+    except Exception:
+        pass
+    if not known['title']:
+        known['title'] = default_title(audio_path)
+    return known
+
+
 def corpus_dir() -> Path:
     import sys
 
@@ -1023,6 +1089,7 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
     """
     name = Path(audio_path).name
     token = launch_token(audio_path)
+    known = known_metadata(audio_path)
     app = dash.Dash(__name__, title=f'label · {name}')
 
     @app.server.route('/audio')
@@ -1079,14 +1146,15 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
                     html.Button('save now', id='save',
                                 style=dict(BUTTON_STYLE, marginLeft='10px',
                                            color='#3fb950')),
-                    dcc.Input(id='title', value=default_title(audio_path),
+                    dcc.Input(id='title', value=known['title'],
                               placeholder='Artist - Track', debounce=False,
                               style={'marginLeft': '10px', 'width': '260px',
                                      'padding': '6px 10px', 'borderRadius': '6px',
                                      'background': CARD_BG, 'color': TEXT,
                                      'border': f'1px solid {BORDER}',
                                      'fontFamily': 'monospace'}),
-                    dcc.Input(id='genre', value='', placeholder='genre',
+                    dcc.Input(id='genre', value=known['genre'] or '',
+                              placeholder='genre',
                               debounce=False,
                               style={'marginLeft': '8px', 'width': '130px',
                                      'padding': '6px 10px', 'borderRadius': '6px',
