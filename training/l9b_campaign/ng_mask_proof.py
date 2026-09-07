@@ -37,7 +37,7 @@ except Exception:  # noqa: BLE001
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 DATA = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot"
             r"\training\data\raveform")
-CAMP = DATA / "models" / "nextgen_campaign"
+CAMP = DATA / "models" / "l9b_campaign"
 
 sys.path.insert(0, str(PHASE_B))
 

@@ -25,7 +25,7 @@ except Exception:  # noqa: BLE001
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 DATA = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot"
             r"\training\data\raveform")
-CAMP = DATA / "models" / "nextgen_campaign"
+CAMP = DATA / "models" / "l9b_campaign"
 SIX = ("hand-65cb8c94812d", "hand-8339586c555a", "hand-1b57bc38e8e4",
        "hand-33d3513481ac", "hand-b7d98ca02e86", "hand-52973d7b1767")
 

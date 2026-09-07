@@ -37,7 +37,7 @@
     "altoutro"
   ],
   "provenance": {
-    "source": "training/data/raveform/models/nextgen_campaign/sweep_H.json",
+    "source": "training/data/raveform/models/l9b_campaign/sweep_H.json",
     "registered_by": "#341",
     "selection_rule": "max two-seed-mean val macro-F1 (raw9, class stream) subject to max-seed flicker@2s <= the 5-class decoded reference (0.274220/min) and lag_bars <= 2",
     "priors": {
@@ -46,11 +46,11 @@
     },
     "posteriors": {
       "ng_H_w128_s1234": {
-        "dir": "training/data/raveform/models/nextgen_campaign/posteriors_ng_H_w128_s1234",
+        "dir": "training/data/raveform/models/l9b_campaign/posteriors_ng_H_w128_s1234",
         "weight_hash": "40ecc00ffa9d56ccbf2af0b1d41630eb46aa061b6637b4825c0af47887ee5a55"
       },
       "ng_H_w128_s1235": {
-        "dir": "training/data/raveform/models/nextgen_campaign/posteriors_ng_H_w128_s1235",
+        "dir": "training/data/raveform/models/l9b_campaign/posteriors_ng_H_w128_s1235",
         "weight_hash": "14f1c3bcb06bccf4cb63a245efa200d3727ffe3bea4c39e7e3eb8d1e204dc1f9"
       }
     },

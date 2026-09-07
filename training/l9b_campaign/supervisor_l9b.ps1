@@ -5,8 +5,8 @@
 $ErrorActionPreference = "Stop"
 $Repo     = "C:\Users\Julian\Projects\soundswitch-auto-pilot"
 $Data     = "$Repo\training\data\raveform"
-$Camp     = "$Data\models\nextgen_campaign"
-$Scripts  = "$Repo\training\nextgen_campaign"
+$Camp     = "$Data\models\l9b_campaign"
+$Scripts  = "$Repo\training\l9b_campaign"
 $TreePB   = "C:\Users\Julian\Projects\soundswitch-phase-b-worktree"
 $PyExp    = "C:\Users\Julian\Projects\soundswitch-exp-ceiling-worktree\.venv\Scripts\python.exe"
 $PyMain   = "$Repo\.venv\Scripts\python.exe"
@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force "$Camp\logs" | Out-Null
 (Get-Process -Id $PID).PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
 
 $script:State = [ordered]@{
-    campaign = "nextgen_campaign (#341)"; stamp = $Stamp; supervisor_pid = $PID
+    campaign = "l9b_campaign (#341)"; stamp = $Stamp; supervisor_pid = $PID
     status = "running"; stage = "boot"; stage_index = 0
     stages = @("preflight","prep","extract","splits","overlay","validate","priors",
                "train_ng_H_w128_s1234","train_ng_H_w128_s1235",

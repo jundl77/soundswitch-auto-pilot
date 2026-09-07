@@ -1,4 +1,4 @@
-"""The nextgen campaign's DECODED raveform-val verdict (#341): one instrument.
+"""The l9b campaign's DECODED raveform-val verdict (#341): one instrument.
 
 spec_decoded_verdict.py's structure, with one disclosed difference: each arm is
 judged under its OWN swept decoder config + refit priors (that is the campaign
@@ -46,7 +46,7 @@ from lib.label_space import SECTION_LABELS, check_class_space  # noqa: E402
 
 DATA = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot\training\data\raveform")
 MAIN = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot")
-CAMP = DATA / "models" / "nextgen_campaign"
+CAMP = DATA / "models" / "l9b_campaign"
 L9_CAMPAIGN = DATA / "models" / "l9_campaign"
 L9_PRIORS = DATA / "models" / "l9" / "priors.json"
 COMMITTED_CONFIG = MAIN / "training" / "nn" / "decoder_config.json"
@@ -437,7 +437,7 @@ def main() -> int:
 
     verdict = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "label": "the nextgen campaign decoded raveform-val verdict (#341): "
+        "label": "the l9b campaign decoded raveform-val verdict (#341): "
                  "shipped l9_w128_s1234 under the frozen committed config vs "
                  "the H and HD arms, EACH under its own swept config + refit "
                  "priors (disclosed difference from the spec precedent's one "

@@ -92,7 +92,7 @@ def admit(corpus: Path, track_id: str) -> None:
 def write_extraction_inputs(corpus: Path, camp: Path, ids: list) -> list:
     camp.mkdir(parents=True, exist_ok=True)
     missing = [i for i in ids if not (F3_DIR / f"{i}.npz").exists()]
-    lines = ["# nextgen campaign (decision #341): new hand tracks missing an F3 sidecar",
+    lines = ["# l9b campaign (decision #341): new hand tracks missing an F3 sidecar",
              "# consumed by training.nn.ceiling.stream_extract --ids-file"]
     (camp / "extract_ids.txt").write_text("\n".join(lines + missing) + "\n",
                                           encoding="utf-8")

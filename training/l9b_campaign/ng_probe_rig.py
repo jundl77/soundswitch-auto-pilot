@@ -1,4 +1,4 @@
-"""The probe-simulation rig for the nextgen campaign (#341).
+"""The probe-simulation rig for the l9b campaign (#341).
 
 Runs a named student chain over the probe tracks through the FULL fast
 simulation.  The sim resolves its model artifacts through
@@ -33,7 +33,7 @@ from pathlib import Path
 
 MAIN = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot")
 DATA = MAIN / "training" / "data" / "raveform"
-CAMP = DATA / "models" / "nextgen_campaign"
+CAMP = DATA / "models" / "l9b_campaign"
 L9 = DATA / "models" / "l9"
 MODEL_VERSION = "l9_w128_s1234"
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
@@ -339,7 +339,7 @@ def combine() -> None:
              if path.name != "PROBES.md"]
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     (out_dir / "PROBES.md").write_text(
-        f"# nextgen campaign probe reads ({stamp})\n\n" + "\n---\n\n".join(parts),
+        f"# l9b campaign probe reads ({stamp})\n\n" + "\n---\n\n".join(parts),
         encoding="utf-8")
     print(f"wrote {out_dir / 'PROBES.md'}")
 

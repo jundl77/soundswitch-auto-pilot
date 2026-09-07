@@ -1,4 +1,4 @@
-"""Shared paths and identities for the nextgen retrain campaign's PREP stage."""
+"""Shared paths and identities for the l9b retrain campaign's PREP stage."""
 from __future__ import annotations
 
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "training" / "data" / "raveform"
-CAMP = CORPUS / "models" / "nextgen_campaign"
+CAMP = CORPUS / "models" / "l9b_campaign"
 VENV_PY = REPO / ".venv" / "Scripts" / "python.exe"
 
 LABEL9_WORKTREE = Path(r"C:\Users\Julian\Projects\soundswitch-label9-worktree")

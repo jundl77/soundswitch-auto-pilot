@@ -1,6 +1,6 @@
 # Nextgen retrain campaign -- PREP stage (decision #341)
 
-CPU-only scripts. Outputs land in `<corpus>/models/nextgen_campaign/` (CAMP);
+CPU-only scripts. Outputs land in `<corpus>/models/l9b_campaign/` (CAMP);
 the only corpus writes outside CAMP are `hand_label_admission.py`'s own
 (beat grid, manifest row, clean row) and the armed `splits.json`. Nothing here
 touches `segments.json`, checksums, `training/eval_*`, test-split membership,

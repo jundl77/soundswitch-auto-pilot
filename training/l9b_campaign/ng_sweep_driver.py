@@ -1,4 +1,4 @@
-"""The per-arm decoder sweep for the nextgen retrain campaign (#341).
+"""The per-arm decoder sweep for the l9b retrain campaign (#341).
 
 Same instrument as the l9 sweep (nn.sweep.run_sweep out of the label9 tree),
 with the #341 floor_bars axis: explicit per-class floor vectors derived from
@@ -36,7 +36,7 @@ from lib.label_space import SECTION_LABELS, check_class_space  # noqa: E402
 
 MAIN = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot")
 DATA = MAIN / "training" / "data" / "raveform"
-CAMP = DATA / "models" / "nextgen_campaign"
+CAMP = DATA / "models" / "l9b_campaign"
 L9_CAMPAIGN = DATA / "models" / "l9_campaign"
 REGISTERED_CEILING = 0.274220
 BUDGET_BARS = 2
@@ -220,7 +220,7 @@ def main() -> int:
 
     payload = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "label": f"nextgen campaign decoder sweep, arm {label}"
+        "label": f"l9b campaign decoder sweep, arm {label}"
                  + (" (SMOKE: l9 posteriors, tiny grid, machinery proof only)"
                     if args.smoke else ""),
         "registered_by": "#341",
