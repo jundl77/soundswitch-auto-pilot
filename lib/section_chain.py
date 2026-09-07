@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import NamedTuple
 
-MODEL_VERSION = "l9_w128_s1234"
-_GENERATION = "l9"
+MODEL_VERSION = "ng_H_w128_s1234"
+_GENERATION = "l9b"
 _AFFINE = "input_affine_F3.npz"
 _GRAPH = "online_step.onnx"
 _PRIORS = "priors.json"

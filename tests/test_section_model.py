@@ -346,8 +346,8 @@ def test_the_session_is_pinned_to_one_thread_and_sequential_execution():
     assert options.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
 
 
-SHIPPED_ONNX_SHA = ("b1ec063d1612c9192b2898221fdff3bc3d75d621"
-                    "4c4b989088e6daea465e6251")
+SHIPPED_ONNX_SHA = ("9658dfc6d48795af334bd8bdf276548b1427aed6"
+                    "aaead7c016eabbac434bad5c")
 
 
 def _shipped():
@@ -362,7 +362,8 @@ def _shipped():
 
 @pytest.mark.integration
 def test_the_shipped_graph_is_the_export_of_the_model_the_sweep_selected():
-    """w128 s1234 per #302; the sha pins the verified export of that checkpoint."""
+    """Arm H w128 s1234 per #341/#343; the sha pins the verified export of
+    that checkpoint."""
     onnx, _affine = _shipped()
     head = S.load_head_geometry(onnx)
     assert head.sha256 == SHIPPED_ONNX_SHA
