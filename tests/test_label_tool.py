@@ -890,6 +890,39 @@ def test_a_commit_click_immediately_shows_a_pending_status(tmp_path):
     assert json.dumps(label_tool.COMMIT_PENDING_STYLE) in js
 
 
+def test_the_playhead_row_highlight_rides_the_cursor_store_not_a_new_poll(
+        tmp_path):
+    """The playhead already reaches the page every tick via the cursor store,
+    so the row highlight hangs off that write -- no new interval, no server
+    round-trip, and the header row can never be the highlighted one."""
+    from dash import dcc
+
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    app = label_tool.build_app(str(audio), _track())
+
+    entry = next(c for c in app._callback_list
+                 if c.get('clientside_function')
+                 and 'playhead-echo.data' in c['output'])
+    assert entry['inputs'] == [{'id': 'cursor', 'property': 'data'}]
+    assert entry['state'] == [{'id': 'sections', 'property': 'data'}]
+    assert any('playhead-row' in s for s in app._inline_scripts)
+
+    served = app.layout()
+    _find(served, 'playhead-echo')
+    stack, intervals = [served], []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dcc.Interval):
+            intervals.append(node.id)
+        children = getattr(node, 'children', None)
+        if isinstance(children, (list, tuple)):
+            stack.extend(children)
+        elif children is not None:
+            stack.append(children)
+    assert sorted(intervals) == ['stale-tick', 'tick']
+
+
 def test_the_pending_style_is_neither_the_success_nor_the_refusal_style():
     pending = label_tool.COMMIT_PENDING_STYLE
     assert pending['color'] not in (label_tool.STATUS_OK, label_tool.STATUS_BAD)
