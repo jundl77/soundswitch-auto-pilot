@@ -133,6 +133,26 @@ RUNS["ng_HFT8_w128_s1234"] = {
             "config/priors), seed 1234",
 }
 
+# #343 rung 2 continued: arm H-SP initialises from arm H's best checkpoint
+# and trains 3 epochs at the FULL campaign LR on the 8x mix, with an L2-SP
+# quadratic anchor to H's weights -- the path-geometry counter to H-FT8's
+# measured null (the unanchored LR dial only interpolates between null and
+# too-far).  HSP2 is the capped second calibration point (lambda one decade
+# over), pre-registered before running.  Same labels, same arm-H config +
+# priors, for the same comparability reason as every rung-2 row.
+for _arm in ("HSP", "HSP2"):
+    _run = f"ng_{_arm}_w128_s1234"
+    RUNS[_run] = {
+        "posteriors": CAMP / f"posteriors_{_run}",
+        "report": CAMP / _run / "training_report.json",
+        "config": CAMP / "decoder_config_H.json",
+        "priors": CAMP / "priors_H.json",
+        "role": f"nextgen arm H-SP{'2' if _arm == 'HSP2' else ''} (#343: "
+                f"L2-SP-anchored fine-tune from ng_H_w128_s1234 at campaign "
+                f"LR on splits_hos8.json; decoded under arm H's "
+                f"config/priors), seed 1234",
+    }
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,
