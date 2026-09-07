@@ -119,6 +119,20 @@ RUNS["ng_HOS8_w128_s1234"] = {
             "seed 1234",
 }
 
+# #343 rung 2: arm H-FT8 initialises from arm H's best checkpoint and
+# fine-tunes 3 epochs at 1/10th LR on the 8x oversampled mix -- a mechanism
+# change, not a dose point: the init is what protects the board the
+# from-scratch doses taxed.  Same labels, same arm-H config + priors.
+RUNS["ng_HFT8_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_HFT8_w128_s1234",
+    "report": CAMP / "ng_HFT8_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_H.json",
+    "priors": CAMP / "priors_H.json",
+    "role": "nextgen arm H-FT8 (#343 rung 2: fine-tune from ng_H_w128_s1234, "
+            "3 epochs at lr 3e-5 on splits_hos8.json; decoded under arm H's "
+            "config/priors), seed 1234",
+}
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,
