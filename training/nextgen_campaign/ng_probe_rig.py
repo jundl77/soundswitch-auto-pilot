@@ -61,8 +61,8 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
 # Which arm's priors/decoder-config a chain decodes under.  HOS (#342) trains
 # on arm H's labels with six tracks oversampled, so its labels -- and
 # therefore its priors and first-read config -- are arm H's own files; only
-# the student export differs.
-CHAIN_ARTIFACTS = {"H": "H", "HD": "HD", "HOS": "H"}
+# the student export differs.  HOS8 (#343) is the same at factor 8.
+CHAIN_ARTIFACTS = {"H": "H", "HD": "HD", "HOS": "H", "HOS8": "H"}
 
 
 def sha256_file(path: Path) -> str:
@@ -369,15 +369,16 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("build-shadow")
-    p.add_argument("--chain", choices=("anchor", "H", "HD", "HOS"),
+    p.add_argument("--chain", choices=("anchor", "H", "HD", "HOS", "HOS8"),
                    required=True)
 
     p = sub.add_parser("export-arm")
-    p.add_argument("--arm", choices=("H", "HD", "HOS"), required=True)
+    p.add_argument("--arm", choices=("H", "HD", "HOS", "HOS8"), required=True)
     p.add_argument("--run", default=None)
 
     p = sub.add_parser("sim")
-    p.add_argument("--chain", choices=("shipped", "anchor", "H", "HD", "HOS"),
+    p.add_argument("--chain",
+                   choices=("shipped", "anchor", "H", "HD", "HOS", "HOS8"),
                    required=True)
     p.add_argument("--track", required=True, help="opus | dwmu | path")
     p.add_argument("--report", type=Path, default=None)

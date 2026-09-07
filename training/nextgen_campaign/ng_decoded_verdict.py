@@ -105,6 +105,20 @@ RUNS["ng_HOS_w128_s1234"] = {
             "seed 1234",
 }
 
+# #343 rung 1: arm H-OS8 is H-OS at factor 8 (7 extra copies per id in
+# splits_hos8.json) -- the dose-response point between 1x (arm H) and 16x
+# (H-OS).  Same labels, so the same arm-H config + priors, for the same
+# reason: the three dose points must decode under one fixed decoder.
+RUNS["ng_HOS8_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_HOS8_w128_s1234",
+    "report": CAMP / "ng_HOS8_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_H.json",
+    "priors": CAMP / "priors_H.json",
+    "role": "nextgen arm H-OS8 (#343: H + owner's 6 hand tracks oversampled "
+            "8x via splits_hos8.json; decoded under arm H's config/priors), "
+            "seed 1234",
+}
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,
