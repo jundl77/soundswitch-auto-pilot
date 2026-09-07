@@ -174,6 +174,23 @@ for _arm, _mix in (("HMK8", "mask + splits_hos8.json 8x dose"),
                 f"config/priors), seed 1234",
     }
 
+# #343 rung 5 (targeted augmentation): arm H-AG8 replaces the 8x dose's
+# identical-content duplication with acoustic diversity -- 7 time-preserving
+# pitch-shift variants per hand track (42 variant ids at 1x beside the six
+# bases in splits_ag8.json; features from the campaign-local root, labels via
+# the trainer's --mapped-tier seam carrying each base's sections verbatim).
+# The annotations are untouched, so arm H's priors + config stay the decode
+# instrument and the row is comparable with every prior arm.
+RUNS["ng_HAG8_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_HAG8_w128_s1234",
+    "report": CAMP / "ng_HAG8_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_H.json",
+    "priors": CAMP / "priors_H.json",
+    "role": "nextgen arm H-AG8 (#343 rung 5: 6 hand tracks + 42 pitch-shift "
+            "variants at 1x via splits_ag8.json + mapped_tier_ag8.json; "
+            "decoded under arm H's config/priors), seed 1234",
+}
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,

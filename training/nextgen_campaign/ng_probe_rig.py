@@ -66,9 +66,12 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
 # HSP2 (#343 rung 2 continued) are the L2-SP-anchored fine-tunes, same labels.
 # HMK8 / HMK1 (#343 anti-supervision masking) MASK 279 train spans out of the
 # label loss -- the annotations themselves are untouched, so arm H's files
-# remain the decode instrument there too.
+# remain the decode instrument there too.  HAG8 (#343 rung 5) trains on the
+# six hand tracks plus 42 pitch-shift variants carrying the SAME labels, so
+# again nothing about the annotations moves.
 CHAIN_ARTIFACTS = {"H": "H", "HD": "HD", "HOS": "H", "HOS8": "H", "HFT8": "H",
-                   "HSP": "H", "HSP2": "H", "HMK8": "H", "HMK1": "H"}
+                   "HSP": "H", "HSP2": "H", "HMK8": "H", "HMK1": "H",
+                   "HAG8": "H"}
 
 
 def sha256_file(path: Path) -> str:
@@ -377,19 +380,19 @@ def main() -> int:
     p = sub.add_parser("build-shadow")
     p.add_argument("--chain",
                    choices=("anchor", "H", "HD", "HOS", "HOS8", "HFT8",
-                            "HSP", "HSP2", "HMK8", "HMK1"),
+                            "HSP", "HSP2", "HMK8", "HMK1", "HAG8"),
                    required=True)
 
     p = sub.add_parser("export-arm")
     p.add_argument("--arm", choices=("H", "HD", "HOS", "HOS8", "HFT8",
-                                     "HSP", "HSP2", "HMK8", "HMK1"),
+                                     "HSP", "HSP2", "HMK8", "HMK1", "HAG8"),
                    required=True)
     p.add_argument("--run", default=None)
 
     p = sub.add_parser("sim")
     p.add_argument("--chain",
                    choices=("shipped", "anchor", "H", "HD", "HOS", "HOS8",
-                            "HFT8", "HSP", "HSP2", "HMK8", "HMK1"),
+                            "HFT8", "HSP", "HSP2", "HMK8", "HMK1", "HAG8"),
                    required=True)
     p.add_argument("--track", required=True, help="opus | dwmu | path")
     p.add_argument("--report", type=Path, default=None)
