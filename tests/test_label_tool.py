@@ -923,6 +923,28 @@ def test_the_playhead_row_highlight_rides_the_cursor_store_not_a_new_poll(
     assert sorted(intervals) == ['stale-tick', 'tick']
 
 
+def test_spacebar_play_pause_binds_once_and_leaves_form_fields_alone(tmp_path):
+    """Space drives the same #player element every other path drives, and a
+    focused form control keeps its native space -- typing a title with spaces
+    must never toggle playback."""
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'')
+    app = label_tool.build_app(str(audio), _track())
+
+    entry = next(c for c in app._callback_list
+                 if c.get('clientside_function')
+                 and 'space-echo.data' in c['output'])
+    assert entry['inputs'] == [{'id': 'tick', 'property': 'n_intervals'}]
+
+    js = label_tool.SPACE_PLAY_JS
+    assert any('__spaceBound' in s for s in app._inline_scripts)
+    for guarded in ('INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'AUDIO',
+                    'isContentEditable', 'event.repeat', 'preventDefault',
+                    '__spaceBound'):
+        assert guarded in js
+    _find(app.layout(), 'space-echo')
+
+
 def test_the_pending_style_is_neither_the_success_nor_the_refusal_style():
     pending = label_tool.COMMIT_PENDING_STYLE
     assert pending['color'] not in (label_tool.STATUS_OK, label_tool.STATUS_BAD)
