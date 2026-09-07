@@ -43,12 +43,13 @@ def main() -> int:
         label_space=DATA / "models" / "l9" / "priors.json",
         arm="online_crnn",
         splits_file=CAMP / "splits_hos.json",
-        demote_drops=None, limit_tracks=None, teacher_dir=None,
+        demote_drops=None, mask_labels=None, limit_tracks=None,
+        teacher_dir=None,
         seed=1234, crop_sec=300.0, crops_per_track=3,
         cache_bytes=0,
     )
     sections = DD.merged_sections(args.data_dir)
-    train, val, _ = build_datasets(args, sections)
+    train, val, _, _ = build_datasets(args, sections)
 
     per_id = collections.Counter(train.ids[index] for index, _ in train._slots)
     baseline = collections.Counter(v for k, v in per_id.items()

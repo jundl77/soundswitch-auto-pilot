@@ -153,6 +153,27 @@ for _arm in ("HSP", "HSP2"):
                 f"config/priors), seed 1234",
     }
 
+# #343 anti-supervision masking: the H-MK arms train with the 279 mined
+# climb-shaped breakdown->drop TRAIN spans CUT from label supervision
+# (supervision_mask_overlay.json; a mask, never a relabel -- the spans take
+# the unlabeled-audio zero-loss path).  HMK8 pairs the mask with the 8x
+# splits_hos8.json dose; HMK1 is the isolation point on the corpus splits.
+# The annotations themselves are untouched, so arm H's priors + config stay
+# the decode instrument and the rows stay comparable with every prior arm.
+for _arm, _mix in (("HMK8", "mask + splits_hos8.json 8x dose"),
+                   ("HMK1", "mask alone, corpus splits")):
+    _run = f"ng_{_arm}_w128_s1234"
+    RUNS[_run] = {
+        "posteriors": CAMP / f"posteriors_{_run}",
+        "report": CAMP / _run / "training_report.json",
+        "config": CAMP / "decoder_config_H.json",
+        "priors": CAMP / "priors_H.json",
+        "role": f"nextgen arm H-MK ({_mix}; #343: 279 climb-shaped "
+                f"breakdown->drop train spans loss-masked via "
+                f"supervision_mask_overlay.json; decoded under arm H's "
+                f"config/priors), seed 1234",
+    }
+
 # l9_decoder_verdict.json -> seeds.l9_w128_s1234, the banked decoded row.
 BANKED = {"macro_f1_9": 0.523542, "core6_macro": 0.640287,
           "accuracy": 0.718635, "crispness_05": 0.708681,
