@@ -764,26 +764,28 @@ def test_a_config_of_known_knobs_round_trips(tmp_path):
     assert params.floor_bars == (1, 2, 3, 4, 5)
 
 
-def test_the_shipping_config_loads_and_is_the_ng_h_sweep_pick():
-    """These are the nextgen campaign H sweep's chosen row (#341), per the
-    file's own provenance block.  floor_bars is an explicit vector on purpose:
-    the sweep opened the per-class floor axis (buildup down to 1 bar), and the
-    vector overrides floor_scale, so a priors refit does not move the floors."""
+def test_the_shipping_config_loads_and_is_the_ng_n_sweep_pick():
+    """These are the l9c campaign N sweep's chosen row (#346), per the file's
+    own provenance block.  floor_bars is an explicit vector on purpose: the
+    sweep keeps the per-class floor axis open (buildup at 2 bars this pick),
+    and the vector overrides floor_scale, so a priors refit does not move the
+    floors.  buildup_drop_bonus 0.0 is the knob's neutral point -- the pick is
+    the pre-l9c decoder on that axis."""
     params = load_decoder_config(SHIPPING_DECODER_CONFIG)
     document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
-    assert document["name"] == "ng_H_sweep_pick"
+    assert document["name"] == "ng_N_sweep_pick"
     assert dataclasses.asdict(params) == {
         "lag_bars": 2,
         "class_prior_division": True,
-        "prior_strength": -0.25,
-        "drop_miss_cost": 1.4678,
+        "prior_strength": 0.0,
+        "drop_miss_cost": 10.0,
         "boundary_weight": 4.0,
         "boundary_ref": 0.1,
         "boundary_tolerance_sec": 0.5,
         "min_coverage": 1,
-        "floor_scale": 0.75,
-        "floor_bars": (4, 4, 1, 4, 4, 8, 4, 4, 2),
-        "outro_escape": 0.01,
+        "floor_scale": 1.0,
+        "floor_bars": (4, 4, 2, 4, 4, 8, 4, 4, 2),
+        "outro_escape": 0.04,
         "temperature": 1.0,
         "buildup_drop_bonus": 0.0,
     }
