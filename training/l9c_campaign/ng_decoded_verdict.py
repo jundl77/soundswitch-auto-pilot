@@ -200,6 +200,32 @@ EXTRA_ARM_SPECS["ng_NIWH2_w128_s1234"] = {
     "role": "l9c arm NIW-H2 (#346: half tilt, inyathi x2 only, no weight "
             "scale; decoded under arm N's config/priors), seed 1234",
 }
+# ARM LC (#346 addendum): the long-context student -- concat [own cell,
+# trailing-15s mean, trailing-45s mean] over the F3 stream, input_dim 6144,
+# l9 recipe otherwise at natural dose (corpus splits, no tilt/mask/scale).
+# Input geometry is not a relabel, so every LC row decodes under arm N's
+# config/priors; selection is decoded-val under the pre-stated constraints
+# (max core4 s.t. deficit <= 80, flicker <= ceiling) across all saved evals.
+_LC_RUN = "ng_LC_w128_s1234"
+EXTRA_ARM_SPECS[_LC_RUN] = {
+    "posteriors": CAMP / f"posteriors_{_LC_RUN}",
+    "report": CAMP / _LC_RUN / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "l9c ARM LC (#346: long-context student, [own|t15|t45] "
+            "trailing-mean aux inputs; the run's own frame-best emit; "
+            "decoded under arm N's config/priors), seed 1234",
+}
+_LC_EPOCHS: tuple = ()   # candidate emits registered here after the train
+for _ep in _LC_EPOCHS:
+    EXTRA_ARM_SPECS[f"{_LC_RUN}_ep{_ep}"] = {
+        "posteriors": CAMP / f"posteriors_ng_LC_ep{_ep}",
+        "report": CAMP / f"ng_LC_ep{_ep}" / "training_report.json",
+        "config": CAMP / "decoder_config_N.json",
+        "priors": CAMP / "priors_N.json",
+        "role": f"#346 ARM LC candidate ep{_ep} (decoded-val constrained "
+                f"selection across saved eval checkpoints)",
+    }
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).

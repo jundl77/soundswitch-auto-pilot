@@ -71,10 +71,20 @@ CHAIN_ARTIFACTS = {"N": "N", "NMK": "N", "NIW": "N", "NIWCS": "N",
                    # #346 NIW-DW: the tilt + drop-weighted focal; a weight
                    # scale is not a relabel, so it decodes under N's files
                    "NIWDW": "N", "NIWDW15": "N", "NIWH2": "N",
+                   # #346 ARM LC: the long-context student; input geometry is
+                   # not a relabel either, so it decodes under N's files
+                   "LC": "N",
                    # #346 expressibility-filter variants: arm N's student
                    # under near-tied swept configs (bonus 0.4/0.7/1.1/1.6)
                    "NB04": "NB04", "NB07": "NB07",
                    "NB11": "NB11", "NB16": "NB16"}
+
+# ARM LC swaps two artifacts a plain arm keeps: the 6144-wide affine, and the
+# graph record's declared geometry (input_dim + the trailing-mean horizons the
+# live feeder reads its assembly from).  Everything else must equal shipped.
+AUX_AFFINE_CHAINS = {"LC"}
+AUX_CHAIN_GEOMETRY = {"LC": {"input_dim": 6144,
+                             "aux_trailing_mean_cells": [161, 484]}}
 
 
 def sha256_file(path: Path) -> str:
@@ -123,6 +133,12 @@ def build_shadow(chain: str) -> Path:
             if source.name == "decoder_config.json":
                 shutil.copy2(CAMP / f"decoder_config_{label}.json", target)
                 continue
+        if chain in AUX_AFFINE_CHAINS and source.name in (
+                "input_affine_F3.npz", "input_affine_F3.npz.json"):
+            replacement = source.name.replace("input_affine_F3",
+                                              "input_affine_LC")
+            shutil.copy2(CAMP / replacement, target)
+            continue
         shutil.copy2(source, target)
 
     how = _junction_or_copy(generation / "bar_tracker", L9 / "bar_tracker")
@@ -175,15 +191,22 @@ def export_arm(chain: str, run: str) -> None:
         raise RuntimeError("export verification does not agree")
     shipped = json.loads((L9 / MODEL_VERSION / "online_step.onnx.json")
                          .read_text(encoding="utf-8"))
+    expected = dict(shipped, **AUX_CHAIN_GEOMETRY.get(chain, {}))
     for field in ("window_cells", "input_dim", "rnn_hidden", "future_cells",
                   "future_sec", "label_frame_sec"):
-        if record[field] != shipped[field]:
+        if record[field] != expected[field]:
             raise RuntimeError(
-                f"arm geometry {field}={record[field]} != shipped "
-                f"{shipped[field]} -- the shadow chain would run a different "
+                f"arm geometry {field}={record[field]} != expected "
+                f"{expected[field]} -- the shadow chain would run a different "
                 f"stream geometry than the one the affine was fitted on")
+    wanted_aux = AUX_CHAIN_GEOMETRY.get(chain, {}).get("aux_trailing_mean_cells")
+    if record.get("aux_trailing_mean_cells") != wanted_aux:
+        raise RuntimeError(
+            f"aux_trailing_mean_cells={record.get('aux_trailing_mean_cells')} "
+            f"!= the {wanted_aux} this chain's live assembly is registered "
+            f"for -- the feeder would assemble a different input")
     print(f"exported {out} (sha {record['sha256'][:12]}), record format and "
-          f"geometry match the shipped {MODEL_VERSION} record")
+          f"geometry match the {chain} chain's registration")
 
 
 def _warm(track: Path) -> bool:
