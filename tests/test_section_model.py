@@ -34,9 +34,10 @@ class _Port:
 
 
 class FakeSession:
-    def __init__(self, seed: int = 0) -> None:
+    def __init__(self, seed: int = 0, dim: int = DIM) -> None:
         rng = np.random.default_rng(seed)
-        self.into = rng.normal(size=(DIM, HIDDEN)).astype(np.float32) * 0.4
+        self.dim = dim
+        self.into = rng.normal(size=(dim, HIDDEN)).astype(np.float32) * 0.4
         self.carry = rng.normal(size=(HIDDEN, HIDDEN)).astype(np.float32) * 0.6
         self.label = rng.normal(size=(HIDDEN, CLASSES)).astype(np.float32)
         self.edge = rng.normal(size=(HIDDEN, 1)).astype(np.float32)
@@ -45,7 +46,7 @@ class FakeSession:
         self.calls = 0
 
     def get_inputs(self):
-        return [_Port(S.FRAMES_INPUT, ["batch", WINDOW, DIM]),
+        return [_Port(S.FRAMES_INPUT, ["batch", WINDOW, self.dim]),
                 _Port(S.STATE_INPUT, [1, "batch", HIDDEN])]
 
     def get_outputs(self):
@@ -57,7 +58,7 @@ class FakeSession:
         assert names == [S.LABEL_OUTPUT, S.BOUNDARY_OUTPUT, S.STATE_OUTPUT]
         frames = feeds[S.FRAMES_INPUT]
         state = feeds[S.STATE_INPUT]
-        assert frames.shape == (1, WINDOW, DIM), frames.shape
+        assert frames.shape == (1, WINDOW, self.dim), frames.shape
         assert state.shape == (1, 1, HIDDEN), state.shape
         self.calls += 1
         pooled = (frames * self.weights).sum(axis=1)
@@ -335,7 +336,7 @@ def test_an_affine_of_the_wrong_width_is_refused(tiny):
 
 def test_a_feature_row_of_the_wrong_width_is_refused(tiny, mean):
     model = _model(tiny, mean)
-    with pytest.raises(ValueError, match="input_dim"):
+    with pytest.raises(ValueError, match=f"eats {DIM}-dim"):
         model.push(np.zeros(DIM + 2, dtype=np.float32))
 
 
@@ -498,3 +499,136 @@ def test_the_extractor_s_cell_index_is_what_the_model_is_stamped_with():
     model = _FakeModel(['p0', 'p1'])
     PosteriorStream(stream, model).push_audio([0.0] * 8)
     assert model.indices == [7, 413]
+
+
+# --- ARM LC: trailing-mean auxiliary inputs (long-context graphs) ---
+
+AUX_HORIZONS = (3, 5)
+AUX_DIM = DIM * (1 + len(AUX_HORIZONS))
+
+
+def _aux_meta(path, **overrides):
+    meta = {"sha256": S.sha256_file(path), "window_cells": WINDOW,
+            "input_dim": AUX_DIM, "rnn_hidden": HIDDEN, "future_cells": FUTURE,
+            "future_sec": FUTURE * 0.25, "label_frame_sec": 0.25,
+            "aux_trailing_mean_cells": list(AUX_HORIZONS)}
+    meta.update(overrides)
+    Path(str(path) + ".json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+@pytest.fixture
+def aux_graph(tmp_path):
+    path = tmp_path / "aux_step.onnx"
+    path.write_bytes(b"a long-context graph's bytes")
+    _aux_meta(path)
+    return path
+
+
+@pytest.fixture
+def aux_mean():
+    return np.arange(AUX_DIM, dtype=np.float32) * 0.1 - 0.4
+
+
+def _aux_model(aux_graph, aux_mean):
+    return S.SectionModel(
+        aux_graph, mean=aux_mean,
+        session_factory=lambda _path: FakeSession(dim=AUX_DIM))
+
+
+def _aux_reference_rows(cells):
+    """The offline dataset assembly: float64 prefix sums over the whole past."""
+    csum = np.concatenate([np.zeros((1, cells.shape[1])),
+                           np.cumsum(cells, axis=0, dtype=np.float64)])
+    rows = []
+    for i in range(len(cells)):
+        blocks = [cells[i]]
+        for k in AUX_HORIZONS:
+            lo = max(i - k + 1, 0)
+            mean = (csum[i + 1] - csum[lo]) / float(i + 1 - lo)
+            blocks.append(mean.astype(np.float16).astype(np.float32))
+        rows.append(np.concatenate(blocks).astype(np.float32))
+    return rows
+
+
+def test_an_aux_record_names_the_trailing_mean_horizons(aux_graph):
+    geometry = S.load_head_geometry(aux_graph)
+    assert geometry.aux_cells == AUX_HORIZONS
+    assert geometry.cell_dim == DIM
+
+
+def test_a_record_without_aux_horizons_keeps_the_plain_cell_path(geometry):
+    assert geometry.aux_cells == ()
+    assert geometry.cell_dim == geometry.input_dim
+
+
+def test_an_input_dim_that_does_not_split_into_blocks_is_refused(tmp_path):
+    path = tmp_path / "bad_split.onnx"
+    path.write_bytes(b"bytes")
+    _aux_meta(path, input_dim=AUX_DIM + 1)
+    with pytest.raises(ValueError, match="equal blocks"):
+        S.SectionModel(path, mean=np.zeros(AUX_DIM + 1, dtype=np.float32),
+                       session_factory=lambda _p: FakeSession(dim=AUX_DIM + 1))
+
+
+def test_unordered_or_degenerate_horizons_are_refused(tmp_path):
+    for horizons in ([5, 3], [1, 5], [3, 3]):
+        path = tmp_path / f"bad_{'_'.join(map(str, horizons))}.onnx"
+        path.write_bytes(b"bytes")
+        _aux_meta(path, aux_trailing_mean_cells=horizons)
+        with pytest.raises(ValueError, match="horizons"):
+            S.SectionModel(path, mean=np.zeros(AUX_DIM, dtype=np.float32),
+                           session_factory=lambda _p: FakeSession(dim=AUX_DIM))
+
+
+def test_assembled_rows_match_the_offline_prefix_sums_and_are_causal(
+        aux_graph, aux_mean):
+    """Each row is captured the instant its cell is pushed, and equals a
+    reference computed from the past alone -- so no later cell can have
+    contributed to it."""
+    model = _aux_model(aux_graph, aux_mean)
+    cells = _cells(40, seed=3)
+    reference = _aux_reference_rows(cells)
+    for row, wanted in zip(cells, reference):
+        model.push(row)
+        assert np.array_equal(model._ring[-1], wanted)
+
+
+def test_the_first_cell_s_means_are_the_cell_itself(aux_graph, aux_mean):
+    model = _aux_model(aux_graph, aux_mean)
+    cell = _cells(1, seed=9)[0]
+    model.push(cell)
+    quantised = cell.astype(np.float16).astype(np.float32)
+    assert np.array_equal(model._ring[-1],
+                          np.concatenate([cell, quantised, quantised]))
+
+
+def test_a_cell_of_the_full_input_width_is_refused_for_an_aux_graph(
+        aux_graph, aux_mean):
+    model = _aux_model(aux_graph, aux_mean)
+    with pytest.raises(ValueError, match=f"eats {DIM}-dim"):
+        model.push(np.zeros(AUX_DIM, dtype=np.float32))
+
+
+def test_reset_clears_the_trailing_history(aux_graph, aux_mean):
+    model = _aux_model(aux_graph, aux_mean)
+    for row in _cells(8, seed=5):
+        model.push(row)
+    model.reset()
+    fresh = _aux_model(aux_graph, aux_mean)
+    for row in _cells(6, seed=6):
+        model.push(row)
+        fresh.push(row)
+        assert np.array_equal(model._ring[-1], fresh._ring[-1])
+
+
+def test_the_aux_ring_is_primed_from_the_full_affine_mean(aux_graph, aux_mean):
+    model = _aux_model(aux_graph, aux_mean)
+    assert np.array_equal(model._ring[0], aux_mean)
+
+
+def test_flush_drains_an_aux_graph_too(aux_graph, aux_mean):
+    model = _aux_model(aux_graph, aux_mean)
+    for n, row in enumerate(_cells(20, seed=8)):
+        model.push(row, index=n)
+    assert [item.index for item in model.flush()] \
+        == list(range(20 - FUTURE, 20))

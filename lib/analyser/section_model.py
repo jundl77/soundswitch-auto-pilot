@@ -39,10 +39,17 @@ class HeadGeometry:
     label_frame_sec: float
     sha256: str
     backward_cells: int | None = None
+    aux_cells: tuple[int, ...] = ()
 
     @property
     def conv_reach_cells(self) -> int:
         return self.window_cells - self.future_cells - 1
+
+    @property
+    def cell_dim(self) -> int:
+        # A long-context graph eats [own cell | one trailing mean per horizon];
+        # the extractor's cell is one block of that concat.
+        return self.input_dim // (1 + len(self.aux_cells))
 
 
 def load_head_geometry(onnx_path) -> HeadGeometry:
@@ -52,6 +59,7 @@ def load_head_geometry(onnx_path) -> HeadGeometry:
     if missing:
         raise ValueError(f"{meta_path} records no {', '.join(missing)}")
     backward = record.get("arch", {}).get("backward_cells")
+    aux = record.get("aux_trailing_mean_cells") or ()
     return HeadGeometry(window_cells=int(record["window_cells"]),
                         input_dim=int(record["input_dim"]),
                         rnn_hidden=int(record["rnn_hidden"]),
@@ -60,7 +68,8 @@ def load_head_geometry(onnx_path) -> HeadGeometry:
                         label_frame_sec=float(record["label_frame_sec"]),
                         sha256=str(record["sha256"]),
                         backward_cells=None if backward is None
-                        else int(backward))
+                        else int(backward),
+                        aux_cells=tuple(int(cells) for cells in aux))
 
 
 def check_head_geometry(geometry: HeadGeometry) -> None:
@@ -78,6 +87,16 @@ def check_head_geometry(geometry: HeadGeometry) -> None:
         if implied != geometry.window_cells:
             raise ValueError(f"window_cells {geometry.window_cells} is not the "
                              f"{implied} its future and backward reach imply")
+    if geometry.aux_cells:
+        blocks = 1 + len(geometry.aux_cells)
+        if geometry.input_dim % blocks:
+            raise ValueError(f"input_dim {geometry.input_dim} does not split "
+                             f"into {blocks} equal blocks for the recorded "
+                             f"trailing-mean horizons")
+        if any(cells < 2 for cells in geometry.aux_cells) or \
+                list(geometry.aux_cells) != sorted(set(geometry.aux_cells)):
+            raise ValueError(f"trailing-mean horizons {geometry.aux_cells} "
+                             f"must be distinct, increasing cell counts >= 2")
 
 
 def check_graph_geometry(session, geometry: HeadGeometry) -> None:
@@ -146,6 +165,39 @@ class Posterior(NamedTuple):
     boundary: float
 
 
+class _TrailingMeans:
+    """Causal trailing means over the song's own cells, past-only (ARM LC).
+
+    The arithmetic is the offline dataset assembly's, fold for fold: float64
+    prefix sums, the window includes the current cell and is partial at song
+    start, and the means land on the fp16 grid the cells already sit on.
+    Living inside the model means every reset that clears the ring -- song
+    boundary or shed recovery -- clears this history with it.
+    """
+
+    def __init__(self, geometry: HeadGeometry) -> None:
+        self._horizons = geometry.aux_cells
+        self._ring: deque = deque(maxlen=geometry.aux_cells[-1])
+        self._total = np.zeros(geometry.cell_dim, dtype=np.float64)
+        self._lags = [np.zeros(geometry.cell_dim, dtype=np.float64)
+                      for _ in self._horizons]
+        self._count = 0
+
+    def assemble(self, row: np.ndarray) -> np.ndarray:
+        for lag, cells in zip(self._lags, self._horizons):
+            if self._count >= cells:
+                lag += np.asarray(self._ring[-cells], dtype=np.float64)
+        self._ring.append(row)
+        self._total += row.astype(np.float64)
+        self._count += 1
+        blocks = [row]
+        for lag, cells in zip(self._lags, self._horizons):
+            span = float(min(cells, self._count))
+            mean = (self._total - lag) / span
+            blocks.append(mean.astype(np.float16).astype(np.float32))
+        return np.concatenate(blocks)
+
+
 class SectionModel:
     def __init__(self, onnx_path, *, mean, geometry: HeadGeometry | None = None,
                  expected_sha: str | None = None, session_factory=None) -> None:
@@ -171,6 +223,8 @@ class SectionModel:
                                axis=0)
         self._state = np.zeros((1, 1, self.geometry.rnn_hidden),
                                dtype=np.float32)
+        self._aux = (_TrailingMeans(self.geometry)
+                     if self.geometry.aux_cells else None)
         self._window: deque = deque()
         self._last_index: int | None = None
         self._flushed = False
@@ -183,9 +237,11 @@ class SectionModel:
 
     def _push(self, features, index: int | None = None) -> Posterior | None:
         row = np.asarray(features, dtype=np.float32).reshape(-1)
-        if len(row) != self.geometry.input_dim:
-            raise ValueError(f"a cell is {len(row)}-dim, the graph's input_dim "
-                             f"is {self.geometry.input_dim}")
+        if len(row) != self.geometry.cell_dim:
+            raise ValueError(f"a cell is {len(row)}-dim, the graph eats "
+                             f"{self.geometry.cell_dim}-dim cells")
+        if self._aux is not None:
+            row = self._aux.assemble(row)
         self._ring[:-1] = self._ring[1:]
         self._ring[-1] = row
         self._last_index = (0 if self._last_index is None
@@ -200,7 +256,8 @@ class SectionModel:
         if self._flushed:
             raise Flushed("the model has already been flushed; reset it first")
         self._flushed = True
-        out = [self._push(self._mean) for _ in range(self.geometry.future_cells)]
+        prime = self._mean[:self.geometry.cell_dim]
+        out = [self._push(prime) for _ in range(self.geometry.future_cells)]
         return [item for item in out if item is not None]
 
     def _step(self, index: int) -> Posterior:
