@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "FSserx_VvFM",
+  "title": "Cosmic Gate - Am2pm (Extended Mix) [Wake Your Mind]",
+  "artist": "Cosmic Gate",
+  "audio": "FSserx_VvFM.mp3",
+  "duration": 390.606,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 7.535,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 7.535,
+      "end": 37.372,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 37.372,
+      "end": 52.182,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 52.182,
+      "end": 67.017,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 67.017,
+      "end": 112.869,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 112.869,
+      "end": 188.188,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 188.188,
+      "end": 202.672,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 202.672,
+      "end": 240.092,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 240.092,
+      "end": 262.685,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 262.685,
+      "end": 293.095,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 293.095,
+      "end": 307.62,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 307.62,
+      "end": 322.646,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 322.646,
+      "end": 352.483,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 352.483,
+      "end": 382.406,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 382.406,
+      "end": 390.606,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

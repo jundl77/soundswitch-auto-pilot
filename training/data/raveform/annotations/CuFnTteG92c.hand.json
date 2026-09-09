@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "CuFnTteG92c",
+  "title": "Orjan Nilsen - Violetta [Armind]",
+  "artist": "Orjan Nilsen",
+  "audio": "CuFnTteG92c.mp3",
+  "duration": 430.08,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 9.66,
+      "end": 39.66,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 39.66,
+      "end": 69.66,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 69.66,
+      "end": 99.66,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 99.66,
+      "end": 174.66,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 174.66,
+      "end": 234.684,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 234.684,
+      "end": 264.66,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 264.66,
+      "end": 324.66,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 324.66,
+      "end": 384.659,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 384.659,
+      "end": 430.08,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

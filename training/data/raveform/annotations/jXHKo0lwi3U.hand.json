@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "jXHKo0lwi3U",
+  "title": "Soul Capsule - Lady Science",
+  "artist": "Soul Capsule",
+  "audio": "jXHKo0lwi3U.mp3",
+  "duration": 598.111,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.0,
+      "end": 90.278,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 90.278,
+      "end": 135.323,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 135.323,
+      "end": 165.353,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 165.353,
+      "end": 330.516,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 330.516,
+      "end": 360.546,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 360.546,
+      "end": 510.694,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 510.694,
+      "end": 598.111,
+      "strength": "major"
+    }
+  ],
+  "genre": "Deep House"
+}

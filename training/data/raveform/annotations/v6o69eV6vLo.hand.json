@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "v6o69eV6vLo",
+  "title": "Deadmau5 - Phantoms Can't Hang [Mau5trap]",
+  "artist": "Deadmau5",
+  "audio": "v6o69eV6vLo.mp3",
+  "duration": 556.606,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.17,
+      "end": 30.17,
+      "strength": "major"
+    },
+    {
+      "name": "intro",
+      "start": 30.17,
+      "end": 45.17,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 45.17,
+      "end": 75.169,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 75.169,
+      "end": 195.169,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 195.169,
+      "end": 328.751,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 328.751,
+      "end": 360.168,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 360.168,
+      "end": 480.167,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 480.167,
+      "end": 510.167,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 510.167,
+      "end": 556.606,
+      "strength": "major"
+    }
+  ],
+  "genre": "Progressive House"
+}

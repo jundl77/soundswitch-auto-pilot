@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "LRayNutcKNc",
+  "title": "Solarstone vs Scott Bond - 3rd Earth (Max Graham Remix) [Captivating]",
+  "artist": "Solarstone vs Scott Bond",
+  "audio": "LRayNutcKNc.mp3",
+  "duration": 374.271,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.031,
+      "end": 29.122,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 29.122,
+      "end": 130.967,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 130.967,
+      "end": 241.886,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 241.886,
+      "end": 247.31,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 247.31,
+      "end": 276.296,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 276.296,
+      "end": 305.486,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 305.486,
+      "end": 320.032,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 320.032,
+      "end": 374.271,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

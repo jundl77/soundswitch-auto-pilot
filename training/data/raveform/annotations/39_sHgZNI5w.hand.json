@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "39_sHgZNI5w",
+  "title": "Wrechiski & Jason Ross - Atlas [Anjunabeats]",
+  "artist": "Wrechiski & Jason Ross",
+  "audio": "39_sHgZNI5w.mp3",
+  "duration": 385.28,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.112,
+      "end": 30.112,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 30.112,
+      "end": 60.112,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 60.112,
+      "end": 120.112,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 120.112,
+      "end": 225.006,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 225.006,
+      "end": 240.112,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 240.112,
+      "end": 300.112,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 300.112,
+      "end": 315.112,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 315.112,
+      "end": 345.112,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 345.112,
+      "end": 360.112,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 360.112,
+      "end": 385.28,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

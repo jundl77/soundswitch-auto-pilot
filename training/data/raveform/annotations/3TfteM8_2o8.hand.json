@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "3TfteM8_2o8",
+  "title": "Gaia - Inyathi [Armind]",
+  "artist": "Gaia",
+  "audio": "3TfteM8_2o8.mp3",
+  "duration": 433.447,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.212,
+      "end": 42.879,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 42.879,
+      "end": 92.527,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 92.527,
+      "end": 99.768,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 99.768,
+      "end": 128.212,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 128.212,
+      "end": 202.843,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 202.843,
+      "end": 231.155,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 231.155,
+      "end": 259.768,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 259.768,
+      "end": 316.657,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 316.657,
+      "end": 330.879,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 330.879,
+      "end": 345.101,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 345.101,
+      "end": 366.257,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 366.257,
+      "end": 373.546,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 373.546,
+      "end": 401.99,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 401.99,
+      "end": 433.447,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

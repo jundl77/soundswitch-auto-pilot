@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-65cb8c94812d",
+  "title": "Eric Prydz - Opus",
+  "artist": "Eric Prydz",
+  "audio": "hand-65cb8c94812d.mp3",
+  "duration": 543.486,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 49.311,
+      "strength": "major"
+    },
+    {
+      "name": "altintro",
+      "start": 49.311,
+      "end": 125.814,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 125.814,
+      "end": 177.63,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 177.63,
+      "end": 223.995,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 223.995,
+      "end": 256.474,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 256.474,
+      "end": 287.775,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 287.775,
+      "end": 294.329,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 294.329,
+      "end": 327.601,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 327.601,
+      "end": 342.307,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 342.307,
+      "end": 386.551,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 386.551,
+      "end": 393.181,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 393.181,
+      "end": 543.486,
+      "strength": "major"
+    }
+  ],
+  "genre": "Progressive House"
+}

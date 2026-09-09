@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "Bn6qh4qPwc4",
+  "title": "Deadmau5 - Some Chords (Dillon Francis Remix) [Mau5trap]",
+  "artist": "Deadmau5",
+  "audio": "Bn6qh4qPwc4.mp3",
+  "duration": 292.49,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.034,
+      "end": 15.034,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 15.034,
+      "end": 30.034,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 30.034,
+      "end": 97.458,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 97.458,
+      "end": 112.534,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 112.534,
+      "end": 142.534,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 142.534,
+      "end": 210.044,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 210.044,
+      "end": 225.034,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 225.034,
+      "end": 255.034,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 255.034,
+      "end": 270.034,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 270.034,
+      "end": 292.49,
+      "strength": "major"
+    }
+  ],
+  "genre": "House"
+}

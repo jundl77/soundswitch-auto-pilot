@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-8339586c555a",
+  "title": "James Hype - Don't Wake Me Up (Agents Of Time Remix)",
+  "artist": "James Hype",
+  "audio": "hand-8339586c555a.mp3",
+  "duration": 193.097,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 37.861,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 37.861,
+      "end": 52.564,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 52.564,
+      "end": 65.157,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 65.157,
+      "end": 67.411,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 67.411,
+      "end": 82.299,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 82.299,
+      "end": 111.818,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 111.818,
+      "end": 126.582,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 126.582,
+      "end": 141.036,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 141.036,
+      "end": 152.607,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 152.607,
+      "end": 155.756,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 155.756,
+      "end": 185.563,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 185.563,
+      "end": 193.097,
+      "strength": "major"
+    }
+  ]
+}

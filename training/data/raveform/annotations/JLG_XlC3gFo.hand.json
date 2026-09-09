@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "JLG_XlC3gFo",
+  "title": "Recondite - Psy",
+  "artist": "Recondite",
+  "audio": "JLG_XlC3gFo.mp3",
+  "duration": 551.66,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 61.171,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 61.171,
+      "end": 152.599,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 152.599,
+      "end": 244.028,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 244.028,
+      "end": 304.981,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 304.981,
+      "end": 335.457,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 335.457,
+      "end": 396.409,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 396.409,
+      "end": 457.362,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 457.362,
+      "end": 487.838,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 487.838,
+      "end": 518.314,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 518.314,
+      "end": 551.66,
+      "strength": "major"
+    }
+  ],
+  "genre": "Melodic House & Techno"
+}

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "JnLS_5KHhqI",
+  "title": "Paul Oakenfold - Bla Bla Bla [Perfecto Fluoro]",
+  "artist": "Paul Oakenfold",
+  "audio": "JnLS_5KHhqI.mp3",
+  "duration": 453.289,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 7.605,
+      "end": 35.431,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 35.431,
+      "end": 59.812,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 59.812,
+      "end": 63.257,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 63.257,
+      "end": 174.561,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 174.561,
+      "end": 212.355,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 212.355,
+      "end": 252.298,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 252.298,
+      "end": 275.431,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 275.431,
+      "end": 344.837,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 344.837,
+      "end": 358.909,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 358.909,
+      "end": 414.561,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 414.561,
+      "end": 453.289,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

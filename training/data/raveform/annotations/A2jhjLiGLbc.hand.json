@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "A2jhjLiGLbc",
+  "title": "Lake People - Point In Time",
+  "artist": "Lake People",
+  "audio": "A2jhjLiGLbc.mp3",
+  "duration": 502.015,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 0.97,
+      "strength": "major"
+    },
+    {
+      "name": "intro",
+      "start": 0.97,
+      "end": 44.97,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 44.97,
+      "end": 124.971,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 124.971,
+      "end": 292.971,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 292.971,
+      "end": 322.971,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 322.971,
+      "end": 394.971,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 394.971,
+      "end": 502.015,
+      "strength": "major"
+    }
+  ],
+  "genre": "Tech House"
+}

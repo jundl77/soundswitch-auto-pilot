@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-33d3513481ac",
+  "title": "Carly Rae Jepsen - Your Heart Is A Muscle",
+  "artist": "Carly Rae Jepsen",
+  "audio": "hand-33d3513481ac.mp3",
+  "duration": 229.796,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 33.703,
+      "strength": "major"
+    },
+    {
+      "name": "altintro",
+      "start": 33.703,
+      "end": 44.865,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 44.865,
+      "end": 67.191,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 67.191,
+      "end": 89.805,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 89.805,
+      "end": 124.414,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 124.414,
+      "end": 181.61,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 181.61,
+      "end": 203.935,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 203.935,
+      "end": 214.4,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 214.4,
+      "end": 229.796,
+      "strength": "major"
+    }
+  ],
+  "genre": "Pop"
+}

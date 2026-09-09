@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-52973d7b1767",
+  "title": "Qwote feat. Pitbull & Lucenzo - Throw Your Hands Up (Dancar Kuduro)",
+  "artist": "Qwote feat. Pitbull & Lucenzo",
+  "audio": "hand-52973d7b1767.mp3",
+  "duration": 209.943,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 23.059,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 23.059,
+      "end": 37.306,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 37.306,
+      "end": 65.503,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 65.503,
+      "end": 81.587,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 81.587,
+      "end": 111.432,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 111.432,
+      "end": 125.84,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 125.84,
+      "end": 147.668,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 147.668,
+      "end": 209.943,
+      "strength": "major"
+    }
+  ],
+  "genre": "Pop"
+}

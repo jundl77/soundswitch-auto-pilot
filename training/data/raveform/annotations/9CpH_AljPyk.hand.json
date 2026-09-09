@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "9CpH_AljPyk",
+  "title": "Cosmic Gate Feat. JES - Yai (Here We Go Again) [Wake Your Mind]",
+  "artist": "Cosmic Gate Feat. JES",
+  "audio": "9CpH_AljPyk.mp3",
+  "duration": 409.493,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.073,
+      "end": 30.073,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 30.073,
+      "end": 45.073,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 45.073,
+      "end": 105.074,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 105.074,
+      "end": 224.827,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 224.827,
+      "end": 270.074,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 270.074,
+      "end": 345.074,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 345.074,
+      "end": 390.03,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 390.03,
+      "end": 409.493,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

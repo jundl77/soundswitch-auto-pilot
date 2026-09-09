@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "mYcerF2Twkc",
+  "title": "Maetrik - The Poem",
+  "artist": "Maetrik",
+  "audio": "mYcerF2Twkc.mp3",
+  "duration": 482.754,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.0,
+      "end": 31.346,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 31.346,
+      "end": 93.052,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 93.052,
+      "end": 154.984,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 154.984,
+      "end": 185.956,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 185.956,
+      "end": 247.912,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 247.912,
+      "end": 288.136,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 288.136,
+      "end": 294.339,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 294.339,
+      "end": 356.279,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 356.279,
+      "end": 402.733,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 402.733,
+      "end": 464.664,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 464.664,
+      "end": 482.754,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}
