@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "0R0r4lrvpAo",
+  "title": "I:Cube - Disco Cubizm (Daft Punk Mix)",
+  "artist": "I:Cube",
+  "audio": "0R0r4lrvpAo.mp3",
+  "duration": 488.789,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 81.891,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 81.891,
+      "end": 200.447,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 200.447,
+      "end": 289.819,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 289.819,
+      "end": 412.391,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 412.391,
+      "end": 488.789,
+      "strength": "major"
+    }
+  ],
+  "genre": "House"
+}

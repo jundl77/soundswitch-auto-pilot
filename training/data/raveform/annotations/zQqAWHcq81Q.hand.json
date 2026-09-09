@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "zQqAWHcq81Q",
+  "title": "Aly & Fila With Ferry Tayle - Nubia [FSOE]",
+  "artist": "Aly & Fila With Ferry Tayle",
+  "audio": "zQqAWHcq81Q.mp3",
+  "duration": 460.907,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.084,
+      "end": 27.91,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 27.91,
+      "end": 83.562,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 83.562,
+      "end": 111.388,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 111.388,
+      "end": 139.214,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 139.214,
+      "end": 250.316,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 250.316,
+      "end": 280.085,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 280.085,
+      "end": 363.563,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 363.563,
+      "end": 419.215,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 419.215,
+      "end": 460.907,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

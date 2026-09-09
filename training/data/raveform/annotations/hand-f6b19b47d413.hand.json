@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-f6b19b47d413",
+  "title": "is it beautiful",
+  "artist": null,
+  "audio": "hand-f6b19b47d413.mp3",
+  "duration": 214.843,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 62.65,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 62.65,
+      "end": 90.628,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 90.628,
+      "end": 104.366,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 104.366,
+      "end": 132.622,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 132.622,
+      "end": 187.734,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 187.734,
+      "end": 214.843,
+      "strength": "major"
+    }
+  ]
+}

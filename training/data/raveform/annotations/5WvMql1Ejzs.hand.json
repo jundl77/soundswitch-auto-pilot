@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "5WvMql1Ejzs",
+  "title": "Secret Cinema & Egbert - Maximaal [Drumcode - DC159]",
+  "artist": "Secret Cinema & Egbert",
+  "audio": "5WvMql1Ejzs.mp3",
+  "duration": 525.269,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.179,
+      "end": 60.179,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 60.179,
+      "end": 104.975,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 104.975,
+      "end": 180.179,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 180.179,
+      "end": 240.179,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 240.179,
+      "end": 270.179,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 270.179,
+      "end": 300.179,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 300.179,
+      "end": 360.179,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 360.179,
+      "end": 480.178,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 480.178,
+      "end": 495.178,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 495.178,
+      "end": 525.269,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}

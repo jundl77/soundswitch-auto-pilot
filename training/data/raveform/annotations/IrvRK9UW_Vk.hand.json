@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "IrvRK9UW_Vk",
+  "title": "Kölsch feat. Troels Abrahamsen - All That Matters",
+  "artist": "Kölsch feat. Troels Abrahamsen",
+  "audio": "IrvRK9UW_Vk.mp3",
+  "duration": 559.984,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 62.091,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 62.091,
+      "end": 119.636,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 119.636,
+      "end": 123.727,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 123.727,
+      "end": 213.124,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 213.124,
+      "end": 216.929,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 216.929,
+      "end": 278.865,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 278.865,
+      "end": 398.62,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 398.62,
+      "end": 402.735,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 402.735,
+      "end": 495.638,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 495.638,
+      "end": 559.984,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}

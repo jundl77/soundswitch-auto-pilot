@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-1b57bc38e8e4",
+  "title": "Soulja Boy Tell 'Em - Kiss Me Thru The Phone",
+  "artist": "Soulja Boy Tell 'Em",
+  "audio": "hand-1b57bc38e8e4.mp3",
+  "duration": 194.154,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 12.928,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 12.928,
+      "end": 38.465,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 38.465,
+      "end": 64.07,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 64.07,
+      "end": 89.657,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 89.657,
+      "end": 115.252,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 115.252,
+      "end": 140.777,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 140.777,
+      "end": 166.408,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 166.408,
+      "end": 188.47,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 188.47,
+      "end": 194.154,
+      "strength": "major"
+    }
+  ],
+  "genre": "Pop"
+}

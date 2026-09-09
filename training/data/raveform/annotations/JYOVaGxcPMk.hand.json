@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "JYOVaGxcPMk",
+  "title": "Rüfüs - Innerbloom (H.O.S.H. Remix)",
+  "artist": "Rüfüs",
+  "audio": "JYOVaGxcPMk.mp3",
+  "duration": 605.019,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 31.672,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 31.672,
+      "end": 63.147,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 63.147,
+      "end": 283.475,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 283.475,
+      "end": 314.949,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 314.949,
+      "end": 503.803,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 503.803,
+      "end": 566.754,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 566.754,
+      "end": 582.491,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 582.491,
+      "end": 605.019,
+      "strength": "major"
+    }
+  ],
+  "genre": "Deep House"
+}

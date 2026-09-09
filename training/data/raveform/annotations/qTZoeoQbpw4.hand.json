@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "qTZoeoQbpw4",
+  "title": "Max Graham - Amnesia (Alex Di Stefano Remix) [Cycles]",
+  "artist": "Max Graham",
+  "audio": "qTZoeoQbpw4.mp3",
+  "duration": 464.981,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 7.667,
+      "end": 37.205,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 37.205,
+      "end": 66.744,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 66.744,
+      "end": 184.898,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 184.898,
+      "end": 244.007,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 244.007,
+      "end": 273.513,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 273.513,
+      "end": 332.455,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 332.455,
+      "end": 421.165,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 421.165,
+      "end": 464.981,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

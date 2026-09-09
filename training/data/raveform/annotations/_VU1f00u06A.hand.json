@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "_VU1f00u06A",
+  "title": "Fango - Vena Cava",
+  "artist": "Fango",
+  "audio": "_VU1f00u06A.mp3",
+  "duration": 464.683,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 61.982,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 61.982,
+      "end": 162.628,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 162.628,
+      "end": 271.015,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 271.015,
+      "end": 301.983,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 301.983,
+      "end": 356.178,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 356.178,
+      "end": 387.144,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 387.144,
+      "end": 418.112,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 418.112,
+      "end": 464.683,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}

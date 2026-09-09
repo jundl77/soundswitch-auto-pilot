@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "Whm7_Z7-n-g",
+  "title": "ReOrder & Ian Standerwick Pres. Skypatrol - Sailing Airwaves (In Memory Of Matt Trigle) [FSOE]",
+  "artist": "ReOrder & Ian Standerwick Pres. Skypatrol",
+  "audio": "Whm7_Z7-n-g.mp3",
+  "duration": 417.356,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 3.55,
+      "end": 31.376,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 31.376,
+      "end": 49.318,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 49.318,
+      "end": 59.202,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 59.202,
+      "end": 87.028,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 87.028,
+      "end": 107.837,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 107.837,
+      "end": 114.854,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 114.854,
+      "end": 142.68,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 142.68,
+      "end": 221.144,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 221.144,
+      "end": 240.071,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 240.071,
+      "end": 295.724,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 295.724,
+      "end": 312.839,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 312.839,
+      "end": 323.55,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 323.55,
+      "end": 379.202,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 379.202,
+      "end": 417.356,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

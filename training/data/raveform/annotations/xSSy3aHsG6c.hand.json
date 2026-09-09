@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "xSSy3aHsG6c",
+  "title": "Oni Ayhun - Oar 003-B",
+  "artist": "Oni Ayhun",
+  "audio": "xSSy3aHsG6c.mp3",
+  "duration": 675.062,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 102.534,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 102.534,
+      "end": 259.269,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 259.269,
+      "end": 345.473,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 345.473,
+      "end": 486.534,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 486.534,
+      "end": 619.758,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 619.758,
+      "end": 651.105,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 651.105,
+      "end": 675.062,
+      "strength": "major"
+    }
+  ],
+  "genre": "Electronica"
+}

@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "rdZ68mkedYY",
+  "title": "Flug - Obscure Cells",
+  "artist": "Flug",
+  "audio": "rdZ68mkedYY.mp3",
+  "duration": 394.705,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 59.71,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 59.71,
+      "end": 119.245,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 119.245,
+      "end": 178.779,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 178.779,
+      "end": 297.849,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 297.849,
+      "end": 387.152,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 387.152,
+      "end": 394.705,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}

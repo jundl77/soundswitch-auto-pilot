@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "IsFW6rBpCBE",
+  "title": "Sean Tyas - Da Doo Da Dah [Subculture]",
+  "artist": "Sean Tyas",
+  "audio": "IsFW6rBpCBE.mp3",
+  "duration": 438.649,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 7.603,
+      "end": 21.721,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 21.721,
+      "end": 56.944,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 56.944,
+      "end": 64.074,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 64.074,
+      "end": 148.78,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 148.78,
+      "end": 205.251,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 205.251,
+      "end": 261.721,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 261.721,
+      "end": 293.486,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 293.486,
+      "end": 315.607,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 315.607,
+      "end": 321.721,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 321.721,
+      "end": 378.192,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 378.192,
+      "end": 406.427,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 406.427,
+      "end": 438.649,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

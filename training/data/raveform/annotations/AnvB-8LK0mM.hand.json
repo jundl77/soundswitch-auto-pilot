@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "AnvB-8LK0mM",
+  "title": "DJ Bone - Cultural Variance",
+  "artist": "DJ Bone",
+  "audio": "AnvB-8LK0mM.mp3",
+  "duration": 600.004,
+  "sections": [
+    {
+      "name": "intro",
+      "start": 0.0,
+      "end": 29.608,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 29.608,
+      "end": 162.531,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 162.531,
+      "end": 206.838,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 206.838,
+      "end": 236.377,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 236.377,
+      "end": 454.53,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 454.53,
+      "end": 504.068,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 504.068,
+      "end": 561.299,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 561.299,
+      "end": 583.452,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 583.452,
+      "end": 600.004,
+      "strength": "major"
+    }
+  ],
+  "genre": "Techno"
+}

@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "doedi2MI-iM",
+  "title": "BT - Skylarking [Armada]",
+  "artist": "BT",
+  "audio": "doedi2MI-iM.mp3",
+  "duration": 659.772,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 21.933,
+      "end": 142.031,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 142.031,
+      "end": 156.933,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 156.933,
+      "end": 254.433,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 254.433,
+      "end": 368.808,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 368.808,
+      "end": 406.308,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 406.308,
+      "end": 462.502,
+      "strength": "major"
+    },
+    {
+      "name": "buildup",
+      "start": 462.502,
+      "end": 466.308,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 466.308,
+      "end": 541.308,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 541.308,
+      "end": 571.308,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 571.308,
+      "end": 659.772,
+      "strength": "major"
+    }
+  ],
+  "genre": "Trance"
+}

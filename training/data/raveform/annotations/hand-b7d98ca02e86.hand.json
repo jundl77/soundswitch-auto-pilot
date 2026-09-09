@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hand-b7d98ca02e86",
+  "title": "Jamie Foxx feat. T-Pain - Blame It (The New Devices remix)",
+  "artist": "Jamie Foxx feat. T-Pain",
+  "audio": "hand-b7d98ca02e86.mp3",
+  "duration": 255.663,
+  "sections": [
+    {
+      "name": "breakdown",
+      "start": 5.239,
+      "end": 28.302,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 28.302,
+      "end": 76.287,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 76.287,
+      "end": 91.196,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 91.196,
+      "end": 122.373,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 122.373,
+      "end": 145.469,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 145.469,
+      "end": 255.663,
+      "strength": "major"
+    }
+  ],
+  "genre": "Dance/Electronic"
+}

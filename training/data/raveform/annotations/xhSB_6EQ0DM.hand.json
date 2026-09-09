@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "xhSB_6EQ0DM",
+  "title": "Ecstasy Club - Jesus Loves The Acid",
+  "artist": "Ecstasy Club",
+  "audio": "xhSB_6EQ0DM.mp3",
+  "duration": 458.919,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.0,
+      "end": 40.085,
+      "strength": "major"
+    },
+    {
+      "name": "intro",
+      "start": 40.085,
+      "end": 105.56,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 105.56,
+      "end": 192.859,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 192.859,
+      "end": 356.545,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 356.545,
+      "end": 440.207,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 440.207,
+      "end": 458.919,
+      "strength": "major"
+    }
+  ],
+  "genre": "House"
+}
