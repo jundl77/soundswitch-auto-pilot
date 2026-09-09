@@ -167,6 +167,18 @@ for _ep in (1, 4, 7):
         "role": f"#346 NIW-CS candidate ep{_ep} of the regenerated N-IW "
                 f"trajectory (composition-aware checkpoint selection)",
     }
+# NIW-DW (#346 addendum): the N-IW tilt + --class-weight-scale drop=2.0 --
+# drop-preserving weighted training.  A weight scale is not a relabel, so the
+# row decodes under arm N's config/priors, the l9b HMK/HOS pattern.
+EXTRA_ARM_SPECS["ng_NIWDW_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_NIWDW_w128_s1234",
+    "report": CAMP / "ng_NIWDW_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "l9c arm NIW-DW (#346: the N-IW +6-slot tilt with the trainer's "
+            "focal drop class weight scaled 2.0x -- drop-preserving weighted "
+            "training; decoded under arm N's config/priors), seed 1234",
+}
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).

@@ -68,6 +68,9 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
 # train on arm N's labels unchanged (e.g. a masked arm) decode under N's
 # files, the l9b pattern.
 CHAIN_ARTIFACTS = {"N": "N", "NMK": "N", "NIW": "N", "NIWCS": "N",
+                   # #346 NIW-DW: the tilt + drop-weighted focal; a weight
+                   # scale is not a relabel, so it decodes under N's files
+                   "NIWDW": "N",
                    # #346 expressibility-filter variants: arm N's student
                    # under near-tied swept configs (bonus 0.4/0.7/1.1/1.6)
                    "NB04": "NB04", "NB07": "NB07",
