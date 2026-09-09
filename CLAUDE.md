@@ -246,13 +246,21 @@ wall, now measured deeper: every supervision lever this campaign tried
 variants) is steerable but not reconciling — what a tilt buys on the taught
 arcs it sells on drops or bridge — and the long-context probe measured the
 root cause: the climb texture is locally ambiguous, and tens of seconds of
-past context materially separate buildup from its neighbours where no window
-the student holds can. The first long-context training arms did not convert
-that probe win, and the long-context iteration is still in flight — it is the
-evidence-named next lever, not a closed door. The known limitation ships
-stated rather than smoothed over: buildup on slow climbs and micro-ramps still
-reads as its neighbours, drops still land on time, and the two probes stay the
-regression reads for every future generation.
+past context materially separate buildup from its neighbours at the linear
+level where no window the student holds can. The cheap way to buy that
+context is closed too: the trailing-mean input-geometry arm ended at its
+two-train cap with the selection rule unsatisfiable on both trains — smearing
+past context into the input of a student that already carries a backward
+window and state is paid on exactly the boundary axes the decoder gates on —
+so if long context reopens it is a model-architecture change (a slow pathway,
+wider state, aux past the conv) or the playback-delay product fork, an
+owner-level decision; the live-path aux feeder and trainer surgery are built,
+proven byte-inert, and parked on their branches for that successor. The known
+limitation ships stated rather than smoothed over: buildup on slow climbs and
+micro-ramps still reads as its neighbours, drops still land on time, the
+supervision axis and the trailing-mean geometry are both measured closed, and
+the path forward is that owner fork plus the `LABEL_TARGETS.md` labelling;
+the two probes stay the regression reads for every future generation.
 
 ### How the show is decided
 
