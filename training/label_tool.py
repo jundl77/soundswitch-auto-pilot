@@ -7,11 +7,13 @@ dropdown of the outputs the browser can see, applied with `setSinkId` and
 remembered in `localStorage`, so the owner picks his headphones once. A chip
 names the device currently in use. The track is decoded once with ffmpeg into a waveform envelope and a
 spectral-flux curve, so the beat starts a boundary should land on are visible
-rather than guessed; play the audio, click the timeline to seek, and press "mark
-boundary" to cut a section at the playhead, with the major/minor toggle saying
-how strong that transition is. Each section gets a row in the table with a label
+rather than guessed; play the audio (space toggles play/pause anywhere outside
+a form field), click the timeline to seek, and press "mark boundary" to cut a
+section at the playhead, with the major/minor toggle saying how strong that
+transition is. Each section gets a row in the table with a label
 picker, a strength picker, +/- nudge buttons and a delete, and shows as a
-coloured span on the timeline.
+coloured span on the timeline. The row whose span contains the playhead is
+highlighted, so the dropdown that describes what is playing is the obvious one.
 
 The vocabulary is the raw Raveform one minus `end`, which is a tail sentinel
 rather than a phase; folding is a downstream decision and a labelling that has
@@ -1126,6 +1128,51 @@ function (tick) {
 }
 """.replace('SEEK_SLOP', str(SEEK_SLOP_PX))
 
+PLAYHEAD_ROW_JS = """
+function (t, sections) {
+    if (!document.getElementById('playhead-row-css')) {
+        const css = document.createElement('style');
+        css.id = 'playhead-row-css';
+        css.textContent =
+            'tr.playhead-row { background: rgba(88,166,255,0.10); }' +
+            'tr.playhead-row td:first-child { box-shadow: inset 3px 0 0 #58a6ff; }';
+        document.head.appendChild(css);
+    }
+    let active = -1;
+    (sections || []).forEach((entry, index) => {
+        if ((t || 0) >= entry.start) { active = index; }
+    });
+    document.querySelectorAll('#table tr').forEach((row, index) =>
+        row.classList.toggle('playhead-row', index > 0 && index - 1 === active));
+    return window.dash_clientside.no_update;
+}
+"""
+
+SPACE_PLAY_JS = """
+function (tick) {
+    if (!window.__spaceBound) {
+        window.__spaceBound = true;
+        document.addEventListener('keydown', function (event) {
+            if (event.code !== 'Space' || event.repeat) { return; }
+            const target = event.target;
+            // A focused form control keeps its native space -- typing a title
+            // with spaces, or toggling a checkbox, must never toggle playback.
+            if (target && (target.isContentEditable
+                    || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON',
+                        'AUDIO'].includes(target.tagName))) {
+                return;
+            }
+            event.preventDefault();
+            const audio = document.getElementById('player');
+            if (audio) {
+                if (audio.paused) { audio.play(); } else { audio.pause(); }
+            }
+        });
+    }
+    return window.dash_clientside.no_update;
+}
+"""
+
 
 def audio_mimetype(audio_path: str) -> str:
     """Whatever the file is -- anything ffmpeg can decode is accepted here."""
@@ -1243,6 +1290,8 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
             dcc.Store(id='sections', data=sections),
             dcc.Store(id='cursor', data=0.0),
             dcc.Store(id='sink-echo'),
+            dcc.Store(id='playhead-echo'),
+            dcc.Store(id='space-echo'),
             dcc.Store(id='launch-token', data=token),
             dcc.Interval(id='tick', interval=TICK_MS),
             dcc.Interval(id='stale-tick', interval=STALE_TICK_MS),
@@ -1256,6 +1305,19 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
         Output('cursor', 'data'),
         Output('cursor-seconds', 'children'),
         Output('cursor-clock', 'children'),
+        Input('tick', 'n_intervals'),
+    )
+
+    app.clientside_callback(
+        PLAYHEAD_ROW_JS,
+        Output('playhead-echo', 'data'),
+        Input('cursor', 'data'),
+        State('sections', 'data'),
+    )
+
+    app.clientside_callback(
+        SPACE_PLAY_JS,
+        Output('space-echo', 'data'),
         Input('tick', 'n_intervals'),
     )
 
