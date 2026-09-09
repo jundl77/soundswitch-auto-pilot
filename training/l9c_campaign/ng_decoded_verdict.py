@@ -190,6 +190,16 @@ EXTRA_ARM_SPECS["ng_NIWDW15_w128_s1234"] = {
             "drop class weight scaled 1.5x; decoded under arm N's "
             "config/priors), seed 1234",
 }
+# NIW-H2 (#346): the fallback dose midpoint -- half tilt (inyathi x2 only,
+# splits_niwh2.json, 970 slots) at K=1, no weight scale.
+EXTRA_ARM_SPECS["ng_NIWH2_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_NIWH2_w128_s1234",
+    "report": CAMP / "ng_NIWH2_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "l9c arm NIW-H2 (#346: half tilt, inyathi x2 only, no weight "
+            "scale; decoded under arm N's config/priors), seed 1234",
+}
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).
