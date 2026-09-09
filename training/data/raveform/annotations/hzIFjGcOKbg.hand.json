@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "hzIFjGcOKbg",
+  "title": "+ Konflict - Beckoning [Renegade Hardware]",
+  "artist": "+ Konflict",
+  "audio": "hzIFjGcOKbg.mp3",
+  "duration": 473.049,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.021,
+      "end": 22.553,
+      "strength": "major"
+    },
+    {
+      "name": "intro",
+      "start": 22.553,
+      "end": 112.683,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 112.683,
+      "end": 157.748,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 157.748,
+      "end": 191.547,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 191.547,
+      "end": 202.813,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 202.813,
+      "end": 236.612,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 236.612,
+      "end": 247.878,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 247.878,
+      "end": 292.943,
+      "strength": "major"
+    },
+    {
+      "name": "drop",
+      "start": 292.943,
+      "end": 394.339,
+      "strength": "major"
+    },
+    {
+      "name": "cooldown",
+      "start": 394.339,
+      "end": 428.138,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 428.138,
+      "end": 473.049,
+      "strength": "major"
+    }
+  ],
+  "genre": "Drum & Bass"
+}
