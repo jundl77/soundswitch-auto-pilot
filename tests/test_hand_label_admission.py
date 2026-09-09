@@ -456,15 +456,34 @@ def test_the_priors_refit_reads_a_hand_track(tmp_path):
         "intro", "breakdown", "drop"]
 
 
-def test_the_benchmark_fallback_ignores_hand_labels(tmp_path):
+def test_the_benchmarks_published_truth_ignores_hand_labels(tmp_path):
+    """The published column is what the eval set was frozen against, so a hand
+    label may never reach it.  It is the reason the flip is EXPLICIT: the owner
+    reading sits beside this one and the gate names which it reads."""
     override = hand_record(identifier="native00001", duration=149.5)
     data_dir = make_corpus(tmp_path, [published_record()], [override])
 
-    sections = run_eval_set.load_sections(
+    truths = run_eval_set.load_sections_by_truth(
         data_dir, labels=tmp_path / "no-such-labels.json")
 
-    assert sections["0001.native00001"] == [
+    assert truths[run_eval_set.PUBLISHED]["0001.native00001"] == [
         (0.0, 60.0, "intro"), (60.0, 140.0, "drop"), (140.0, 150.0, "end")]
+
+
+def test_the_benchmarks_owner_truth_reads_hand_labels(tmp_path):
+    """The other half of the same statement: the corpus fallback's include_hand
+    flips WITH the truth.  If it did not, a machine reading the committed slice
+    and a machine falling back to the corpus would score different ground truth
+    for exactly the hand-labelled tracks."""
+    override = hand_record(identifier="native00001", duration=149.5)
+    data_dir = make_corpus(tmp_path, [published_record()], [override])
+
+    truths = run_eval_set.load_sections_by_truth(
+        data_dir, labels=tmp_path / "no-such-labels.json")
+
+    assert truths[run_eval_set.OWNER]["0001.native00001"][0] == (0.0, 30.0, "intro")
+    assert (truths[run_eval_set.OWNER]["0001.native00001"]
+            != truths[run_eval_set.PUBLISHED]["0001.native00001"])
 
 
 def test_the_table_join_reads_hand_wins(tmp_path):

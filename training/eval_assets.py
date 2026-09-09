@@ -30,6 +30,15 @@ Two artifacts, both committed:
     check ``run_eval_set.verify_ground_truth`` makes, which is what the corpus
     file's own sha256 used to be for.
 
+    Schema 2 carries a SECOND reading of the same ten tracks beside the first.
+    The owner has ruled published labels wrong on benchmark tracks and
+    relabelled them, so the slice records what he has said about each of the ten
+    (``overridden`` / ``accepted`` / ``unreviewed``) and, for the overridden
+    ones, the merge of the published record with his hand label.  ``tracks``
+    stays byte-for-byte the published half; the owner half is a separate block
+    with its own per-file sha provenance, so neither reading can be mistaken for
+    the other and the published pin keeps meaning what it meant.
+
 The naming scheme is recorded in the eval set's ``artifacts`` provenance block
 (see ``artifacts_block``) -- the scheme, not a mapping, because the mapping is
 computable and a committed one would be a second source of truth.
@@ -44,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import hashlib
 import json
 import shutil
@@ -60,14 +70,26 @@ for _path in (
 
 from build_clean_manifest import AUDIO_DIR  # noqa: E402  (needs the path inserts)
 from raveform_fetch_annotations import (  # noqa: E402
+    HAND_LABEL_SUFFIX,
     SEGMENTS_FILE,
     annotations_dir,
+    load_hand_tracks,
     load_tracks,
+    merge_hand_tracks,
     parse_sections,
+    youtube_id as track_youtube_id,
 )
 
 EVAL_AUDIO_DIR = REPO_ROOT / "training" / "eval_audio"
 EVAL_LABELS_FILE = REPO_ROOT / "training" / "eval_labels.json"
+
+# Hand labels are the one thing under training/data/ that git tracks, so every
+# checkout and every linked worktree materialises its own copy here.
+# corpus_root.corpus_dir() resolves a LINKED worktree to the MAIN checkout's
+# corpus, which holds whatever that checkout has -- including uncommitted
+# labels.  Hashing through it would make the provenance verdict a fact about
+# which worktree ran it, so the tracked path is the one the slice pins.
+REPO_CORPUS_DIR = REPO_ROOT / "training" / "data" / "raveform"
 
 # How many characters of the base64url digest name a file.  Changing this
 # renames every committed mp3, so it is a re-cut, not a tweak.
@@ -77,7 +99,22 @@ NAME_CHARS = 10
 # every error message that has to tell a human where a file should have been.
 AUDIO_NAME_SCHEME = f"base64url(sha256(youtube_id))[:{NAME_CHARS}] + '.mp3'"
 
-LABELS_SCHEMA = 1
+LABELS_SCHEMA = 2
+
+# The two annotators the same ten tracks can be read against.  PUBLISHED is the
+# Raveform annotation the eval set was frozen against; OWNER is that reading
+# with the owner's hand labels substituted wherever he has ruled one wrong.
+PUBLISHED = "published"
+OWNER = "owner"
+TRUTHS = (OWNER, PUBLISHED)
+
+# What the owner has said about one frozen track.  Coverage is "how many has he
+# ruled on", not "how many did he relabel": for a track he listens to and
+# agrees with, ACCEPTED is the decision, and it is worth recording as one.
+OVERRIDDEN = "overridden"     # he relabelled it -- a committed *.hand.json
+ACCEPTED = "accepted"         # he ruled the published label correct
+UNREVIEWED = "unreviewed"     # he has not ruled
+RULINGS = (OVERRIDDEN, ACCEPTED, UNREVIEWED)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +172,12 @@ def load_labels(path: Path | None = None) -> dict:
         raise RuntimeError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(document, dict) or not isinstance(document.get("tracks"), list):
         raise RuntimeError(f"{path} has no 'tracks' list -- it is not a label slice")
+    schema = document.get("schema")
+    if schema != LABELS_SCHEMA:
+        raise RuntimeError(
+            f"{path} is schema {schema!r}, not {LABELS_SCHEMA} -- a slice now "
+            f"carries both annotators' readings of the frozen ten; re-cut it "
+            f"with training/eval_assets.py --cut")
     return document
 
 
@@ -149,22 +192,56 @@ def sections_by_track(document: dict) -> dict:
     return {str(track["key"]): parse_sections(track) for track in document["tracks"]}
 
 
+def sections_by_truth(document: dict) -> dict:
+    """``{truth: {track_id -> spans}}`` -- the same ten tracks, both annotators.
+
+    The owner reading is the published one with the overridden tracks replaced.
+    Only overridden records are stored, so a track the owner has not relabelled
+    is the SAME object under both truths rather than a second copy that can
+    drift from the first.
+    """
+    published = sections_by_track(document)
+    owner = dict(published)
+    owner.update({str(track["key"]): parse_sections(track)
+                  for track in document.get("owner_tracks") or []})
+    return {PUBLISHED: published, OWNER: owner}
+
+
+def published_source(document: dict) -> dict:
+    """What the slice records about the annotation its published half came from."""
+    return ((document.get("truths") or {}).get(PUBLISHED)) or {}
+
+
 def labels_source_sha(document: dict) -> str | None:
     """The sha256 of the ``segments.json`` the slice was cut from."""
-    return (document.get("source") or {}).get("sha256")
+    return published_source(document).get("sha256")
 
 
-def build_labels_document(records: list, source_sha: str,
-                          source_tracks: int) -> dict:
-    """The committed label slice: the source it came from, then the records."""
+def owner_rulings(document: dict) -> dict:
+    """``track_id -> ruling`` for every frozen track, always all ten of them."""
+    return (((document.get("truths") or {}).get(OWNER)) or {}).get("rulings") or {}
+
+
+def build_labels_document(records: list, source_sha: str, source_tracks: int,
+                          rulings: dict | None = None,
+                          owner_records: list | None = None) -> dict:
+    """The committed label slice: both annotators, then the records.
+
+    One file rather than two because the pair has to be re-cut atomically -- two
+    files drift, and there is then no single artifact whose sha pins the pair.
+    """
     return {
         "schema": LABELS_SCHEMA,
-        "source": {
-            "file": f"annotations/{SEGMENTS_FILE}",
-            "sha256": source_sha,
-            "tracks_in_source": source_tracks,
+        "truths": {
+            PUBLISHED: {
+                "file": f"annotations/{SEGMENTS_FILE}",
+                "sha256": source_sha,
+                "tracks_in_source": source_tracks,
+            },
+            OWNER: {"rulings": dict(rulings or {})},
         },
         "tracks": records,
+        "owner_tracks": list(owner_records or []),
     }
 
 
@@ -179,6 +256,42 @@ def sha256_of(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def hand_label_path(youtube_id: str, root: Path | None = None) -> Path:
+    """The TRACKED copy of one track's hand label -- see ``REPO_CORPUS_DIR``."""
+    return annotations_dir(Path(root or REPO_CORPUS_DIR)) / f"{youtube_id}{HAND_LABEL_SUFFIX}"
+
+
+def hand_label_name(youtube_id: str, root: Path | None = None) -> str:
+    """The path the slice records: repo-relative, so nothing resolves it against
+    a corpus dir that may not be this checkout's."""
+    path = hand_label_path(youtube_id, root)
+    try:
+        return str(path.relative_to(REPO_ROOT)).replace("\\", "/")
+    except ValueError:
+        return path.as_posix()
+
+
+def hand_records(root: Path | None = None) -> dict:
+    """``youtube_id -> record`` for every hand label tracked in this repo."""
+    root = Path(root or REPO_CORPUS_DIR)
+    if not annotations_dir(root).exists():
+        return {}
+    return {track_youtube_id(record): record for record in load_hand_tracks(root)}
+
+
+def carried_ruling(previous: dict | None) -> dict:
+    """What a track with no hand label is ruled, given what the slice said before.
+
+    An ``accepted`` ruling is the owner listening to a track and deciding the
+    published label is right.  A re-cut must not wipe that -- it is the only
+    place the decision is recorded, and losing it silently re-opens a track he
+    has already closed.
+    """
+    if previous and str(previous.get("ruling")) == ACCEPTED:
+        return dict(previous)
+    return {"ruling": UNREVIEWED}
 
 
 def corpus_audio_path(data_dir: Path, youtube_id: str) -> Path:
@@ -220,13 +333,18 @@ def copy_audio(data_dir: Path, youtube_ids: list,
     return copied
 
 
-def cut_labels(data_dir: Path, eval_set: dict, path: Path | None = None) -> dict:
+def cut_labels(data_dir: Path, eval_set: dict, path: Path | None = None,
+               hand_root: Path | None = None) -> dict:
     """Write the label slice for the eval set out of the corpus annotations.
 
-    The records go in VERBATIM.  Re-deriving them into a tidier shape would make
-    the slice a transformation nobody can check against the source, and the
-    check that matters here is exactly "these are the corpus's own bytes for
-    these ten tracks".
+    The published records go in VERBATIM.  Re-deriving them into a tidier shape
+    would make the slice a transformation nobody can check against the source,
+    and the check that matters here is exactly "these are the corpus's own bytes
+    for these ten tracks".
+
+    The owner half is derived by the corpus's OWN ``merge_hand_tracks`` rather
+    than a re-derivation, so an owner record is provably "published record plus
+    hand sections" and nothing invented.
     """
     path = Path(path or EVAL_LABELS_FILE)
     wanted = {track["track_id"] for track in eval_set["tracks"]}
@@ -238,10 +356,34 @@ def cut_labels(data_dir: Path, eval_set: dict, path: Path | None = None) -> dict
             f"{SEGMENTS_FILE} has no annotation for: "
             f"{', '.join(sorted(wanted - found))}")
 
+    records = sorted(records, key=lambda record: str(record["key"]))
+    by_key = {str(record["key"]): record for record in records}
+    hand = hand_records(hand_root)
+    try:
+        previous = owner_rulings(load_labels(path))
+    except RuntimeError:
+        previous = {}
+
+    rulings, owner_records = {}, []
+    for track in sorted(eval_set["tracks"], key=lambda item: str(item["track_id"])):
+        track_id, youtube = str(track["track_id"]), str(track["youtube_id"])
+        record = hand.get(youtube)
+        if record is None:
+            rulings[track_id] = carried_ruling(previous.get(track_id))
+            continue
+        rulings[track_id] = {
+            "ruling": OVERRIDDEN,
+            "file": hand_label_name(youtube, hand_root),
+            "sha256": sha256_of(hand_label_path(youtube, hand_root)),
+        }
+        owner_records.append(merge_hand_tracks([by_key[track_id]], [record])[0])
+
     document = build_labels_document(
-        sorted(records, key=lambda record: str(record["key"])),
+        records,
         sha256_of(annotations_dir(Path(data_dir)) / SEGMENTS_FILE),
         len(tracks),
+        rulings=rulings,
+        owner_records=owner_records,
     )
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, indent=2)
@@ -274,6 +416,12 @@ def verify(eval_set: dict, audio_dir: Path | None = None,
             f"missing {', '.join(sorted(want - have)) or '(none)'}")
     if not labels_source_sha(document):
         problems.append("the label slice records no source sha256")
+    ruled = set(owner_rulings(document))
+    if ruled != want:
+        problems.append(
+            f"the owner rulings name {len(ruled)} of {len(want)} eval tracks; "
+            f"missing {', '.join(sorted(want - ruled)) or '(none)'} -- every "
+            f"frozen track carries a ruling, even an unreviewed one")
     return problems
 
 
@@ -301,6 +449,9 @@ def main(argv: list | None = None) -> int:
         print(f"labels: {EVAL_LABELS_FILE.name} "
               f"({len(document['tracks'])} tracks, source "
               f"{labels_source_sha(document)[:16]}...)")
+        tally = collections.Counter(str(ruling.get("ruling"))
+                                    for ruling in owner_rulings(document).values())
+        print(f"owner : {', '.join(f'{tally[name]} {name}' for name in RULINGS)}")
 
     problems = verify(eval_set)
     if problems:

@@ -16,6 +16,15 @@ training/*.json text eol=lf
 # down: `training/*.json` does not match a subdirectory.
 training/nn/*.json text eol=lf
 
+# Hand labels are benchmark ground truth now: training/eval_labels.json pins the
+# sha256 of each one the owner has ruled on, and run_eval_set re-hashes them
+# before it scores anything.  They were `text: unspecified`, so with
+# core.autocrlf=true git auto-detects JSON as text and smudges LF to CRLF ON
+# CHECKOUT -- the pinned sha would then hold in the worktree that wrote the file
+# and fail in every fresh clone.  Same rule as training/*.json, three levels
+# down; the label tool already writes them with newline="\n".
+training/data/raveform/annotations/*.hand.json text eol=lf
+
 # The committed eval-set audio must check out byte-identical to the corpus mp3s
 # it was copied from, or the two paths decode differently and the benchmark's
 # report checksums become a fact about which copy a machine happened to read.
