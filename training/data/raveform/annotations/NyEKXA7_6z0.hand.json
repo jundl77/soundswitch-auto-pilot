@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "source": "hand_label",
+  "id": "NyEKXA7_6z0",
+  "title": "Session Victim - Never Forget [Delusions Of Grandeur]",
+  "artist": "Session Victim",
+  "audio": "NyEKXA7_6z0.mp3",
+  "duration": 365.087,
+  "sections": [
+    {
+      "name": "altintro",
+      "start": 0.358,
+      "end": 33.178,
+      "strength": "major"
+    },
+    {
+      "name": "intro",
+      "start": 33.178,
+      "end": 65.999,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 65.999,
+      "end": 148.049,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 148.049,
+      "end": 164.459,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 164.459,
+      "end": 193.176,
+      "strength": "major"
+    },
+    {
+      "name": "breakdown",
+      "start": 193.176,
+      "end": 213.689,
+      "strength": "major"
+    },
+    {
+      "name": "bridge",
+      "start": 213.689,
+      "end": 312.149,
+      "strength": "major"
+    },
+    {
+      "name": "outro",
+      "start": 312.149,
+      "end": 344.969,
+      "strength": "major"
+    },
+    {
+      "name": "altoutro",
+      "start": 344.969,
+      "end": 365.087,
+      "strength": "major"
+    }
+  ],
+  "genre": "Others"
+}
