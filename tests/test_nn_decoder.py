@@ -785,6 +785,7 @@ def test_the_shipping_config_loads_and_is_the_ng_h_sweep_pick():
         "floor_bars": (4, 4, 1, 4, 4, 8, 4, 4, 2),
         "outro_escape": 0.01,
         "temperature": 1.0,
+        "buildup_drop_bonus": 0.0,
     }
 
 

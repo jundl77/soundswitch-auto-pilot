@@ -21,7 +21,8 @@
       2
     ],
     "outro_escape": 0.01,
-    "temperature": 1.0
+    "temperature": 1.0,
+    "buildup_drop_bonus": 0.0
   },
   "name": "ng_H_sweep_pick",
   "generated_at": "2026-09-06T18:48:32.012295+00:00",
@@ -58,6 +59,7 @@
     "tracks": 215
   },
   "notes": [
-    "floor_bars is an explicit per-class vector in vocabulary order (#341, buildup opened down to 1 bar); it overrides floor_scale entirely, so a priors refit does NOT move these floors"
+    "floor_bars is an explicit per-class vector in vocabulary order (#341, buildup opened down to 1 bar); it overrides floor_scale entirely, so a priors refit does NOT move these floors",
+    "buildup_drop_bonus 0.0 was added when the #345/#346 transition knob entered DecodeParams; 0.0 IS the decoder this config was swept on (the knob's neutral point is byte-identical), recorded so the config keeps naming every knob the decoder has"
   ]
 }
