@@ -226,6 +226,29 @@ for _ep in _LC_EPOCHS:
         "role": f"#346 ARM LC candidate ep{_ep} (decoded-val constrained "
                 f"selection across saved eval checkpoints)",
     }
+# ARM LC iteration 2 (#346 addendum): geometry unchanged, lr halved to
+# 1.5e-4 -- the trainer's own lr-triage signature (val peaks at eval 0 and
+# erodes) named the first train's failure.  Same instrument, same selection.
+_LC2_RUN = "ng_LC2_w128_s1234"
+EXTRA_ARM_SPECS[_LC2_RUN] = {
+    "posteriors": CAMP / f"posteriors_{_LC2_RUN}",
+    "report": CAMP / _LC2_RUN / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "l9c ARM LC iteration 2 (#346: [own|t15|t45] concat at lr "
+            "1.5e-4; the run's own frame-best emit, ep1; decoded under "
+            "arm N's config/priors), seed 1234",
+}
+_LC2_EPOCHS: tuple = (0, 2, 3, 4, 5, 6)   # ep1 is the run's own emit
+for _ep in _LC2_EPOCHS:
+    EXTRA_ARM_SPECS[f"{_LC2_RUN}_ep{_ep}"] = {
+        "posteriors": CAMP / f"posteriors_ng_LC2_ep{_ep}",
+        "report": CAMP / f"ng_LC2_ep{_ep}" / "training_report.json",
+        "config": CAMP / "decoder_config_N.json",
+        "priors": CAMP / "priors_N.json",
+        "role": f"#346 ARM LC iter 2 candidate ep{_ep} (decoded-val "
+                f"constrained selection across saved eval checkpoints)",
+    }
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).
