@@ -216,7 +216,7 @@ EXTRA_ARM_SPECS[_LC_RUN] = {
             "trailing-mean aux inputs; the run's own frame-best emit; "
             "decoded under arm N's config/priors), seed 1234",
 }
-_LC_EPOCHS: tuple = ()   # candidate emits registered here after the train
+_LC_EPOCHS: tuple = (1, 2, 3, 4, 5)   # every saved eval; ep0 is the run's own emit
 for _ep in _LC_EPOCHS:
     EXTRA_ARM_SPECS[f"{_LC_RUN}_ep{_ep}"] = {
         "posteriors": CAMP / f"posteriors_ng_LC_ep{_ep}",
