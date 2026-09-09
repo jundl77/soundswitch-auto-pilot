@@ -70,7 +70,7 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
 CHAIN_ARTIFACTS = {"N": "N", "NMK": "N", "NIW": "N", "NIWCS": "N",
                    # #346 NIW-DW: the tilt + drop-weighted focal; a weight
                    # scale is not a relabel, so it decodes under N's files
-                   "NIWDW": "N",
+                   "NIWDW": "N", "NIWDW15": "N",
                    # #346 expressibility-filter variants: arm N's student
                    # under near-tied swept configs (bonus 0.4/0.7/1.1/1.6)
                    "NB04": "NB04", "NB07": "NB07",

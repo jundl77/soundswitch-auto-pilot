@@ -179,6 +179,17 @@ EXTRA_ARM_SPECS["ng_NIWDW_w128_s1234"] = {
             "focal drop class weight scaled 2.0x -- drop-preserving weighted "
             "training; decoded under arm N's config/priors), seed 1234",
 }
+# NIW-DW iteration 2: K=1.5, the pre-registered "probes lost with deficit
+# restored" branch.
+EXTRA_ARM_SPECS["ng_NIWDW15_w128_s1234"] = {
+    "posteriors": CAMP / "posteriors_ng_NIWDW15_w128_s1234",
+    "report": CAMP / "ng_NIWDW15_w128_s1234" / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "l9c arm NIW-DW iteration 2 (#346: the N-IW tilt with the focal "
+            "drop class weight scaled 1.5x; decoded under arm N's "
+            "config/priors), seed 1234",
+}
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).
