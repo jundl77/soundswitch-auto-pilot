@@ -25,6 +25,11 @@ import sys
 from pathlib import Path
 
 MAIN = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot")
+# MAIN owns the corpus; the code (nn_shadow sources, lib/, the committed
+# config) must come from the l9c_campaign branch, which MAIN usually no longer
+# has checked out after bank time.  NG_CODE_ROOT points the code role at a
+# worktree holding that branch; default is the night's behaviour exactly.
+CODE = Path(os.environ.get("NG_CODE_ROOT", str(MAIN)))
 DATA = MAIN / "training" / "data" / "raveform"
 CAMP = DATA / "models" / "l9c_campaign"
 L9B_CAMP = DATA / "models" / "l9b_campaign"
@@ -62,7 +67,7 @@ RECORD_GEOMETRY_FIELDS = ("window_cells", "input_dim", "rnn_hidden",
 # Which arm's priors/decoder-config a chain decodes under.  Post-N arms that
 # train on arm N's labels unchanged (e.g. a masked arm) decode under N's
 # files, the l9b pattern.
-CHAIN_ARTIFACTS = {"N": "N", "NMK": "N", "NIW": "N",
+CHAIN_ARTIFACTS = {"N": "N", "NMK": "N", "NIW": "N", "NIWCS": "N",
                    # #346 expressibility-filter variants: arm N's student
                    # under near-tied swept configs (bonus 0.4/0.7/1.1/1.6)
                    "NB04": "NB04", "NB07": "NB07",
@@ -128,8 +133,8 @@ def build_shadow(chain: str) -> Path:
     nn_dir = root / "nn_shadow" / "nn"
     nn_dir.mkdir(parents=True, exist_ok=True)
     for name in ("__init__.py", "decoder.py", "priors.py"):
-        shutil.copy2(MAIN / "training" / "nn" / name, nn_dir / name)
-    config_source = (MAIN / "training" / "nn" / "decoder_config.json"
+        shutil.copy2(CODE / "training" / "nn" / name, nn_dir / name)
+    config_source = (CODE / "training" / "nn" / "decoder_config.json"
                      if chain == "anchor"
                      else CAMP / f"decoder_config_{CHAIN_ARTIFACTS[chain]}.json")
     shutil.copy2(config_source, nn_dir / "decoder_config.json")
@@ -195,7 +200,7 @@ def run_sim(chain: str, track: Path, report: Path, *,
     if hide_cuda:
         env["CUDA_VISIBLE_DEVICES"] = ""
     if chain == "shipped":
-        command = [sys.executable, str(MAIN / "auto_pilot"), "simulate",
+        command = [sys.executable, str(CODE / "auto_pilot"), "simulate",
                    "file", str(track), "--report", str(report)]
     else:
         root = shadow_root(chain)
@@ -205,7 +210,7 @@ def run_sim(chain: str, track: Path, report: Path, *,
         env["RAVEFORM_DATA_DIR"] = str(root)
         command = [sys.executable, str(Path(__file__).resolve()), "_run-sim",
                    "--shadow", str(root), str(track), str(report)]
-    proc = subprocess.run(command, cwd=str(MAIN), env=env)
+    proc = subprocess.run(command, cwd=str(CODE), env=env)
     if proc.returncode not in (0, 1):
         raise RuntimeError(f"simulation died with rc {proc.returncode}")
     if not report.exists():
@@ -217,7 +222,7 @@ def run_sim(chain: str, track: Path, report: Path, *,
 
 def run_sim_inner(shadow: str, track: str, report: str) -> None:
     root = Path(shadow)
-    sys.path[:0] = [str(root / "nn_shadow"), str(MAIN)]
+    sys.path[:0] = [str(root / "nn_shadow"), str(CODE)]
     import nn.decoder  # noqa: PLC0415
 
     wanted = (root / "nn_shadow" / "nn" / "decoder_config.json").resolve()

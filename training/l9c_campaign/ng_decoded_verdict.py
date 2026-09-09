@@ -24,13 +24,20 @@ import dataclasses
 import datetime
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 
 MAIN = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot")
-W = str(MAIN)
+# Code and corpus are separate roles: MAIN owns the gitignored corpus, but the
+# knob-bearing decoder lives on the l9c_campaign branch, which after bank time
+# is usually NOT what MAIN has checked out.  NG_CODE_ROOT points imports (and
+# the committed-config gate) at a worktree holding that branch; default is the
+# night's behaviour exactly.
+CODE = Path(os.environ.get("NG_CODE_ROOT", str(MAIN)))
+W = str(CODE)
 sys.path[:0] = [W, W + r"\training"]
 
 try:
@@ -63,7 +70,7 @@ L9_PRIORS = DATA / "models" / "l9" / "priors.json"
 # its banked digits were cut under.  The committed config is the l9b ship's
 # ng_H pick now, so it is checked against models/l9b instead.
 L9_GEN_CONFIG = DATA / "models" / "l9" / "decoder_config.json"
-COMMITTED_CONFIG = MAIN / "training" / "nn" / "decoder_config.json"
+COMMITTED_CONFIG = CODE / "training" / "nn" / "decoder_config.json"
 SHIPPED_CONFIG = DATA / "models" / "l9b" / "decoder_config.json"
 SEGMENTS = DATA / "annotations" / "segments.json"
 CORE6 = ("intro", "buildup", "breakdown", "drop", "cooldown", "outro")
@@ -137,6 +144,29 @@ EXTRA_ARM_SPECS: dict = {
                 "no mask; decoded under arm N's config/priors), seed 1234",
     },
 }
+# NIW-CS (#346 addendum): the N-IW trajectory regenerated with every epoch's
+# weights kept, candidate epochs decoded under the SAME instrument (arm N's
+# config + priors, nothing re-swept) and selected on the decoded board by the
+# pre-registered composition rule.  ep2 is the control -- the run's own
+# best.pt emit -- and must reproduce the banked N-IW row to all digits.
+_NIWCS_RUN = "ng_NIWCS_w128_s1234"
+EXTRA_ARM_SPECS[f"{_NIWCS_RUN}_ep2"] = {
+    "posteriors": CAMP / f"posteriors_{_NIWCS_RUN}",
+    "report": CAMP / _NIWCS_RUN / "training_report.json",
+    "config": CAMP / "decoder_config_N.json",
+    "priors": CAMP / "priors_N.json",
+    "role": "#346 NIW-CS control: the regenerated N-IW trajectory's ep2 "
+            "(the frame-macro pick) -- must reproduce the banked N-IW row",
+}
+for _ep in (1, 4, 7):
+    EXTRA_ARM_SPECS[f"{_NIWCS_RUN}_ep{_ep}"] = {
+        "posteriors": CAMP / f"posteriors_ng_NIWCS_ep{_ep}",
+        "report": CAMP / f"ng_NIWCS_ep{_ep}" / "training_report.json",
+        "config": CAMP / "decoder_config_N.json",
+        "priors": CAMP / "priors_N.json",
+        "role": f"#346 NIW-CS candidate ep{_ep} of the regenerated N-IW "
+                f"trajectory (composition-aware checkpoint selection)",
+    }
 RUNS.update(EXTRA_ARM_SPECS)
 
 # l9 campaign banked decoded row (same values l9b asserted).
