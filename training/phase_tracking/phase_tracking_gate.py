@@ -30,6 +30,13 @@ HERE = Path(__file__).resolve().parent
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 sys.path.insert(0, str(PHASE_B))
 sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE.parent))
+
+import module_source  # noqa: E402
+
+# The gate decodes the phase-B generation: ``ceiling`` and ``paired`` exist
+# nowhere else, so every training.nn it reads must come from there too.
+module_source.require("training.nn", PHASE_B)
 
 from training.nn.decoder import (DecodeParams, bar_observations,  # noqa: E402
                                  observation_knobs)

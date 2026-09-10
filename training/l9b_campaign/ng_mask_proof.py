@@ -40,6 +40,14 @@ DATA = Path(r"C:\Users\Julian\Projects\soundswitch-auto-pilot"
 CAMP = DATA / "models" / "l9b_campaign"
 
 sys.path.insert(0, str(PHASE_B))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import module_source  # noqa: E402
+
+# ``ceiling`` exists only in the phase-B checkout, so the rest of training.nn
+# must come from beside it rather than from whichever copy an import reached
+# first -- the two disagree, and nothing downstream would say which ran.
+module_source.require("training.nn", PHASE_B)
 
 import numpy as np  # noqa: E402
 

@@ -33,10 +33,21 @@ CODE = Path(os.environ.get("NG_CODE_ROOT", str(MAIN)))
 DATA = MAIN / "training" / "data" / "raveform"
 CAMP = DATA / "models" / "l9c_campaign"
 L9B_CAMP = DATA / "models" / "l9b_campaign"
-# The SHIPPED generation is l9b (ng_H): the shadow must mirror what the
-# live chain resolves, models/l9b + ng_H_w128_s1234.
-L9 = DATA / "models" / "l9b"
-MODEL_VERSION = "ng_H_w128_s1234"
+sys.path.insert(0, str(CODE))
+
+from lib import section_chain  # noqa: E402
+
+# The shadow has to be what the live chain RESOLVES, so both names are read off
+# the chain rather than typed here.  Typed, they went stale at the next ship and
+# the simulation quietly ran the no-model degradation state -- a probe whose
+# number is indistinguishable from a real read is worse than one that refuses.
+GENERATION = section_chain.generation_dir(DATA).name
+MODEL_VERSION = section_chain.MODEL_VERSION
+SHIPPED = DATA / "models" / GENERATION
+_absent = section_chain.artifacts(DATA).missing()
+if _absent:
+    raise SystemExit(f"the shipped generation {SHIPPED} is not on this machine: "
+                     f"{_absent} -- there is nothing to mirror")
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 CEILING_PY = Path(r"C:\Users\Julian\Projects\soundswitch-exp-ceiling-worktree"
                   r"\.venv\Scripts\python.exe")
@@ -108,10 +119,10 @@ def _junction_or_copy(link: Path, target: Path) -> str:
 
 def build_shadow(chain: str) -> Path:
     root = shadow_root(chain)
-    generation = root / "models" / "l9b"
+    generation = root / "models" / GENERATION
     generation.mkdir(parents=True, exist_ok=True)
 
-    for source in sorted(L9.iterdir()):
+    for source in sorted(SHIPPED.iterdir()):
         if not source.is_file():
             continue
         target = generation / source.name
@@ -125,12 +136,12 @@ def build_shadow(chain: str) -> Path:
                 continue
         shutil.copy2(source, target)
 
-    how = _junction_or_copy(generation / "bar_tracker", L9 / "bar_tracker")
+    how = _junction_or_copy(generation / "bar_tracker", SHIPPED / "bar_tracker")
 
     run_dir = generation / MODEL_VERSION
     run_dir.mkdir(exist_ok=True)
     if chain == "anchor":
-        for source in sorted((L9 / MODEL_VERSION).iterdir()):
+        for source in sorted((SHIPPED / MODEL_VERSION).iterdir()):
             shutil.copy2(source, run_dir / source.name)
 
     nn_dir = root / "nn_shadow" / "nn"
@@ -142,6 +153,12 @@ def build_shadow(chain: str) -> Path:
                      else CAMP / f"decoder_config_{CHAIN_ARTIFACTS[chain]}.json")
     shutil.copy2(config_source, nn_dir / "decoder_config.json")
 
+    absent = [path for path in section_chain.artifacts(root).missing()
+              if not path.endswith("online_step.onnx")]
+    if absent:
+        raise SystemExit(f"shadow {root} is missing {absent} -- the show would "
+                         f"run the degradation state against it")
+
     print(f"shadow {root} built (bar_tracker: {how}; decoder config: "
           f"{config_source})")
     if chain in CHAIN_ARTIFACTS and not (run_dir / "online_step.onnx").exists():
@@ -152,7 +169,7 @@ def build_shadow(chain: str) -> Path:
 
 def export_arm(chain: str, run: str) -> None:
     root = shadow_root(chain)
-    out = root / "models" / "l9b" / MODEL_VERSION / "online_step.onnx"
+    out = root / "models" / GENERATION / MODEL_VERSION / "online_step.onnx"
     checkpoint = CAMP / run / "best.pt"
     if not checkpoint.exists():
         raise RuntimeError(f"no checkpoint at {checkpoint}")
@@ -173,7 +190,7 @@ def export_arm(chain: str, run: str) -> None:
         raise RuntimeError("exported record sha256 does not match the graph")
     if not record.get("verification", {}).get("agrees"):
         raise RuntimeError("export verification does not agree")
-    shipped = json.loads((L9 / MODEL_VERSION / "online_step.onnx.json")
+    shipped = json.loads((SHIPPED / MODEL_VERSION / "online_step.onnx.json")
                          .read_text(encoding="utf-8"))
     for field in ("window_cells", "input_dim", "rnn_hidden", "future_cells",
                   "future_sec", "label_frame_sec"):
@@ -207,9 +224,11 @@ def run_sim(chain: str, track: Path, report: Path, *,
                    "file", str(track), "--report", str(report)]
     else:
         root = shadow_root(chain)
-        if not (root / "models" / "l9b" / MODEL_VERSION
-                / "online_step.onnx").exists():
-            raise RuntimeError(f"shadow {root} has no student export")
+        missing = section_chain.artifacts(root).missing()
+        if missing:
+            raise RuntimeError(
+                f"shadow {root} is not a chain the show can resolve: {missing} "
+                f"-- simulating it would measure the degradation state")
         env["RAVEFORM_DATA_DIR"] = str(root)
         command = [sys.executable, str(Path(__file__).resolve()), "_run-sim",
                    "--shadow", str(root), str(track), str(report)]
