@@ -9,7 +9,9 @@
     "owner": {
       "rulings": {
         "0064.hzIFjGcOKbg": {
-          "ruling": "unreviewed"
+          "ruling": "overridden",
+          "file": "training/data/raveform/annotations/hzIFjGcOKbg.hand.json",
+          "sha256": "d9157d1b7ab7890889565c87bab616c9af37243dae8ebc4ac7a61698ca4a81de"
         },
         "0096.PNpXKsge4xM": {
           "ruling": "unreviewed"
@@ -30,7 +32,9 @@
           "ruling": "unreviewed"
         },
         "0834.NyEKXA7_6z0": {
-          "ruling": "unreviewed"
+          "ruling": "overridden",
+          "file": "training/data/raveform/annotations/NyEKXA7_6z0.hand.json",
+          "sha256": "580bf2932ed281c2fae43ae060d0fe74f485887d03f6de62325d3640ad5d4d7b"
         },
         "0911.hSCcLy_OBLM": {
           "ruling": "unreviewed"
@@ -2125,5 +2129,189 @@
       ]
     }
   ],
-  "owner_tracks": []
+  "owner_tracks": [
+    {
+      "key": "0064.hzIFjGcOKbg",
+      "index": 64,
+      "id": "hzIFjGcOKbg",
+      "title": "+ Konflict - Beckoning [Renegade Hardware]",
+      "fold": 7,
+      "genre": "Drum & Bass",
+      "duration": 473.049,
+      "play_count": 8,
+      "average_bpm": 170.42,
+      "tempos": [
+        {
+          "start": 0.021,
+          "bpm": 170.42,
+          "beat_position_in_bar": 1
+        },
+        {
+          "start": 395.044,
+          "bpm": 170.42,
+          "beat_position_in_bar": 3
+        }
+      ],
+      "sections": [
+        {
+          "name": "altintro",
+          "start": 0.021,
+          "end": 22.553,
+          "strength": "major"
+        },
+        {
+          "name": "intro",
+          "start": 22.553,
+          "end": 112.683,
+          "strength": "major"
+        },
+        {
+          "name": "bridge",
+          "start": 112.683,
+          "end": 157.748,
+          "strength": "major"
+        },
+        {
+          "name": "drop",
+          "start": 157.748,
+          "end": 191.547,
+          "strength": "major"
+        },
+        {
+          "name": "breakdown",
+          "start": 191.547,
+          "end": 202.813,
+          "strength": "major"
+        },
+        {
+          "name": "drop",
+          "start": 202.813,
+          "end": 236.612,
+          "strength": "major"
+        },
+        {
+          "name": "cooldown",
+          "start": 236.612,
+          "end": 247.878,
+          "strength": "major"
+        },
+        {
+          "name": "breakdown",
+          "start": 247.878,
+          "end": 292.943,
+          "strength": "major"
+        },
+        {
+          "name": "drop",
+          "start": 292.943,
+          "end": 394.339,
+          "strength": "major"
+        },
+        {
+          "name": "cooldown",
+          "start": 394.339,
+          "end": 428.138,
+          "strength": "major"
+        },
+        {
+          "name": "outro",
+          "start": 428.138,
+          "end": 473.049,
+          "strength": "major"
+        }
+      ],
+      "played_at": [
+        "mix0189",
+        "mix0193",
+        "mix0273",
+        "mix0351",
+        "mix0783",
+        "mix1100",
+        "mix2638",
+        "mix4527"
+      ],
+      "source": "hand_label"
+    },
+    {
+      "key": "0834.NyEKXA7_6z0",
+      "index": 834,
+      "id": "NyEKXA7_6z0",
+      "title": "Session Victim - Never Forget [Delusions Of Grandeur]",
+      "fold": 2,
+      "genre": "Others",
+      "duration": 365.087,
+      "play_count": 4,
+      "average_bpm": 117.0,
+      "tempos": [
+        {
+          "start": 0.358,
+          "bpm": 117.0,
+          "beat_position_in_bar": 1
+        }
+      ],
+      "sections": [
+        {
+          "name": "altintro",
+          "start": 0.358,
+          "end": 33.178,
+          "strength": "major"
+        },
+        {
+          "name": "intro",
+          "start": 33.178,
+          "end": 65.999,
+          "strength": "major"
+        },
+        {
+          "name": "bridge",
+          "start": 65.999,
+          "end": 148.049,
+          "strength": "major"
+        },
+        {
+          "name": "breakdown",
+          "start": 148.049,
+          "end": 164.459,
+          "strength": "major"
+        },
+        {
+          "name": "bridge",
+          "start": 164.459,
+          "end": 193.176,
+          "strength": "major"
+        },
+        {
+          "name": "breakdown",
+          "start": 193.176,
+          "end": 213.689,
+          "strength": "major"
+        },
+        {
+          "name": "bridge",
+          "start": 213.689,
+          "end": 312.149,
+          "strength": "major"
+        },
+        {
+          "name": "outro",
+          "start": 312.149,
+          "end": 344.969,
+          "strength": "major"
+        },
+        {
+          "name": "altoutro",
+          "start": 344.969,
+          "end": 365.087,
+          "strength": "major"
+        }
+      ],
+      "played_at": [
+        "mix1962",
+        "mix1982",
+        "mix1989",
+        "mix2053"
+      ],
+      "source": "hand_label"
+    }
+  ]
 }
