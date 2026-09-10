@@ -17,11 +17,16 @@
       "DnhxAxnCbrY"
     ]
   },
-  "pipeline_sha": "bc58a3b5fb6bc9f41e45827cea0af11592a303df+dirty.717b8415824d",
+  "pipeline_sha": "a5bb5deab60c7417f9e89a6486b07b5f44e4287f",
   "space": "raw9",
   "reported_spaces": [
     "raw9",
     "legacy_v1"
+  ],
+  "truth": "published",
+  "reported_truths": [
+    "owner",
+    "published"
   ],
   "stream": "intent",
   "boundary_tolerance_sec": 2.0,
@@ -61,6 +66,66 @@
         "flicker_per_min": 0.239474,
         "label_boundaries": 97,
         "changes_class": 78
+      }
+    },
+    "truths": {
+      "owner": {
+        "macro_f1": 0.507888,
+        "accuracy": 0.770322,
+        "boundary_f1": 0.703297,
+        "crispness": 0.648352,
+        "flicker_per_min": 0.20954,
+        "label_boundaries": 104,
+        "changes_class": 78,
+        "spaces": {
+          "raw9": {
+            "macro_f1": 0.507888,
+            "accuracy": 0.770322,
+            "boundary_f1": 0.703297,
+            "crispness": 0.648352,
+            "flicker_per_min": 0.20954,
+            "label_boundaries": 104,
+            "changes_class": 78
+          },
+          "legacy_v1": {
+            "macro_f1": 0.642988,
+            "accuracy": 0.770322,
+            "boundary_f1": 0.708571,
+            "crispness": 0.651429,
+            "flicker_per_min": 0.239474,
+            "label_boundaries": 97,
+            "changes_class": 78
+          }
+        }
+      },
+      "published": {
+        "macro_f1": 0.507888,
+        "accuracy": 0.770322,
+        "boundary_f1": 0.703297,
+        "crispness": 0.648352,
+        "flicker_per_min": 0.20954,
+        "label_boundaries": 104,
+        "changes_class": 78,
+        "spaces": {
+          "raw9": {
+            "macro_f1": 0.507888,
+            "accuracy": 0.770322,
+            "boundary_f1": 0.703297,
+            "crispness": 0.648352,
+            "flicker_per_min": 0.20954,
+            "label_boundaries": 104,
+            "changes_class": 78
+          },
+          "legacy_v1": {
+            "macro_f1": 0.642988,
+            "accuracy": 0.770322,
+            "boundary_f1": 0.708571,
+            "crispness": 0.651429,
+            "flicker_per_min": 0.239474,
+            "label_boundaries": 97,
+            "changes_class": 78
+          }
+        }
       }
     }
   },
@@ -104,6 +169,82 @@
           "label_boundaries": 8,
           "changes_class": 5
         }
+      },
+      "truths": {
+        "owner": {
+          "rows": 1312,
+          "exposure_sec": 472.602,
+          "changes_intent": 5,
+          "late": 1,
+          "blocks_measurable": 6,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.429695,
+          "accuracy": 0.724056,
+          "boundary_f1": 0.4,
+          "crispness": 0.4,
+          "flicker_per_min": 0.253914,
+          "label_boundaries": 10,
+          "changes_class": 5,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.429695,
+              "accuracy": 0.724056,
+              "boundary_f1": 0.4,
+              "crispness": 0.4,
+              "flicker_per_min": 0.253914,
+              "label_boundaries": 10,
+              "changes_class": 5
+            },
+            "legacy_v1": {
+              "macro_f1": 0.479696,
+              "accuracy": 0.724056,
+              "boundary_f1": 0.307692,
+              "crispness": 0.307692,
+              "flicker_per_min": 0.380871,
+              "label_boundaries": 8,
+              "changes_class": 5
+            }
+          }
+        },
+        "published": {
+          "rows": 1312,
+          "exposure_sec": 472.602,
+          "changes_intent": 5,
+          "late": 1,
+          "blocks_measurable": 6,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.429695,
+          "accuracy": 0.724056,
+          "boundary_f1": 0.4,
+          "crispness": 0.4,
+          "flicker_per_min": 0.253914,
+          "label_boundaries": 10,
+          "changes_class": 5,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.429695,
+              "accuracy": 0.724056,
+              "boundary_f1": 0.4,
+              "crispness": 0.4,
+              "flicker_per_min": 0.253914,
+              "label_boundaries": 10,
+              "changes_class": 5
+            },
+            "legacy_v1": {
+              "macro_f1": 0.479696,
+              "accuracy": 0.724056,
+              "boundary_f1": 0.307692,
+              "crispness": 0.307692,
+              "flicker_per_min": 0.380871,
+              "label_boundaries": 8,
+              "changes_class": 5
+            }
+          }
+        }
       }
     },
     "0096.PNpXKsge4xM": {
@@ -144,6 +285,82 @@
           "flicker_per_min": 0.236732,
           "label_boundaries": 8,
           "changes_class": 4
+        }
+      },
+      "truths": {
+        "owner": {
+          "rows": 726,
+          "exposure_sec": 253.452,
+          "changes_intent": 4,
+          "late": 0,
+          "blocks_measurable": 6,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.362883,
+          "accuracy": 0.752342,
+          "boundary_f1": 0.5,
+          "crispness": 0.5,
+          "flicker_per_min": 0.236732,
+          "label_boundaries": 8,
+          "changes_class": 4,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.362883,
+              "accuracy": 0.752342,
+              "boundary_f1": 0.5,
+              "crispness": 0.5,
+              "flicker_per_min": 0.236732,
+              "label_boundaries": 8,
+              "changes_class": 4
+            },
+            "legacy_v1": {
+              "macro_f1": 0.488561,
+              "accuracy": 0.752342,
+              "boundary_f1": 0.5,
+              "crispness": 0.5,
+              "flicker_per_min": 0.236732,
+              "label_boundaries": 8,
+              "changes_class": 4
+            }
+          }
+        },
+        "published": {
+          "rows": 726,
+          "exposure_sec": 253.452,
+          "changes_intent": 4,
+          "late": 0,
+          "blocks_measurable": 6,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.362883,
+          "accuracy": 0.752342,
+          "boundary_f1": 0.5,
+          "crispness": 0.5,
+          "flicker_per_min": 0.236732,
+          "label_boundaries": 8,
+          "changes_class": 4,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.362883,
+              "accuracy": 0.752342,
+              "boundary_f1": 0.5,
+              "crispness": 0.5,
+              "flicker_per_min": 0.236732,
+              "label_boundaries": 8,
+              "changes_class": 4
+            },
+            "legacy_v1": {
+              "macro_f1": 0.488561,
+              "accuracy": 0.752342,
+              "boundary_f1": 0.5,
+              "crispness": 0.5,
+              "flicker_per_min": 0.236732,
+              "label_boundaries": 8,
+              "changes_class": 4
+            }
+          }
         }
       }
     },
@@ -186,6 +403,82 @@
           "label_boundaries": 11,
           "changes_class": 12
         }
+      },
+      "truths": {
+        "owner": {
+          "rows": 924,
+          "exposure_sec": 431.107,
+          "changes_intent": 12,
+          "late": 0,
+          "blocks_measurable": 13,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.594957,
+          "accuracy": 0.875005,
+          "boundary_f1": 0.916667,
+          "crispness": 0.916667,
+          "flicker_per_min": 0.139176,
+          "label_boundaries": 12,
+          "changes_class": 12,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.594957,
+              "accuracy": 0.875005,
+              "boundary_f1": 0.916667,
+              "crispness": 0.916667,
+              "flicker_per_min": 0.139176,
+              "label_boundaries": 12,
+              "changes_class": 12
+            },
+            "legacy_v1": {
+              "macro_f1": 0.745766,
+              "accuracy": 0.875005,
+              "boundary_f1": 0.869565,
+              "crispness": 0.869565,
+              "flicker_per_min": 0.278353,
+              "label_boundaries": 11,
+              "changes_class": 12
+            }
+          }
+        },
+        "published": {
+          "rows": 924,
+          "exposure_sec": 431.107,
+          "changes_intent": 12,
+          "late": 0,
+          "blocks_measurable": 13,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.594957,
+          "accuracy": 0.875005,
+          "boundary_f1": 0.916667,
+          "crispness": 0.916667,
+          "flicker_per_min": 0.139176,
+          "label_boundaries": 12,
+          "changes_class": 12,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.594957,
+              "accuracy": 0.875005,
+              "boundary_f1": 0.916667,
+              "crispness": 0.916667,
+              "flicker_per_min": 0.139176,
+              "label_boundaries": 12,
+              "changes_class": 12
+            },
+            "legacy_v1": {
+              "macro_f1": 0.745766,
+              "accuracy": 0.875005,
+              "boundary_f1": 0.869565,
+              "crispness": 0.869565,
+              "flicker_per_min": 0.278353,
+              "label_boundaries": 11,
+              "changes_class": 12
+            }
+          }
+        }
       }
     },
     "0434.SBnxzXkc_qw": {
@@ -226,6 +519,82 @@
           "flicker_per_min": 0.44319,
           "label_boundaries": 10,
           "changes_class": 6
+        }
+      },
+      "truths": {
+        "owner": {
+          "rows": 1047,
+          "exposure_sec": 406.146,
+          "changes_intent": 6,
+          "late": 1,
+          "blocks_measurable": 7,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.548337,
+          "accuracy": 0.793918,
+          "boundary_f1": 0.333333,
+          "crispness": 0.222222,
+          "flicker_per_min": 0.44319,
+          "label_boundaries": 12,
+          "changes_class": 6,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.548337,
+              "accuracy": 0.793918,
+              "boundary_f1": 0.333333,
+              "crispness": 0.222222,
+              "flicker_per_min": 0.44319,
+              "label_boundaries": 12,
+              "changes_class": 6
+            },
+            "legacy_v1": {
+              "macro_f1": 0.578129,
+              "accuracy": 0.793918,
+              "boundary_f1": 0.375,
+              "crispness": 0.25,
+              "flicker_per_min": 0.44319,
+              "label_boundaries": 10,
+              "changes_class": 6
+            }
+          }
+        },
+        "published": {
+          "rows": 1047,
+          "exposure_sec": 406.146,
+          "changes_intent": 6,
+          "late": 1,
+          "blocks_measurable": 7,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.548337,
+          "accuracy": 0.793918,
+          "boundary_f1": 0.333333,
+          "crispness": 0.222222,
+          "flicker_per_min": 0.44319,
+          "label_boundaries": 12,
+          "changes_class": 6,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.548337,
+              "accuracy": 0.793918,
+              "boundary_f1": 0.333333,
+              "crispness": 0.222222,
+              "flicker_per_min": 0.44319,
+              "label_boundaries": 12,
+              "changes_class": 6
+            },
+            "legacy_v1": {
+              "macro_f1": 0.578129,
+              "accuracy": 0.793918,
+              "boundary_f1": 0.375,
+              "crispness": 0.25,
+              "flicker_per_min": 0.44319,
+              "label_boundaries": 10,
+              "changes_class": 6
+            }
+          }
         }
       }
     },
@@ -268,6 +637,82 @@
           "label_boundaries": 13,
           "changes_class": 14
         }
+      },
+      "truths": {
+        "owner": {
+          "rows": 862,
+          "exposure_sec": 407.719,
+          "changes_intent": 14,
+          "late": 0,
+          "blocks_measurable": 16,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.477523,
+          "accuracy": 0.844571,
+          "boundary_f1": 0.888889,
+          "crispness": 0.814815,
+          "flicker_per_min": 0.29432,
+          "label_boundaries": 13,
+          "changes_class": 14,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.477523,
+              "accuracy": 0.844571,
+              "boundary_f1": 0.888889,
+              "crispness": 0.814815,
+              "flicker_per_min": 0.29432,
+              "label_boundaries": 13,
+              "changes_class": 14
+            },
+            "legacy_v1": {
+              "macro_f1": 0.720996,
+              "accuracy": 0.844571,
+              "boundary_f1": 0.888889,
+              "crispness": 0.814815,
+              "flicker_per_min": 0.29432,
+              "label_boundaries": 13,
+              "changes_class": 14
+            }
+          }
+        },
+        "published": {
+          "rows": 862,
+          "exposure_sec": 407.719,
+          "changes_intent": 14,
+          "late": 0,
+          "blocks_measurable": 16,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.477523,
+          "accuracy": 0.844571,
+          "boundary_f1": 0.888889,
+          "crispness": 0.814815,
+          "flicker_per_min": 0.29432,
+          "label_boundaries": 13,
+          "changes_class": 14,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.477523,
+              "accuracy": 0.844571,
+              "boundary_f1": 0.888889,
+              "crispness": 0.814815,
+              "flicker_per_min": 0.29432,
+              "label_boundaries": 13,
+              "changes_class": 14
+            },
+            "legacy_v1": {
+              "macro_f1": 0.720996,
+              "accuracy": 0.844571,
+              "boundary_f1": 0.888889,
+              "crispness": 0.814815,
+              "flicker_per_min": 0.29432,
+              "label_boundaries": 13,
+              "changes_class": 14
+            }
+          }
+        }
       }
     },
     "0501.hwdjIgtMFq8": {
@@ -308,6 +753,82 @@
           "flicker_per_min": 0.0,
           "label_boundaries": 10,
           "changes_class": 8
+        }
+      },
+      "truths": {
+        "owner": {
+          "rows": 919,
+          "exposure_sec": 402.907,
+          "changes_intent": 8,
+          "late": 1,
+          "blocks_measurable": 10,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.311763,
+          "accuracy": 0.823663,
+          "boundary_f1": 0.888889,
+          "crispness": 0.777778,
+          "flicker_per_min": 0.0,
+          "label_boundaries": 10,
+          "changes_class": 8,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.311763,
+              "accuracy": 0.823663,
+              "boundary_f1": 0.888889,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.0,
+              "label_boundaries": 10,
+              "changes_class": 8
+            },
+            "legacy_v1": {
+              "macro_f1": 0.528611,
+              "accuracy": 0.823663,
+              "boundary_f1": 0.888889,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.0,
+              "label_boundaries": 10,
+              "changes_class": 8
+            }
+          }
+        },
+        "published": {
+          "rows": 919,
+          "exposure_sec": 402.907,
+          "changes_intent": 8,
+          "late": 1,
+          "blocks_measurable": 10,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.311763,
+          "accuracy": 0.823663,
+          "boundary_f1": 0.888889,
+          "crispness": 0.777778,
+          "flicker_per_min": 0.0,
+          "label_boundaries": 10,
+          "changes_class": 8,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.311763,
+              "accuracy": 0.823663,
+              "boundary_f1": 0.888889,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.0,
+              "label_boundaries": 10,
+              "changes_class": 8
+            },
+            "legacy_v1": {
+              "macro_f1": 0.528611,
+              "accuracy": 0.823663,
+              "boundary_f1": 0.888889,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.0,
+              "label_boundaries": 10,
+              "changes_class": 8
+            }
+          }
         }
       }
     },
@@ -350,6 +871,82 @@
           "label_boundaries": 9,
           "changes_class": 9
         }
+      },
+      "truths": {
+        "owner": {
+          "rows": 955,
+          "exposure_sec": 421.251,
+          "changes_intent": 9,
+          "late": 1,
+          "blocks_measurable": 10,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.427688,
+          "accuracy": 0.845652,
+          "boundary_f1": 0.777778,
+          "crispness": 0.777778,
+          "flicker_per_min": 0.284866,
+          "label_boundaries": 9,
+          "changes_class": 9,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.427688,
+              "accuracy": 0.845652,
+              "boundary_f1": 0.777778,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.284866,
+              "label_boundaries": 9,
+              "changes_class": 9
+            },
+            "legacy_v1": {
+              "macro_f1": 0.579474,
+              "accuracy": 0.845652,
+              "boundary_f1": 0.777778,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.284866,
+              "label_boundaries": 9,
+              "changes_class": 9
+            }
+          }
+        },
+        "published": {
+          "rows": 955,
+          "exposure_sec": 421.251,
+          "changes_intent": 9,
+          "late": 1,
+          "blocks_measurable": 10,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.427688,
+          "accuracy": 0.845652,
+          "boundary_f1": 0.777778,
+          "crispness": 0.777778,
+          "flicker_per_min": 0.284866,
+          "label_boundaries": 9,
+          "changes_class": 9,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.427688,
+              "accuracy": 0.845652,
+              "boundary_f1": 0.777778,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.284866,
+              "label_boundaries": 9,
+              "changes_class": 9
+            },
+            "legacy_v1": {
+              "macro_f1": 0.579474,
+              "accuracy": 0.845652,
+              "boundary_f1": 0.777778,
+              "crispness": 0.777778,
+              "flicker_per_min": 0.284866,
+              "label_boundaries": 9,
+              "changes_class": 9
+            }
+          }
+        }
       }
     },
     "0834.NyEKXA7_6z0": {
@@ -390,6 +987,82 @@
           "flicker_per_min": 0.166328,
           "label_boundaries": 8,
           "changes_class": 2
+        }
+      },
+      "truths": {
+        "owner": {
+          "rows": 699,
+          "exposure_sec": 360.734,
+          "changes_intent": 2,
+          "late": 1,
+          "blocks_measurable": 4,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.26973,
+          "accuracy": 0.315123,
+          "boundary_f1": 0.166667,
+          "crispness": 0.0,
+          "flicker_per_min": 0.166328,
+          "label_boundaries": 10,
+          "changes_class": 2,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.26973,
+              "accuracy": 0.315123,
+              "boundary_f1": 0.166667,
+              "crispness": 0.0,
+              "flicker_per_min": 0.166328,
+              "label_boundaries": 10,
+              "changes_class": 2
+            },
+            "legacy_v1": {
+              "macro_f1": 0.228235,
+              "accuracy": 0.315123,
+              "boundary_f1": 0.2,
+              "crispness": 0.0,
+              "flicker_per_min": 0.166328,
+              "label_boundaries": 8,
+              "changes_class": 2
+            }
+          }
+        },
+        "published": {
+          "rows": 699,
+          "exposure_sec": 360.734,
+          "changes_intent": 2,
+          "late": 1,
+          "blocks_measurable": 4,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 1,
+          "macro_f1": 0.26973,
+          "accuracy": 0.315123,
+          "boundary_f1": 0.166667,
+          "crispness": 0.0,
+          "flicker_per_min": 0.166328,
+          "label_boundaries": 10,
+          "changes_class": 2,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.26973,
+              "accuracy": 0.315123,
+              "boundary_f1": 0.166667,
+              "crispness": 0.0,
+              "flicker_per_min": 0.166328,
+              "label_boundaries": 10,
+              "changes_class": 2
+            },
+            "legacy_v1": {
+              "macro_f1": 0.228235,
+              "accuracy": 0.315123,
+              "boundary_f1": 0.2,
+              "crispness": 0.0,
+              "flicker_per_min": 0.166328,
+              "label_boundaries": 8,
+              "changes_class": 2
+            }
+          }
         }
       }
     },
@@ -432,6 +1105,82 @@
           "label_boundaries": 11,
           "changes_class": 10
         }
+      },
+      "truths": {
+        "owner": {
+          "rows": 828,
+          "exposure_sec": 408.816,
+          "changes_intent": 10,
+          "late": 1,
+          "blocks_measurable": 11,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.652263,
+          "accuracy": 0.910129,
+          "boundary_f1": 0.857143,
+          "crispness": 0.761905,
+          "flicker_per_min": 0.146765,
+          "label_boundaries": 11,
+          "changes_class": 10,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.652263,
+              "accuracy": 0.910129,
+              "boundary_f1": 0.857143,
+              "crispness": 0.761905,
+              "flicker_per_min": 0.146765,
+              "label_boundaries": 11,
+              "changes_class": 10
+            },
+            "legacy_v1": {
+              "macro_f1": 0.884412,
+              "accuracy": 0.910129,
+              "boundary_f1": 0.857143,
+              "crispness": 0.761905,
+              "flicker_per_min": 0.146765,
+              "label_boundaries": 11,
+              "changes_class": 10
+            }
+          }
+        },
+        "published": {
+          "rows": 828,
+          "exposure_sec": 408.816,
+          "changes_intent": 10,
+          "late": 1,
+          "blocks_measurable": 11,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.652263,
+          "accuracy": 0.910129,
+          "boundary_f1": 0.857143,
+          "crispness": 0.761905,
+          "flicker_per_min": 0.146765,
+          "label_boundaries": 11,
+          "changes_class": 10,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.652263,
+              "accuracy": 0.910129,
+              "boundary_f1": 0.857143,
+              "crispness": 0.761905,
+              "flicker_per_min": 0.146765,
+              "label_boundaries": 11,
+              "changes_class": 10
+            },
+            "legacy_v1": {
+              "macro_f1": 0.884412,
+              "accuracy": 0.910129,
+              "boundary_f1": 0.857143,
+              "crispness": 0.761905,
+              "flicker_per_min": 0.146765,
+              "label_boundaries": 11,
+              "changes_class": 10
+            }
+          }
+        }
       }
     },
     "1110.DnhxAxnCbrY": {
@@ -472,6 +1221,82 @@
           "flicker_per_min": 0.135121,
           "label_boundaries": 9,
           "changes_class": 8
+        }
+      },
+      "truths": {
+        "owner": {
+          "rows": 988,
+          "exposure_sec": 444.047,
+          "changes_intent": 8,
+          "late": 0,
+          "blocks_measurable": 9,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.419401,
+          "accuracy": 0.766777,
+          "boundary_f1": 0.823529,
+          "crispness": 0.823529,
+          "flicker_per_min": 0.135121,
+          "label_boundaries": 9,
+          "changes_class": 8,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.419401,
+              "accuracy": 0.766777,
+              "boundary_f1": 0.823529,
+              "crispness": 0.823529,
+              "flicker_per_min": 0.135121,
+              "label_boundaries": 9,
+              "changes_class": 8
+            },
+            "legacy_v1": {
+              "macro_f1": 0.739476,
+              "accuracy": 0.766777,
+              "boundary_f1": 0.823529,
+              "crispness": 0.823529,
+              "flicker_per_min": 0.135121,
+              "label_boundaries": 9,
+              "changes_class": 8
+            }
+          }
+        },
+        "published": {
+          "rows": 988,
+          "exposure_sec": 444.047,
+          "changes_intent": 8,
+          "late": 0,
+          "blocks_measurable": 9,
+          "silence_leading": 0,
+          "silence_interior": 0,
+          "silence_trailing": 0,
+          "macro_f1": 0.419401,
+          "accuracy": 0.766777,
+          "boundary_f1": 0.823529,
+          "crispness": 0.823529,
+          "flicker_per_min": 0.135121,
+          "label_boundaries": 9,
+          "changes_class": 8,
+          "spaces": {
+            "raw9": {
+              "macro_f1": 0.419401,
+              "accuracy": 0.766777,
+              "boundary_f1": 0.823529,
+              "crispness": 0.823529,
+              "flicker_per_min": 0.135121,
+              "label_boundaries": 9,
+              "changes_class": 8
+            },
+            "legacy_v1": {
+              "macro_f1": 0.739476,
+              "accuracy": 0.766777,
+              "boundary_f1": 0.823529,
+              "crispness": 0.823529,
+              "flicker_per_min": 0.135121,
+              "label_boundaries": 9,
+              "changes_class": 8
+            }
+          }
         }
       }
     }

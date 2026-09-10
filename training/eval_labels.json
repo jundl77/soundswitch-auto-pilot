@@ -1,9 +1,45 @@
 {
-  "schema": 1,
-  "source": {
-    "file": "annotations/segments.json",
-    "sha256": "ab7d0b2d0dd74c645794ca9c085f30b5de42202bdc544069b035e05d97237708",
-    "tracks_in_source": 1423
+  "schema": 2,
+  "truths": {
+    "published": {
+      "file": "annotations/segments.json",
+      "sha256": "ab7d0b2d0dd74c645794ca9c085f30b5de42202bdc544069b035e05d97237708",
+      "tracks_in_source": 1423
+    },
+    "owner": {
+      "rulings": {
+        "0064.hzIFjGcOKbg": {
+          "ruling": "unreviewed"
+        },
+        "0096.PNpXKsge4xM": {
+          "ruling": "unreviewed"
+        },
+        "0136.FO566BKY2Jc": {
+          "ruling": "unreviewed"
+        },
+        "0434.SBnxzXkc_qw": {
+          "ruling": "unreviewed"
+        },
+        "0485.MRRgXXq-0rc": {
+          "ruling": "unreviewed"
+        },
+        "0501.hwdjIgtMFq8": {
+          "ruling": "unreviewed"
+        },
+        "0640.4o4joooH5tg": {
+          "ruling": "unreviewed"
+        },
+        "0834.NyEKXA7_6z0": {
+          "ruling": "unreviewed"
+        },
+        "0911.hSCcLy_OBLM": {
+          "ruling": "unreviewed"
+        },
+        "1110.DnhxAxnCbrY": {
+          "ruling": "unreviewed"
+        }
+      }
+    }
   },
   "tracks": [
     {
@@ -2088,5 +2124,6 @@
         "mix3380"
       ]
     }
-  ]
+  ],
+  "owner_tracks": []
 }
