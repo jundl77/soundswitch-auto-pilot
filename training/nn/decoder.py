@@ -27,6 +27,7 @@ DEFAULT_BOUNDARY_TOLERANCE_SEC = 0.5
 DEFAULT_MIN_COVERAGE = 2
 DEFAULT_OUTRO_ESCAPE = 0.0
 DEFAULT_TEMPERATURE = 1.0
+DEFAULT_BUILDUP_DROP_BONUS = 0.0
 EPS = 1e-12
 
 
@@ -50,6 +51,7 @@ class DecodeParams:
     floor_bars: tuple | None = None
     outro_escape: float = DEFAULT_OUTRO_ESCAPE
     temperature: float = DEFAULT_TEMPERATURE
+    buildup_drop_bonus: float = DEFAULT_BUILDUP_DROP_BONUS
 
     def __post_init__(self) -> None:
         if self.floor_bars is not None and not isinstance(self.floor_bars, tuple):
@@ -98,7 +100,8 @@ class FixedLagViterbi:
                  boundary_ref: float = DEFAULT_BOUNDARY_REF,
                  floor_scale: float = 1.0,
                  floor_bars=None,
-                 outro_escape: float = DEFAULT_OUTRO_ESCAPE) -> None:
+                 outro_escape: float = DEFAULT_OUTRO_ESCAPE,
+                 buildup_drop_bonus: float = DEFAULT_BUILDUP_DROP_BONUS) -> None:
         if int(lag_bars) < 0:
             raise ValueError(f"lag_bars must be >= 0, got {lag_bars}")
         if float(floor_scale) <= 0.0:
@@ -110,6 +113,9 @@ class FixedLagViterbi:
                 f"outro_escape must lie in [0, 0.5) -- got {outro_escape}; it is "
                 f"a per-bar probability and TWO targets are opened, so the stay "
                 f"probability is 1 - 2 * escape")
+        if not math.isfinite(float(buildup_drop_bonus)):
+            raise ValueError(
+                f"buildup_drop_bonus must be finite, got {buildup_drop_bonus}")
 
         self.priors = priors
         self.classes = tuple(priors.classes)
@@ -124,6 +130,7 @@ class FixedLagViterbi:
         self.boundary_ref = float(boundary_ref)
         self.floor_scale = float(floor_scale)
         self.outro_escape = float(outro_escape)
+        self.buildup_drop_bonus = float(buildup_drop_bonus)
         self.floor_bars = tuple(floor_bars) if floor_bars is not None else None
 
         hazard = np.asarray(priors.hazard, dtype=np.float64)
@@ -186,6 +193,7 @@ class FixedLagViterbi:
                     switch[state, target] = True
 
         self._apply_outro_escape(transition, switch)
+        self._apply_buildup_drop_bonus(transition)
 
         self._transition = transition
         self._switch = switch
@@ -212,6 +220,23 @@ class FixedLagViterbi:
             transition[source, entry] = (math.log(self.outro_escape)
                                          + self._entry_bonus[target_class])
             switch[source, entry] = True
+
+    def _apply_buildup_drop_bonus(self, transition: np.ndarray) -> None:
+        """#345: a log-domain preference on entering drop FROM buildup.
+
+        Applied to the one trellis edge buildup-final -> drop-entry, so an
+        ambiguous pre-drop bar resolves toward the build the owner says
+        precedes most drops.  0.0 is today's decoder exactly; a structurally
+        forbidden edge (-inf) stays forbidden, since a finite bonus cannot
+        lift it.
+        """
+        if not self.buildup_drop_bonus:
+            return
+        if "buildup" not in self.classes or "drop" not in self.classes:
+            return
+        source = int(self._final_state[self.classes.index("buildup")])
+        target = int(self._entry_state[self.classes.index("drop")])
+        transition[source, target] += self.buildup_drop_bonus
 
     def _class_bonus(self) -> np.ndarray:
         bonus = np.zeros(len(self.classes), dtype=np.float64)
@@ -501,6 +526,7 @@ def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
         boundary_ref=params.boundary_ref,
         floor_scale=params.floor_scale,
         floor_bars=params.floor_bars,
-        outro_escape=params.outro_escape)
+        outro_escape=params.outro_escape,
+        buildup_drop_bonus=params.buildup_drop_bonus)
     decisions = decoder.decode(posteriors, boundary)
     return [(float(edges[d.bar]), d.label) for d in decisions]

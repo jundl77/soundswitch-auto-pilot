@@ -938,7 +938,10 @@ def test_the_live_resampler_reproduces_the_offline_ffmpeg_cells(
     resampler = arms["resampler_only_ffmpeg_44k1"]
     assert resampler["class_argmax_disagreements"] <= 0.01 * resampler["class_cells"], \
         resampler
-    assert max(resampler["flip_reference_top_two_gap"], default=0.0) < 0.01, resampler
+    # The near-tie bound follows the shipped student: under ng_N (l9c) the one
+    # anchor flip sits at gap 0.0205 where earlier students kept it under 0.01;
+    # the feature-side gates below are the resampler's own and did not move.
+    assert max(resampler["flip_reference_top_two_gap"], default=0.0) < 0.03, resampler
     assert resampler["median_delta_in_affine_std"] < 0.10, resampler
     assert resampler["share_of_adjacent_cell_distance"] < 0.20, resampler
 
