@@ -1023,6 +1023,14 @@ uv run pytest                        # unit + integration (minutes, not seconds)
   an explicit-duration HSMM, with the structural graph, duration floors and
   hazards fitted from the corpus (`training/nn/priors.py`). It is imported by
   `lib/`, not copied. It owns stability and latency policy in one place.
+  **There is exactly one path from a decoder config to a decoder**, and it reads
+  the parameter set's own fields rather than naming them. The config loader has
+  always refused a key the parameters do not have; the reverse -- a knob the
+  parameters gained that a construction site never learned to pass -- had no
+  guard at all, and four hand-written sites meant the #345 transition knob
+  reached three of them. Deriving the arguments from the dataclass makes that
+  silent drop a loud one: a knob a site cannot place is a raise, not a decoder
+  quietly ignoring part of the config it was handed.
 - **Beat This-small (vendored, MIT)** -- the bar tracker: a ~2M-parameter
   offline downbeat net fine-tuned on the corpus's own expert grids, run over
   trailing windows so its non-causality becomes lag the delay budget absorbs.

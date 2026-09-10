@@ -31,7 +31,8 @@ PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 sys.path.insert(0, str(PHASE_B))
 sys.path.insert(0, str(HERE))
 
-from training.nn.decoder import DecodeParams, bar_observations  # noqa: E402
+from training.nn.decoder import (DecodeParams, bar_observations,  # noqa: E402
+                                 observation_knobs)
 from training.nn.ceiling.decoder_frontier import score_stream  # noqa: E402
 from training.nn.evaluate_v1 import (  # noqa: E402
     DEFAULT_SPACE, aggregate, build_decoder, decode_beats, generation_model_sha,
@@ -92,10 +93,8 @@ def pick_params(frontier_path: Path):
 
 
 def regrid(item, edges: np.ndarray, sidecar: Path, params: DecodeParams):
-    posteriors, boundary = bar_observations(
-        sidecar, edges, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec,
-        temperature=params.temperature)
+    posteriors, boundary = bar_observations(sidecar, edges,
+                                            **observation_knobs(params))
     return dataclasses.replace(item, edges=edges, posteriors=posteriors,
                                boundary=boundary)
 
@@ -318,9 +317,7 @@ def main(argv=None) -> int:
         ids = ids[:args.limit]
 
     inputs, skipped = load_inputs(
-        data_dir, ids, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec,
-        temperature=params.temperature, posteriors_dir=posteriors_dir,
+        data_dir, ids, params=params, posteriors_dir=posteriors_dir,
         model_sha=model_sha)
     if skipped:
         raise SystemExit(f"{len(skipped)} tracks unusable: {skipped[:5]}")

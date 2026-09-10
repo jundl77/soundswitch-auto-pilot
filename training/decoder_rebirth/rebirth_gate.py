@@ -41,7 +41,8 @@ for entry in (str(HERE), str(ROOT / "training" / "raveform"), str(PHASE_B)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-from training.nn.decoder import DecodeParams, bar_observations  # noqa: E402
+from training.nn.decoder import (DecodeParams, bar_observations,  # noqa: E402
+                                 observation_knobs)
 from training.nn.ceiling.decoder_frontier import (  # noqa: E402
     false_drop_entries, score_stream)
 from training.nn.evaluate_v1 import (  # noqa: E402
@@ -233,9 +234,7 @@ def main(argv=None) -> int:
     priors = Priors.load(model_dir / PRIORS_FILE)
     ids = split_ids(data_dir, "val")
     inputs, skipped = load_inputs(
-        data_dir, ids, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec,
-        temperature=params.temperature, posteriors_dir=posteriors_dir,
+        data_dir, ids, params=params, posteriors_dir=posteriors_dir,
         model_sha=model_sha)
     if skipped:
         raise SystemExit(f"{len(skipped)} tracks unusable: {skipped[:5]}")
@@ -256,9 +255,7 @@ def main(argv=None) -> int:
     def regrid(item, grid):
         posteriors, boundary = bar_observations(
             posteriors_dir / f"{item.youtube_id}.npz", grid.edges,
-            min_coverage=params.min_coverage,
-            boundary_tolerance_sec=params.boundary_tolerance_sec,
-            temperature=params.temperature)
+            **observation_knobs(params))
         return dataclasses.replace(item, edges=grid.edges, posteriors=posteriors,
                                    boundary=boundary), posteriors, boundary
 
