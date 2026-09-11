@@ -8,9 +8,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR_ENV = "RAVEFORM_DATA_DIR"
 
+# The hand labels are the one thing under training/data that git tracks, so
+# every checkout materialises the corpus directory holding nothing of the
+# corpus.  Existence therefore says nothing; these are what only a machine's
+# own copy has -- the show reads the first, acquisition writes the second.
+MARKERS = ("models", "manifest.csv")
+
 
 def default_data_dir() -> Path:
     return REPO_ROOT / "training" / "data" / "raveform"
+
+
+def is_corpus(path: Path) -> bool:
+    return any((path / marker).exists() for marker in MARKERS)
 
 
 def corpus_dir() -> Path:
@@ -18,13 +28,13 @@ def corpus_dir() -> Path:
     if override:
         return Path(override).resolve()
     local = default_data_dir()
-    if local.exists():
+    if is_corpus(local):
         return local
     main_checkout_git_dir = _git("rev-parse", "--path-format=absolute",
                                  "--git-common-dir")
     if main_checkout_git_dir:
         shared = Path(main_checkout_git_dir).parent / local.relative_to(REPO_ROOT)
-        if shared.exists():
+        if is_corpus(shared):
             return shared
     return local
 
