@@ -25,8 +25,8 @@ _TRAINING_DIR = str(Path(__file__).resolve().parents[2] / "training")
 if _TRAINING_DIR not in sys.path:
     sys.path.insert(0, _TRAINING_DIR)
 
-from nn.decoder import (DecodeParams, FixedLagViterbi,  # noqa: E402
-                        SHIPPING_DECODER_CONFIG, decoder_config_classes,
+from nn.decoder import (DecodeParams, SHIPPING_DECODER_CONFIG,  # noqa: E402
+                        build_decoder, decoder_config_classes,
                         load_decoder_config, temper)
 from nn.priors import Priors  # noqa: E402
 
@@ -83,17 +83,7 @@ class SectionDecoder:
                 f"has coverage 1 and every bar would decode from the duration "
                 f"prior with nothing to say so")
         self.feature_latency_sec = float(feature_latency_sec)
-        self._decoder = FixedLagViterbi(
-            priors, self.params.lag_bars,
-            class_prior_division=self.params.class_prior_division,
-            drop_miss_cost=self.params.drop_miss_cost,
-            prior_strength=self.params.prior_strength,
-            boundary_weight=self.params.boundary_weight,
-            boundary_ref=self.params.boundary_ref,
-            floor_scale=self.params.floor_scale,
-            floor_bars=self.params.floor_bars,
-            outro_escape=self.params.outro_escape,
-            buildup_drop_bonus=self.params.buildup_drop_bonus)
+        self._decoder = build_decoder(priors, self.params)
         self._n_classes = len(priors.classes)
         self.recent_observations: deque = deque(
             maxlen=self.params.lag_bars + 2)

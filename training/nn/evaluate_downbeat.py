@@ -714,7 +714,7 @@ def naive_grids(data_dir, ids) -> dict:
 
 def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
                   models_subdir: str, naive: dict | None = None) -> dict:
-    from .decoder import DecodeParams, bar_grid
+    from .decoder import DecodeParams, bar_grid, observation_knobs
     from .evaluate_v1 import (
         DEFAULT_SPACE,
         POSTERIORS_DIR,
@@ -763,9 +763,8 @@ def ablation_rows(data_dir, ids, predicted: dict, *, section_dir: str,
             skipped.append({"youtube_id": youtube_id, "reason": str(error)})
             continue
         for edges, bucket in columns:
-            posteriors, boundary = bar_observations(
-                sidecar, edges, min_coverage=params.min_coverage,
-                boundary_tolerance_sec=params.boundary_tolerance_sec)
+            posteriors, boundary = bar_observations(sidecar, edges,
+                                                    **observation_knobs(params))
             bucket.append(TrackInputs(
                 track_id=track.track_id, youtube_id=youtube_id, edges=edges,
                 posteriors=posteriors, boundary=boundary, times=track.times,

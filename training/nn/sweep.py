@@ -9,7 +9,7 @@ import itertools
 import time
 from pathlib import Path
 
-from .decoder import DEFAULT_LAG_BARS, DecodeParams
+from .decoder import DEFAULT_LAG_BARS, DecodeParams, observation_knobs
 from .evaluate_v1 import (
     DECODER_CONFIG_FILE,
     DEFAULT_SPACE,
@@ -76,8 +76,7 @@ def enumerate_configs(base: DecodeParams, axes: dict) -> list:
 
 
 def observation_key(params: DecodeParams) -> tuple:
-    return (int(params.min_coverage), float(params.boundary_tolerance_sec),
-            float(params.temperature))
+    return tuple(observation_knobs(params).items())
 
 
 class InputCache:
@@ -95,8 +94,7 @@ class InputCache:
         key = observation_key(params)
         if key not in self._cache:
             inputs, skipped = load_inputs(
-                self.data_dir, self.ids, min_coverage=key[0],
-                boundary_tolerance_sec=key[1], temperature=key[2],
+                self.data_dir, self.ids, params=params,
                 table_path=self.table_path,
                 posteriors_dir=self.posteriors_dir, model_sha=self.model_sha)
             self._cache[key] = inputs
