@@ -93,7 +93,8 @@ class SectionDecoder:
             floor_scale=self.params.floor_scale,
             floor_bars=self.params.floor_bars,
             outro_escape=self.params.outro_escape,
-            buildup_drop_bonus=self.params.buildup_drop_bonus)
+            buildup_drop_bonus=self.params.buildup_drop_bonus,
+            buildup_entry_bonus=self.params.buildup_entry_bonus)
         self._n_classes = len(priors.classes)
         self.recent_observations: deque = deque(
             maxlen=self.params.lag_bars + 2)

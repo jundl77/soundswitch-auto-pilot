@@ -12,7 +12,7 @@
     "floor_bars": [
       4,
       4,
-      2,
+      3,
       4,
       4,
       8,
@@ -22,10 +22,11 @@
     ],
     "outro_escape": 0.04,
     "temperature": 1.0,
-    "buildup_drop_bonus": 0.0
+    "buildup_drop_bonus": 0.0,
+    "buildup_entry_bonus": 1.0
   },
-  "name": "ng_N_sweep_pick",
-  "generated_at": "2026-09-09T01:14:01.437574+00:00",
+  "name": "l9d_buildup_entry_1nat_floor3",
+  "generated_at": "2026-09-11T02:40:00+00:00",
   "class_space": [
     "intro",
     "altintro",
@@ -38,28 +39,23 @@
     "altoutro"
   ],
   "provenance": {
-    "source": "C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform\\models\\l9c_campaign\\sweep_N.json",
-    "registered_by": "#346",
-    "selection_rule": "max two-seed-mean val macro-F1 (raw9, class stream) subject to max-seed flicker@2s <= the 5-class decoded reference (0.274220/min) and lag_bars <= 2",
+    "source": "training/data/raveform/models/l9c_campaign/sweep_N.json, with two knobs moved off the swept pick",
+    "registered_by": "the l9d ship",
+    "selection_rule": "NOT a sweep result, and the config says so rather than implying one. The base is arm N's genuine 972-config sweep (max two-seed-mean val macro-F1 subject to flicker@2s <= 0.274220 and lag_bars <= 2). Two knobs are moved on top of it. (1) buildup_entry_bonus 1.0: a log-domain any->buildup preference on the transition edges. Chosen from a 4-point grid judged on 12 arcs across 4 probe tracks, and its val board rows were declared contaminated by a mid-board priors regeneration and NEVER RE-RUN -- so this value has never been validated on val. It is a decision bias of the same family as drop_miss_cost, not a fitted probability. (2) buildup floor 3 bars, against the sweep pick's 2. The campaign banked its candidate at a hand-set floor 4; the axis was measured afterwards and floor 3 is exactly NEUTRAL against it on every measured axis -- identical climb counts on both arms, identical drop coverage, identical drop deficit, slightly better crispness, flicker +0.02 -- so it is taken because it costs nothing and retires a hand-set diagnostic for the swept-adjacent value. NOTE the floor does NOT remove the drop hazard it was once thought to: a buildup committed fewer than the floor's bars before a drop cannot leave before the drop line, and lowering the floor MOVES that hazard rather than removing it, because a cheaper buildup permits later entries that a larger floor would never have produced. Measured on the shipping arm: floor 4 and floor 3 both enter at 330.902 (7.98 bars of lead) and land the drop on time, while floor 2 picks a different segmentation entirely, enters at 343.342 (0.99 bars) and pushes the drop +1.794 s. Floor 2 scores far better on the powered instrument (buildup-preceded drops 0.82 vs 0.60 over 215 val tracks, best core4 of any masked config, deficit 68 -> 64) but costs flicker past the owner-accepted band, crispness, one probe climb and that 1.8 s drop shortfall; it is offered to the owner as a priced, one-integer, fully reversible choice, not shipped silently.",
     "priors": {
-      "path": "C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform\\models\\l9c_campaign\\priors_N.json",
-      "sha256": "4d11bbff91d9e7104c69280c5f38141f8013beaa0d5f6b05635b874569352e29"
+      "path": "training/data/raveform/models/l9d/priors.json",
+      "sha256": "9620af4bb190a02cb9b58a8ef2fa4bb21e4fb0295f75a85fd28544485f034862",
+      "note": "the plain FITTED DA-RESTORE priors (transition rows sum to 1). The campaign's diagnostic priors_DAE1.json, which pre-multiplied the ->buildup column and left the rows unnormalised (max row sum 2.17), is NOT what ships -- the entry bonus is stated as a decoder knob instead, which is equivalent on the transition edges and leaves the cold start alone."
     },
-    "posteriors": {
-      "ng_N_w128_s1234": {
-        "dir": "C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform\\models\\l9c_campaign\\posteriors_ng_N_w128_s1234",
-        "weight_hash": "9e7366793d123fa9ec03b5b0d54a2e750b570cc425c2539d84a5c86a6fac5411"
-      },
-      "ng_N_w128_s1235": {
-        "dir": "C:\\Users\\Julian\\Projects\\soundswitch-auto-pilot\\training\\data\\raveform\\models\\l9c_campaign\\posteriors_ng_N_w128_s1235",
-        "weight_hash": "2648391233b9b209c6ce3624be7723d0534a7ae939501492de5f67d443289ff9"
-      }
-    },
-    "split": "val",
-    "tracks": 215
+    "student": {
+      "path": "training/data/raveform/models/l9d/ng_DACLEANTV_w128_s1234/online_step.onnx",
+      "sha256": "a5c07427a2e91ce6564bccc83d189021b9357438aa8d6f3783e3f78ace0c047a",
+      "arm": "DA-CLEAN (label mask + ontology-translation overlay) at --tv-lambda 0.4, w128, seed 1234"
+    }
   },
   "notes": [
-    "floor_bars is an explicit per-class vector in vocabulary order (#341, buildup opened down to 1 bar); it overrides floor_scale entirely, so a priors refit does NOT move these floors",
-    "buildup_drop_bonus is the #345/#346 transition axis (log-domain buildup->drop entry preference); 0.0 is the pre-l9c decoder exactly"
+    "floor_bars is an explicit per-class vector in vocabulary order; it overrides floor_scale entirely, so a priors refit does NOT move these floors.",
+    "buildup_entry_bonus is applied on the transition edges only and deliberately not on the cold start: log_initial[buildup] is finite, so routing it through the entry state would also move where a track may begin -- a different decoder from the one the value was measured on. It biases entry into buildup from EVERY source class, including intro and outro, not only the breakdown edge the translation was about.",
+    "buildup_drop_bonus 0.0 is the transition axis at its neutral point, unchanged from l9c."
   ]
 }

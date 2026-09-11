@@ -230,7 +230,8 @@ def build_decoder(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
         floor_scale=params.floor_scale,
         floor_bars=params.floor_bars,
         outro_escape=params.outro_escape,
-        buildup_drop_bonus=params.buildup_drop_bonus)
+        buildup_drop_bonus=params.buildup_drop_bonus,
+        buildup_entry_bonus=params.buildup_entry_bonus)
 
 
 def decode_bars(inputs: TrackInputs, decoder: FixedLagViterbi) -> tuple:

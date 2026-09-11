@@ -28,6 +28,7 @@ DEFAULT_MIN_COVERAGE = 2
 DEFAULT_OUTRO_ESCAPE = 0.0
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_BUILDUP_DROP_BONUS = 0.0
+DEFAULT_BUILDUP_ENTRY_BONUS = 0.0
 EPS = 1e-12
 
 
@@ -52,6 +53,7 @@ class DecodeParams:
     outro_escape: float = DEFAULT_OUTRO_ESCAPE
     temperature: float = DEFAULT_TEMPERATURE
     buildup_drop_bonus: float = DEFAULT_BUILDUP_DROP_BONUS
+    buildup_entry_bonus: float = DEFAULT_BUILDUP_ENTRY_BONUS
 
     def __post_init__(self) -> None:
         if self.floor_bars is not None and not isinstance(self.floor_bars, tuple):
@@ -101,7 +103,9 @@ class FixedLagViterbi:
                  floor_scale: float = 1.0,
                  floor_bars=None,
                  outro_escape: float = DEFAULT_OUTRO_ESCAPE,
-                 buildup_drop_bonus: float = DEFAULT_BUILDUP_DROP_BONUS) -> None:
+                 buildup_drop_bonus: float = DEFAULT_BUILDUP_DROP_BONUS,
+                 buildup_entry_bonus: float = DEFAULT_BUILDUP_ENTRY_BONUS,
+                 ) -> None:
         if int(lag_bars) < 0:
             raise ValueError(f"lag_bars must be >= 0, got {lag_bars}")
         if float(floor_scale) <= 0.0:
@@ -116,6 +120,9 @@ class FixedLagViterbi:
         if not math.isfinite(float(buildup_drop_bonus)):
             raise ValueError(
                 f"buildup_drop_bonus must be finite, got {buildup_drop_bonus}")
+        if not math.isfinite(float(buildup_entry_bonus)):
+            raise ValueError(
+                f"buildup_entry_bonus must be finite, got {buildup_entry_bonus}")
 
         self.priors = priors
         self.classes = tuple(priors.classes)
@@ -131,6 +138,7 @@ class FixedLagViterbi:
         self.floor_scale = float(floor_scale)
         self.outro_escape = float(outro_escape)
         self.buildup_drop_bonus = float(buildup_drop_bonus)
+        self.buildup_entry_bonus = float(buildup_entry_bonus)
         self.floor_bars = tuple(floor_bars) if floor_bars is not None else None
 
         hazard = np.asarray(priors.hazard, dtype=np.float64)
@@ -194,6 +202,7 @@ class FixedLagViterbi:
 
         self._apply_outro_escape(transition, switch)
         self._apply_buildup_drop_bonus(transition)
+        self._apply_buildup_entry_bonus(transition, switch)
 
         self._transition = transition
         self._switch = switch
@@ -237,6 +246,26 @@ class FixedLagViterbi:
         source = int(self._final_state[self.classes.index("buildup")])
         target = int(self._entry_state[self.classes.index("drop")])
         transition[source, target] += self.buildup_drop_bonus
+
+    def _apply_buildup_entry_bonus(self, transition: np.ndarray,
+                                   switch: np.ndarray) -> None:
+        """A log-domain preference on entering buildup FROM ANY class.
+
+        On the transition edges only, and deliberately NOT on the cold start:
+        ``_cold_initial`` is ``log_initial + _entry_bonus``, and
+        ``log_initial[buildup]`` is finite, so routing this through
+        ``_entry_bonus`` would also move where a track is allowed to *begin* --
+        a different decoder from the one this value was measured on.  Applied
+        after ``_apply_outro_escape`` because that rule *replaces* the edges it
+        owns; a forbidden edge (-inf) stays forbidden, since a finite bonus
+        cannot lift it.
+        """
+        if not self.buildup_entry_bonus:
+            return
+        if "buildup" not in self.classes:
+            return
+        target = int(self._entry_state[self.classes.index("buildup")])
+        transition[switch[:, target], target] += self.buildup_entry_bonus
 
     def _class_bonus(self) -> np.ndarray:
         bonus = np.zeros(len(self.classes), dtype=np.float64)
@@ -527,6 +556,7 @@ def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
         floor_scale=params.floor_scale,
         floor_bars=params.floor_bars,
         outro_escape=params.outro_escape,
-        buildup_drop_bonus=params.buildup_drop_bonus)
+        buildup_drop_bonus=params.buildup_drop_bonus,
+        buildup_entry_bonus=params.buildup_entry_bonus)
     decisions = decoder.decode(posteriors, boundary)
     return [(float(edges[d.bar]), d.label) for d in decisions]

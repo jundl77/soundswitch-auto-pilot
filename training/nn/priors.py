@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import logging
 from pathlib import Path
 from typing import NamedTuple
 
@@ -298,8 +299,31 @@ def bar_runs(sections: list, downbeats: np.ndarray) -> list:
     return [(label, bars) for label, bars in runs]
 
 
-def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
-    """``([[ (label, bars) ]], skipped)`` for the given ids, in id order.
+# The four ways a requested id fails to become a fitted sequence.  They were
+# one list under the beat-grid name, and the name was a lie for three of them:
+# a fit that silently dropped five tracks reported "no beat grid" for tracks
+# whose grids were present and valid, and the search went to the wrong artifact.
+# ``SKIP_NO_BEAT_GRID`` keeps its spelling because several artifacts and scripts
+# read it -- what changed is that it now means only what it says.
+SKIP_NO_ANNOTATION = "skipped_no_annotation_record"
+SKIP_NO_BEAT_GRID = "skipped_no_beat_grid"
+SKIP_DEGENERATE_GRID = "skipped_degenerate_beat_grid"
+SKIP_NO_BAR_RUNS = "skipped_no_bar_runs"
+SKIP_CAUSES = (SKIP_NO_ANNOTATION, SKIP_NO_BEAT_GRID, SKIP_DEGENERATE_GRID,
+               SKIP_NO_BAR_RUNS)
+
+# How many dropped ids a warning names before it says "and N more".  A corpus
+# fit asks for hundreds of ids; a warning that dumps all of them is a warning
+# nobody reads to the end.
+SKIP_SAMPLE = 8
+
+
+def corpus_bar_runs_by_cause(data_dir, youtube_ids) -> tuple:
+    """``([[ (label, bars) ]], {cause: [id]})`` for the given ids, in id order.
+
+    Every requested id lands in exactly one place -- a fitted sequence or one
+    cause -- so ``len(sequences) + sum(len(ids)) == len(requested)`` is an
+    invariant a caller can check, and ``fit`` does.
 
     A track with no beat grid is skipped rather than fitted in seconds: mixing
     two duration units in one prior would be invisible in the output and wrong
@@ -312,29 +336,47 @@ def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
     by_id = {str(track.get("id")): track for track in load_all_tracks(data_dir)}
 
     sequences: list = []
-    skipped: list = []
+    skipped: dict = {cause: [] for cause in SKIP_CAUSES}
     for youtube_id in sorted(wanted):
         track = by_id.get(youtube_id)
         if track is None:
-            skipped.append(youtube_id)
+            skipped[SKIP_NO_ANNOTATION].append(youtube_id)
             continue
         path = beat_csv_path(data_dir, track)
         if not path.exists():
-            skipped.append(youtube_id)
+            skipped[SKIP_NO_BEAT_GRID].append(youtube_id)
             continue
         downbeats = np.array(
             [time for time, position, _section in parse_beat_csv(path) if position == 1],
             dtype=np.float64)
         if downbeats.size < 2:
-            skipped.append(youtube_id)
+            skipped[SKIP_DEGENERATE_GRID].append(youtube_id)
             continue
         runs = [(label, bars) for label, bars in
                 bar_runs(parse_sections(track), downbeats) if bars > 0]
         if runs:
             sequences.append(runs)
         else:
-            skipped.append(youtube_id)
+            skipped[SKIP_NO_BAR_RUNS].append(youtube_id)
     return sequences, skipped
+
+
+def corpus_bar_runs(data_dir, youtube_ids) -> tuple:
+    """``([[ (label, bars) ]], skipped)`` -- the flat view, for callers that
+    only need to know whether anything was dropped."""
+    sequences, skipped = corpus_bar_runs_by_cause(data_dir, youtube_ids)
+    return sequences, sorted(i for ids in skipped.values() for i in ids)
+
+
+def _skip_report(split: str, requested: int, fitted: int, skipped: dict) -> str:
+    dropped = sorted(i for ids in skipped.values() for i in ids)
+    causes = ", ".join(f"{cause}={len(skipped[cause])}"
+                       for cause in SKIP_CAUSES if skipped[cause])
+    sample = ", ".join(dropped[:SKIP_SAMPLE])
+    if len(dropped) > SKIP_SAMPLE:
+        sample += f", and {len(dropped) - SKIP_SAMPLE} more"
+    return (f"[priors] split {split!r}: dropped {len(dropped)} of {requested} "
+            f"ids ({causes}), fitting {fitted}; dropped ids: {sample}")
 
 
 # --------------------------------------------------------------------------- #
@@ -520,27 +562,47 @@ def split_ids(data_dir, split: str = "train") -> list:
     return [str(i) for i in document[split]]
 
 
-def fit(data_dir, *, split: str = "train", strict: bool = True, **kwargs) -> Priors:
+def fit(data_dir, *, split: str = "train", strict: bool = True,
+        require_all_ids: bool = False, **kwargs) -> Priors:
     """Fit priors from one split of the corpus.
 
     ``split`` defaults to ``train`` and should stay there.  Val is the decoder
     sweep set and test is the benchmark; fitting the priors on either makes
     every number produced afterwards an in-sample number, and nothing
     downstream can tell.
+
+    A dropped id is **loud but not fatal**: a growing corpus legitimately holds
+    ids nothing can fit yet, so refusing by default would break every workflow
+    to catch the rare run where the drop matters.  ``require_all_ids`` is the
+    opt-in for the run where it does -- a deliberate refit, where fitting 955 of
+    960 tracks is not a smaller corpus but a broken one.
     """
     data_dir = Path(data_dir)
     ids = split_ids(data_dir, split)
-    sequences, skipped = corpus_bar_runs(data_dir, ids)
+    sequences, skipped = corpus_bar_runs_by_cause(data_dir, ids)
     if not sequences:
         raise RuntimeError(
             f"no usable tracks in split '{split}' of {data_dir} -- every one is "
             f"missing its beat grid or its annotation"
         )
+    dropped = sum(len(found) for found in skipped.values())
+    if dropped:
+        report = _skip_report(split, len(ids), len(sequences), skipped)
+        if require_all_ids:
+            raise RuntimeError(
+                f"{report}.  require_all_ids demands every id in the split be "
+                f"fitted; either the corpus is incomplete or the split names "
+                f"ids it no longer holds -- decide which before shipping priors "
+                f"that quietly describe fewer tracks than they claim."
+            )
+        logging.warning(report)
     provenance = {
         "split": split,
         "split_size": len(ids),
-        "skipped_no_beat_grid": skipped,
+        "fitted_tracks": len(sequences),
+        "skipped_tracks": dropped,
     }
+    provenance.update({cause: skipped[cause] for cause in SKIP_CAUSES})
     return fit_runs(sequences, strict=strict, provenance=provenance, **kwargs)
 
 
@@ -558,6 +620,12 @@ def format_report(priors: Priors) -> str:
     lines.append(f"fitted on {corpus.get('tracks', '?')} tracks / "
                  f"{corpus.get('runs', '?')} runs / {corpus.get('bars', '?')} bars "
                  f"(split={corpus.get('split', '?')})")
+    if corpus.get("skipped_tracks"):
+        causes = ", ".join(f"{cause}={len(corpus.get(cause) or [])}"
+                           for cause in SKIP_CAUSES if corpus.get(cause))
+        lines.append(f"  WARNING {corpus['skipped_tracks']} of "
+                     f"{corpus.get('split_size', '?')} ids in the split were "
+                     f"not fitted: {causes}")
     if corpus.get("illegal_observed"):
         lines.append(f"  WARNING structurally illegal transitions observed: "
                      f"{corpus['illegal_observed']}")
@@ -611,12 +679,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-illegal", action="store_true",
                         help="record rather than refuse transitions the "
                              "structural graph calls impossible")
+    parser.add_argument("--require-all-ids", action="store_true",
+                        help="refuse rather than warn when an id in the split "
+                             "could not be fitted -- for a deliberate refit, "
+                             "where a short corpus is a broken one")
     return parser
 
 
 def main(argv: list | None = None) -> int:
     args = build_parser().parse_args(argv)
-    priors = fit(args.data_dir, split=args.split, strict=not args.allow_illegal)
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    priors = fit(args.data_dir, split=args.split, strict=not args.allow_illegal,
+                 require_all_ids=args.require_all_ids)
     out = Path(args.out) if args.out else priors_path(args.data_dir)
     priors.save(out)
     print(format_report(priors))
