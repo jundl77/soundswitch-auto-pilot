@@ -36,6 +36,13 @@ DATA = MAIN / "training" / "data" / "raveform"
 CAMP = DATA / "models" / "l9b_campaign"
 L9 = DATA / "models" / "l9"
 MODEL_VERSION = "l9_w128_s1234"
+sys.path.insert(0, str(MAIN))
+
+# This campaign is retired, so what it mirrors stays the record it was; what
+# changes is that a shadow the live chain cannot resolve is refused instead of
+# simulated, which is the whole difference between no answer and a wrong one.
+from lib import section_chain  # noqa: E402
+
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 CEILING_PY = Path(r"C:\Users\Julian\Projects\soundswitch-exp-ceiling-worktree"
                   r"\.venv\Scripts\python.exe")
@@ -133,6 +140,12 @@ def build_shadow(chain: str) -> Path:
                      else CAMP / f"decoder_config_{CHAIN_ARTIFACTS[chain]}.json")
     shutil.copy2(config_source, nn_dir / "decoder_config.json")
 
+    absent = [p for p in section_chain.artifacts(root).missing()
+              if not p.endswith("online_step.onnx")]
+    if absent:
+        raise SystemExit(f"shadow {root} is missing {absent} -- the show would "
+                         f"run the degradation state against it")
+
     print(f"shadow {root} built (bar_tracker: {how}; decoder config: "
           f"{config_source})")
     if chain in CHAIN_ARTIFACTS and not (run_dir / "online_step.onnx").exists():
@@ -198,9 +211,11 @@ def run_sim(chain: str, track: Path, report: Path, *,
                    "file", str(track), "--report", str(report)]
     else:
         root = shadow_root(chain)
-        if not (root / "models" / "l9" / MODEL_VERSION
-                / "online_step.onnx").exists():
-            raise RuntimeError(f"shadow {root} has no student export")
+        missing = section_chain.artifacts(root).missing()
+        if missing:
+            raise RuntimeError(
+                f"shadow {root} is not a chain the show can resolve: {missing} "
+                f"-- simulating it would measure the degradation state")
         env["RAVEFORM_DATA_DIR"] = str(root)
         command = [sys.executable, str(Path(__file__).resolve()), "_run-sim",
                    "--shadow", str(root), str(track), str(report)]

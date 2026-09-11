@@ -40,6 +40,13 @@ PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 for entry in (str(HERE), str(ROOT / "training" / "raveform"), str(PHASE_B)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
+sys.path.append(str(ROOT / "training"))
+
+import module_source  # noqa: E402
+
+# The whole gate is phase-B's generation: ``ceiling`` and ``paired`` exist
+# nowhere else, so every training.nn it reads must come from there too.
+module_source.require("training.nn", PHASE_B)
 
 from training.nn.decoder import (DecodeParams, bar_observations,  # noqa: E402
                                  observation_knobs)

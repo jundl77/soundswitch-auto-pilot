@@ -48,6 +48,8 @@ TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
+import corpus_root  # noqa: E402
+
 from lib.label_space import NUM_SECTION_CLASSES  # noqa: E402
 from nn.dataset import (  # noqa: E402
     FRAME_SEC,
@@ -101,10 +103,9 @@ PARITY_TOLERANCE = 1e-4
 # Weight gain for the seeded stand-in model -- see `seeded_model`.
 GAIN = 2.0
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "training" / "data" / "raveform"
-if not DATA_DIR.exists():   # the worktree has no data dir; the main checkout does
-    DATA_DIR = (Path(__file__).resolve().parents[2] / "soundswitch-auto-pilot"
-                / "training" / "data" / "raveform")
+# corpus_root, never a local existence test: the committed hand labels give
+# every worktree a corpus directory holding none of the corpus.
+DATA_DIR = corpus_root.corpus_dir()
 
 needs_corpus = pytest.mark.skipif(
     not (DATA_DIR / "features").is_dir(),

@@ -27,10 +27,18 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
-for entry in (str(HERE), str(ROOT / "training" / "raveform"), str(PHASE_B)):
+for entry in (str(HERE), str(ROOT / "training" / "raveform"),
+              str(ROOT / "training"), str(ROOT)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
+
+import module_source  # noqa: E402
+
+# The banked phase-B artifacts are replayed through THIS repo's decoder -- the
+# one the offline package still tolerates an older class space for.  Asked
+# before the names are bound, because a decoder chosen by import order is a
+# measurement of a codebase nobody named.
+module_source.require("training.nn", ROOT)
 
 from training.nn.decoder import DecodeParams, build_decoder, temper  # noqa: E402
 from training.nn.evaluate_v1 import write_json  # noqa: E402

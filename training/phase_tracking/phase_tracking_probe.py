@@ -27,6 +27,11 @@ HERE = Path(__file__).resolve().parent
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 sys.path.insert(0, str(PHASE_B))
 sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE.parent))
+
+import module_source  # noqa: E402
+
+module_source.require("training.nn", PHASE_B)
 
 import training.nn.decoder  # noqa: E402
 from training.nn.evaluate_v1 import split_ids, write_json  # noqa: E402
@@ -36,9 +41,6 @@ from build_training_table import TABLE_FILE  # noqa: E402
 from evaluate_against_labels import load_tracks  # noqa: E402
 
 import phase_tracking as pt  # noqa: E402
-
-if not Path(training.nn.decoder.__file__).is_relative_to(PHASE_B):
-    raise SystemExit("the decoder generation must come from the phase_b worktree")
 
 PLACEMENT_TOL = 0.5
 WINDOWS = (4, 8, 16)

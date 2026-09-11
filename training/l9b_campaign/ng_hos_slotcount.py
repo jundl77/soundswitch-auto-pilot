@@ -30,6 +30,14 @@ SIX = ("hand-65cb8c94812d", "hand-8339586c555a", "hand-1b57bc38e8e4",
        "hand-33d3513481ac", "hand-b7d98ca02e86", "hand-52973d7b1767")
 
 sys.path.insert(0, str(PHASE_B))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import module_source  # noqa: E402
+
+# ``ceiling`` exists only in the phase-B checkout, so the rest of training.nn
+# must come from beside it rather than from whichever copy an import reached
+# first -- the two disagree, and nothing downstream would say which ran.
+module_source.require("training.nn", PHASE_B)
 
 from training.nn.ceiling import demote as DD  # noqa: E402
 from training.nn.ceiling.train_head import build_datasets  # noqa: E402

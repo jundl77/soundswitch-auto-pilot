@@ -26,6 +26,14 @@ from pathlib import Path
 
 PHASE_B = Path(r"C:\Users\Julian\Projects\soundswitch-phase-b-worktree")
 sys.path.insert(0, str(PHASE_B))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import module_source  # noqa: E402
+
+# ``ceiling`` exists only in the phase-B checkout, so the rest of training.nn
+# must come from beside it rather than from whichever copy an import reached
+# first -- the two disagree, and nothing downstream would say which ran.
+module_source.require("training.nn", PHASE_B)
 
 from ng_common import CAMP, CORPUS, F3_DIR, NEW_HAND_IDS  # noqa: E402
 from ng_ag8_variants import SHIFTS, variant_id  # noqa: E402
