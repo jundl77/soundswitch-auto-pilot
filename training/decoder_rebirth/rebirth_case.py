@@ -32,7 +32,7 @@ for entry in (str(HERE), str(ROOT / "training" / "raveform"), str(PHASE_B)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-from training.nn.decoder import DecodeParams, FixedLagViterbi, temper  # noqa: E402
+from training.nn.decoder import DecodeParams, build_decoder, temper  # noqa: E402
 from training.nn.evaluate_v1 import write_json  # noqa: E402
 from training.nn.priors import MODELS_DIR, PRIORS_FILE, Priors  # noqa: E402
 
@@ -107,15 +107,6 @@ def first_change(labels, edges) -> dict | None:
     return None
 
 
-def build(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
-    return FixedLagViterbi(
-        priors, params.lag_bars, class_prior_division=params.class_prior_division,
-        drop_miss_cost=params.drop_miss_cost, prior_strength=params.prior_strength,
-        boundary_weight=params.boundary_weight, boundary_ref=params.boundary_ref,
-        floor_scale=params.floor_scale, floor_bars=params.floor_bars,
-        outro_escape=params.outro_escape)
-
-
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=Path, default=Path(
@@ -133,7 +124,7 @@ def main(argv=None) -> int:
                                / "student_kd_t2_w05_s1234" / "frontier.json")
     priors = Priors.load(data_dir / MODELS_DIR
                          / "phase_b_student_kd_t2_w05_s1234" / PRIORS_FILE)
-    decoder = build(priors, params)
+    decoder = build_decoder(priors, params)
     print(f"pick {name}  lag_bars={params.lag_bars}  classes {priors.classes}",
           flush=True)
 

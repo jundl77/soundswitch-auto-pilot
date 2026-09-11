@@ -1,5 +1,7 @@
 """The fitted section priors and the fixed-lag Viterbi decoder."""
+import ast
 import dataclasses
+import inspect
 import json
 import subprocess
 import sys
@@ -23,10 +25,13 @@ from nn.decoder import (  # noqa: E402
     FixedLagViterbi,
     bar_grid,
     bar_observations,
+    build_decoder,
     decode_track,
     load_decoder_config,
+    observation_knobs,
     segments,
     temper,
+    trellis_knobs,
 )
 from nn.priors import (  # noqa: E402
     PRIORS_FILE,
@@ -1345,3 +1350,94 @@ def test_decode_track_forwards_the_outro_escape_to_the_trellis(tmp_path):
             == {"outro"})
     assert "drop" in [label for _, label in
                       decode_track(npz, beats, escaping, priors=priors)]
+
+
+NON_DEFAULT_TRELLIS_KNOBS = {
+    "lag_bars": 1,
+    "class_prior_division": False,
+    "prior_strength": 0.4,
+    "drop_miss_cost": 3.0,
+    "boundary_weight": 5.0,
+    "boundary_ref": 0.2,
+    "floor_scale": 2.0,
+    "floor_bars": (1, 2, 3, 4, 5),
+    "outro_escape": 0.05,
+    "buildup_drop_bonus": 0.75,
+}
+
+
+def test_every_decode_knob_is_claimed_by_exactly_one_stage():
+    params = DecodeParams()
+    trellis, observation = set(trellis_knobs(params)), set(observation_knobs(params))
+    assert not trellis & observation
+    assert trellis | observation == {f.name for f in dataclasses.fields(DecodeParams)}
+    # Both halves must be placeable, or the partition merely moves the drop:
+    # a trellis knob lands as an unexpected keyword, an observation knob here.
+    assert observation <= set(inspect.signature(bar_observations).parameters)
+
+
+def test_build_decoder_carries_every_trellis_knob_onto_the_decoder():
+    params = DecodeParams(**NON_DEFAULT_TRELLIS_KNOBS)
+    assert set(NON_DEFAULT_TRELLIS_KNOBS) == set(trellis_knobs(params))
+    decoder = build_decoder(toy_priors(), params)
+    for name, value in trellis_knobs(params).items():
+        assert getattr(decoder, name) == value, name
+
+
+def _repo_sources(root):
+    """The repository's own python, which is not everything under these names.
+
+    `training/data` is the gitignored corpus, and it holds ops copies of
+    campaign scripts and whole shadow trees of a vendored decoder.  Those are
+    data this machine happens to have, not source this repository ships, so a
+    rule about the source must not read them -- and reading them made the gate
+    below a statement about whether the corpus was downloaded.
+    """
+    corpus = root / "training" / "data"
+    for directory in ("lib", "simulate", "training"):
+        for path in (root / directory).rglob("*.py"):
+            if corpus in path.parents:
+                continue
+            yield path
+
+
+def test_only_one_place_builds_the_trellis():
+    """Four hand-written call sites once; buildup_drop_bonus reached three.
+
+    A second construction site is a second list of knobs to keep in step, which
+    is how a decoder came to ignore part of the config it was handed.  Tests are
+    exempt: they exercise the constructor's own arguments deliberately.
+    """
+    root = Path(__file__).resolve().parents[1]
+    shared = root / "training" / "nn" / "decoder.py"
+    offenders = []
+    for path in _repo_sources(root):
+        if path == shared:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        offenders += [f"{path.relative_to(root)}:{node.lineno}"
+                      for node in ast.walk(tree)
+                      if isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Name)
+                      and node.func.id == "FixedLagViterbi"]
+    assert offenders == [], (
+        f"build_decoder is the one way to build one; {offenders} hand-list the "
+        f"knobs and can fall behind DecodeParams")
+
+
+def test_the_source_walk_skips_the_gitignored_corpus(tmp_path):
+    """440 corpus files were being parsed, and two of them do not parse at all.
+
+    On a machine that has the corpus the gate above died in `ast.parse` on an
+    ops copy carrying a BOM -- so a rule about this repository's source failed
+    for a reason that is a fact about the download.  Every offender the walk
+    reported was a shadow tree's vendored decoder, none of it ours.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "ours.py").write_text("x = 1\n", encoding="utf-8")
+    corpus = tmp_path / "training" / "data" / "raveform" / "models" / "campaign"
+    corpus.mkdir(parents=True)
+    (corpus / "ops_copy.py").write_text(
+        '﻿"""an ops copy with a BOM"""\nFixedLagViterbi(1)\n', encoding="utf-8")
+
+    assert [p.name for p in _repo_sources(tmp_path)] == ["ours.py"]

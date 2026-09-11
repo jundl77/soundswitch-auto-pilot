@@ -93,6 +93,28 @@ def load_decoder_config(path) -> DecodeParams:
     return DecodeParams(**chosen)
 
 
+# The knobs that shape the bar OBSERVATIONS rather than the trellis; everything
+# else in DecodeParams is a trellis knob by subtraction, which is what makes
+# `trellis_knobs` exhaustive over the dataclass instead of a hand-kept list.
+OBSERVATION_KNOBS = ("min_coverage", "boundary_tolerance_sec", "temperature")
+
+
+def observation_knobs(params: DecodeParams) -> dict:
+    return {name: getattr(params, name) for name in OBSERVATION_KNOBS}
+
+
+def trellis_knobs(params: DecodeParams) -> dict:
+    """Every remaining DecodeParams field, so a new one cannot be dropped.
+
+    Four sites used to hand-list these and `buildup_drop_bonus` reached three of
+    them -- a decoder built from a config it did not honour, silently. A knob
+    this misses now reaches FixedLagViterbi as an unexpected keyword and raises.
+    """
+    return {field.name: getattr(params, field.name)
+            for field in dataclasses.fields(params)
+            if field.name not in OBSERVATION_KNOBS}
+
+
 class FixedLagViterbi:
     def __init__(self, priors: Priors, lag_bars: int = DEFAULT_LAG_BARS,
                  class_prior_division: bool = True,
@@ -537,26 +559,16 @@ def bar_observations(posterior_npz, edges, *, min_coverage: int = DEFAULT_MIN_CO
     return posteriors, scores
 
 
+def build_decoder(priors: Priors,
+                  params: DecodeParams | None = None) -> FixedLagViterbi:
+    return FixedLagViterbi(priors, **trellis_knobs(params or DecodeParams()))
+
+
 def decode_track(posterior_npz, beat_csv, params: DecodeParams | None = None, *,
                  priors: Priors) -> list:
     params = params or DecodeParams()
     edges = bar_grid(beat_csv)
-    posteriors, boundary = bar_observations(
-        posterior_npz, edges, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec,
-        temperature=params.temperature)
-
-    decoder = FixedLagViterbi(
-        priors, params.lag_bars,
-        class_prior_division=params.class_prior_division,
-        drop_miss_cost=params.drop_miss_cost,
-        prior_strength=params.prior_strength,
-        boundary_weight=params.boundary_weight,
-        boundary_ref=params.boundary_ref,
-        floor_scale=params.floor_scale,
-        floor_bars=params.floor_bars,
-        outro_escape=params.outro_escape,
-        buildup_drop_bonus=params.buildup_drop_bonus,
-        buildup_entry_bonus=params.buildup_entry_bonus)
-    decisions = decoder.decode(posteriors, boundary)
+    posteriors, boundary = bar_observations(posterior_npz, edges,
+                                            **observation_knobs(params))
+    decisions = build_decoder(priors, params).decode(posteriors, boundary)
     return [(float(edges[d.bar]), d.label) for d in decisions]

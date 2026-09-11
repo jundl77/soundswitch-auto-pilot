@@ -354,10 +354,7 @@ def main() -> int:
         report = json.loads(spec["report"].read_text(encoding="utf-8"))
 
         inputs, skipped = load_inputs(
-            DATA, ids, min_coverage=params.min_coverage,
-            boundary_tolerance_sec=params.boundary_tolerance_sec,
-            temperature=params.temperature,
-            posteriors_dir=spec["posteriors"],
+            DATA, ids, params=params, posteriors_dir=spec["posteriors"],
             model_sha=report["weight_hash"])
         if skipped:
             raise RuntimeError(f"{run}: {len(skipped)} tracks missing inputs: "

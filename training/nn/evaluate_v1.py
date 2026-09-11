@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .decoder import (DecodeParams, FixedLagViterbi, bar_grid, bar_observations,
-                      load_decoder_config)
+                      build_decoder, load_decoder_config, observation_knobs)
 from .priors import MODEL_VERSION, MODELS_DIR, PRIORS_FILE, Priors
 
 from build_training_table import NO_INTENT, TABLE_FILE  # noqa: E402
@@ -219,21 +219,6 @@ class TrackInputs:
                           intents=self.intents, labels=self.labels)
 
 
-def build_decoder(priors: Priors, params: DecodeParams) -> FixedLagViterbi:
-    return FixedLagViterbi(
-        priors, params.lag_bars,
-        class_prior_division=params.class_prior_division,
-        drop_miss_cost=params.drop_miss_cost,
-        prior_strength=params.prior_strength,
-        boundary_weight=params.boundary_weight,
-        boundary_ref=params.boundary_ref,
-        floor_scale=params.floor_scale,
-        floor_bars=params.floor_bars,
-        outro_escape=params.outro_escape,
-        buildup_drop_bonus=params.buildup_drop_bonus,
-        buildup_entry_bonus=params.buildup_entry_bonus)
-
-
 def decode_bars(inputs: TrackInputs, decoder: FixedLagViterbi) -> tuple:
     return tuple(decision.label
                  for decision in decoder.decode(inputs.posteriors, inputs.boundary))
@@ -294,13 +279,12 @@ def _youtube_id_of(track_id: str) -> str:
     return track_id.split(".", 1)[-1]
 
 
-def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverage,
-                boundary_tolerance_sec: float = DecodeParams().boundary_tolerance_sec,
-                temperature: float = DecodeParams().temperature,
+def load_inputs(data_dir, ids, *, params: DecodeParams | None = None,
                 table_path: Path | None = None,
                 posteriors_dir: Path | None = None,
                 model_sha: str | None = None,
                 allow_missing: bool = False) -> tuple:
+    params = params or DecodeParams()
     data_dir = Path(data_dir)
     table_path = Path(table_path) if table_path else data_dir / TABLE_FILE
     by_youtube_id = {_youtube_id_of(t.track_id): t for t in load_tracks(table_path)}
@@ -333,10 +317,8 @@ def load_inputs(data_dir, ids, *, min_coverage: int = DecodeParams().min_coverag
         except RuntimeError as error:
             skipped.append({"youtube_id": youtube_id, "reason": str(error)})
             continue
-        posteriors, boundary = bar_observations(
-            sidecar, edges, min_coverage=min_coverage,
-            boundary_tolerance_sec=boundary_tolerance_sec,
-            temperature=temperature)
+        posteriors, boundary = bar_observations(sidecar, edges,
+                                                **observation_knobs(params))
         inputs.append(TrackInputs(
             track_id=track.track_id, youtube_id=youtube_id, edges=edges,
             posteriors=posteriors, boundary=boundary, times=track.times,
@@ -755,9 +737,7 @@ def main(argv: list | None = None) -> int:
     ids = (read_ids_file(args.ids_file) if args.ids_file
            else split_ids(args.data_dir, args.split))
     inputs, skipped = load_inputs(
-        args.data_dir, ids, min_coverage=params.min_coverage,
-        boundary_tolerance_sec=params.boundary_tolerance_sec,
-        temperature=params.temperature,
+        args.data_dir, ids, params=params,
         posteriors_dir=args.posteriors_dir, model_sha=model_sha)
     if not inputs:
         print(f"no usable tracks in split {args.split!r}", file=sys.stderr)
