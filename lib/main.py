@@ -235,7 +235,7 @@ async def label_cmd(args: argparse.Namespace):
         sys.path.insert(0, training)
     import label_tool
 
-    label_tool.launch(args.audio, port=args.port)
+    label_tool.launch(args.audio, port=args.port, seed=args.seed)
 
 
 def death_handler(signum, frame):
@@ -280,6 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparser = subparsers.add_parser('label', help='Hand-label a song into sections in the browser (requires dash extra)')
     subparser.add_argument('audio', help='Path to the audio file to label')
     subparser.add_argument('--port', type=int, default=8070, help='Labeler Dash server port (default: 8070)')
+    subparser.add_argument('--seed', action='store_true', help="Start from the published section boundaries when there is no working file yet, so only the names need changing")
     subparser.set_defaults(func=label_cmd)
 
     from simulate.cli import add_simulate_subparser

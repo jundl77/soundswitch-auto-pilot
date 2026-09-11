@@ -423,15 +423,18 @@ async def test_auto_pilot_label_parses_and_dispatches(monkeypatch, tmp_path):
     from lib.main import build_parser, label_cmd
 
     song = tmp_path / 'song.mp3'
-    args = build_parser().parse_args(['label', str(song), '--port', '9001'])
+    args = build_parser().parse_args(['label', str(song), '--port', '9001',
+                                      '--seed'])
     assert args.func is label_cmd
-    assert (args.audio, args.port) == (str(song), 9001)
+    assert (args.audio, args.port, args.seed) == (str(song), 9001, True)
 
     launched = {}
     monkeypatch.setitem(sys.modules, 'label_tool', types.SimpleNamespace(
-        launch=lambda audio, port: launched.update(audio=audio, port=port)))
+        launch=lambda audio, port, seed: launched.update(
+            audio=audio, port=port, seed=seed)))
     await label_cmd(args)
-    assert launched == {'audio': str(song), 'port': 9001}
+    assert launched == {'audio': str(song), 'port': 9001, 'seed': True}
+    assert not build_parser().parse_args(['label', str(song)]).seed
 
 
 async def test_the_labeller_takes_no_audio_device_flag(tmp_path):
@@ -1254,3 +1257,100 @@ def test_the_layout_falls_back_to_the_filename_prefill(song_file, corpus):
     assert _find(served, 'artist').value == ''
     assert _find(served, 'title').value == default_title(str(song_file))
     assert _find(served, 'genre').value == ''
+
+
+def _publish_with_sections(corpus, youtube_id, sections, payload=b'seed me'):
+    audio = _publish(corpus, youtube_id, payload)
+    (corpus / 'annotations' / 'segments.json').write_text(
+        json.dumps([{'id': youtube_id, 'title': 'A - B', 'sections': sections}]),
+        encoding='utf-8')
+    return audio
+
+
+def test_the_seed_keeps_the_published_boundaries_and_drops_the_end_sentinel(
+        corpus):
+    audio = _publish_with_sections(corpus, 'kUP_iJuoq9g', [
+        {'name': 'intro', 'start': 0.11, 'end': 30.5},
+        {'name': 'breakdown', 'start': 30.5, 'end': 97.25},
+        {'name': 'drop', 'start': 97.25, 'end': 180.0},
+        {'name': 'end', 'start': 180.0, 'end': 190.0}])
+
+    assert label_tool.published_seed(str(audio)) == [
+        {'start': 0.0, 'label': 'intro', 'strength': 'major'},
+        {'start': 30.5, 'label': 'breakdown', 'strength': 'major'},
+        {'start': 97.25, 'label': 'drop', 'strength': 'major'}]
+
+
+def test_a_seed_the_tool_wrote_is_one_the_tool_can_read_back(corpus):
+    audio = _publish_with_sections(corpus, 'kUP_iJuoq9g', [
+        {'name': 'intro', 'start': 0.11, 'end': 30.5},
+        {'name': 'end', 'start': 30.5, 'end': 40.0}])
+
+    label_tool.seed_from_published(str(audio))
+
+    assert load_labels(str(audio)) == label_tool.published_seed(str(audio))
+
+
+def test_a_published_start_past_the_tolerance_gains_an_anchor(corpus):
+    audio = _publish_with_sections(corpus, 'kUP_iJuoq9g', [
+        {'name': 'drop', 'start': 12.0, 'end': 30.5}])
+
+    assert label_tool.published_seed(str(audio)) == [
+        {'start': 0.0, 'label': 'intro', 'strength': 'major'},
+        {'start': 12.0, 'label': 'drop', 'strength': 'major'}]
+
+
+def test_a_start_inside_the_tolerance_moves_rather_than_gaining_a_sliver(
+        corpus):
+    audio = _publish_with_sections(corpus, 'kUP_iJuoq9g', [
+        {'name': 'altintro', 'start': 0.663, 'end': 22.8},
+        {'name': 'drop', 'start': 22.8, 'end': 60.0}])
+
+    assert label_tool.published_seed(str(audio)) == [
+        {'start': 0.0, 'label': 'altintro', 'strength': 'major'},
+        {'start': 22.8, 'label': 'drop', 'strength': 'major'}]
+
+
+def test_seeding_never_overwrites_work_already_on_disk(corpus):
+    audio = _publish_with_sections(corpus, 'kUP_iJuoq9g', [
+        {'name': 'intro', 'start': 0.0, 'end': 30.5},
+        {'name': 'drop', 'start': 30.5, 'end': 60.0}])
+    label_tool.save_labels(str(audio), [{'start': 0.0, 'label': 'buildup'}])
+
+    message = label_tool.seed_from_published(str(audio))
+
+    assert 'left alone' in message
+    assert load_labels(str(audio)) == [
+        {'start': 0.0, 'label': 'buildup', 'strength': 'major'}]
+
+
+def test_audio_the_corpus_does_not_hold_seeds_nothing(song, corpus):
+    assert label_tool.published_seed(str(song)) == []
+    assert 'no published annotation' in label_tool.seed_from_published(str(song))
+    assert not label_tool.labels_path(str(song)).exists()
+
+
+def _beat_file(corpus, name, rows):
+    path = corpus / 'annotations' / 'beats' / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('time,downbeat\n' + ''.join(f'{t},{d}\n' for t, d in rows),
+                    encoding='utf-8')
+    return path
+
+
+def test_a_published_grid_numbers_the_bar_and_is_read_as_one_downbeat(corpus):
+    audio = _publish(corpus, 'kUP_iJuoq9g', b'gridded')
+    _beat_file(corpus, '1723.kUP_iJuoq9g.beat.csv',
+               [(0.1, 1), (0.6, 2), (1.1, 3), (1.6, 4), (2.1, 1)])
+
+    assert label_tool.beat_grid(str(audio)) == [
+        (0.1, 1), (0.6, 0), (1.1, 0), (1.6, 0), (2.1, 1)]
+
+
+def test_a_generated_grid_wins_over_the_published_one_for_the_same_track(
+        corpus):
+    audio = _publish(corpus, 'kUP_iJuoq9g', b'gridded')
+    _beat_file(corpus, '1723.kUP_iJuoq9g.beat.csv', [(0.1, 1), (0.6, 2)])
+    _beat_file(corpus, 'kUP_iJuoq9g.hand.beat.csv', [(0.2, 1), (0.7, 0)])
+
+    assert label_tool.beat_grid(str(audio)) == [(0.2, 1), (0.7, 0)]
