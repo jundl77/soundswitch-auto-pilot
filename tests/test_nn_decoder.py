@@ -1363,6 +1363,7 @@ NON_DEFAULT_TRELLIS_KNOBS = {
     "floor_bars": (1, 2, 3, 4, 5),
     "outro_escape": 0.05,
     "buildup_drop_bonus": 0.75,
+    "buildup_entry_bonus": 0.5,
 }
 
 
