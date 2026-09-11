@@ -31,12 +31,18 @@ from build_training_table import (  # noqa: E402  (needs the path inserts above)
 from eval_assets import (  # noqa: E402
     EVAL_AUDIO_DIR,
     EVAL_LABELS_FILE,
+    OVERRIDDEN,
+    OWNER,
+    PUBLISHED,
+    TRUTHS,
+    UNREVIEWED,
     committed_audio_path,
     corpus_audio_path,
     labels_source_sha,
     load_labels,
+    owner_rulings,
+    sections_by_truth as sections_from_slice,
 )
-from eval_assets import sections_by_track as sections_from_slice  # noqa: E402
 from evaluate_against_labels import (  # noqa: E402
     LABEL_COLUMN,
     LEGACY_V1,
@@ -65,6 +71,21 @@ REPORTED_SPACES = (RAW9, LEGACY_V1)
 # space is not this one -- a gate reading macro-F1 across two different label
 # vocabularies would call that drift a regression or, worse, a pass.
 GATED_SPACE = RAW9
+
+# Every annotator the run measures and prints.  One simulation, joined and
+# scored once per truth: the labels are never read by the simulation, so the
+# expensive half runs once and a second reading costs a sub-second CPU join.
+REPORTED_TRUTHS = TRUTHS
+
+# The one the committed baseline gates.  The owner has ruled published labels
+# wrong on benchmark tracks and relabelled them, and the benchmark is to agree
+# with his ear -- but that flip is a re-freeze of the ground truth, so it lands
+# on its own, once, with the baseline re-cut in the same commit.  Until then the
+# owner reading is REPORTED beside the gated one and cannot fail the gate, and
+# compare() refuses a baseline whose recorded truth is not this one: a gate
+# reading scores against a different annotator than it was cut against would
+# call a relabelling a regression.
+GATED_TRUTH = PUBLISHED
 
 STREAM = "intent"
 BOUNDARY_TOLERANCE_SEC = PRIMARY_TOLERANCE_SEC
@@ -118,11 +139,26 @@ def labels_source(data_dir: Path, labels: Path | None = None) -> tuple:
     return annotations_dir(Path(data_dir)) / SEGMENTS_FILE, False
 
 
-def load_sections(data_dir: Path, labels: Path | None = None) -> dict:
+def load_sections_by_truth(data_dir: Path, labels: Path | None = None) -> dict:
+    """``{truth: {track_id -> spans}}`` from whichever ground truth this box has.
+
+    The corpus fallback's ``include_hand`` flips WITH the truth rather than
+    being hardcoded off.  Both arms have to move together: a machine reading the
+    committed slice and a machine falling back to the corpus would otherwise
+    score different ground truth for exactly the hand-labelled tracks.
+    """
     path, committed = labels_source(data_dir, labels)
     if committed:
         return sections_from_slice(load_labels(path))
-    return load_sections_by_track(Path(data_dir), include_hand=False)
+    return {
+        PUBLISHED: load_sections_by_track(Path(data_dir), include_hand=False),
+        OWNER: load_sections_by_track(Path(data_dir), include_hand=True),
+    }
+
+
+def load_labels_document(data_dir: Path, labels: Path | None = None) -> dict:
+    path, committed = labels_source(data_dir, labels)
+    return load_labels(path) if committed else {}
 
 
 def select_tracks(document: dict, only: list | None = None) -> list:
@@ -179,13 +215,47 @@ def missing_model(data_dir: Path) -> str | None:
             "re-cut the baseline from here.")
 
 
+def verify_owner_ground_truth(slice_document: dict) -> None:
+    """Re-hash every hand label the slice pins, from the TRACKED path.
+
+    Stronger than the published half's pin, and for a reason: a hand label is a
+    file in this repository that the owner edits routinely, so the moment he
+    relabels a frozen track the benchmark must refuse to score rather than
+    quietly score new labels against an old baseline.  The path is repo-relative
+    (see eval_assets.REPO_CORPUS_DIR) so the verdict is a fact about this
+    checkout rather than about which worktree happened to run it.
+    """
+    drift = []
+    for track_id, ruling in sorted(owner_rulings(slice_document).items()):
+        if str(ruling.get("ruling")) != OVERRIDDEN:
+            continue
+        name = str(ruling.get("file") or "")
+        recorded = str(ruling.get("sha256") or "")
+        label = REPO_ROOT / name
+        if not name or not recorded:
+            drift.append(f"{track_id} -- the ruling records no file and sha256")
+        elif not label.exists():
+            drift.append(f"{track_id} -- {name} is not on this checkout")
+        elif file_sha256(label) != recorded:
+            drift.append(f"{track_id} -- {name} is {file_sha256(label)[:12]}... "
+                         f"on disk, the slice was cut from {recorded[:12]}...")
+    if drift:
+        raise RuntimeError(
+            "the eval set's OWNER GROUND TRUTH does not match the freeze:\n  "
+            + "\n  ".join(drift)
+            + "\nre-cut the slice (training/eval_assets.py --cut) and the "
+              "baseline together."
+        )
+
+
 def verify_ground_truth(document: dict, data_dir: Path,
                         labels: Path | None = None) -> None:
     path, committed = labels_source(data_dir, labels)
     if committed:
         frozen = ((document.get("selected_from") or {}).get("inputs")
                   or {}).get(SEGMENTS_FILE)
-        cut_from = labels_source_sha(load_labels(path))
+        slice_document = load_labels(path)
+        cut_from = labels_source_sha(slice_document)
         if not frozen or not cut_from or frozen != cut_from:
             raise RuntimeError(
                 f"the eval set's GROUND TRUTH does not match the freeze: "
@@ -194,6 +264,7 @@ def verify_ground_truth(document: dict, data_dir: Path,
                 f"{str(frozen)[:12]}... -- re-cut the slice "
                 f"(training/eval_assets.py --cut) and the baseline together."
             )
+        verify_owner_ground_truth(slice_document)
         return
 
     drift = verify_inputs(document, Path(data_dir), only=(SEGMENTS_FILE,))
@@ -228,6 +299,45 @@ def partial_baseline_refusal(selected: list, document: dict, baseline_path: Path
         f"  file, so a subset baseline passes by construction.\n"
         f"  --allow-partial-baseline  do it anyway (you are shrinking the benchmark)\n"
         f"  --baseline PATH           write the subset where no gate reads it"
+    )
+
+
+def unreviewed_tracks(document: dict, slice_document: dict) -> list:
+    rulings = owner_rulings(slice_document)
+    return [str(track["track_id"]) for track in document.get("tracks") or []
+            if str((rulings.get(str(track["track_id"])) or {}).get(
+                "ruling", UNREVIEWED)) == UNREVIEWED]
+
+
+def unreviewed_truth_refusal(document: dict, slice_document: dict,
+                             baseline_path: Path,
+                             allowed: bool = False) -> str | None:
+    """All-or-nothing on REVIEW, incremental on OVERRIDE.
+
+    A ruling is one of overridden / accepted / unreviewed, so the owner reading
+    is complete on all ten the moment he has *listened* to all ten -- he does
+    not have to relabel eight tracks he has no complaint about.  Cutting a gated
+    owner baseline before that pools ten tracks scored against two annotators:
+    the aggregate cannot be attributed, and it would move again every time one
+    more track is ruled on, with no pipeline change.
+    """
+    if (allowed or GATED_TRUTH != OWNER
+            or not same_path(baseline_path, BASELINE_FILE)):
+        return None
+    unreviewed = unreviewed_tracks(document, slice_document)
+    if not unreviewed:
+        return None
+    total = len(document.get("tracks") or [])
+    return (
+        f"REFUSING to cut an OWNER-TRUTH baseline over unreviewed tracks\n"
+        f"  {len(unreviewed)} of {total} eval tracks carry no owner ruling: "
+        f"{', '.join(unreviewed)}\n"
+        f"  The aggregate would be scored against two different annotators, and\n"
+        f"  it would move again every time one of them is ruled on, with no\n"
+        f"  pipeline change.\n"
+        f"  Rule on them (training/label_tool.py), or record an 'accepted'\n"
+        f"  ruling in {EVAL_LABELS_FILE.name} -- a re-cut carries those forward.\n"
+        f"  --allow-unreviewed-truth  do it anyway (the aggregate is then mixed)"
     )
 
 
@@ -312,51 +422,75 @@ def space_block(score) -> dict:
     return {**track_metrics(score), **space_facts(score)}
 
 
-def track_entry(report: dict, scores: dict, rows: int, youtube_id: str,
-                song_sec: float, stats=None) -> dict:
-    from simulate.evaluator import report_checksum
+def truth_block(scores: dict, rows: int, stats=None) -> dict:
+    """Everything ONE annotator's reading of a run says.
 
+    Rows joined, exposure, the label boundaries a vocabulary can see and where
+    the blackouts fell are all facts about the READING: a ground truth whose
+    labelled span is longer joins more beats and re-buckets a trailing quiet
+    floor as interior.  Beats, the report checksum and the song's length are
+    facts about the RUN and stay at the top of the entry, where a move in one of
+    them means the pipeline changed rather than the annotator.
+    """
     gated = scores[GATED_SPACE]
-    entry = {
-        "youtube_id": youtube_id,
-        "checksum": report_checksum(report),
-        "beats": len(report.get("beats", [])),
+    block = {
         "rows": rows,
-        "song_sec": round(float(song_sec), 3),
         "exposure_sec": round(gated.exposure_sec, 3),
         "changes_intent":
             gated.boundary["intent"][BOUNDARY_TOLERANCE_SEC]["overall"]["n_pred"],
     }
     if stats is not None:
-        entry["late"] = int(stats.intent_blocks_late)
-        entry["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
-        entry["silence_leading"] = int(stats.silence_blocks_leading)
-        entry["silence_interior"] = int(stats.silence_blocks_interior)
-        entry["silence_trailing"] = int(stats.silence_blocks_trailing)
-    entry.update(space_block(gated))
-    entry["spaces"] = {space: space_block(scores[space])
+        block["late"] = int(stats.intent_blocks_late)
+        block["blocks_measurable"] = int(stats.intent_blocks_song_recorded)
+        block["silence_leading"] = int(stats.silence_blocks_leading)
+        block["silence_interior"] = int(stats.silence_blocks_interior)
+        block["silence_trailing"] = int(stats.silence_blocks_trailing)
+    block.update(space_block(gated))
+    block["spaces"] = {space: space_block(scores[space])
                        for space in REPORTED_SPACES}
+    return block
+
+
+def track_entry(report: dict, reads: dict, youtube_id: str,
+                song_sec: float) -> dict:
+    from simulate.evaluator import report_checksum
+
+    blocks = {truth: truth_block(*reads[truth]) for truth in REPORTED_TRUTHS}
+    gated = blocks[GATED_TRUTH]
+    entry = {
+        "youtube_id": youtube_id,
+        "checksum": report_checksum(report),
+        "beats": len(report.get("beats", [])),
+        "rows": gated["rows"],
+        "song_sec": round(float(song_sec), 3),
+    }
+    entry.update({key: value for key, value in gated.items() if key != "rows"})
+    entry["truths"] = blocks
     return entry
 
 
 class Job(NamedTuple):
     data_dir: str
     track: dict
-    sections: list
+    sections: dict
 
 
 def run_job(job: Job) -> TrackRun:
     track_id, youtube_id = job.track["track_id"], job.track["youtube_id"]
     report, song_sec, wall_sec = simulate_report(
         audio_path(Path(job.data_dir), youtube_id))
-    scores, rows, stats = score_report(track_id, youtube_id, report, job.sections)
+    reads = {truth: score_report(track_id, youtube_id, report,
+                                 job.sections[truth])
+             for truth in REPORTED_TRUTHS}
     return TrackRun(track_id, youtube_id,
-                    track_entry(report, scores, rows, youtube_id, song_sec, stats),
-                    scores, wall_sec)
+                    track_entry(report, reads, youtube_id, song_sec),
+                    {truth: reads[truth][0] for truth in REPORTED_TRUTHS},
+                    wall_sec)
 
 
 def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
                    aggregate_metrics: dict, aggregate_spaces: dict | None = None,
+                   aggregate_truths: dict | None = None,
                    score_tolerance: float = DEFAULT_SCORE_TOLERANCE,
                    flicker_tolerance: float = DEFAULT_FLICKER_TOLERANCE) -> dict:
     return {
@@ -365,6 +499,8 @@ def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
         "pipeline_sha": pipeline_sha_,
         "space": GATED_SPACE,
         "reported_spaces": list(REPORTED_SPACES),
+        "truth": GATED_TRUTH,
+        "reported_truths": list(REPORTED_TRUTHS),
         "stream": STREAM,
         "boundary_tolerance_sec": BOUNDARY_TOLERANCE_SEC,
         "crispness_tolerance_sec": CRISPNESS_TOLERANCE_SEC,
@@ -372,7 +508,8 @@ def build_document(eval_set: dict, pipeline_sha_: str, entries: dict,
                  "flicker_tolerance": flicker_tolerance,
                  "metrics": dict(GUARDED_METRICS)},
         "aggregate": {**aggregate_metrics,
-                      "spaces": dict(aggregate_spaces or {})},
+                      "spaces": dict(aggregate_spaces or {}),
+                      "truths": dict(aggregate_truths or {})},
         "tracks": entries,
     }
 
@@ -475,6 +612,15 @@ def compare(baseline: dict, current: dict,
             f"vocabulary than it was cut in; re-cut it with --write-baseline"
         )
 
+    baseline_truth = baseline.get("truth")
+    if baseline_truth != GATED_TRUTH:
+        desync.append(
+            f"the baseline gates the {baseline_truth!r} ground truth, this run "
+            f"gates {GATED_TRUTH!r} -- every score would be read against a "
+            f"different annotator than it was cut against; re-cut it with "
+            f"--write-baseline"
+        )
+
     baseline_tracks = baseline.get("tracks") or {}
     current_tracks = current.get("tracks") or {}
     subset = set(current_tracks) < set(baseline_tracks)
@@ -546,9 +692,10 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
         f'{aggregate_entry["flicker_per_min"]:>9.2f}'
     )
     lines.append(
-        f'  macro-F1 and accuracy in the {GATED_SPACE} space; boundary-F1 and '
-        f'flicker on the {STREAM} stream at +/-{BOUNDARY_TOLERANCE_SEC}s, '
-        f'crispness at +/-{CRISPNESS_TOLERANCE_SEC}s'
+        f'  macro-F1 and accuracy in the {GATED_SPACE} space against the '
+        f'{GATED_TRUTH} ground truth; boundary-F1 and flicker on the {STREAM} '
+        f'stream at +/-{BOUNDARY_TOLERANCE_SEC}s, crispness at '
+        f'+/-{CRISPNESS_TOLERANCE_SEC}s'
     )
     lines.append(
         f'  late = intent blocks committed more than the playback delay after '
@@ -560,7 +707,38 @@ def render_table(runs: list, aggregate_entry: dict, total_song: float,
             f'workers, so it is less than the per-track column sums'
         )
     lines += render_spaces(runs, aggregate_entry)
+    lines += render_truths(runs, aggregate_entry)
     return "\n".join(lines)
+
+
+def render_truths(runs: list, aggregate_entry: dict) -> list:
+    """The same run read by every annotator -- one gated, the rest reported."""
+    lines = ["", f'  every ground truth ({GATED_TRUTH} is the gated one)',
+             f'  {"track_id":<20}' + "".join(
+                 f'{truth + " macroF1":>19}{"acc":>7}{"bF1":>7}{"crisp":>7}'
+                 f'{"flick/m":>9}{"rows":>7}{"bnd":>6}'
+                 for truth in REPORTED_TRUTHS),
+             "  " + "-" * (20 + 62 * len(REPORTED_TRUTHS))]
+    rows = [(run.track_id, run.entry.get("truths") or {}) for run in runs]
+    aggregate_truths = aggregate_entry.get("truths") or {}
+    if aggregate_truths:
+        rows.append(("(aggregate)", aggregate_truths))
+    for track_id, blocks in rows:
+        cells = ""
+        for truth in REPORTED_TRUTHS:
+            block = blocks.get(truth)
+            if block is None:
+                cells += f'{"-":>62}'
+                continue
+            cells += (f'{block["macro_f1"]:>19.3f}{block["accuracy"]:>7.3f}'
+                      f'{block["boundary_f1"]:>7.3f}{block["crispness"]:>7.3f}'
+                      f'{block["flicker_per_min"]:>9.2f}'
+                      f'{block.get("rows", "-"):>7}'
+                      f'{block.get("label_boundaries", "-"):>6}')
+        lines.append(f'  {track_id:<20}{cells}')
+    lines.append('  a track the owner has not relabelled reads identically '
+                 'under both -- it IS the same annotation')
+    return lines
 
 
 def render_spaces(runs: list, aggregate_entry: dict) -> list:
@@ -625,13 +803,17 @@ def render_comparison(outcome: Comparison, baseline_path: Path) -> str:
     return "\n".join(lines)
 
 
-def build_jobs(data_dir: Path, tracks: list, sections_by_track: dict) -> list:
+def build_jobs(data_dir: Path, tracks: list, sections_by_truth: dict) -> list:
     jobs = []
     for track in tracks:
-        sections = sections_by_track.get(track["track_id"])
-        if sections is None:
-            raise RuntimeError(
-                f"{track['track_id']} has no annotation in {SEGMENTS_FILE}")
+        sections = {}
+        for truth in REPORTED_TRUTHS:
+            spans = (sections_by_truth.get(truth) or {}).get(track["track_id"])
+            if spans is None:
+                raise RuntimeError(
+                    f"{track['track_id']} has no annotation in {SEGMENTS_FILE} "
+                    f"under the {truth} ground truth")
+            sections[truth] = spans
         jobs.append(Job(str(data_dir), track, sections))
     return jobs
 
@@ -676,21 +858,29 @@ def run(data_dir: Path, eval_set_path: Path, only: list | None = None,
         raise RuntimeError("; ".join(problems))
     verify_ground_truth(eval_document, Path(data_dir))
 
-    jobs = build_jobs(data_dir, tracks, load_sections(data_dir))
+    jobs = build_jobs(data_dir, tracks, load_sections_by_truth(data_dir))
     started = time.monotonic()
     runs = execute(jobs, workers, quiet=quiet)
     total_wall = time.monotonic() - started
     total_song = sum(result.entry["song_sec"] for result in runs)
 
-    corpus = {space: aggregate([result.scores[space] for result in runs])
-              for space in REPORTED_SPACES}
+    corpus = {truth: {space: aggregate([result.scores[truth][space]
+                                        for result in runs])
+                      for space in REPORTED_SPACES}
+              for truth in REPORTED_TRUTHS}
+    gated = corpus[GATED_TRUTH]
     document = build_document(
         eval_set=eval_set_identity(eval_set_path, eval_document),
         pipeline_sha_=pipeline_sha(REPO_ROOT),
         entries={result.track_id: result.entry for result in runs},
-        aggregate_metrics=track_metrics(corpus[GATED_SPACE]),
-        aggregate_spaces={space: space_block(corpus[space])
+        aggregate_metrics=track_metrics(gated[GATED_SPACE]),
+        aggregate_spaces={space: space_block(gated[space])
                           for space in REPORTED_SPACES},
+        aggregate_truths={
+            truth: {**space_block(corpus[truth][GATED_SPACE]),
+                    "spaces": {space: space_block(corpus[truth][space])
+                               for space in REPORTED_SPACES}}
+            for truth in REPORTED_TRUTHS},
     )
     return document, runs, total_song, total_wall
 
@@ -709,6 +899,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-partial-baseline", action="store_true",
                         help="permit --write-baseline to shrink the COMMITTED "
                              "baseline to the tracks this run covered")
+    parser.add_argument("--allow-unreviewed-truth", action="store_true",
+                        help="permit an OWNER-truth --write-baseline while some "
+                             "frozen tracks carry no owner ruling (the "
+                             "aggregate is then a mix of two annotators)")
     parser.add_argument("--only", default=None,
                         help="comma-separated track_ids or youtube_ids to run "
                              "(default: the whole frozen set)")
@@ -744,6 +938,10 @@ def main(argv: list | None = None) -> int:
             refusal = partial_baseline_refusal(
                 select_tracks(document, only), document, Path(args.baseline),
                 args.allow_partial_baseline)
+            if not refusal:
+                refusal = unreviewed_truth_refusal(
+                    document, load_labels_document(Path(args.data_dir)),
+                    Path(args.baseline), args.allow_unreviewed_truth)
             if refusal:
                 print(refusal, file=sys.stderr)
                 return 2
@@ -770,6 +968,8 @@ def main(argv: list | None = None) -> int:
         print(f"  eval set        : {result['eval_set']['sha256'][:12]}... "
               f"({result['eval_set']['tracks']} tracks)")
         print(f"  pipeline        : {result['pipeline_sha'][:12]}...")
+        print(f"  ground truth    : {result['truth']} "
+              f"(reported: {', '.join(result['reported_truths'])})")
         if len(result["tracks"]) != result["eval_set"]["tracks"]:
             print(f"  WARNING: this baseline covers {len(result['tracks'])} of "
                   f"{result['eval_set']['tracks']} eval-set tracks -- the rest "

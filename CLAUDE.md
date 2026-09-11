@@ -196,17 +196,48 @@ hour into a set.
 ### The 9-class generation on stage
 
 **The show decodes the raw nine, and every layer is held to it at construction.**
-The model is the l9c campaign's arm-N w128 seed-1234 student (#346) — the exact
-l9b recipe retrained labels-alone on the corpus with the owner's completed
-slow-climb labelling session folded in (35 hand labels now, #344/#345), at
-natural dose: the campaign measured and falsified every supervision tilt beside
-it (oversampling slots, masking, drop-weighted loss, checkpoint re-selection) —
-selected on decoded val output exactly as its predecessors were (#301/#302 —
-frame-macro seed ordering flips under the decoder, which is why selection
-happens there). Its priors are the refit over the completed label set, and the
-decoder config is that campaign's sweep pick — the per-class floor axis still
-open (buildup at two bars this pick), the #345 buildup→drop transition knob
-carried at its neutral point — committed at
+The model is the l9c campaign's DA-CLEAN arm — the l9b recipe retrained on a
+*corrected view* of the corpus labels rather than on the labels as published.
+Two training-side overlays make that view, and neither edits an annotation:
+an **ontology translation** that rewrites published sections into the owner's
+vocabulary, additively and only ever *into* buildup, restoring his short
+pre-drop tension device where the published annotator called that stretch a
+breakdown; and a **label mask** that removes *supervision* (masked frames carry
+no loss at all) from published buildup runs judged not to be his buildup. The
+pair exists because restoring alone leaves the class bimodal — a short pre-drop
+device and a long post-intro ramp under one name — which is the confusion the
+generation exists to remove. A smoothing weight on the training loss's
+boundary-aware total-variation term is carried above its default; it was adopted
+while the campaign believed the recipe's seed spread was wide, which the
+instrument correction below has since substantially undone — so it is carried
+because it measures no worse, not because it was shown to be necessary. **The
+translation is a machine translation, not the owner's ear**: it was fitted on a
+small paired set with a bootstrap interval including zero and a disclosed
+feature-selection leak, and nothing here should be read as training on his
+labels. **Its priors are refit over the translated view, and that moves the
+fitted duration model as well as the transition counts** — most visibly, the
+per-bar probability of *leaving* buildup once past its floor is several times the
+previous generation's. That is a fitted consequence rather than a chosen knob: it
+is what teaching the class as a short pre-drop device instead of a long ramp does
+to a duration prior, since a shorter class exits sooner. So a real part of the
+behaviour change belongs to the labels rather than to any decoder setting, which
+is exactly why "labels or decoder bias?" stays an open question here instead of a
+rhetorical one. It also means the two generations' priors differ on several axes
+at once — track set, label view, entry preference and that hazard — so **no
+single-axis conclusion survives diffing them**, a trap an agent fell into and
+retracted while this shipped. The question is nonetheless *answerable*, and the
+split is a two-step ladder over artifacts that already exist rather than a new
+experiment: refitting under the translated view is where the duration model moves
+-- in the *hazard*, not the floor, because a decoder config carrying an explicit
+per-class floor vector overrides the fitted floors outright and the fitted ones
+then reach no decode at all -- that being the labels' share, though that refit
+also lost the tracks the lookup defect dropped, so it is close to clean rather
+than clean; and the diagnostic priors are
+that refit plus the entry preference and **nothing else** — a full structural diff
+moves only the buildup column, by exactly the stated amount. Price the two
+separately; do not read either off a direct comparison with the previous
+generation. The decoder
+config is that campaign's sweep pick with two knobs moved — committed at
 `training/nn/decoder_config.json` with the class space it was swept in recorded
 inside it. `build_section_chain`
 enforces **space equality, fatally**: the graph's declared label axis, the
@@ -217,14 +248,24 @@ benchmark's gated space is the raw nine, and its
 compare refuses a baseline recorded in any other space.
 
 **The artifact layout is generational, and the flip selects rather than
-destroys.** `models/l9c/` in the corpus is the generation dir — the shared F3
-affine (byte-identical copy of l9b's, itself l9's, itself phase_b's; every
-generation so far trained on the same feature stream), the refit priors, the
-campaign's decoder config, and the verified export under `ng_N_w128_s1234/`
-with its sha/geometry/parity record beside it; the bar tracker's checkpoint and
-record are carried forward unchanged, since the campaign never touched the
-grid. The retired generations stay on disk untouched — `models/l9b/` in full,
-one constant away as the rollback, `models/l9/` behind it, and
+destroys.** `models/l9d/` in the corpus is the generation dir — the shared F3
+affine (byte-identical copy of l9c's, itself l9b's, itself l9's, itself
+phase_b's; every generation so far trained on the same feature stream), the
+refit priors, the campaign's decoder config, and the verified export with its
+sha/geometry/parity record beside it; the bar tracker's checkpoint and record
+are carried forward unchanged, since the campaign never touched the grid. **The
+decode point is part of the generation, not a detail of it** — the same weights
+read one climb entered and none held under the previous decoder, and six of six
+under this one, so the buildup result is a property of the *chain* and shipping
+the student without these artifacts would ship a model that catches nothing.
+**A generation flip is two edits, not one, and calling it one is how a rollback
+goes wrong.** The constants in `lib/section_chain.py` select the *artifacts*, but
+the decoder config the show loads is the committed repo file under `training/nn/`
+— the copy inside the generation dir is a provenance record nothing reads. Revert
+the constants alone and the old student decodes under the new decoder, which is a
+chain nobody measured. Revert the shipping commit and both move together.
+The retired generations stay on disk untouched — `models/l9c/` in full,
+the rollback target, `models/l9b/` and `models/l9/` behind it, and
 `models/phase_b*` still readable by the rebirth/phase-tracking gates that pin
 decoder *mechanisms* against banked 5-class cases. The campaign dir
 (`models/l9c_campaign/`) is the training record — the decoded verdict board,
@@ -232,35 +273,117 @@ the probe reads, the per-arm results and the pre-registered arm ladder — and
 archives to D: at the generation's DONE boundary (#298), which is exactly why
 the shipped set lives outside it.
 
-**The campaign's own gate split, and the ship is an owner-accepted trade.** The
-two-part gate (#343/#346) asked for the decoded-val board not to regress AND
-for the two named probe tracks' buildup arcs to commit. Arm N holds the board
-with a real trade the owner accepted explicitly (2026-09-09): the core four,
-crispness, boundary placement, drop timing and flicker all read better than the
-shipped arm H, paid with a small give-back on nine-class macro and accuracy —
-the accuracy loss concentrated in cooldown and outro, largely the
-owner-vs-corpus cooldown convention clash, while his core four move net
-positive (`models/l9c_campaign/NG_DECODED.md`). The probe half is still the measured
-wall, now measured deeper: every supervision lever this campaign tried
-(masking, weighted slots, checkpoint selection, the drop-weight K-curve, tilt
-variants) is steerable but not reconciling — what a tilt buys on the taught
-arcs it sells on drops or bridge — and the long-context probe measured the
-root cause: the climb texture is locally ambiguous, and tens of seconds of
-past context materially separate buildup from its neighbours at the linear
-level where no window the student holds can. The cheap way to buy that
-context is closed too: the trailing-mean input-geometry arm ended at its
-two-train cap with the selection rule unsatisfiable on both trains — smearing
-past context into the input of a student that already carries a backward
-window and state is paid on exactly the boundary axes the decoder gates on —
-so if long context reopens it is a model-architecture change (a slow pathway,
-wider state, aux past the conv) or the playback-delay product fork, an
-owner-level decision; the live-path aux feeder and trainer surgery are built,
-proven byte-inert, and parked on their branches for that successor. The known
-limitation ships stated rather than smoothed over: buildup on slow climbs and
-micro-ramps still reads as its neighbours, drops still land on time, the
-supervision axis and the trailing-mean geometry are both measured closed, and
-the path forward is that owner fork plus the `LABEL_TARGETS.md` labelling;
-the two probes stay the regression reads for every future generation.
+**The ship is a priced trade the owner took, not a clean win, and the charter
+required it be put to him that way.** The campaign fixed its board gate before
+any result was seen: section-naming quality within a small margin of the
+outgoing show, flicker under a ceiling, bridge not zeroed. **Two of those are
+breached.** Flicker roughly doubles, and the owner accepted that explicitly.
+Section naming regresses by several times the margin, and that one he was asked
+rather than told — a candidate outside the gate comes to him as a priced trade,
+never as a silent ship.
+
+**The naming regression is real, not an artifact of scoring a re-taught model
+against the old labels.** That defence was pre-registered as a falsifiable
+prediction and it failed: restricted to the ~95% of val beats the translation
+never touched, most of the regression survives. It is carried by buildup and
+breakdown; drop is nearly untouched and bridge improves.
+
+**But the instrument is not neutral, and both readings must always travel
+together.** Scored against the owner's own labels on tracks nothing trained on —
+same models, same beats, same decode, same scorer, only the label column
+differing — the ranking **inverts**: every corrected-view arm beats the outgoing
+show, driven by buildup. The settled claim is narrower than either number:
+published-label scoring is not a neutral instrument for this comparison. Quote
+neither figure without naming the truth it was measured against. The owner-truth
+sample is small and **not neutral either** — the tracks he reaches for to label
+are measurably the ones this recipe finds hardest under the published record, so
+both hand-label-adjacent samples are unusual in the same direction. What settles
+it is more owner labels, and a batch is already staged and seeded for him.
+
+**The inversion is confined to naming, and that is measured rather than assumed —
+which means the timing costs are real.** The tempting defence of a re-taught
+model is that *all* its regressions are the old labels mis-scoring it. For
+placement that defence is refuted: counted the way the scorer counts them, the
+owner marks essentially the same NUMBER of boundaries as the published record,
+and the large majority of his sit within half a second of one of theirs — with
+the match count identical whether the window is half a second or four, so where
+the two agree they agree tightly and where they disagree they disagree
+structurally rather than by a nudge. He does not move boundaries; he replaces a
+few and renames many, and the leftovers are balanced in both directions. Since
+crispness, boundary-F1 and flicker are all scored against boundary *positions*,
+they are being scored against nearly the same positions under either truth.
+**So the naming regression and the timing regression are both real and are not in
+tension** — they are about different halves of the annotation. This is the
+corpus's "boundaries gold, classes wrong" reading, measured at the boundary level
+instead of inferred from the classes.
+
+**What the generation buys, on the powered instrument:** buildup→drop arcs where
+the show is actually in buildup when the drop lands go from a few percent to
+around six in ten, across the whole validation corpus rather than a handful of
+probe tracks — and on never-trained material buildup precision **and** recall
+both rise, so it is a capability gain rather than a threshold pushed. Drops are
+not sacrificed: no candidate under-lights a drop the outgoing show lights, and
+on holdout the new chain recovers a long drop the outgoing show misses outright.
+
+**The buildup duration floor is the biggest single lever and it is a live owner
+choice.** The generation ships it *lengthened* against the value the previous
+show ran, and that lengthening costs about three-tenths of the available buildup
+win: left where it was, the same weights move the buildup objective by far more
+than any arm,
+model seed or training knob measured all campaign, and improve drop timing and
+section naming with it — paid for in flicker past the band the owner accepted,
+and in crispness, the axis this project explicitly promoted above the decoder
+sweep's own utility. So the shipped value is the restrained one and the bolder
+option is simply *not changing the floor at all*, which is worth stating in that
+direction because the opposite framing makes it sound exotic when it is the
+status quo. It is one integer in the decoder config: no retrain, reversible, and
+therefore a product decision rather than an engineering one.
+
+**A duration floor cannot be lowered out of its own hazard, and believing
+otherwise cost a wrong sentence in a shipping document.** A buildup committed
+fewer than the floor's bars before a drop cannot leave before the drop line, so
+the drop commits late — which reads as an argument for a shorter floor. It is
+not: measured on the shipping arm, shortening the floor does not keep the early
+entry and exit sooner, it makes the decoder pick a *different segmentation
+entirely* and commit buildup under one bar out, where the smaller floor then
+pushes the drop by the identical arithmetic. **A cheaper buildup permits later
+entries, so a smaller floor gets violated by entries a larger floor would never
+have produced.** The hazard is structural to having a floor at all beside a
+decoder free to enter near the drop line; the floor value only decides which
+tracks trip it.
+
+**A lesson about instruments outranks any of these numbers.** The gate that
+judged this campaign asked whether a lighting intent was *entered* inside a
+window, when what it meant was whether that intent was *in force*. A show that
+walked into a section already holding the right look started no block there and
+was scored as having missed it. That one substitution inflated the headline
+result, manufactured a drop failure that never happened, and made four sessions
+of apparent seed instability look real — the corrected reading replicates far
+more tightly than the board did. It also hid genuine failures the other way: the
+old clause could only see drops the *baseline* landed, so a drop neither chain
+lit was invisible. The reader now measures seconds in force over the labelled
+span and keeps the old column beside the new one, and it lives on the branch
+rather than in the gitignored campaign directory — an instrument that produced a
+false finding should not be unreviewable.
+
+**Known limitations, stated rather than smoothed over.** Section naming is worse
+and the reason is contested between the model and the label ontology, with the
+evidence pointing both ways depending on whose labels are read. The entry
+preference the decode point rests on was chosen on a dozen probe arcs and was
+**never validated on the corpus** — its board rows were contaminated and never
+re-run. And the shipped priors were fit on five fewer tracks than intended,
+including both of the owner's named probe tracks: the annotations and grids are
+present and valid, but the refit consulted the published-only annotation source
+where the rest of the dataset reads the merged view. The merged-view rule is
+stated as policy in this document and **enforced nowhere**: the published-only
+reader stays importable, and every other campaign script that reaches for it
+pairs it with a deliberate hand-track decision (they mine published labels
+precisely in order to mask them, and guard the owner's out by id). The refit is
+the one that reached for it and decided nothing — then recorded the loss under a
+name meaning "no beat grid", which is the cause that did *not* apply and is why
+it read as a corpus defect for an hour. Correcting it
+moves the priors and therefore invalidates every measurement taken against them,
+so it belongs to the next generation with its own re-cut, not to a patch.
 
 ### How the show is decided
 
@@ -498,9 +621,12 @@ the stamp alone (a bar line is not a beat the report carries).
 
 **`simulate/cell_cache.py` is the decode cache one layer up** (D12). The only
 part of the path that needs a GPU is the MERT encoder, so the cells it emits are
-recorded beside the audio and replayed: every run after the first is pure CPU,
-and a machine with no GPU can run the whole pipeline over a track someone else
-extracted. The trigger is a *position in the call sequence* (source samples
+recorded beside the audio and replayed: every run after the first does no
+encoder work at all, and a machine with no GPU can run that stage over a track
+someone else extracted. **That was once true of the whole pipeline and no longer
+is** -- the bar tracker landed later and is built on the card whether or not its
+own sidecar will replay, so a warm run still claims VRAM (see the gotcha below).
+The claim here is about the encoder, which is what this cache covers. The trigger is a *position in the call sequence* (source samples
 pushed when a pass ran), not song time, so a replay needs neither the resampler,
 the ring nor the schedule, and the reset the engine does at each song boundary
 needs no special handling. The key carries the encoder identity, the framing, the
@@ -1080,7 +1206,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 | `build_training_table.py` | clean manifest + the unmodified fast sim -> `training_table.csv.gz` (one row per labelled beat) and a sim report per track. It **no longer exports mel sidecars**: the exporter went with the analyser's filterbank, so existing sidecars are still read and new ones cannot be produced |
 | `evaluate_against_labels.py` | training table -> `baseline_eval.json` + a printed report: the committed show scored against expert labels (confusion, per-class F1, boundary-F1, flicker, worst songs) |
 | `select_eval_set.py` | clean manifest + annotations -> the frozen ten-track benchmark at `training/eval_set.json` (committed, tempo-spanning, structurally rich) |
-| `eval_assets.py` | the eval set's committed artifacts: the derived opaque mp3 names, the sha-pinned label slice, and the `--cut` that re-makes both |
+| `eval_assets.py` | the eval set's committed artifacts: the derived opaque mp3 names, the sha-pinned label slice — both annotators' readings of the frozen ten plus a ruling per track — and the `--cut` that re-makes them |
 | `run_eval_set.py` | the frozen eval set -> per-track report checksums and label-aligned scores; cuts and enforces `training/eval_set_baseline.json` |
 | `f3_mertcells.py` | a phase-B F3 feature sidecar -> a replayable cell sidecar. Built to price a warm 9-class corpus re-sim, and the measurement **rejected the transplant**: the replay bookkeeping is a pure function of framing + sample count + the song-start reset (proven byte-equivalent through a full sim), but the features are not reconstructible — F3 decoded via ffmpeg at 24 kHz on a file-anchored grid, the live path decodes at 44.1 kHz and resamples on a reset-anchored grid — and the transplant moved 13% of committed intent-time on the probe track, landing exactly on the campaign's contested sections. The corpus re-sim is therefore a cold GPU-serial pass; keeping the cell sidecars it writes makes every later re-sim warm, parallel and byte-faithful |
 | `hand_label_admission.py` | the named second admission path ("hand-admitted"): a label the owner committed from the labelling tool (`annotations/<track_id>.hand.json`, audio already placed and content-deduped by the tool) -> the rest of dataset membership. Generates the beat grid in the published format via madmom's **offline** downbeat tracker (training-side only — the online tracker's warm-up and causality are runtime constraints this side does not have; a native track keeps its expert grid), regenerates `manifest.csv` from the merged annotation source, and measures the clean-manifest row through the same gate every downloaded track passes — durations are decoded, never copied, and fields with no source stay absent. A failed gate is recorded with its reason and refused, not absorbed. Idempotent; never touches `segments.json`, `checksums.sha256`, `splits.json` or any eval artifact. The split is the same id-hash every corpus track goes through, additively, at the next dataset build. Split membership no longer waits on a mel sidecar — the dead generation's file was a candidacy condition nothing can satisfy for a hand track, and it silently kept one out of the very splits the priors and the retrain read; candidacy is annotation + labelled spans, and a v1 mel consumer that meets a sidecar-less candidate fails loudly at its own doorstep |
@@ -1111,7 +1237,7 @@ The pipeline is a set of scripts, each resumable and safe to re-run. Acquisition
 
 Decisions that belong here rather than in the code:
 
-- **Hand labels are an annotation source beside the published one, and the hand label wins.** The owner's ear is product truth (ruling #266), so everywhere the dataset reads sections -- the training-table join, the splits builder, the priors refit, the manifest, the acquisition validator -- the annotation source is the merged view: published records from `segments.json`, hand records from `annotations/*.hand.json`, and where both name the same track the hand sections and duration replace the published ones while the richer published title stays (the artist-exclusion guard reads titles, and a hand override must not weaken it). A hand-only track *is* its hand record, keyed by the content-addressed `hand-<sha>` id the labelling tool minted, so splits hash it and the guard reads its title like any corpus track's. **The frozen benchmark is the one deliberate exception**: it scores against its committed, sha-pinned label slice, and even its fallback to the corpus annotation is published-only by construction -- a hand label on an eval-set track is an explicit re-freeze decision, never a silent re-score. A committed-but-unadmitted hand label is deliberately visible: the validator flags the missing manifest row and beat grid by name, so a half-admitted track cannot look finished.
+- **Hand labels are an annotation source beside the published one, and the hand label wins.** The owner's ear is product truth (ruling #266), so everywhere the dataset reads sections -- the training-table join, the splits builder, the priors refit, the manifest, the acquisition validator -- the annotation source is the merged view: published records from `segments.json`, hand records from `annotations/*.hand.json`, and where both name the same track the hand sections and duration replace the published ones while the richer published title stays (the artist-exclusion guard reads titles, and a hand override must not weaken it). A hand-only track *is* its hand record, keyed by the content-addressed `hand-<sha>` id the labelling tool minted, so splits hash it and the guard reads its title like any corpus track's. **The frozen benchmark is the one deliberate exception**, and the shape of that exception has moved: the rule used to be enforced by construction (the fallback was hardcoded published-only), and it is now enforced by a *named* mechanism instead. The benchmark reads both annotators and gates one, and today it gates the published slice — so a hand label on an eval-set track is still an explicit re-freeze decision and never a silent re-score, but the refusal now says which annotator a baseline was cut against rather than relying on a flag nothing could flip (see The benchmark). Hand labels are consequently no longer only "irreplaceable owner judgement": for the frozen ten they are **benchmark ground truth**, sha-pinned by the slice, which is why they now carry a `.gitattributes` eol rung. A committed-but-unadmitted hand label is deliberately visible: the validator flags the missing manifest row and beat grid by name, so a half-admitted track cannot look finished.
 - **One label vocabulary, and it is the published one.** The repo's only label space is the raw Raveform nine -- `intro`, `altintro`, `buildup`, `breakdown`, `bridge`, `drop`, `cooldown`, `outro`, `altoutro` -- with `end` dropped as a tail sentinel rather than treated as a musical section. It lives in `lib/label_space.py`, which also owns the class-space check every priors file, exported graph and decoder config is held to: vocabulary names, in vocabulary order, no duplicates. Order is checked because per-class floors and hazards are positional lists, so a space of merely the right *length* loads cleanly and decodes the wrong classes. Adjacent same-label sections are still merged after the drop, because that answers "how long is a musical section" and is a statement about section identity, not about vocabulary.
 - **The structural graph is stated over families, because that is the granularity it was measured at.** "Nothing enters intro, nothing leaves outro" was counted while the folds collapsed `altintro` into `intro` and `altoutro` into `outro`, so those counts never distinguished the members of a pair. Re-stating the rule per class would silently promote *unmeasured* to *impossible* and would forbid the `altintro` -> `intro` beat-in the vocabulary exists to express. So the intro family `{intro, altintro}` cannot be entered from outside and the outro family `{outro, altoutro}` cannot be left; moves *within* a family are legal, and everything else the strict fit still refuses loudly rather than smoothing over.
 - **Politeness over throughput.** Downloads are strictly sequential with a pause between videos -- pulling 1,423 tracks in parallel is indistinguishable from abuse. Bot checks are never worked around: no cookies, credentials or IP tricks. A refusal is recorded, reported, and left as an owner decision, and a run of consecutive refusals aborts rather than burning the manifest into failure records.
@@ -1247,11 +1373,15 @@ The simulation used to be judged against one bundled track and a plumbing-only P
 - **Crispness@0.5 s is the fifth gated metric, and it is a headline rather than a diagnostic.** Boundary-F1 at the tightest tolerance the scorer computes asks whether the change landed *on* the section change, not merely near it — and it is the axis the shipped decoder was **selected** on. The 2.0 s lens it sits beside hides most of the spread: the post-decoder dwell configs that were rejected score 0.68 at 2 s and 0.01 at 0.5 s. A benchmark that cannot see the axis a model was chosen on cannot defend that choice. It is gated from its first cut with no historical value to compare against — the rule engine's baseline has no such column and one cannot be reconstructed, because the demolition's schema change makes those reports unreproducible — so the aggregate is a starting line.
 - **`late` is recorded and deliberately not gated.** On a track slow enough that the chain is older than the playback delay, a decision commits as soon as it can rather than on time. That is accepted lateness and a property of the music, so the benchmark shows it with its denominator (only a block that recorded its own instant can be measured at all) and does not stop a commit for it.
 - **The baseline is a neural show's baseline now, and it was cut exactly once.** All ten checksums moved, which a demolition plus a rewire makes certain. Aggregate macro-F1 nearly tripled, boundary-F1@2 s roughly quadrupled, flicker fell about fourfold, and the show changes intent about half as often — a better-scoring show made of fewer decisions, which is the whole argument for the decoder. Every track improved on macro-F1, boundary-F1 and flicker. Two rows carry the qualification and both are the decoder's known shape rather than surprises: one track *loses accuracy* while gaining macro-F1 (two committed runs against the annotator's ten boundaries — a committed classifier does not collect the partial credit a twitchy one does, and its flicker is the best on the set for the same reason), and one scores **zero** crispness at a healthy boundary-F1@2 s, i.e. every hit near and none on. The count facts (beats, rows joined, label boundaries, exposure seconds) are **identical on all ten tracks** across the two baselines, so the comparison is like for like and no score difference is an artifact of measuring a different number of things. Three of the ten checksums equal the determinism-proof and pipeline-digest anchors cut on separate runs from a separate commit, so those artifact families corroborate each other rather than merely coexisting.
-- **The baseline is the l9c (labels-alone retrain) generation's now.** The arm-N ship re-cut moved all ten checksums — new student, new priors, new decoder config — with **every count fact identical on all ten** (beats, rows joined, label boundaries, exposure seconds, and the silence counters), so the rhythm side is untouched and the comparison is like for like; only the intent-change and measurable-block counts moved beside the scores, which is the decoder behaving differently, i.e. the thing that shipped. The honest read: the frozen ten give back aggregate macro and accuracy and hold flicker flat, with two committed-runs collapses (the set's weakest row halving its block count) carrying most of it while half the set improves on macro and four tracks on crispness — whereas the val-215 campaign instrument (`models/l9c_campaign/NG_DECODED.md`) has N above H on the core four, crispness, boundary placement and drop timing, paying a small macro9/accuracy give-back concentrated in the owner-vs-corpus cooldown convention clash. That val read is the trade the owner explicitly accepted at ship; the benchmark is the regression gate, the campaign instrument the powered measurement, and this is the first cut where the two disagree in aggregate sign — the per-track spread (±0.2 both directions, the committed-runs shape both prior ships documented) is the mechanism. The cut and its compare ran fully warm (byte-faithfully primed sidecars, pure CPU, the GPU held by a training run throughout), and the compare reproduced the fresh baseline checksum-for-checksum — the determinism contract re-proven warm/warm on this generation.
+- **The baseline is the l9d (corrected-label-view) generation's now.** The ship re-cut moved all ten checksums — new student, new priors, new decoder config — with **every count fact identical on all ten** (rows, beats, label boundaries, exposure seconds and the silence counters), so the rhythm side is untouched and the comparison is like for like; what moved beside the scores is the intent-change count on nine of ten and lateness on one, which is the decoder behaving differently, i.e. the thing that shipped. **The read is genuinely split and neither half may be quoted alone.** Nine-class macro-F1 rises on eight of ten tracks and in aggregate — the frozen ten say the show *names* sections better — while accuracy, boundary placement and crispness all give ground and **flicker nearly triples**, which is the same direction the val-215 instrument reports but harder. So the benchmark and the campaign instrument disagree about naming (macro9 up here, core4 down there) and agree about timing, and the disagreement is a 10-track sample against a 215-track one rather than a contradiction to be resolved by picking the flattering number. The flicker figure is the largest single number anywhere in this generation's evidence pointing *against* it, and it is a re-cut of the gate rather than a score with a tolerance, so it is stated at full size. The cut ran **cold on nine of ten tracks**: it was performed in a fresh linked worktree, whose gitignored sidecars do not follow `git worktree add`, so the run wrote them rather than replaying them. That is the same temperature the previous generation's cut ran at and costs nothing in trust -- worker count and cache temperature do not touch the report bytes, which is the runner's own contract -- but it is **not** the stronger warm/warm determinism read, and an earlier draft of this entry claimed it was.
+- **The baseline before it was the l9c (labels-alone retrain) generation's.** The arm-N ship re-cut moved all ten checksums — new student, new priors, new decoder config — with **every count fact identical on all ten** (beats, rows joined, label boundaries, exposure seconds, and the silence counters), so the rhythm side is untouched and the comparison is like for like; only the intent-change and measurable-block counts moved beside the scores, which is the decoder behaving differently, i.e. the thing that shipped. The honest read: the frozen ten give back aggregate macro and accuracy and hold flicker flat, with two committed-runs collapses (the set's weakest row halving its block count) carrying most of it while half the set improves on macro and four tracks on crispness — whereas the val-215 campaign instrument (`models/l9c_campaign/NG_DECODED.md`) has N above H on the core four, crispness, boundary placement and drop timing, paying a small macro9/accuracy give-back concentrated in the owner-vs-corpus cooldown convention clash. That val read is the trade the owner explicitly accepted at ship; the benchmark is the regression gate, the campaign instrument the powered measurement, and this is the first cut where the two disagree in aggregate sign — the per-track spread (±0.2 both directions, the committed-runs shape both prior ships documented) is the mechanism. The cut and its compare ran fully warm (byte-faithfully primed sidecars, pure CPU, the GPU held by a training run throughout), and the compare reproduced the fresh baseline checksum-for-checksum — the determinism contract re-proven warm/warm on this generation.
 - **The baseline before it was the l9b (hand-label retrain) generation's.** The arm-H ship re-cut moved all ten checksums — new student, new priors, new decoder config — with **every count fact identical on all ten** (beats, rows joined, label boundaries, exposure seconds, and the silence counters), so the rhythm side is untouched and the comparison is like for like; what moved beside the scores is only the intent-change and measurable-block counts, which is the decoder behaving differently, i.e. the thing that shipped. The read matches the campaign's val verdict in kind: accuracy, boundary-F1 and crispness up, flicker down, and the nine-class macro flat within a ten-track sample's noise where val-215 showed a real gain — the benchmark is the regression gate here, the campaign instrument (`models/l9b_campaign/NG_DECODED.md`) is the powered measurement. Per-track spread is wide in both directions, the decoder's known committed-runs shape; the re-cut was mostly-cold (nine tracks' tracker sidecars were absent on this checkout) and its one warm track reproduced a separately-run warm sim byte-for-byte, so the determinism contract held across temperatures again.
 - **The baseline before it was the fused-grid generation's.** The live-bar-tracker re-cut moved all ten checksums with **beats identical on all ten** — the rhythm source is untouched, only the bar grid moved — and the intent-change counts identical too. What moved is the axis the tracker was adopted for: aggregate crispness@0.5 s rose from 0.45 to 0.62, improving on five tracks and worsening on none, while boundary-F1@2 s and flicker are unchanged in aggregate — the #331 claim (the classes are nearly grid-invariant; the whole win is placement) reproduced on the frozen ten. One row shows the known trade: the track that gained the most crispness gave back some nine-class macro. The cut was performed cold twice — before and after a cache-key fix — with identical checksums both times, which re-proves the determinism contract at benchmark scale with the tracker in the loop.
 - **The baseline before it was the 9-class generation's, and the gated space is still the raw nine.** The l9 ship re-cut moved all ten checksums (new model, new priors, new decoder config, PEAK gone — the extreme case, as the NN integration was) with beats identical on all ten, so the rhythm side is untouched and the comparison is like for like. Read the old-vs-new correctly: macro-F1 and accuracy changed *vocabulary* at this cut — the gated macro is now a nine-class number against nine-class ground truth, strictly harder than the fold it replaced, and only the legacy_v1 view in the same entries is comparable with the previous baseline. On the axes that never changed meaning, the 9-class show reads better across the set: boundary-F1, crispness and accuracy up, flicker down about threefold, fewer intent changes. The re-cut was performed once, cold, and confirmed compare-green warm — the cold and warm passes produced identical checksums on all ten, which re-proves the determinism contract at benchmark scale on this generation.
 - **The ground truth is verified before anything is simulated.** A boundary that moves under a baseline cut before the move leaves every number comparable to nothing while the gate prints "matches". The committed label slice cannot move behind git's back, so what is checked of it is *provenance*: it records the checksum of the annotation file it was cut from, and that must be the one the eval set froze against. A machine falling back to the gitignored corpus annotation gets that file hashed on every run instead. Either way a mismatch is fatal. The manifest that chose *which* tracks are in the set is deliberately not checked: it grows with every download batch and feeds no score.
+- **The run is read by two annotators and gated by one.** The owner has ruled published labels wrong on benchmark tracks and relabelled them, and the benchmark is to agree with his ear — so the slice carries both readings of the same ten tracks and every run joins and scores twice. The shape is the label-space mechanism one axis over (`REPORTED_TRUTHS` / `GATED_TRUTH` beside `REPORTED_SPACES` / `GATED_SPACE`), and for the same reason: a reading the gate does not read is still a reading worth printing. The simulation never touches labels, so the expensive half runs once and the second reading costs a sub-second CPU join — **a two-truth run costs the same wall time as a one-truth run did**. `GATED_TRUTH` is still the **published** annotation: the machinery landed as a pure refactor in which no gated number moved and no baseline number was re-cut, precisely so that "the mechanism works" and "the ground truth changed" are two separately checkable claims that never move in one commit. Which entails the corollary worth stating: **a ground-truth re-cut is the first baseline change in this project's history that must move scores while moving no report checksum at all.** The simulation cannot see labels, so if a checksum moves across one, the change touched the pipeline and is a bug.
+- **Flipping the gate is a one-time explicit act, and the tripwires say so by name.** The baseline records the truth it was cut under and `compare()` refuses one that disagrees — changing `GATED_TRUTH` without re-cutting the baseline in the same commit fails loudly, exactly as a silent vocabulary change already does. The provenance guard grew an owner half that re-hashes every hand label the slice pinned, which is *stronger* than the published half's pin because a hand label is a file in this repo the owner edits routinely: the moment he relabels a frozen track after a re-freeze, the benchmark refuses to score rather than quietly scoring new labels against an old baseline. That path is deliberately **repo-relative and never `corpus_dir()`** — a linked worktree resolves the latter to the *main* checkout's corpus, which would make the guard's verdict a fact about which worktree ran it. And because the slice now pins their bytes, `.gitattributes` gained a rung for `*.hand.json`: they were `text: unspecified`, so `core.autocrlf=true` would smudge them to CRLF on checkout and the pin would hold in the worktree that wrote them while failing in every clone — verbatim the bug that file was written to fix, one directory down.
+- **Coverage is all-or-nothing on REVIEW and incremental on OVERRIDE.** Every frozen track carries an explicit ruling — `overridden` (he relabelled it, evidenced by a committed hand label), `accepted` (he listened and rules the published label correct, a decision the slice records and a re-cut carries forward), or `unreviewed`. The owner reading is therefore *complete* the moment he has listened to all ten, not when he has relabelled all ten; pressuring him to relabel eight tracks he has no complaint about would inject his own transcription noise into eight ground truths to fix two, which is a worse ground truth rather than a better one. `--write-baseline` at the committed path refuses an owner-truth cut while any track is unreviewed, because a gated aggregate pooled over two annotators cannot be attributed and would move again every time one more track is ruled on, with no pipeline change — the metric drift the freeze exists to prevent, arriving through the front door. `--allow-unreviewed-truth` is the deliberate override.
 - **Scores are the corpus's scores, not the benchmark's own.** The runner reuses the training table's beat/label join (and therefore whatever that join does to reach song time -- today, reading each block's recorded instant) and the label-aligned evaluator's metric functions. A benchmark that computed its own numbers would eventually disagree with the corpus evaluation and nobody would know which was right.
 - **The integration suite runs a subset, a human runs the set.** Three tracks fit a test-suite wall-time budget; ten do not. A subset run compares only its own tracks and deliberately does not compare the aggregate — an aggregate over three tracks is a different quantity. The full set is a manual command, and its cost now depends on the cell cache rather than on core count alone: the cut that produced the current baseline ran all ten **cold** (every sidecar had missed on a backend-key change) in about sixteen minutes of wall for 68 minutes of audio, at `--workers 1`. That worker count was a GPU constraint, not a determinism one — one simulation process reserves several GB against an 8 GB card — and it is free because parallel and serial produce identical bytes, which is the runner's own contract and is checked by running both. Warm, the encoder does not run at all and the pass is pure CPU.
 - **A subset may not overwrite the committed baseline, and the baseline is itself under test.** The two ways this tripwire could be disarmed without anything failing are a baseline cut from a partial run (the gate then compares the tracks it ran against the tracks in the file, so the rest silently stop being checked) and a guarded metric missing from the file (skipped rather than flagged). So a partial `--write-baseline` at the committed path is refused outright — `--allow-partial-baseline` is the deliberate override, an explicit `--baseline PATH` is the experiment — a missing metric is a failure rather than a skip, and a fast unit test reads the committed file and asserts it still covers the whole frozen set, was cut against the current one, and carries every gated number.
@@ -1296,7 +1426,7 @@ The design spec is `docs/superpowers/specs/2026-07-26-nn-section-classifier-desi
 - **The sweep is joint where the axes interact, and deterministic everywhere.** Prior strength and drop-miss cost both push mass toward the rare expensive classes, and the boundary gain is meaningless without the neutral point it is measured from; a line search over either pair finds a compromise neither axis would pick. Those are full grids, the remaining axes are staged around the running winner, and a joint refinement then re-opens everything at once to catch what a staged search walks past. Nothing samples: every axis is an explicit tuple and the enumeration is a fixed-order product, so a winner is reproducible without replaying the search. It is cheap because bar observations depend only on the two knobs the sweep holds fixed -- so sidecars are read once and a config costs a decode plus a score -- and the cache is keyed on that pair rather than assuming it.
 - **Sensitivity is measured by ablating the shipped config, not by reading a curve off the search.** The best result ever seen at a given knob value conflates that knob with whatever the rest of the config happened to be in the stage that produced it, so it cannot say what the knob cost. A final pass moves one axis at a time around the chosen config, reusing configs the search already measured so the anchor appears in every curve. That pass is also a search -- if it finds something better the selection takes it, and the artifact records whether the anchor survived.
 
-**v1 exists, it won, and a successor of it is now driving the show.** v1 was scored once against the held-out test split -- tracks no selection decision had ever seen -- and beat the shipping rule classifier on every metric the plan named, in both the all-classes and the contested-core reading, while committing several times fewer state changes. The verdict artifacts are `models/v1/eval_val.json` (the tuned reading) and `models/v1/eval_test.json` (the selection-clean one); each carries the sha256 of the model, priors, splits and table that produced it, so any figure traces to a chain rather than to a memory. The figures themselves are deliberately not copied into documentation -- the corpus is still growing and a written-down number goes stale in silence. `training/nn/CLAUDE.md` maps the package; the bullets above are the reasoning behind it. What runs live today is the l9c generation's student (the l9c campaign's arm N, w128 seed 1234, 9-class, trained with the phase-B worktree's tooling over MERT F3 features on the owner's completed hand-label set); the l9b, l9 and phase-B students it descends from were the same lineage, one, two and three generations earlier. Every generation's offline verdict was taken in the worktree that trained it, not here.
+**v1 exists, it won, and a successor of it is now driving the show.** v1 was scored once against the held-out test split -- tracks no selection decision had ever seen -- and beat the shipping rule classifier on every metric the plan named, in both the all-classes and the contested-core reading, while committing several times fewer state changes. The verdict artifacts are `models/v1/eval_val.json` (the tuned reading) and `models/v1/eval_test.json` (the selection-clean one); each carries the sha256 of the model, priors, splits and table that produced it, so any figure traces to a chain rather than to a memory. The figures themselves are deliberately not copied into documentation -- the corpus is still growing and a written-down number goes stale in silence. `training/nn/CLAUDE.md` maps the package; the bullets above are the reasoning behind it. What runs live today is the l9d generation's student (the l9c campaign's DA-CLEAN arm, w128 seed 1234, 9-class, trained with the phase-B worktree's tooling over MERT F3 features on a corrected *view* of the corpus labels rather than on the labels as published); the l9c, l9b, l9 and phase-B students it descends from were the same lineage, one to four generations earlier, every one of them trained on the published labels as given. Every generation's offline verdict was taken in the worktree that trained it, not here.
 
 - **The rule-classifier column of the v1/v2 verdict is a fact about the aubio beat stream, and it has not been re-measured.** Those verdicts were scored before the madmom migration landed under this branch. The model side is unaffected — it trains and infers on the mel stream, which the migration held byte-identical, on a fixed frame grid that has nothing to do with beats. The *baseline* side is not: the training table carries one row per detected beat, and the beat stream is now a different stream. Re-scoring it would be a second read of the test split, which the rule above forbids for exactly the reason it exists, so the number stands as dated rather than being quietly refreshed. The eval set is where the rule classifier's post-madmom behaviour *is* measured, and there it got better on three of four metrics — so the recorded margin is more likely an over-statement of today's gap than an under-statement. That direction is the safe one for a claim of "the model wins", but it is a reason to distrust the size of the win, not the sign. **That column is now permanently unrepeatable**: the rule classifier and every feature it read have been deleted, so nothing can re-measure it and the recorded figure is a historical record rather than a comparand. The live comparison that replaces it is the eval-set baseline, where the same ten tracks were scored under the rule engine and then under the neural show.
 - **The test split is read once, and that run is the record.** Everything else in this package was chosen on val -- the decoder config, the early-stopping epoch, and which of several training runs to export -- so the test figure is the only number no decision was permitted to see, and the acoustic-layer selection noise alone is comparable to most of what the decoder sweep was tuning. Tuning after reading it spends the one clean measurement the project has. A disappointing test result is therefore a *new versioned model*, never a re-tuned old one, and that model gets its own single read.
@@ -1420,8 +1550,10 @@ session is therefore not a clean read of what the headless pipeline does.
 - **Intent blocks record `song_t`, and older reports do not.** The delay is per command now (playback delay minus that decision's measured age), so no constant de-shift and no beat-matching rule recovers song time from a block's stamp. The engine records the instant it commits about; `realign_intents` reads it and infers nothing. Reports cut before that stamping keep the old inference — including its one known hole, a timer-fired ATMOSPHERIC that lands a look-ahead late — and the corpus holds thousands of them. A report mixing recorded and inferred blocks was cut across the change, and the counters say so.
 - **The eval-set baseline lags a deliberate pipeline change by one command.** Any change to `lib/` or `simulate/` that moves the reports fails `run_eval_set.py` until the baseline is re-cut. That is the gate working, not a flake — but it does mean a pipeline PR is two steps, and the second one must not be skipped. **The gate keys on report content, not on musical behaviour**: the madmom migration moved all ten checksums, and so did a later merge that changed no rhythm at all. Read the printed table before assuming a checksum move means the show moved — `beats` and `changes_intent` sitting still is the signal that it did not. The NN integration is the extreme case: the branch deliberately carried a strict-xfail on this gate through the whole demolition rather than re-cutting an intermediate state as the benchmark, and cut it exactly once at the settled tip.
 - **The CPU cost of the front-end, as measured today.** Paced at real time on one eval-set track: the audio loop is about 17 % of one core (mean 0.97 ms, p99 2.80 ms against the 5.805 ms buffer period), of which madmom is ~10 % and the engine's per-buffer audio push ~1.6 %; the GPU pass is ~157 ms mean / ~334 ms p99 against a 1 s hop, with the hand-off queue's p99 depth at zero. **These are anchored against the same day's madmom and cannot be diffed against the committed `realtime_measurement.json`** — madmom alone measures 2.5x apart between days on identical code, so subtracting the two files is meaningless. For history: the earlier aubio front-end cost ~1.4 % of a core end to end, and the madmom migration took that to ~25.7 % before the demolition gave ~11 % of it back by deleting the onset chain.
-- **Fast simulation now has a cold cost and a warm one.** A warm run replays the extractor and is about 2.2x faster than a cold one, and needs no GPU at all. A cold run needs a GPU and is what the first pass over any new audio pays. Regenerating the corpus report cache is a cold pass over every track — and the report schema change on this branch invalidates that cache by construction.
-- **A cold benchmark run must be serial on a single GPU, and `--workers` above 1 does not merely fail to help.** `--workers` therefore **defaults to 1**, and the integration suite's subset run passes it explicitly rather than inheriting it — the default used to be one worker per core less two, so the tool that documents this wedge was the thing most likely to walk into it, on a box whose core count decides how badly. Parallelism is still one flag away for a machine that can afford it, and asking for it can never change a result: worker count does not touch the report bytes, which is the runner's own determinism contract and is checked by running both. Each simulation worker holds ~3.3 GB of VRAM, so on an 8 GB card two workers plus the desktop already sit at 7.7 GB and the driver evicts continuously: a 30 s encoder pass that costs ~157 ms warm ran **over ten minutes without completing**, at four workers and again at two, while serial the frozen ten take 16 minutes at 4x realtime. The pathology is invisible from outside — the runner banks no per-track artifact and `pool.map` yields in order, so an empty stdout is what both a wedged run and a healthy one look like for the first several minutes. What separates them is `buffers_fed` in `simulate/runner.py`'s `run_simulation` frame, read out of the live process (`py-spy dump --locals`); times the buffer period it is seconds of audio consumed, and if it does not move in five minutes the run will not finish. A serial pass also leaves the cell sidecars behind, so the next run over the same audio is warm and needs no GPU at all.
+- **The sidecar cache is all-or-nothing, and one missing 100 KB file costs 4 GB of VRAM silently.** A run takes the warm branch only if the cell replay *and* the tracker replay both open, so a single absent `.bartracker.npz` discards ten hitting 25 MB cell sidecars and rebuilds the whole GPU chain, encoder included. Measured on a quiet card: a genuinely warm run never initialises CUDA at all and holds **zero** VRAM; the bar tracker alone on CUDA is ~190 MiB, which it must be at ~2M parameters; cells hitting with the tracker archive absent reserves ~4 GB, and that is the MERT encoder. **A linked worktree is the way to walk into this** -- the sidecars are gitignored, so a fresh worktree has none of them beside its committed eval audio and every "warm" run there is cold. Copying the ten tracker archives across turns a 4 GB run into a 0 GB one. Two things made this cost hours to attribute rather than minutes, and both are the real lesson: the runner *does* log the decision, naming both caches' reasons -- but it logs at INFO, and `simulate/cli.py` sets the root level to WARNING, so **the one line that would tell an operator their benchmark just went cold is actively suppressed on the entry point that runs benchmarks** (the live show sets INFO and would print it). The silence is by configuration, not omission, which makes the remedy a one-line level decision rather than a diagnostic to build; and `nvidia-smi` reports per-process `used_memory` as `[N/A]` under WDDM here, so **a card total cannot be attributed to a process on this box at all**. The only two attributable readings available are membership in `--query-compute-apps=pid` and `torch.cuda.is_initialized()` inside the process itself. Three agents in one night each attributed a card total to a process and each drew a different wrong conclusion from it.
+- **`CUDA_VISIBLE_DEVICES=""` is not a way to force a CPU run, and it fails in the least obvious place.** The backend is part of the sidecar cache key, so hiding the card flips the wanted key, both sidecars miss, and the run goes *cold* -- onto the counting bar grid, having done more GPU-shaped work rather than less. Worse, the parent process may still report the card present while a spawned worker sees none, so the parent resolves the device to CUDA and hands that to a worker that cannot honour it, failing deep inside checkpoint deserialisation rather than at device selection.
+- **Fast simulation now has a cold cost and a warm one.** A warm run replays the extractor and is about 2.2x faster than a cold one. A cold run needs a GPU for real work and is what the first pass over any new audio pays. Regenerating the corpus report cache is a cold pass over every track — and the report schema change on this branch invalidates that cache by construction.
+- **A cold benchmark run must be serial on a single GPU, and `--workers` above 1 does not merely fail to help.** `--workers` therefore **defaults to 1**, and the integration suite's subset run passes it explicitly rather than inheriting it — the default used to be one worker per core less two, so the tool that documents this wedge was the thing most likely to walk into it, on a box whose core count decides how badly. Parallelism is still one flag away for a machine that can afford it, and asking for it can never change a result: worker count does not touch the report bytes, which is the runner's own determinism contract and is checked by running both. Each simulation worker holds ~3.3 GB of VRAM, so on an 8 GB card two workers plus the desktop already sit at 7.7 GB and the driver evicts continuously: a 30 s encoder pass that costs ~157 ms warm ran **over ten minutes without completing**, at four workers and again at two, while serial the frozen ten take 16 minutes at 4x realtime. The pathology is invisible from outside — the runner banks no per-track artifact and `pool.map` yields in order, so an empty stdout is what both a wedged run and a healthy one look like for the first several minutes. What separates them is `buffers_fed` in `simulate/runner.py`'s `run_simulation` frame, read out of the live process (`py-spy dump --locals`); times the buffer period it is seconds of audio consumed, and if it does not move in five minutes the run will not finish. A serial pass also leaves the cell sidecars behind, so the next run over the same audio is warm and does no encoder work -- though it still holds the card for the bar tracker, which is the gotcha above.
 - **madmom is CC BY-NC-SA** (models). Fine for a personal project; it forecloses a
   commercial turn without a JKU licence. **MERT's own licence terms are the same
   class of question and are not analysed here** — check them before any

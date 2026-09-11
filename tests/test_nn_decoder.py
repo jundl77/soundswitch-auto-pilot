@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import math
 import numpy as np
 import pytest
 
@@ -34,8 +35,16 @@ from nn.decoder import (  # noqa: E402
 )
 from nn.priors import (  # noqa: E402
     PRIORS_FILE,
+    SKIP_CAUSES,
+    SKIP_DEGENERATE_GRID,
+    SKIP_NO_ANNOTATION,
+    SKIP_NO_BAR_RUNS,
+    SKIP_NO_BEAT_GRID,
     Priors,
     bar_runs,
+    corpus_bar_runs,
+    corpus_bar_runs_by_cause,
+    fit,
     fit_runs,
     label_runs,
     section_classes,
@@ -323,6 +332,171 @@ def test_bar_runs_counts_downbeats_and_never_reattributes_dropped_time():
         (30.0, 40.0, "drop"),
     ]
     assert bar_runs(sections, downbeats) == [("intro", 5), ("drop", 10)]
+
+
+# --------------------------------------------------------------------------- #
+# Skip accounting: four causes, and the arithmetic nobody was checking
+# --------------------------------------------------------------------------- #
+
+SKIP_SECTIONS = [
+    {"name": "intro", "start": 0.0, "end": 8.0},
+    {"name": "drop", "start": 8.0, "end": 24.0},
+]
+
+
+def skip_corpus(tmp_path, *, records, grids, split=None):
+    """A minimal corpus on disk: ``segments.json``, beat grids, a frozen split.
+
+    ``records`` are the ids ``segments.json`` names; ``grids`` maps an id to the
+    ``(bars, t0)`` of the grid written for it.  An id in ``records`` with no
+    grid has no file on disk; an id in neither is the incident's own cause --
+    requested, but absent from the annotation source being consulted.
+    """
+    data_dir = tmp_path / "raveform"
+    beats = data_dir / "annotations" / "beats"
+    beats.mkdir(parents=True)
+    with open(data_dir / "annotations" / "segments.json", "w",
+              encoding="utf-8") as handle:
+        json.dump([{"key": name, "id": name, "title": f"An Artist - {name}",
+                    "duration": 24.0, "sections": SKIP_SECTIONS}
+                   for name in records], handle)
+    for name, (bars, t0) in grids.items():
+        write_beat_csv(beats / f"{name}.beat.csv", bars=bars, bar_sec=2.0, t0=t0)
+    if split is not None:
+        with open(data_dir / "splits.json", "w", encoding="utf-8") as handle:
+            json.dump({"train": list(split), "val": [], "test": []}, handle)
+    return data_dir
+
+
+def four_cause_corpus(tmp_path, *, split=True):
+    """One id per cause plus two that fit -- six requested, two fitted."""
+    ids = ["fits_a", "fits_b", "no_grid", "one_downbeat", "off_grid", "ghost"]
+    data_dir = skip_corpus(
+        tmp_path,
+        records=[name for name in ids if name != "ghost"],
+        grids={"fits_a": (8, 0.0), "fits_b": (8, 0.0), "one_downbeat": (1, 0.0),
+               "off_grid": (8, 100.0)},
+        split=ids if split else None,
+    )
+    return data_dir, ids
+
+
+def test_a_track_absent_from_the_annotation_source_is_not_a_missing_beat_grid(tmp_path):
+    """The incident, exactly: five tracks whose grids were present and valid on
+    disk were reported under a key that names the beat grid, and everyone went
+    looking at the wrong artifact."""
+    data_dir = skip_corpus(tmp_path, records=["present"],
+                           grids={"present": (8, 0.0)})
+
+    sequences, skipped = corpus_bar_runs_by_cause(data_dir, ["present", "ghost"])
+
+    assert len(sequences) == 1
+    assert skipped[SKIP_NO_ANNOTATION] == ["ghost"]
+    assert skipped[SKIP_NO_BEAT_GRID] == []
+
+
+def test_a_track_whose_grid_file_is_missing_is_counted_under_the_missing_grid_cause(tmp_path):
+    data_dir = skip_corpus(tmp_path, records=["present", "no_grid"],
+                           grids={"present": (8, 0.0)})
+
+    sequences, skipped = corpus_bar_runs_by_cause(data_dir, ["present", "no_grid"])
+
+    assert len(sequences) == 1
+    assert skipped[SKIP_NO_BEAT_GRID] == ["no_grid"]
+    assert skipped[SKIP_NO_ANNOTATION] == []
+
+
+def test_a_degenerate_grid_and_a_track_with_no_bar_runs_land_in_their_own_causes(tmp_path):
+    data_dir = skip_corpus(
+        tmp_path, records=["one_downbeat", "off_grid"],
+        grids={"one_downbeat": (1, 0.0), "off_grid": (8, 100.0)})
+
+    sequences, skipped = corpus_bar_runs_by_cause(
+        data_dir, ["one_downbeat", "off_grid"])
+
+    assert sequences == []
+    assert skipped[SKIP_DEGENERATE_GRID] == ["one_downbeat"]
+    assert skipped[SKIP_NO_BAR_RUNS] == ["off_grid"]
+    assert skipped[SKIP_NO_BEAT_GRID] == []
+
+
+def test_the_per_cause_counts_and_the_fitted_count_sum_to_the_ids_requested(tmp_path):
+    """The arithmetic nothing was checking: a fit over 955 of 960 tracks looked
+    exactly like a fit over 960."""
+    data_dir, ids = four_cause_corpus(tmp_path, split=False)
+
+    sequences, skipped = corpus_bar_runs_by_cause(data_dir, ids)
+
+    assert set(skipped) == set(SKIP_CAUSES)
+    assert len(sequences) + sum(len(v) for v in skipped.values()) == len(ids)
+    assert len(sequences) == 2
+
+
+def test_the_flat_skip_list_still_carries_every_cause_for_existing_readers(tmp_path):
+    data_dir, ids = four_cause_corpus(tmp_path, split=False)
+
+    _sequences, skipped = corpus_bar_runs(data_dir, ids)
+
+    assert skipped == ["ghost", "no_grid", "off_grid", "one_downbeat"]
+
+
+def test_the_provenance_names_only_genuinely_missing_grids_under_the_legacy_key(tmp_path):
+    data_dir, ids = four_cause_corpus(tmp_path)
+
+    corpus = fit(data_dir, classes=SHIPPING_CLASSES).corpus
+
+    assert corpus["skipped_no_beat_grid"] == ["no_grid"]
+    assert corpus["skipped_no_annotation_record"] == ["ghost"]
+    assert corpus["skipped_degenerate_beat_grid"] == ["one_downbeat"]
+    assert corpus["skipped_no_bar_runs"] == ["off_grid"]
+    assert corpus["split_size"] == len(ids)
+    assert corpus["fitted_tracks"] + corpus["skipped_tracks"] == corpus["split_size"]
+
+
+def test_the_opt_in_strictness_flag_refuses_a_fit_that_dropped_an_id(tmp_path):
+    data_dir, _ids = four_cause_corpus(tmp_path)
+
+    with pytest.raises(RuntimeError, match="skipped_no_annotation_record"):
+        fit(data_dir, classes=SHIPPING_CLASSES, require_all_ids=True)
+
+
+def test_a_dropped_id_warns_by_default_rather_than_raising(tmp_path, caplog):
+    data_dir, ids = four_cause_corpus(tmp_path)
+
+    with caplog.at_level("WARNING"):
+        priors = fit(data_dir, classes=SHIPPING_CLASSES)
+
+    assert priors.corpus["fitted_tracks"] == 2
+    warning = "\n".join(record.getMessage() for record in caplog.records)
+    assert "4 of 6" in warning
+    assert "skipped_no_annotation_record=1" in warning
+    assert "ghost" in warning
+
+
+def test_a_complete_fit_neither_warns_nor_refuses_under_the_strict_flag(tmp_path, caplog):
+    data_dir = skip_corpus(tmp_path, records=["a", "b"],
+                           grids={"a": (8, 0.0), "b": (8, 0.0)},
+                           split=["a", "b"])
+
+    with caplog.at_level("WARNING"):
+        priors = fit(data_dir, classes=SHIPPING_CLASSES, require_all_ids=True)
+
+    assert priors.corpus["skipped_tracks"] == 0
+    assert caplog.records == []
+
+
+def test_the_warning_samples_the_dropped_ids_rather_than_listing_all_of_them(tmp_path, caplog):
+    ghosts = [f"ghost{index:03d}" for index in range(40)]
+    data_dir = skip_corpus(tmp_path, records=["a"], grids={"a": (8, 0.0)},
+                           split=["a"] + ghosts)
+
+    with caplog.at_level("WARNING"):
+        fit(data_dir, classes=SHIPPING_CLASSES)
+
+    warning = "\n".join(record.getMessage() for record in caplog.records)
+    assert "40 of 41" in warning
+    assert warning.count("ghost") < 40, "a 900-id dump is not a warning anyone reads"
+    assert "more" in warning
 
 
 def test_isolated_flicker_bars_are_outvoted_by_the_duration_prior():
@@ -769,16 +943,67 @@ def test_a_config_of_known_knobs_round_trips(tmp_path):
     assert params.floor_bars == (1, 2, 3, 4, 5)
 
 
-def test_the_shipping_config_loads_and_is_the_ng_n_sweep_pick():
-    """These are the l9c campaign N sweep's chosen row (#346), per the file's
-    own provenance block.  floor_bars is an explicit vector on purpose: the
-    sweep keeps the per-class floor axis open (buildup at 2 bars this pick),
-    and the vector overrides floor_scale, so a priors refit does not move the
-    floors.  buildup_drop_bonus 0.0 is the knob's neutral point -- the pick is
-    the pre-l9c decoder on that axis."""
+def test_the_entry_bonus_in_the_config_equals_the_same_bonus_premultiplied():
+    """The two expressions of the entry preference must agree, because BOTH
+    exist on disk and applying both would double it.
+
+    The l9c campaign measured every candidate with the bonus premultiplied into
+    the priors' ->buildup column (`priors_DAE1.json`, whose transition rows
+    therefore do NOT sum to 1).  The generation ships the FITTED priors and
+    states the bonus as a config knob instead.  That is only legitimate if the
+    two produce the same trellis -- otherwise the shipped chain is not the one
+    the campaign measured -- and it is only safe while exactly one of them is
+    in force at a time.
+    """
+    bonus = 1.0
+    plain = toy_priors()
+    index = plain.classes.index("buildup")
+    premultiplied = np.array(plain.transition, dtype=np.float64, copy=True)
+    premultiplied[:, index] *= math.exp(bonus)
+    premultiplied = plain._replace(transition=premultiplied)
+
+    knob = FixedLagViterbi(plain, lag_bars=2, buildup_entry_bonus=bonus)
+    baked = FixedLagViterbi(premultiplied, lag_bars=2, buildup_entry_bonus=0.0)
+
+    for name in ("_transition", "_cold_initial"):
+        ours, theirs = getattr(knob, name), getattr(baked, name)
+        # A finite bonus may not lift a structurally forbidden edge, so the
+        # -inf pattern is part of the claim rather than a detail of it.
+        assert (np.isinf(ours) == np.isinf(theirs)).all(), name
+        finite = np.isfinite(ours) & np.isfinite(theirs)
+        assert np.abs(ours[finite] - theirs[finite]).max() < 1e-12, name
+
+
+def test_the_shipped_priors_carry_no_premultiplied_entry_bonus(nn_artifacts):
+    """The doubling guard, read off the artifact the show actually loads.
+
+    A priors file with the bonus already in it has a ->buildup column scaled by
+    exp(bonus), so its transition rows stop summing to 1.  The config knob is
+    non-zero, so normalised rows are what says the preference is applied once.
+    """
+    from lib.section_chain import artifacts
+
+    priors = Priors.load(artifacts().priors)
+    rows = np.asarray(priors.transition, dtype=np.float64).sum(axis=1)
+    assert np.abs(rows[rows > 0] - 1.0).max() < 1e-9
+
+
+def test_the_shipping_config_loads_and_is_the_l9d_point():
+    """The l9d point, per the file's own provenance block, and it is NOT a
+    sweep result.  The base is arm N's sweep pick; two knobs are moved on top
+    of it.  buildup_entry_bonus 1.0 is a decision bias of the same family as
+    drop_miss_cost -- chosen on 12 probe arcs, never validated on val, and the
+    config says so rather than implying a sweep.  The buildup floor sits at 3
+    bars against the sweep pick's 2: the campaign's own candidate was a
+    hand-set 4, which the axis was later measured against and found exactly
+    neutral -- floor 3 matches it on climbs, drop coverage and deficit and reads
+    slightly better on crispness, so it is taken because it costs nothing and
+    retires a hand-set value for the swept-adjacent one.  floor_bars is an explicit
+    vector on purpose -- it overrides floor_scale, so a priors refit does not
+    move these floors."""
     params = load_decoder_config(SHIPPING_DECODER_CONFIG)
     document = json.loads(SHIPPING_DECODER_CONFIG.read_text())
-    assert document["name"] == "ng_N_sweep_pick"
+    assert document["name"] == "l9d_buildup_entry_1nat_floor3"
     assert dataclasses.asdict(params) == {
         "lag_bars": 2,
         "class_prior_division": True,
@@ -789,10 +1014,11 @@ def test_the_shipping_config_loads_and_is_the_ng_n_sweep_pick():
         "boundary_tolerance_sec": 0.5,
         "min_coverage": 1,
         "floor_scale": 1.0,
-        "floor_bars": (4, 4, 2, 4, 4, 8, 4, 4, 2),
+        "floor_bars": (4, 4, 3, 4, 4, 8, 4, 4, 2),
         "outro_escape": 0.04,
         "temperature": 1.0,
         "buildup_drop_bonus": 0.0,
+        "buildup_entry_bonus": 1.0,
     }
 
 
@@ -864,6 +1090,146 @@ def test_the_escape_only_opens_the_two_classes_a_track_can_resume_into():
     reachable = {decoder.classes[int(decoder._state_class[target])]
                  for target in np.flatnonzero(np.isfinite(decoder._transition[source]))}
     assert reachable == {"outro", "breakdown", "drop"}
+
+
+def intro_then_bars_that_shade_breakdown(ambiguity=0.02):
+    """Intro, then bars where breakdown edges out buildup by a hair.
+
+    A neutral decoder leaves intro for breakdown; only a preference on the
+    edges *into* buildup can send it the other way, which is the knob's own
+    case in miniature.
+    """
+    tail = np.full(5, 0.02)
+    tail[BREAKDOWN] = 0.47 + ambiguity / 2
+    tail[BUILDUP] = 0.47 - ambiguity / 2
+    tail /= tail.sum()
+    return np.asarray([one_hot(INTRO)] * 4 + [tail] * 8)
+
+
+def entry_bonus_pair(bonus, floor=2):
+    """A neutral and a boosted trellis, and what the bonus added between them.
+
+    ``-inf`` minus ``-inf`` is nan rather than zero, so a forbidden edge that
+    stayed forbidden reads as no change -- which is what it is.
+    """
+    neutral = FixedLagViterbi(toy_priors(floor=floor), lag_bars=2)
+    boosted = FixedLagViterbi(toy_priors(floor=floor), lag_bars=2,
+                              buildup_entry_bonus=bonus)
+    with np.errstate(invalid="ignore"):
+        delta = boosted._transition - neutral._transition
+    return neutral, boosted, np.where(np.isnan(delta), 0.0, delta)
+
+
+def test_the_default_entry_bonus_is_bit_identically_the_knobless_decoder(monkeypatch):
+    """The neutral point has to be a genuine no-op, not an approximate one.
+
+    ``0.0`` is what every config cut before the knob existed decodes with, so
+    a float that merely rounds back to the same trellis would silently re-cut
+    the whole committed baseline.
+    """
+    posteriors = intro_then_bars_that_shade_breakdown()
+    reference = FixedLagViterbi(toy_priors(floor=1), lag_bars=2)
+
+    monkeypatch.setattr(FixedLagViterbi, "_apply_buildup_entry_bonus",
+                        lambda self, transition, switch: None)
+    knobless = FixedLagViterbi(toy_priors(floor=1), lag_bars=2)
+    monkeypatch.undo()
+
+    assert DecodeParams().buildup_entry_bonus == 0.0
+    assert reference._transition.tobytes() == knobless._transition.tobytes()
+    assert reference._cold_initial.tobytes() == knobless._cold_initial.tobytes()
+    assert (labels_of(reference.decode(posteriors))
+            == labels_of(knobless.decode(posteriors)))
+
+
+def test_the_entry_bonus_lifts_every_legal_edge_into_buildup_by_exactly_itself():
+    """From ANY source class, not only from the one that motivated it.
+
+    The knob is a preference for the class, not for one particular approach to
+    it, so intro -> buildup and drop -> buildup have to move exactly as far as
+    breakdown -> buildup does.
+    """
+    neutral, _, delta = entry_bonus_pair(0.7)
+    target = int(neutral._entry_state[BUILDUP])
+
+    moved = np.flatnonzero(delta.any(axis=1))
+    assert delta[moved, target] == pytest.approx(0.7)
+    assert {neutral.classes[int(neutral._state_class[state])] for state in moved} == {
+        "intro", "breakdown", "drop"}
+
+    delta[moved, target] = 0.0
+    assert not delta.any()
+
+
+def test_an_edge_the_graph_forbids_into_buildup_stays_forbidden():
+    """A finite bonus cannot lift a -inf, and must not be allowed to try.
+
+    Nothing leaves the outro family, so outro -> buildup is structural, and a
+    knob that could open it would be re-writing the graph rather than
+    weighting it.
+    """
+    neutral, boosted, _ = entry_bonus_pair(6.0)
+    source = int(neutral._final_state[OUTRO])
+    target = int(neutral._entry_state[BUILDUP])
+    assert neutral._transition[source, target] == -np.inf
+    assert boosted._transition[source, target] == -np.inf
+
+
+def test_the_entry_bonus_leaves_the_cold_start_alone():
+    """The subtle one, and the reason the knob sits on the switch edges.
+
+    ``_cold_initial`` is ``log_initial + _entry_bonus``, and a track is allowed
+    to open in buildup -- that entry is finite.  Routing the preference through
+    ``_entry_bonus`` would therefore also move where a track may BEGIN, which
+    is a different decoder from the one this value was measured on.
+    """
+    neutral, boosted, _ = entry_bonus_pair(6.0)
+    entry = int(neutral._entry_state[BUILDUP])
+    assert np.isfinite(neutral._cold_initial[entry])
+    assert boosted._cold_initial.tobytes() == neutral._cold_initial.tobytes()
+    assert boosted._entry_bonus.tobytes() == neutral._entry_bonus.tobytes()
+
+    neutral.reset()
+    boosted.reset()
+    assert boosted._log_initial.tobytes() == neutral._log_initial.tobytes()
+
+
+def test_the_entry_bonus_resolves_an_ambiguous_exit_toward_buildup():
+    posteriors = intro_then_bars_that_shade_breakdown()
+    neutral = FixedLagViterbi(toy_priors(floor=1), lag_bars=2)
+    boosted = FixedLagViterbi(toy_priors(floor=1), lag_bars=2,
+                              buildup_entry_bonus=1.0)
+
+    neutral_labels = labels_of(neutral.decode(posteriors))
+    boosted_labels = labels_of(boosted.decode(posteriors))
+    assert "buildup" not in neutral_labels and "breakdown" in neutral_labels
+    assert "buildup" in boosted_labels
+    # The cold start is untouched, so the track still OPENS where the evidence says.
+    assert boosted_labels[0] == "intro"
+
+
+def test_a_non_finite_entry_bonus_is_refused():
+    with pytest.raises(ValueError, match="buildup_entry_bonus"):
+        FixedLagViterbi(toy_priors(), buildup_entry_bonus=float("nan"))
+    with pytest.raises(ValueError, match="buildup_entry_bonus"):
+        FixedLagViterbi(toy_priors(), buildup_entry_bonus=float("inf"))
+
+
+def test_the_entry_bonus_round_trips_through_a_config_and_a_typo_still_raises(tmp_path):
+    path = tmp_path / "decoder_config.json"
+    path.write_text(json.dumps({"chosen": {"lag_bars": 2,
+                                           "buildup_entry_bonus": 1.0}}))
+    assert load_decoder_config(path).buildup_entry_bonus == 1.0
+
+    # A config cut before the knob existed still loads, at the neutral point.
+    old = tmp_path / "old_config.json"
+    old.write_text(json.dumps({"chosen": {"lag_bars": 2}}))
+    assert load_decoder_config(old).buildup_entry_bonus == 0.0
+
+    typo = tmp_path / "typo_config.json"
+    typo.write_text(json.dumps({"chosen": {"buildup_entrance_bonus": 1.0}}))
+    with pytest.raises(ValueError, match="buildup_entrance_bonus"):
+        load_decoder_config(typo)
 
 
 def test_temper_is_the_identity_at_one_and_returns_the_same_array():
@@ -997,6 +1363,7 @@ NON_DEFAULT_TRELLIS_KNOBS = {
     "floor_bars": (1, 2, 3, 4, 5),
     "outro_escape": 0.05,
     "buildup_drop_bonus": 0.75,
+    "buildup_entry_bonus": 0.5,
 }
 
 

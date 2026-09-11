@@ -31,6 +31,14 @@ Drivers, in stage order:
 - `ng_probe_rig.py` — shadow-corpus probe sims (mirrors the SHIPPED
   models/l9b generation), the #344 read lines, fit-diagnostic tracks
   (inyathi/yai/skylark) beside the two owner probes.
+- `ng_arc_read.py` — the #348 trade-off table: arcs entered/held and the
+  strict drop clause, recomputed from the banked probe report JSONs. Versioned
+  here because the ops copy produced a false finding — it asked which block
+  STARTED in the labelled window, so a chain already holding DROP scored as
+  having lost a drop it lit completely. It now reports SECONDS in force over
+  the labelled span (a boolean alone is wrong in both directions), and keeps
+  the superseded reading under `first_entry_*` so banked digits stay
+  comparable. `tests/test_arc_read.py` pins both.
 - `ng_build_mask_overlay.py` / `ng_mask_proof.py` — the N-MK conditional:
   the l9b mask re-mined minus hand-labeled tracks, proven zero-loss before
   any train.
