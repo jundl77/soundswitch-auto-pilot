@@ -414,20 +414,29 @@ def corpus_audio_path(identifier: str, audio_path: str) -> Path:
 def beat_grid(audio_path: str) -> list:
     """Beat times and downbeat flags for this track, or [] if it has no grid.
 
-    Only `<track_id>.hand.beat.csv` is read. The published grids are named by a
-    corpus key this tool never sees, so a generated grid is the only kind it can
-    find -- for a native track as much as for a new one.
+    A generated grid is preferred where there is one; otherwise a published
+    corpus grid, which is filed under `<index>.<track_id>` rather than under the
+    id alone. The two columns agree in name and disagree in meaning -- generated
+    grids flag the downbeat, published ones number the beat within its bar -- so
+    a published grid is read through that comparison rather than for truth. It
+    is the expert grid where it exists, and the boundaries the owner is judging
+    were drawn on it.
     """
     try:
-        found = sorted((annotations_dir() / 'beats').glob(
-            f'{resolve_identity(audio_path)[0]}.hand.beat.csv'))
+        beats_dir = annotations_dir() / 'beats'
+        identifier = resolve_identity(audio_path)[0]
+        found = (sorted(beats_dir.glob(f'{identifier}.hand.beat.csv'))
+                 or sorted(beats_dir.glob(f'*.{identifier}.beat.csv')))
     except OSError:
         return []
     if not found:
         return []
+    generated = found[0].name.endswith('.hand.beat.csv')
     try:
         with open(found[0], 'r', encoding='utf-8', newline='') as handle:
-            return [(float(row['time']), int(row['downbeat']))
+            return [(float(row['time']),
+                     int(int(row['downbeat']) != 0 if generated
+                         else int(row['downbeat']) == 1))
                     for row in csv.DictReader(handle)]
     except (OSError, KeyError, ValueError):
         return []
@@ -468,6 +477,39 @@ def from_annotation(record: dict) -> list:
     return normalise([{'start': span['start'], 'label': span['name'],
                        'strength': span.get('strength', DEFAULT_STRENGTH)}
                       for span in record['sections']])
+
+
+# About one bar. Inside it a published start is the annotation's own offset
+# rather than a section anyone plays, and anchoring it beats seeding a sliver
+# the owner then has to delete.
+SEED_ANCHOR_TOLERANCE = 2.0
+
+
+def published_seed(audio_path: str) -> list:
+    """The published boundaries as a draft to re-name, for the measured reason.
+
+    Where the owner has relabelled a published track he has moved almost no
+    boundaries and rewritten most of the names, so authoring the grid from
+    scratch is the expensive half of a job whose answer is already on disk.
+    Seeding is a draft and not truth: the format carries no gaps, so a span the
+    published record leaves unlabelled -- the `end` sentinel included -- silently
+    inherits its predecessor's name rather than staying empty.
+    """
+    identifier, native = resolve_identity(audio_path)
+    if native is None:
+        return []
+    spans = [span for span in (_published_record(identifier).get('sections') or [])
+             if isinstance(span, dict) and span.get('name') in LABELS]
+    if not spans:
+        return []
+    seed = normalise([{'start': float(span['start']), 'label': span['name']}
+                      for span in spans])
+    if seed[0]['start'] <= SEED_ANCHOR_TOLERANCE:
+        seed[0]['start'] = 0.0
+    else:
+        seed.insert(0, {'start': 0.0, 'label': LABELS[0],
+                        'strength': DEFAULT_STRENGTH})
+    return normalise(seed)
 
 
 ADMISSION_MODULE = 'hand_label_admission'
@@ -1401,7 +1443,24 @@ def build_app(audio_path: str, track: Track, beats: list = ()) -> dash.Dash:
     return app
 
 
-def launch(audio: str, port: int = 8070) -> None:
+def seed_from_published(audio_path: str) -> str:
+    """Place a draft working file, and never over an existing one.
+
+    The scratch file is the only copy of whatever is already labelled, so a seed
+    that could overwrite it would be the one unrecoverable action this tool has.
+    """
+    path = labels_path(audio_path)
+    if path.exists():
+        return f'  working file already exists — left alone ({path})'
+    seed = published_seed(audio_path)
+    if not seed:
+        return '  no published annotation for these bytes — starting empty'
+    write_atomically(path, format_csv(seed))
+    return (f'  seeded {len(seed)} sections from the published annotation — '
+            f'the boundaries are the published ones, the names are a draft')
+
+
+def launch(audio: str, port: int = 8070, seed: bool = False) -> None:
     """Read the labels first: a file this refuses is one only this can repair.
 
     Decoding a whole track before finding out costs the owner a minute for a
@@ -1412,6 +1471,9 @@ def launch(audio: str, port: int = 8070) -> None:
     audio_path = str(Path(audio).resolve())
     if not Path(audio_path).exists():
         raise SystemExit(f'no such audio file: {audio_path}')
+
+    if seed:
+        print(seed_from_published(audio_path))
 
     try:
         sections = load_labels(audio_path)
