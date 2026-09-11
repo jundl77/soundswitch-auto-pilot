@@ -1031,7 +1031,14 @@ uv run pytest                        # unit + integration (minutes, not seconds)
   guard at all, and four hand-written sites meant the #345 transition knob
   reached three of them. Deriving the arguments from the dataclass makes that
   silent drop a loud one: a knob a site cannot place is a raise, not a decoder
-  quietly ignoring part of the config it was handed.
+  quietly ignoring part of the config it was handed. **The gate that enforces
+  it reads this repository's source and not the corpus beside it**: the walk
+  covered `training/` whole, which on a machine that has the corpus is 440
+  extra files -- ops copies of campaign scripts and whole shadow trees of a
+  vendored decoder -- so the gate reported dozens of construction sites that
+  are not ours and then died parsing one carrying a BOM. A rule about the
+  source that passes or fails on whether the corpus was downloaded is a rule
+  about the download, so `training/data` is excluded by name.
 - **Beat This-small (vendored, MIT)** -- the bar tracker: a ~2M-parameter
   offline downbeat net fine-tuned on the corpus's own expert grids, run over
   trailing windows so its non-causality becomes lag the delay budget absorbs.
