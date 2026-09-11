@@ -1018,6 +1018,23 @@ def test_build_decoder_carries_every_trellis_knob_onto_the_decoder():
         assert getattr(decoder, name) == value, name
 
 
+def _repo_sources(root):
+    """The repository's own python, which is not everything under these names.
+
+    `training/data` is the gitignored corpus, and it holds ops copies of
+    campaign scripts and whole shadow trees of a vendored decoder.  Those are
+    data this machine happens to have, not source this repository ships, so a
+    rule about the source must not read them -- and reading them made the gate
+    below a statement about whether the corpus was downloaded.
+    """
+    corpus = root / "training" / "data"
+    for directory in ("lib", "simulate", "training"):
+        for path in (root / directory).rglob("*.py"):
+            if corpus in path.parents:
+                continue
+            yield path
+
+
 def test_only_one_place_builds_the_trellis():
     """Four hand-written call sites once; buildup_drop_bonus reached three.
 
@@ -1028,16 +1045,33 @@ def test_only_one_place_builds_the_trellis():
     root = Path(__file__).resolve().parents[1]
     shared = root / "training" / "nn" / "decoder.py"
     offenders = []
-    for directory in ("lib", "simulate", "training"):
-        for path in (root / directory).rglob("*.py"):
-            if path == shared:
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            offenders += [f"{path.relative_to(root)}:{node.lineno}"
-                          for node in ast.walk(tree)
-                          if isinstance(node, ast.Call)
-                          and isinstance(node.func, ast.Name)
-                          and node.func.id == "FixedLagViterbi"]
+    for path in _repo_sources(root):
+        if path == shared:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        offenders += [f"{path.relative_to(root)}:{node.lineno}"
+                      for node in ast.walk(tree)
+                      if isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Name)
+                      and node.func.id == "FixedLagViterbi"]
     assert offenders == [], (
         f"build_decoder is the one way to build one; {offenders} hand-list the "
         f"knobs and can fall behind DecodeParams")
+
+
+def test_the_source_walk_skips_the_gitignored_corpus(tmp_path):
+    """440 corpus files were being parsed, and two of them do not parse at all.
+
+    On a machine that has the corpus the gate above died in `ast.parse` on an
+    ops copy carrying a BOM -- so a rule about this repository's source failed
+    for a reason that is a fact about the download.  Every offender the walk
+    reported was a shadow tree's vendored decoder, none of it ours.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "ours.py").write_text("x = 1\n", encoding="utf-8")
+    corpus = tmp_path / "training" / "data" / "raveform" / "models" / "campaign"
+    corpus.mkdir(parents=True)
+    (corpus / "ops_copy.py").write_text(
+        '﻿"""an ops copy with a BOM"""\nFixedLagViterbi(1)\n', encoding="utf-8")
+
+    assert [p.name for p in _repo_sources(tmp_path)] == ["ours.py"]
