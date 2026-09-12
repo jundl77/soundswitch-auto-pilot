@@ -118,6 +118,38 @@ RULINGS = (OVERRIDDEN, ACCEPTED, UNREVIEWED)
 
 
 # --------------------------------------------------------------------------- #
+# Line endings
+# --------------------------------------------------------------------------- #
+
+
+def crlf_drift(path: Path, recorded: str, name: str | None = None) -> str | None:
+    """Why a sha over a tracked file can fail while ``git status`` reports clean.
+
+    ``core.autocrlf=true`` smudges LF to CRLF on checkout, and a working copy
+    materialised before its path gained an ``eol=lf`` rung in ``.gitattributes``
+    stays CRLF for ever -- git normalises on read, so nothing shows it.  Proving
+    that is what makes the remedy safe to state: LF-normalising the bytes has to
+    reproduce the pin exactly, so a genuine edit is never blamed on a platform.
+
+    Plain ``git checkout -- <path>`` is a no-op here -- git believes the file
+    matches and skips it -- which is why the remedy names two commands rather
+    than the obvious one.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    if b"\r\n" not in data:
+        return None
+    if hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest() != recorded:
+        return None
+    name = name or path.as_posix()
+    return (f"{name} is CRLF on disk and LF in git, which git status cannot "
+            f"show you -- repair the working copy with "
+            f"`rm {name} && git checkout -- {name}`")
+
+
+# --------------------------------------------------------------------------- #
 # Names
 # --------------------------------------------------------------------------- #
 

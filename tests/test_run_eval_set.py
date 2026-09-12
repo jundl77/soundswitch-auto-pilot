@@ -627,7 +627,9 @@ def test_the_frozen_artifacts_are_checked_out_with_canonical_line_endings():
         assert b"\r" not in Path(path).read_bytes(), (
             f"{Path(path).name} was checked out with CRLF, but its recorded "
             f"sha256 is over LF bytes -- check .gitattributes still pins "
-            f"training/*.json to eol=lf, then `git add --renormalize` it"
+            f"training/*.json to eol=lf, then repair the working copy with "
+            f"`rm {path} && git checkout -- {path}` (renormalising touches the "
+            f"index, which was never wrong; a plain checkout is a no-op here)"
         )
 
 

@@ -38,6 +38,7 @@ from eval_assets import (  # noqa: E402
     UNREVIEWED,
     committed_audio_path,
     corpus_audio_path,
+    crlf_drift,
     labels_source_sha,
     load_labels,
     owner_rulings,
@@ -225,7 +226,7 @@ def verify_owner_ground_truth(slice_document: dict) -> None:
     (see eval_assets.REPO_CORPUS_DIR) so the verdict is a fact about this
     checkout rather than about which worktree happened to run it.
     """
-    drift = []
+    drift, line_endings = [], False
     for track_id, ruling in sorted(owner_rulings(slice_document).items()):
         if str(ruling.get("ruling")) != OVERRIDDEN:
             continue
@@ -237,14 +238,20 @@ def verify_owner_ground_truth(slice_document: dict) -> None:
         elif not label.exists():
             drift.append(f"{track_id} -- {name} is not on this checkout")
         elif file_sha256(label) != recorded:
-            drift.append(f"{track_id} -- {name} is {file_sha256(label)[:12]}... "
-                         f"on disk, the slice was cut from {recorded[:12]}...")
+            stale = crlf_drift(label, recorded, name)
+            drift.append(f"{track_id} -- " + (stale or
+                         f"{name} is {file_sha256(label)[:12]}... on disk, the "
+                         f"slice was cut from {recorded[:12]}..."))
+            line_endings = line_endings or bool(stale)
     if drift:
         raise RuntimeError(
             "the eval set's OWNER GROUND TRUTH does not match the freeze:\n  "
             + "\n  ".join(drift)
-            + "\nre-cut the slice (training/eval_assets.py --cut) and the "
-              "baseline together."
+            + ("\nthe committed bytes were never wrong, so this is a checkout "
+               "to repair and NOT a re-cut."
+               if line_endings else
+               "\nre-cut the slice (training/eval_assets.py --cut) and the "
+               "baseline together.")
         )
 
 
@@ -598,7 +605,9 @@ def compare(baseline: dict, current: dict,
     baseline_sha = (baseline.get("eval_set") or {}).get("sha256")
     current_sha = (current.get("eval_set") or {}).get("sha256")
     if baseline_sha != current_sha:
+        frozen_name = str((current.get("eval_set") or {}).get("path"))
         desync.append(
+            crlf_drift(REPO_ROOT / frozen_name, str(baseline_sha), frozen_name) or
             f"the baseline was cut against a different eval set "
             f"({str(baseline_sha)[:12]}... on record, {str(current_sha)[:12]}... "
             f"on disk) -- re-cut it with --write-baseline"
